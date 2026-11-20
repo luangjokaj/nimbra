@@ -3,6 +3,9 @@
 mod app;
 mod blur;
 mod data;
+mod gmail;
+mod input;
+mod rich;
 mod theme;
 mod ui;
 
@@ -14,8 +17,8 @@ use gpui::{
 };
 
 use app::{
-    Back, Confirm, Dismiss, Forward, MarkDone, Next, Nimbra, Prev, Quit, Reload, TogglePalette,
-    ToggleSidebar, ToggleTheme, Undo,
+    Back, Compose, Confirm, Dismiss, Forward, MarkDone, Next, Nimbra, Prev, Quit, Reload, Reply,
+    SendMail, TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -95,18 +98,29 @@ fn main() {
             ])
             .expect("bundled fonts should load");
 
+        input::bind_keys(cx);
+        // Single-letter shortcuts belong to the mail view only, so they never fire while
+        // you are typing in the composer.
+        let mail = Some("Mail");
         cx.bind_keys([
-            KeyBinding::new("j", Next, None),
-            KeyBinding::new("down", Next, None),
-            KeyBinding::new("k", Prev, None),
-            KeyBinding::new("up", Prev, None),
-            KeyBinding::new("e", MarkDone, None),
-            KeyBinding::new("z", Undo, None),
+            KeyBinding::new("c", Compose, mail),
+            KeyBinding::new("r", Reply, mail),
+            KeyBinding::new("cmd-enter", SendMail, Some("Composer")),
+            KeyBinding::new("ctrl-enter", SendMail, Some("Composer")),
+            KeyBinding::new("j", Next, mail),
+            KeyBinding::new("down", Next, mail),
+            KeyBinding::new("k", Prev, mail),
+            KeyBinding::new("up", Prev, mail),
+            KeyBinding::new("e", MarkDone, mail),
+            KeyBinding::new("z", Undo, mail),
+            KeyBinding::new("s", ToggleStar, mail),
+            KeyBinding::new("cmd-backspace", Trash, mail),
+            KeyBinding::new("ctrl-backspace", Trash, mail),
             KeyBinding::new("cmd-k", TogglePalette, None),
             KeyBinding::new("ctrl-k", TogglePalette, None),
-            KeyBinding::new("h", TogglePalette, None),
+            KeyBinding::new("h", TogglePalette, mail),
             KeyBinding::new("escape", Dismiss, None),
-            KeyBinding::new("enter", Confirm, None),
+            KeyBinding::new("enter", Confirm, mail),
             KeyBinding::new("cmd-shift-l", ToggleTheme, None),
             KeyBinding::new("ctrl-shift-l", ToggleTheme, None),
             KeyBinding::new("cmd-b", ToggleSidebar, None),

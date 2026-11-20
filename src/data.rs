@@ -1,25 +1,192 @@
+use gpui::SharedString;
+
+use crate::gmail;
+use crate::rich::{self, Block};
 use crate::theme::{Accent, Tone};
 
+#[derive(Clone)]
 pub struct Mail {
-    pub sender: &'static str,
-    pub initials: &'static str,
+    /// Gmail thread id; `None` for the built-in demo data.
+    pub id: Option<String>,
+    pub sender: SharedString,
+    pub initials: SharedString,
     pub tone: Tone,
-    pub subject: &'static str,
-    pub snippet: &'static str,
-    pub time: &'static str,
-    pub thread: Option<&'static str>,
+    pub subject: SharedString,
+    pub snippet: SharedString,
+    pub time: SharedString,
+    pub thread: Option<SharedString>,
     pub unread: bool,
-    pub tag: Option<(&'static str, Accent)>,
+    pub starred: bool,
+    pub tag: Option<(SharedString, Accent)>,
+    /// Not from today; shown under the "Earlier" group.
     pub yesterday: bool,
-    pub brief: &'static str,
-    pub body: &'static [&'static str],
+    /// AI summary. Empty when there is none (real mail has none yet).
+    pub brief: SharedString,
+    pub participants: SharedString,
+    /// Older messages in the thread, shown collapsed above the latest one.
+    pub earlier: Vec<Earlier>,
+    pub body: Vec<Block>,
     /// (already typed, AI suggestion shown as ghost text)
-    pub draft: (&'static str, &'static str),
-    /// The hero thread shows action items, earlier messages and attachments.
+    pub draft: (SharedString, SharedString),
+    /// The demo hero thread shows action items and attachments.
     pub rich: bool,
+    /// Whether `body` and `earlier` have been fetched.
+    pub loaded: bool,
+    /// Who and what a reply answers (the latest message), once the thread is loaded.
+    pub reply: Option<(String, gmail::ReplyTo)>,
 }
 
-const fn mail(
+#[derive(Clone)]
+pub struct Earlier {
+    pub tone: Tone,
+    pub initials: SharedString,
+    pub sender: SharedString,
+    pub snippet: SharedString,
+    pub when: SharedString,
+    pub blocks: Vec<Block>,
+    /// Collapsed to one line until clicked.
+    pub expanded: bool,
+}
+
+impl Mail {
+    /// A list row for a real Gmail thread. The messages are filled in by [`Mail::fill`].
+    pub fn from_summary(summary: gmail::Summary) -> Self {
+        let (time, earlier) = format_time(summary.timestamp_ms);
+        Mail {
+            id: Some(summary.id),
+            initials: initials(&summary.sender).into(),
+            tone: tone_for(&summary.sender),
+            participants: summary.sender.clone().into(),
+            sender: summary.sender.into(),
+            subject: summary.subject.into(),
+            snippet: summary.snippet.into(),
+            time: time.into(),
+            thread: (summary.message_count > 1).then(|| summary.message_count.to_string().into()),
+            unread: summary.unread,
+            starred: summary.starred,
+            tag: None,
+            yesterday: earlier,
+            brief: "".into(),
+            earlier: Vec::new(),
+            body: Vec::new(),
+            draft: ("".into(), "".into()),
+            rich: false,
+            loaded: false,
+            reply: None,
+        }
+    }
+
+    /// Fills in the thread once its messages (oldest first) have been fetched.
+    pub fn fill(&mut self, mut messages: Vec<gmail::Message>) {
+        let count = messages.len();
+        let mut senders: Vec<&str> = Vec::new();
+        for message in &messages {
+            if !senders.contains(&message.sender.as_str()) {
+                senders.push(&message.sender);
+            }
+        }
+        self.participants = if count > 1 {
+            format!("{} · {count} messages", senders.join(", ")).into()
+        } else {
+            senders.join(", ").into()
+        };
+        if let Some(latest) = messages.pop() {
+            self.reply = self.id.clone().map(|thread_id| {
+                (
+                    latest.address.clone(),
+                    gmail::ReplyTo {
+                        thread_id,
+                        message_id: latest.message_id.clone(),
+                    },
+                )
+            });
+            self.body = latest.blocks;
+            if self.body.is_empty() {
+                self.body = rich::from_text(vec![latest.snippet]);
+            }
+        }
+        self.earlier = messages
+            .into_iter()
+            .rev()
+            .map(|message| Earlier {
+                tone: tone_for(&message.sender),
+                initials: initials(&message.sender).into(),
+                when: format_time(message.timestamp_ms).0.into(),
+                sender: message.sender.into(),
+                snippet: message.snippet.into(),
+                blocks: message.blocks,
+                expanded: false,
+            })
+            .collect();
+        self.loaded = true;
+    }
+}
+
+/// Combines a freshly fetched mailbox listing with what is already in memory, so thread
+/// contents that were already downloaded are not fetched again.
+///
+/// A thread keeps its cached messages only while its snippet and message count are
+/// unchanged; a new reply changes both, which makes it load again.
+pub fn merge(cached: &[Mail], fresh: Vec<Mail>) -> Vec<Mail> {
+    fresh
+        .into_iter()
+        .map(|mut mail| {
+            if let Some(old) = cached.iter().find(|old| old.loaded && old.id == mail.id)
+                && old.snippet == mail.snippet
+                && old.thread == mail.thread
+            {
+                mail.body = old.body.clone();
+                mail.earlier = old.earlier.clone();
+                mail.participants = old.participants.clone();
+                mail.reply = old.reply.clone();
+                mail.loaded = true;
+            }
+            mail
+        })
+        .collect()
+}
+
+/// Up to two initials: "Mira Kovač" gives "MK", "stripe" gives "S".
+fn initials(name: &str) -> String {
+    name.split_whitespace()
+        .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// A stable avatar colour per sender.
+fn tone_for(name: &str) -> Tone {
+    const TONES: [Tone; 6] = [
+        Tone::Violet,
+        Tone::Rose,
+        Tone::Amber,
+        Tone::Mint,
+        Tone::Sky,
+        Tone::Graphite,
+    ];
+    let hash = name
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+    TONES[hash as usize % TONES.len()]
+}
+
+/// A short local time label, and whether it falls before today.
+fn format_time(timestamp_ms: i64) -> (String, bool) {
+    use chrono::{Local, TimeZone};
+    let Some(when) = Local.timestamp_millis_opt(timestamp_ms).single() else {
+        return (String::new(), true);
+    };
+    let days = (Local::now().date_naive() - when.date_naive()).num_days();
+    let label = match days {
+        0 => when.format("%-H:%M"),
+        1..=6 => when.format("%a"),
+        _ => when.format("%b %-d"),
+    };
+    (label.to_string(), days != 0)
+}
+
+fn mail(
     sender: &'static str,
     initials: &'static str,
     tone: Tone,
@@ -28,41 +195,75 @@ const fn mail(
     time: &'static str,
 ) -> Mail {
     Mail {
-        sender,
-        initials,
+        id: None,
+        sender: sender.into(),
+        initials: initials.into(),
         tone,
-        subject,
-        snippet,
-        time,
+        subject: subject.into(),
+        snippet: snippet.into(),
+        time: time.into(),
         thread: None,
         unread: false,
+        starred: false,
         tag: None,
         yesterday: false,
-        brief: snippet,
-        body: &[],
-        draft: ("", ""),
+        brief: snippet.into(),
+        participants: format!("{sender} and you").into(),
+        earlier: Vec::new(),
+        body: Vec::new(),
+        draft: ("".into(), "".into()),
         rich: false,
+        loaded: true,
+        reply: None,
     }
+}
+
+fn paragraphs(items: &[&'static str]) -> Vec<Block> {
+    rich::from_text(items.iter().map(|p| p.to_string()).collect())
 }
 
 pub fn inbox() -> Vec<Mail> {
     vec![
         Mail {
-            thread: Some("3"),
+            thread: Some("3".into()),
             unread: true,
-            tag: Some(("Needs reply", Accent::Rose)),
+            tag: Some(("Needs reply".into(), Accent::Rose)),
             rich: true,
-            brief: "Mira needs your sign-off by Friday. Public launch moves to Dec 9 so onboarding gets one more test round; budget is unchanged.",
-            body: &[
+            participants: "Mira, Jonah and you · 3 messages".into(),
+            earlier: vec![
+                Earlier {
+                    tone: Tone::Mint,
+                    initials: "JR".into(),
+                    sender: "Jonah Reyes".into(),
+                    snippet: "Numbers look right to me. Looping Luan in for final sign-off.".into(),
+                    when: "Yesterday".into(),
+                    blocks: paragraphs(&[
+                        "Numbers look right to me. Looping Luan in for final sign-off.",
+                        "The only open question on my side is the embargo date.",
+                    ]),
+                    expanded: false,
+                },
+                Earlier {
+                    tone: Tone::Violet,
+                    initials: "MK".into(),
+                    sender: "Mira Kovač".into(),
+                    snippet: "First pass of the deck. Timeline still says Nov 28, fixing now.".into(),
+                    when: "Tue".into(),
+                    blocks: paragraphs(&[
+                        "First pass of the deck. Timeline still says Nov 28, fixing now.",
+                        "Draft is here: https://example.com/q4-launch-plan",
+                    ]),
+                    expanded: false,
+                },
+            ],
+            brief: "Mira needs your sign-off by Friday. Public launch moves to Dec 9 so onboarding gets one more test round; budget is unchanged.".into(),
+            body: paragraphs(&[
                 "Hi Luan,",
                 "Final deck is attached with the updated timeline. We pushed the public launch to December 9 so the new onboarding flow gets one more round of testing. Budget stays exactly where it was.",
                 "Two things before Friday: the pricing tiers on slide 14, and a date for the press embargo.",
                 "Thanks,\nMira",
-            ],
-            draft: (
-                "Looks great, approved for Dec 9.",
-                " Let’s lock the embargo for Dec 4 and I’ll confirm the tiers by Thursday.",
-            ),
+            ]),
+            draft: ("Looks great, approved for Dec 9.".into(), " Let’s lock the embargo for Dec 4 and I’ll confirm the tiers by Thursday.".into()),
             ..mail(
                 "Mira Kovač",
                 "MK",
@@ -74,12 +275,12 @@ pub fn inbox() -> Vec<Mail> {
         },
         Mail {
             unread: true,
-            brief: "Your November payout of €24,180.00 lands on Nov 22. Nothing to do.",
-            body: &[
+            brief: "Your November payout of €24,180.00 lands on Nov 22. Nothing to do.".into(),
+            body: paragraphs(&[
                 "Hi Luan,",
                 "Your payout of €24,180.00 is on its way and should arrive on November 22 in the account ending 4421.",
                 "You can see the full breakdown in your dashboard.",
-            ],
+            ]),
             ..mail(
                 "Stripe",
                 "S",
@@ -90,15 +291,15 @@ pub fn inbox() -> Vec<Mail> {
             )
         },
         Mail {
-            thread: Some("5"),
+            thread: Some("5".into()),
             unread: true,
-            brief: "Jonah finished the component audit. Two focus-ring edge cases in dark mode need a decision; everything else passes.",
-            body: &[
+            brief: "Jonah finished the component audit. Two focus-ring edge cases in dark mode need a decision; everything else passes.".into(),
+            body: paragraphs(&[
                 "Hey,",
                 "Went through Button and Input end to end. Two edge cases with focus rings in dark mode, otherwise solid.",
                 "I can pair on it tomorrow morning if that works.",
-            ],
-            draft: ("Tomorrow works.", " 10:00 at my desk?"),
+            ]),
+            draft: ("Tomorrow works.".into(), " 10:00 at my desk?".into()),
             ..mail(
                 "Jonah Reyes",
                 "JR",
@@ -109,13 +310,13 @@ pub fn inbox() -> Vec<Mail> {
             )
         },
         Mail {
-            tag: Some(("Travel", Accent::Sky)),
-            brief: "Flights for the Lisbon offsite are booked. Everyone lands Thursday afternoon; hotel confirmation is attached.",
-            body: &[
+            tag: Some(("Travel".into(), Accent::Sky)),
+            brief: "Flights for the Lisbon offsite are booked. Everyone lands Thursday afternoon; hotel confirmation is attached.".into(),
+            body: paragraphs(&[
                 "Hi all,",
                 "Flights are booked. Everyone lands Thursday afternoon and the hotel confirmation is inside.",
                 "Dinner on the first night is at 8:30, a short walk from the hotel.",
-            ],
+            ]),
             ..mail(
                 "Ana Petrović",
                 "AP",
@@ -126,12 +327,12 @@ pub fn inbox() -> Vec<Mail> {
             )
         },
         Mail {
-            brief: "Three issues were assigned to you: fuzzy matching in the command palette, snooze presets, and a keyboard hint bug.",
-            body: &[
+            brief: "Three issues were assigned to you: fuzzy matching in the command palette, snooze presets, and a keyboard hint bug.".into(),
+            body: paragraphs(&[
                 "NIM-214 Command palette fuzzy matching",
                 "NIM-219 Snooze presets",
                 "NIM-223 Keyboard hints overlap on narrow windows",
-            ],
+            ]),
             ..mail(
                 "Linear",
                 "L",
@@ -142,12 +343,27 @@ pub fn inbox() -> Vec<Mail> {
             )
         },
         Mail {
-            thread: Some("2"),
+            thread: Some("2".into()),
             yesterday: true,
-            body: &[
-                "Pulled a few references for the aurora wallpaper and the serif. The italic accent on the last words of a subject line is my favourite detail.",
-                "Have a look when you get a minute.",
-            ],
+            // An HTML message, to exercise the rich-text viewer.
+            body: rich::from_html(
+                r#"<div><p>Hi Luan,</p>
+                <p>Pulled a few references for the <b>aurora wallpaper</b> and the serif. The
+                <i>italic accent</i> on the last words of a subject line is my favourite detail.</p>
+                <h2>What I would keep</h2>
+                <ul><li>The violet to rose gradient on the primary button</li>
+                <li>Mono for timestamps and <code>keyboard hints</code></li>
+                <li>One accent colour per label, nothing more</li></ul>
+                <h3>Next steps</h3>
+                <ol><li>Review the board: <a href="https://example.com/nimbra-moodboard">nimbra-moodboard</a></li>
+                <li>Pick two directions for light mode</li></ol>
+                <blockquote><p>Can the unread counts be a touch quieter?</p></blockquote>
+                <p>I think that note from last week still stands.</p>
+                <img src="https://example.com/aurora-reference.png" alt="Aurora reference" width="560">
+                <hr><pre>--color-accent: #8b7cff;
+--color-rose:   #ff7ab6;</pre>
+                <p>Thanks,<br>Elena</p></div>"#,
+            ),
             ..mail(
                 "Elena Brooks",
                 "EB",
@@ -159,7 +375,7 @@ pub fn inbox() -> Vec<Mail> {
         },
         Mail {
             yesterday: true,
-            body: &["Clause 4.2 is updated per legal. Ready to countersign when you are."],
+            body: paragraphs(&["Clause 4.2 is updated per legal. Ready to countersign when you are."]),
             ..mail(
                 "Daniel Osei",
                 "DO",
@@ -171,7 +387,7 @@ pub fn inbox() -> Vec<Mail> {
         },
         Mail {
             yesterday: true,
-            body: &["“Can the unread counts be a touch quieter?”"],
+            body: paragraphs(&["“Can the unread counts be a touch quieter?”"]),
             ..mail(
                 "Figma",
                 "F",
@@ -183,7 +399,7 @@ pub fn inbox() -> Vec<Mail> {
         },
         Mail {
             yesterday: true,
-            body: &["Design crit is now Thursday 2:00 PM in Studio B. Agenda attached."],
+            body: paragraphs(&["Design crit is now Thursday 2:00 PM in Studio B. Agenda attached."]),
             ..mail(
                 "Google Calendar",
                 "GC",
@@ -195,12 +411,12 @@ pub fn inbox() -> Vec<Mail> {
         },
         Mail {
             yesterday: true,
-            body: &["12 pages updated and 4 new comments in Roadmap 2027."],
+            body: paragraphs(&["12 pages updated and 4 new comments in Roadmap 2027."]),
             ..mail(
                 "Notion",
                 "N",
                 Tone::Amber,
-                "Weekly digest",
+                "Weekly digest: everything that changed across the Design workspace this week",
                 "12 pages updated, 4 new comments in Roadmap 2027.",
                 "Tue",
             )
@@ -235,3 +451,45 @@ pub const COMMANDS: &[(&str, &str, &str, &str, Option<&str>)] = &[
         None,
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thread(id: &str, snippet: &'static str) -> Mail {
+        Mail {
+            id: Some(id.into()),
+            loaded: false,
+            ..mail("Ana", "A", Tone::Mint, "Subject", snippet, "9:00")
+        }
+    }
+
+    #[test]
+    fn merge_keeps_downloaded_threads_and_refetches_changed_ones() {
+        let mut same = thread("a", "hello");
+        same.body = rich::from_text(vec!["Downloaded body".into()]);
+        same.loaded = true;
+        let mut changed = thread("b", "old reply");
+        changed.body = rich::from_text(vec!["Stale body".into()]);
+        changed.loaded = true;
+        let cached = vec![same, changed];
+
+        let merged = merge(
+            &cached,
+            vec![
+                thread("c", "brand new"),
+                thread("a", "hello"),
+                thread("b", "new reply"),
+            ],
+        );
+
+        // Order follows the fresh listing.
+        let ids: Vec<_> = merged.iter().map(|m| m.id.clone().unwrap()).collect();
+        assert_eq!(ids, ["c", "a", "b"]);
+        // Unchanged thread keeps its body; new and changed ones will load again.
+        assert!(merged[1].loaded);
+        assert_eq!(merged[1].body[0].text, "Downloaded body");
+        assert!(!merged[0].loaded && merged[0].body.is_empty());
+        assert!(!merged[2].loaded && merged[2].body.is_empty());
+    }
+}
