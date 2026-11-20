@@ -1,6 +1,9 @@
+use std::time::Duration;
+
 use gpui::{
-    App, Context, Div, FocusHandle, FontStyle, FontWeight, HighlightStyle, Hsla, MouseButton,
-    SharedString, Stateful, StyledText, Window, actions, div, prelude::*, px, relative,
+    Animation, AnimationExt as _, AnyElement, App, Context, Div, FocusHandle, FontStyle,
+    FontWeight, HighlightStyle, Hsla, MouseButton, SharedString, Stateful, StyledText,
+    Transformation, Window, actions, div, ease_out_quint, percentage, prelude::*, px, relative,
 };
 
 use crate::data::{COMMANDS, Mail, inbox};
@@ -20,6 +23,10 @@ actions!(
         Dismiss,
         Confirm,
         ToggleTheme,
+        ToggleSidebar,
+        Back,
+        Forward,
+        Reload,
         Quit
     ]
 );
@@ -33,6 +40,13 @@ pub struct Nimbra {
     palette: bool,
     palette_sel: usize,
     dark: bool,
+    sidebar_open: bool,
+    /// Bumped on every toggle / reload so the matching animation replays.
+    sidebar_gen: usize,
+    reload_gen: usize,
+    /// Threads visited before / after the current one, for the back and forward buttons.
+    back: Vec<usize>,
+    forward: Vec<usize>,
 }
 
 impl Nimbra {
@@ -55,6 +69,11 @@ impl Nimbra {
             palette: screen == "palette",
             palette_sel: 0,
             dark: std::env::var("NIMBRA_THEME").as_deref() != Ok("light"),
+            sidebar_open: std::env::var("NIMBRA_SIDEBAR").as_deref() != Ok("closed"),
+            sidebar_gen: 0,
+            reload_gen: 0,
+            back: Vec::new(),
+            forward: Vec::new(),
         }
     }
 
@@ -82,9 +101,92 @@ impl Nimbra {
             let visible = self.visible();
             if let Some(pos) = visible.iter().position(|i| *i == self.selected) {
                 let next = (pos as isize + delta).clamp(0, visible.len() as isize - 1);
-                self.selected = visible[next as usize];
+                self.open(visible[next as usize]);
             }
         }
+        cx.notify();
+    }
+
+    /// Opens a thread and records the previous one so Back can return to it.
+    fn open(&mut self, i: usize) {
+        if i != self.selected {
+            self.back.push(self.selected);
+            self.forward.clear();
+            self.selected = i;
+        }
+    }
+
+    fn can_go_back(&self) -> bool {
+        self.back.iter().any(|i| !self.done[*i])
+    }
+
+    fn can_go_forward(&self) -> bool {
+        self.forward.iter().any(|i| !self.done[*i])
+    }
+
+    fn go_back(&mut self, cx: &mut Context<Self>) {
+        // Skip threads that were marked done in the meantime.
+        while let Some(i) = self.back.pop() {
+            if !self.done[i] {
+                self.forward.push(self.selected);
+                self.selected = i;
+                break;
+            }
+        }
+        cx.notify();
+    }
+
+    fn go_forward(&mut self, cx: &mut Context<Self>) {
+        while let Some(i) = self.forward.pop() {
+            if !self.done[i] {
+                self.back.push(self.selected);
+                self.selected = i;
+                break;
+            }
+        }
+        cx.notify();
+    }
+
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_open = !self.sidebar_open;
+        self.sidebar_gen += 1;
+        cx.notify();
+    }
+
+    /// Runs `apply` with how open the sidebar is (0 = hidden, 1 = shown), animating
+    /// towards the current state after a toggle.
+    fn with_sidebar_progress<E: IntoElement + 'static>(
+        &self,
+        key: &'static str,
+        element: E,
+        apply: impl Fn(E, f32) -> E + 'static,
+    ) -> AnyElement {
+        let (from, to) = if self.sidebar_open {
+            (0., 1.)
+        } else {
+            (1., 0.)
+        };
+        if self.sidebar_gen == 0 {
+            return apply(element, to).into_any_element();
+        }
+        element
+            .with_animation(
+                (key, self.sidebar_gen),
+                Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
+                move |element, delta| apply(element, from + (to - from) * delta),
+            )
+            .into_any_element()
+    }
+
+    /// Mock "check for mail": everything that was cleared arrives again.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.reload_gen += 1;
+        self.done.fill(false);
+        self.history.clear();
+        self.back.clear();
+        self.forward.clear();
+        self.selected = 0;
+        self.palette = false;
         cx.notify();
     }
 
@@ -188,6 +290,77 @@ fn card(t: &Theme) -> Div {
 // ---------------------------------------------------------------- panes
 
 impl Nimbra {
+    /// Sidebar toggle, back, forward and reload, sitting beside the traffic lights.
+    /// Drawn above the panes so it stays put when the sidebar is hidden.
+    fn window_controls(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let hover = t.hover;
+        let control = |name: &str, enabled: bool| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(28.))
+                .rounded(px(7.))
+                .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
+                .child(icon(name, 17., if enabled { t.text2 } else { t.faint }))
+        };
+        div()
+            .absolute()
+            .top(px(11.))
+            .left(px(84.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                control("sidebar", true)
+                    .id("toggle-sidebar")
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
+            )
+            .child(div().w(px(6.)))
+            .child(
+                control("back", self.can_go_back())
+                    .id("go-back")
+                    .on_click(cx.listener(|this, _, _, cx| this.go_back(cx))),
+            )
+            .child(
+                control("next", self.can_go_forward())
+                    .id("go-forward")
+                    .on_click(cx.listener(|this, _, _, cx| this.go_forward(cx))),
+            )
+            .child(div().w(px(6.)))
+            .child(
+                div()
+                    .id("reload")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(px(28.))
+                    .rounded(px(7.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+                    .child(if self.reload_gen == 0 {
+                        icon("reload", 17., t.text2).into_any_element()
+                    } else {
+                        // One full turn each time mail is checked.
+                        icon("reload", 17., t.text2)
+                            .with_animation(
+                                ("reload-spin", self.reload_gen),
+                                Animation::new(Duration::from_millis(700))
+                                    .with_easing(ease_out_quint()),
+                                |svg, delta| {
+                                    svg.with_transformation(Transformation::rotate(percentage(
+                                        delta,
+                                    )))
+                                },
+                            )
+                            .into_any_element()
+                    }),
+            )
+    }
+
     fn sidebar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let left = self.visible().len();
         let unread = self
@@ -375,7 +548,7 @@ impl Nimbra {
             .when(selected, |d| d.bg(t.selected))
             .when(!selected, |d| d.hover(move |s| s.bg(hover)))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.selected = i;
+                this.open(i);
                 cx.notify();
             }))
             .child(
@@ -506,6 +679,12 @@ impl Nimbra {
             .bg(t.surface)
             .border_r_1()
             .border_color(t.border)
+            // Makes room for the window controls while the sidebar is hidden.
+            .child(
+                self.with_sidebar_progress("list-top", div().flex_none(), |d, open| {
+                    d.h(px(34. * (1. - open)))
+                }),
+            )
             .child(
                 div()
                     .flex()
@@ -1017,6 +1196,7 @@ impl Nimbra {
             .min_w(px(0.))
             .h_full()
             .p(px(20.))
+            .when(!self.sidebar_open, |d| d.pt(px(52.)))
             .bg(t.surface)
             .child(
                 div()
@@ -1343,6 +1523,10 @@ impl Render for Nimbra {
                 this.dark = !this.dark;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &Back, _, cx| this.go_back(cx)))
+            .on_action(cx.listener(|this, _: &Forward, _, cx| this.go_forward(cx)))
+            .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
             .relative()
             .flex()
@@ -1351,11 +1535,22 @@ impl Render for Nimbra {
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
-            .child(self.sidebar(&t, cx))
+            .child(
+                self.with_sidebar_progress(
+                    "sidebar-width",
+                    div()
+                        .flex_none()
+                        .h_full()
+                        .overflow_hidden()
+                        .child(self.sidebar(&t, cx)),
+                    |d, open| d.w(px(236. * open)),
+                ),
+            )
             .when(empty, |d| d.child(self.zero(&t)))
             .when(!empty, |d| {
                 d.child(self.list(&t, cx)).child(self.reading(&t, cx))
             })
+            .child(self.window_controls(&t, cx))
             .when(self.palette && !empty, |d| d.child(self.palette(&t, cx)))
     }
 }

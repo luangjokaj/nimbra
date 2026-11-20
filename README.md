@@ -20,10 +20,13 @@ GPUI is built with the `runtime_shaders` feature, so Xcode's Metal toolchain is 
 | `⌘K` or `H` | Command palette (snooze) |
 | `↵` / `esc` | Run command / close palette |
 | `⌘⇧L` | Toggle light and dark |
+| `⌘B` | Show or hide the sidebar |
+| `⌘[` / `⌘]` | Back / forward through opened threads |
+| `⌘R` | Reload (mock mail check: restores the inbox) |
 
 ## Screenshot states
 
-`NIMBRA_SCREEN=palette` or `NIMBRA_SCREEN=zero` opens that screen directly. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SHIFT=<px>` moves the window sideways.
+`NIMBRA_SCREEN=palette` or `NIMBRA_SCREEN=zero` opens that screen directly. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` starts with the sidebar hidden. `NIMBRA_SHIFT=<px>` moves the window sideways.
 
 ## Sidebar blur
 

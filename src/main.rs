@@ -13,7 +13,10 @@ use gpui::{
     WindowBackgroundAppearance, WindowBounds, WindowOptions, point, prelude::*, px, size,
 };
 
-use app::{Confirm, Dismiss, MarkDone, Next, Nimbra, Prev, Quit, TogglePalette, ToggleTheme, Undo};
+use app::{
+    Back, Confirm, Dismiss, Forward, MarkDone, Next, Nimbra, Prev, Quit, Reload, TogglePalette,
+    ToggleSidebar, ToggleTheme, Undo,
+};
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
 macro_rules! icons {
@@ -53,6 +56,10 @@ static ICONS: &[(&str, &[u8])] = icons![
     "link",
     "sun",
     "moon",
+    "sidebar",
+    "back",
+    "next",
+    "reload",
 ];
 
 struct Assets;
@@ -102,6 +109,12 @@ fn main() {
             KeyBinding::new("enter", Confirm, None),
             KeyBinding::new("cmd-shift-l", ToggleTheme, None),
             KeyBinding::new("ctrl-shift-l", ToggleTheme, None),
+            KeyBinding::new("cmd-b", ToggleSidebar, None),
+            KeyBinding::new("ctrl-b", ToggleSidebar, None),
+            KeyBinding::new("cmd-[", Back, None),
+            KeyBinding::new("cmd-]", Forward, None),
+            KeyBinding::new("cmd-r", Reload, None),
+            KeyBinding::new("ctrl-r", Reload, None),
             KeyBinding::new("cmd-q", Quit, None),
         ]);
 
