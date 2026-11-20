@@ -51,7 +51,7 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            sidebar: c(0x14141c, 0.62),
+            sidebar: c(0x101017, 0.88),
             surface: c(0x0e0e14, 1.),
             raised: c(0x17171f, 1.),
             hover: c(0xffffff, 0.045),
@@ -59,9 +59,9 @@ impl Theme {
             border: c(0xffffff, 0.07),
             border_strong: c(0xffffff, 0.13),
             text: c(0xf5f3ef, 1.),
-            text2: c(0xb4b2bc, 1.),
-            text3: c(0x77757f, 1.),
-            faint: c(0x4a4955, 1.),
+            text2: c(0xc6c4ce, 1.),
+            text3: c(0x918f9a, 1.),
+            faint: c(0x62616d, 1.),
             violet: c(0x8b7cff, 1.),
             rose: c(0xff7ab6, 1.),
             amber: c(0xffb86b, 1.),
@@ -77,7 +77,7 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             dark: false,
-            sidebar: c(0xf3f1ed, 0.62),
+            sidebar: c(0xf4f2ee, 0.88),
             surface: c(0xffffff, 1.),
             raised: c(0xffffff, 1.),
             hover: c(0x000000, 0.035),
@@ -85,9 +85,9 @@ impl Theme {
             border: c(0x000000, 0.07),
             border_strong: c(0x000000, 0.12),
             text: c(0x17161c, 1.),
-            text2: c(0x55535e, 1.),
-            text3: c(0x8c8a95, 1.),
-            faint: c(0xbcbac3, 1.),
+            text2: c(0x45434d, 1.),
+            text3: c(0x75737e, 1.),
+            faint: c(0xa5a3ad, 1.),
             violet: c(0x6e5cf6, 1.),
             rose: c(0xe4528f, 1.),
             amber: c(0xe58a2e, 1.),
