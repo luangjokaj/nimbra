@@ -8,6 +8,7 @@ mod input;
 mod rich;
 mod theme;
 mod ui;
+mod webview;
 
 use std::borrow::Cow;
 
@@ -17,8 +18,9 @@ use gpui::{
 };
 
 use app::{
-    Back, Compose, Confirm, Dismiss, Forward, MarkDone, Next, Nimbra, Prev, Quit, Reload, Reply,
-    SendMail, TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
+    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, MarkDone, Next, Nimbra, Prev, Quit,
+    Reload, Reply, SendMail, ToggleFullCompose, ToggleOriginal, TogglePalette, ToggleSidebar,
+    ToggleStar, ToggleTheme, Trash, Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -63,6 +65,8 @@ static ICONS: &[(&str, &[u8])] = icons![
     "back",
     "next",
     "reload",
+    "expand",
+    "shrink",
 ];
 
 struct Assets;
@@ -101,11 +105,16 @@ fn main() {
         input::bind_keys(cx);
         // Single-letter shortcuts belong to the mail view only, so they never fire while
         // you are typing in the composer.
-        let mail = Some("Mail");
+        let mail = Some("Mail && !TextInput");
         cx.bind_keys([
+            KeyBinding::new("/", FocusSearch, mail),
+            KeyBinding::new("cmd-f", FocusSearch, Some("Mail")),
+            KeyBinding::new("ctrl-f", FocusSearch, Some("Mail")),
             KeyBinding::new("c", Compose, mail),
             KeyBinding::new("r", Reply, mail),
             KeyBinding::new("cmd-enter", SendMail, Some("Composer")),
+            KeyBinding::new("cmd-shift-f", ToggleFullCompose, Some("Composer")),
+            KeyBinding::new("ctrl-shift-f", ToggleFullCompose, Some("Composer")),
             KeyBinding::new("ctrl-enter", SendMail, Some("Composer")),
             KeyBinding::new("j", Next, mail),
             KeyBinding::new("down", Next, mail),
@@ -114,6 +123,7 @@ fn main() {
             KeyBinding::new("e", MarkDone, mail),
             KeyBinding::new("z", Undo, mail),
             KeyBinding::new("s", ToggleStar, mail),
+            KeyBinding::new("v", ToggleOriginal, mail),
             KeyBinding::new("cmd-backspace", Trash, mail),
             KeyBinding::new("ctrl-backspace", Trash, mail),
             KeyBinding::new("cmd-k", TogglePalette, None),

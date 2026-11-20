@@ -34,6 +34,10 @@ pub struct Mail {
     pub loaded: bool,
     /// Who and what a reply answers (the latest message), once the thread is loaded.
     pub reply: Option<(String, gmail::ReplyTo)>,
+    /// The other recipients of the latest message, for reply-all.
+    pub reply_all: Vec<String>,
+    /// The latest message's original HTML, for "Show original".
+    pub html: Option<SharedString>,
 }
 
 #[derive(Clone)]
@@ -73,6 +77,8 @@ impl Mail {
             rich: false,
             loaded: false,
             reply: None,
+            reply_all: Vec::new(),
+            html: None,
         }
     }
 
@@ -91,6 +97,7 @@ impl Mail {
             senders.join(", ").into()
         };
         if let Some(latest) = messages.pop() {
+            self.reply_all = latest.others.clone();
             self.reply = self.id.clone().map(|thread_id| {
                 (
                     latest.address.clone(),
@@ -100,6 +107,7 @@ impl Mail {
                     },
                 )
             });
+            self.html = latest.html.map(Into::into);
             self.body = latest.blocks;
             if self.body.is_empty() {
                 self.body = rich::from_text(vec![latest.snippet]);
@@ -139,6 +147,8 @@ pub fn merge(cached: &[Mail], fresh: Vec<Mail>) -> Vec<Mail> {
                 mail.earlier = old.earlier.clone();
                 mail.participants = old.participants.clone();
                 mail.reply = old.reply.clone();
+                mail.reply_all = old.reply_all.clone();
+                mail.html = old.html.clone();
                 mail.loaded = true;
             }
             mail
@@ -215,12 +225,38 @@ fn mail(
         rich: false,
         loaded: true,
         reply: None,
+        reply_all: Vec::new(),
+        html: None,
     }
 }
 
 fn paragraphs(items: &[&'static str]) -> Vec<Block> {
     rich::from_text(items.iter().map(|p| p.to_string()).collect())
 }
+
+/// A formatted message for the sample data.
+const SAMPLE_HTML: &str = r#"<html><head><meta name="color-scheme" content="light dark">
+                <style>body{font-family:-apple-system,sans-serif;margin:24px}
+                @media (prefers-color-scheme: dark){body{background:#22252a;color:#e6e6e6}a{color:#8ab4ff}}</style></head>
+                <body><div><p>Hi Luan,</p>
+                <p>Pulled a few references for the <b>aurora wallpaper</b> and the serif. The
+                <i>italic accent</i> on the last words of a subject line is my favourite detail.</p>
+                <h2>What I would keep</h2>
+                <ul><li>The violet to rose gradient on the primary button</li>
+                <li>Mono for timestamps and <code>keyboard hints</code></li>
+                <li>One accent colour per label, nothing more</li></ul>
+                <h3>Next steps</h3>
+                <ol><li>Review the board: <a href="https://example.com/nimbra-moodboard">nimbra-moodboard</a></li>
+                <li>Pick two directions for light mode</li></ol>
+                <blockquote><p>Can the unread counts be a touch quieter?</p></blockquote>
+                <p>I think that note from last week still stands.</p>
+                <img src="https://example.com/aurora-reference.png" alt="Aurora reference" width="560">
+                <table width="100%" cellpadding="8"><tr><th align="left">Status</th><th align="left">Direction</th><th align="right">Votes</th></tr>
+                <tr><td>Kept</td><td><b>Aurora</b> gradient</td><td align="right">4</td></tr>
+                <tr><td>Open</td><td><b>Paper</b> light mode</td><td align="right">2</td></tr></table>
+                <hr><pre>--color-accent: #8b7cff;
+--color-rose:   #ff7ab6;</pre>
+                <p>Thanks,<br>Elena</p></div></body></html>"#;
 
 pub fn inbox() -> Vec<Mail> {
     vec![
@@ -346,24 +382,8 @@ pub fn inbox() -> Vec<Mail> {
             thread: Some("2".into()),
             yesterday: true,
             // An HTML message, to exercise the rich-text viewer.
-            body: rich::from_html(
-                r#"<div><p>Hi Luan,</p>
-                <p>Pulled a few references for the <b>aurora wallpaper</b> and the serif. The
-                <i>italic accent</i> on the last words of a subject line is my favourite detail.</p>
-                <h2>What I would keep</h2>
-                <ul><li>The violet to rose gradient on the primary button</li>
-                <li>Mono for timestamps and <code>keyboard hints</code></li>
-                <li>One accent colour per label, nothing more</li></ul>
-                <h3>Next steps</h3>
-                <ol><li>Review the board: <a href="https://example.com/nimbra-moodboard">nimbra-moodboard</a></li>
-                <li>Pick two directions for light mode</li></ol>
-                <blockquote><p>Can the unread counts be a touch quieter?</p></blockquote>
-                <p>I think that note from last week still stands.</p>
-                <img src="https://example.com/aurora-reference.png" alt="Aurora reference" width="560">
-                <hr><pre>--color-accent: #8b7cff;
---color-rose:   #ff7ab6;</pre>
-                <p>Thanks,<br>Elena</p></div>"#,
-            ),
+            body: rich::from_html(SAMPLE_HTML),
+            html: Some(SAMPLE_HTML.into()),
             ..mail(
                 "Elena Brooks",
                 "EB",

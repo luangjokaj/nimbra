@@ -17,6 +17,7 @@ use crate::theme::{Accent, SERIF, Theme, Tone, c, fade, gradient};
 use crate::ui::{
     ButtonKind, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill, shadow,
 };
+use crate::webview::HtmlView;
 
 actions!(
     nimbra,
@@ -35,6 +36,9 @@ actions!(
         Compose,
         Reply,
         SendMail,
+        ToggleFullCompose,
+        ToggleOriginal,
+        FocusSearch,
         Back,
         Forward,
         Reload,
@@ -60,10 +64,42 @@ struct Composer {
     subject: Entity<TextInput>,
     lines: Vec<Entity<TextInput>>,
     reply: Option<gmail::ReplyTo>,
+    /// Fills the window instead of floating over the mail.
+    full: bool,
+    /// Top-left corner of the floating card; `None` until it is first laid out, centred.
+    position: Option<(f32, f32)>,
+    size: (f32, f32),
+    /// An in-progress move or resize: what, where the mouse started, and the card's
+    /// position and size at that moment.
+    grab: Option<(Grab, (f32, f32), (f32, f32), (f32, f32))>,
     sending: bool,
     error: Option<SharedString>,
     _subscriptions: Vec<gpui::Subscription>,
 }
+
+#[derive(Clone, Copy, PartialEq)]
+enum ComposeKind {
+    New,
+    Reply,
+    ReplyAll,
+    Forward,
+}
+
+/// A small menu dropped from the reading toolbar.
+#[derive(Clone, Copy, PartialEq)]
+enum Menu {
+    Labels,
+    More,
+}
+
+/// What the mouse is doing to the floating composer.
+#[derive(Clone, Copy, PartialEq)]
+enum Grab {
+    Move,
+    Resize,
+}
+
+const COMPOSER_MIN: (f32, f32) = (460., 320.);
 
 /// Which composer field an event came from.
 #[derive(Clone, Copy, PartialEq)]
@@ -95,6 +131,25 @@ pub struct Nimbra {
     labels: Vec<gmail::Label>,
     /// A mailbox request is in flight.
     fetching: bool,
+    /// The search field in the sidebar, and the query the results are for.
+    search: Entity<TextInput>,
+    query: String,
+    _search_events: gpui::Subscription,
+    /// The open toolbar menu, if any.
+    menu: Option<Menu>,
+    /// The menu a click outside just closed, and when. Lets a click on the menu's own
+    /// button close it instead of closing and instantly reopening it.
+    menu_dismissed: Option<(Menu, std::time::Instant)>,
+    /// "Show original": the message's own HTML in a web view instead of the native reader.
+    original: bool,
+    /// Remote images allowed in the web view for the open thread.
+    original_images: bool,
+    /// The web view, created the first time it is needed.
+    html_view: Option<std::rc::Rc<HtmlView>>,
+    /// What the web view currently shows (thread, images allowed), to avoid reloading.
+    html_shown: Option<(String, bool)>,
+    /// The colour scheme the web view was last told to use.
+    html_dark: Option<bool>,
     /// The message being written, if the composer is open.
     compose: Option<Composer>,
     /// Focus to hand over on the next frame (set where no window is at hand).
@@ -142,7 +197,21 @@ impl Nimbra {
         let demo = config.is_none();
         let mails = if demo { inbox() } else { Vec::new() };
         let zero = screen == "zero";
+        let search = cx
+            .new(|cx| TextInput::new(cx, "Search mail", Theme::dark().text3, Theme::dark().violet));
+        let search_events = cx.subscribe(&search, |this, _, event: &InputEvent, cx| match event {
+            InputEvent::Enter => this.run_search(cx),
+            // Down or Tab hands the keyboard back to the list.
+            InputEvent::Down | InputEvent::Tab => {
+                this.pending_focus = Some(this.focus.clone());
+                cx.notify();
+            }
+            _ => {}
+        });
         let mut this = Self {
+            search,
+            query: String::new(),
+            _search_events: search_events,
             focus: cx.focus_handle(),
             status: if demo {
                 Status::Demo
@@ -161,6 +230,13 @@ impl Nimbra {
             cache: HashMap::new(),
             labels: Vec::new(),
             fetching: false,
+            menu: None,
+            menu_dismissed: None,
+            original: false,
+            original_images: false,
+            html_view: None,
+            html_shown: None,
+            html_dark: None,
             compose: None,
             pending_focus: None,
             unread_only: false,
@@ -199,9 +275,15 @@ impl Nimbra {
             forward: Vec::new(),
         };
         // NIMBRA_SCREEN=compose opens the composer on the sample data (screenshots).
-        if screen == "compose" {
-            this.open_compose(true, cx);
+        if screen == "compose" || screen == "compose-full" {
+            this.open_compose(ComposeKind::Reply, cx);
+            if let Some(composer) = &mut this.compose {
+                composer.full = screen == "compose-full";
+            }
         }
+        // Mail opens in its original formatting by default; NIMBRA_READER=1 starts in the
+        // native reader instead. Messages without HTML always use the reader.
+        this.original = std::env::var_os("NIMBRA_READER").is_none();
         // NIMBRA_SCREEN=loading holds the loading skeleton on screen (screenshots).
         if screen == "loading" {
             this.status = Status::Loading;
@@ -231,6 +313,12 @@ impl Nimbra {
             })
             .detach();
         }
+        // NIMBRA_SEARCH=<query> starts with that search already run.
+        if let Ok(query) = std::env::var("NIMBRA_SEARCH") {
+            this.search
+                .update(cx, |input, cx| input.set(query, usize::MAX, cx));
+            this.run_search(cx);
+        }
         this
     }
 
@@ -255,12 +343,66 @@ impl Nimbra {
             View::Drafts => "Drafts".into(),
             View::Sent => "Sent".into(),
             View::Done => "Done".into(),
+            View::Search => "Search".into(),
             View::Label(index) => self
                 .labels
                 .get(index)
                 .map(|label| SharedString::from(label.name.clone()))
                 .unwrap_or_else(|| "Label".into()),
         }
+    }
+
+    fn focus_search(&mut self, cx: &mut Context<Self>) {
+        if !self.sidebar_open {
+            self.toggle_sidebar(cx);
+        }
+        self.pending_focus = Some(self.search.read(cx).focus_handle(cx));
+        cx.notify();
+    }
+
+    /// Runs the typed query: against Gmail (its full search syntax works), or locally
+    /// on the sample data.
+    fn run_search(&mut self, cx: &mut Context<Self>) {
+        let query = self.search.read(cx).text().trim().to_string();
+        if query.is_empty() {
+            self.clear_search(cx);
+            return;
+        }
+        if matches!(self.status, Status::SignedOut | Status::SigningIn) {
+            return;
+        }
+        self.remember_mailbox();
+        // Results are never cached: every search is fetched fresh.
+        self.cache.remove(&View::Search);
+        self.query = query;
+        self.mailbox = View::Search;
+        self.back.clear();
+        self.forward.clear();
+        self.palette = false;
+        self.unread_only = false;
+        self.pending_focus = Some(self.focus.clone());
+        if self.is_demo() {
+            self.selected = self.visible().first().copied().unwrap_or(0);
+        } else {
+            self.mails.clear();
+            self.done.clear();
+            self.history.clear();
+            self.selected = 0;
+            self.fetch_inbox(cx);
+        }
+        cx.notify();
+    }
+
+    /// Empties the search field and goes back to the inbox.
+    fn clear_search(&mut self, cx: &mut Context<Self>) {
+        self.search
+            .update(cx, |input, cx| input.set(String::new(), 0, cx));
+        self.query.clear();
+        self.pending_focus = Some(self.focus.clone());
+        if self.mailbox == View::Search {
+            self.select_mailbox(View::Inbox, cx);
+        }
+        cx.notify();
     }
 
     /// Saves the current listing (minus threads cleared from it) for a later return.
@@ -275,7 +417,9 @@ impl Nimbra {
             .filter(|(_, done)| !**done)
             .map(|(mail, _)| mail.clone())
             .collect();
-        self.cache.insert(self.mailbox, kept);
+        if self.mailbox != View::Search {
+            self.cache.insert(self.mailbox, kept);
+        }
     }
 
     /// Switches the list to another mailbox.
@@ -354,9 +498,11 @@ impl Nimbra {
         let view = self.mailbox;
         let label_id = match view {
             View::Label(index) => self.labels.get(index).map(|label| label.id.clone()),
+            View::Search => Some(self.query.clone()),
             _ => None,
         };
         let need_labels = self.labels.is_empty();
+        let sent_query = self.query.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -369,8 +515,8 @@ impl Nimbra {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                // Ignore the answer if the user has moved to another mailbox meanwhile.
-                if this.mailbox != view {
+                // Ignore the answer if the user has moved to another mailbox or search meanwhile.
+                if this.mailbox != view || (view == View::Search && this.query != sent_query) {
                     return;
                 }
                 this.fetching = false;
@@ -534,7 +680,8 @@ impl Nimbra {
     }
 
     /// Opens the composer, empty or as a reply to the open thread.
-    fn open_compose(&mut self, reply: bool, cx: &mut Context<Self>) {
+    fn open_compose(&mut self, kind: ComposeKind, cx: &mut Context<Self>) {
+        self.menu = None;
         if self.compose.is_some() || self.palette {
             return;
         }
@@ -546,29 +693,72 @@ impl Nimbra {
             subject,
             lines: vec![line],
             reply: None,
+            full: false,
+            position: None,
+            size: (720., 440.),
+            grab: None,
             sending: false,
             error: None,
             _subscriptions: vec![s1, s2, s3],
         };
         let mut focus = composer.to.read(cx).focus_handle(cx);
-        if reply
+        if kind != ComposeKind::New
             && let Some(mail) = self
                 .mails
                 .get(self.selected)
                 .filter(|_| !self.visible().is_empty())
+                .cloned()
         {
-            let subject = if mail.subject.to_lowercase().starts_with("re:") {
+            let prefix = if kind == ComposeKind::Forward {
+                "Fwd: "
+            } else {
+                "Re: "
+            };
+            let subject = if mail
+                .subject
+                .to_lowercase()
+                .starts_with(&prefix.trim().to_lowercase())
+            {
                 mail.subject.to_string()
             } else {
-                format!("Re: {}", mail.subject)
+                format!("{prefix}{}", mail.subject)
             };
             composer
                 .subject
                 .update(cx, |input, cx| input.set(subject, usize::MAX, cx));
-            if let Some((address, reply_to)) = mail.reply.clone() {
+            if kind == ComposeKind::Forward {
+                // The forwarded message goes in as plain text under a divider.
+                let mut quoted = vec![
+                    String::new(),
+                    "---------- Forwarded message ----------".to_string(),
+                    format!("From: {}", mail.sender),
+                    format!("Subject: {}", mail.subject),
+                    String::new(),
+                ];
+                for block in &mail.body {
+                    quoted.extend(block.text.lines().map(str::to_string));
+                    quoted.push(String::new());
+                }
+                for text in quoted.into_iter().take(400) {
+                    let index = composer.lines.len();
+                    let (line, subscription) = self.new_field(Field::Line(index), "", cx);
+                    line.update(cx, |input, cx| input.set(text, 0, cx));
+                    composer.lines.push(line);
+                    composer._subscriptions.push(subscription);
+                }
+            } else if let Some((address, reply_to)) = mail.reply.clone() {
+                let mut to = vec![address];
+                if kind == ComposeKind::ReplyAll {
+                    for other in &mail.reply_all {
+                        let me = other.eq_ignore_ascii_case(&self.account);
+                        if !me && !to.iter().any(|known| known.eq_ignore_ascii_case(other)) {
+                            to.push(other.clone());
+                        }
+                    }
+                }
                 composer
                     .to
-                    .update(cx, |input, cx| input.set(address, usize::MAX, cx));
+                    .update(cx, |input, cx| input.set(to.join(", "), usize::MAX, cx));
                 composer.reply = Some(reply_to);
                 focus = composer.lines[0].read(cx).focus_handle(cx);
             }
@@ -576,6 +766,198 @@ impl Nimbra {
         self.pending_focus = Some(focus);
         self.compose = Some(composer);
         cx.notify();
+    }
+
+    /// Starts moving or resizing the floating composer.
+    fn grab_composer(&mut self, grab: Grab, event: &gpui::MouseDownEvent, cx: &mut Context<Self>) {
+        if let Some(composer) = &mut self.compose
+            && let Some(position) = composer.position
+            && !composer.full
+        {
+            let mouse = (f32::from(event.position.x), f32::from(event.position.y));
+            composer.grab = Some((grab, mouse, position, composer.size));
+            cx.notify();
+        }
+    }
+
+    /// Follows the mouse while the composer is grabbed, keeping it reachable on screen.
+    fn drag_composer(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        viewport: (f32, f32),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        let Some((grab, start, position, size)) = composer.grab else {
+            return;
+        };
+        if event.pressed_button != Some(MouseButton::Left) {
+            composer.grab = None;
+            return;
+        }
+        let dx = f32::from(event.position.x) - start.0;
+        let dy = f32::from(event.position.y) - start.1;
+        match grab {
+            Grab::Move => {
+                composer.position = Some((
+                    (position.0 + dx).clamp(80. - size.0, viewport.0 - 80.),
+                    (position.1 + dy).clamp(0., viewport.1 - 60.),
+                ));
+            }
+            Grab::Resize => {
+                composer.size = (
+                    (size.0 + dx).clamp(
+                        COMPOSER_MIN.0,
+                        (viewport.0 - position.0).max(COMPOSER_MIN.0),
+                    ),
+                    (size.1 + dy).clamp(
+                        COMPOSER_MIN.1,
+                        (viewport.1 - position.1).max(COMPOSER_MIN.1),
+                    ),
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    /// Switches the open thread between the native reader and its original HTML.
+    fn toggle_original(&mut self, cx: &mut Context<Self>) {
+        let has_html = self
+            .mails
+            .get(self.selected)
+            .is_some_and(|mail| mail.html.is_some());
+        if !self.original && !has_html {
+            self.notice = Some("This message has no HTML version to show.".into());
+        } else {
+            self.original = !self.original;
+        }
+        cx.notify();
+    }
+
+    /// The thread the web view should be showing right now, if any. It stays hidden
+    /// whenever something is drawn over the reading pane, because a native web view
+    /// always sits on top of everything GPUI paints.
+    fn original_target(&self) -> Option<(String, SharedString)> {
+        let ready = matches!(self.status, Status::Demo | Status::Ready);
+        let covered =
+            self.palette || self.compose.is_some() || self.menu.is_some() || self.notice.is_some();
+        if !self.original || !ready || covered || !self.visible().contains(&self.selected) {
+            return None;
+        }
+        let mail = self.mails.get(self.selected)?;
+        let key = format!("{}:{}", self.selected, mail.id.clone().unwrap_or_default());
+        Some((key, mail.html.clone()?))
+    }
+
+    /// Creates, loads, shows or hides the web view to match the current state.
+    fn sync_html_view(&mut self, window: &mut Window) {
+        let Some((key, html)) = self.original_target() else {
+            if let Some(view) = &self.html_view {
+                view.set_visible(false);
+            }
+            return;
+        };
+        if self.html_view.is_none() {
+            self.html_view = HtmlView::new(window).map(std::rc::Rc::new);
+        }
+        let Some(view) = &self.html_view else {
+            // No web view on this platform: fall back to the native reader.
+            self.original = false;
+            self.notice = Some("The original view is not available on this system.".into());
+            return;
+        };
+        // The page follows Nimbra's light or dark theme, so emails with dark styles use them.
+        if self.html_dark != Some(self.dark) {
+            view.set_dark(self.dark);
+            self.html_dark = Some(self.dark);
+        }
+        // A different thread starts with remote images blocked again.
+        if self
+            .html_shown
+            .as_ref()
+            .is_some_and(|(shown, _)| *shown != key)
+        {
+            self.original_images = false;
+        }
+        let wanted = (key, self.original_images);
+        if self.html_shown.as_ref() != Some(&wanted) {
+            view.show(&html, self.original_images);
+            self.html_shown = Some(wanted);
+        }
+        view.set_visible(true);
+    }
+
+    fn toggle_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
+        let just_dismissed = self.menu_dismissed.take().is_some_and(|(closed, at)| {
+            closed == menu && at.elapsed() < Duration::from_millis(400)
+        });
+        self.menu = if self.menu == Some(menu) || just_dismissed {
+            None
+        } else {
+            Some(menu)
+        };
+        cx.notify();
+    }
+
+    /// Adds one of the user's labels to the open thread.
+    fn apply_label(&mut self, label: usize, cx: &mut Context<Self>) {
+        self.menu = None;
+        let (Some(label), Some(mail)) = (
+            self.labels.get(label).cloned(),
+            self.mails.get(self.selected),
+        ) else {
+            return;
+        };
+        let (Some(client), Some(id)) = (self.gmail.clone(), mail.id.clone()) else {
+            return;
+        };
+        let name = label.name.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { client.add_label(&id, &label.id) })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    this.notice = Some(format!("Labelled “{}”.", short(&name, 30)).into());
+                    cx.notify();
+                }
+                Err(error) => this.fail(error, cx),
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn mark_unread(&mut self, cx: &mut Context<Self>) {
+        self.menu = None;
+        let index = self.selected;
+        if self.visible().contains(&index) {
+            self.mails[index].unread = true;
+            self.sync(index, gmail::Change::MarkUnread, false, cx);
+        }
+        cx.notify();
+    }
+
+    fn open_in_gmail(&mut self, cx: &mut Context<Self>) {
+        self.menu = None;
+        // Thread ids are validated as plain alphanumerics before they get here.
+        if let Some(id) = self.mails.get(self.selected).and_then(|m| m.id.as_ref())
+            && id.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            cx.open_url(&format!("https://mail.google.com/mail/u/0/#all/{id}"));
+        }
+        cx.notify();
+    }
+
+    fn toggle_full_compose(&mut self, cx: &mut Context<Self>) {
+        if let Some(composer) = &mut self.compose {
+            composer.full = !composer.full;
+            cx.notify();
+        }
     }
 
     fn close_compose(&mut self, cx: &mut Context<Self>) {
@@ -823,6 +1205,15 @@ impl Nimbra {
         (0..self.mails.len())
             .filter(|i| match (self.is_demo(), self.mailbox) {
                 (true, View::Done) => self.done[*i],
+                // The sample data is searched locally.
+                (true, View::Search) => {
+                    let mail = &self.mails[*i];
+                    let query = self.query.to_lowercase();
+                    !self.done[*i]
+                        && [&mail.sender, &mail.subject, &mail.snippet]
+                            .iter()
+                            .any(|field| field.to_lowercase().contains(&query))
+                }
                 (true, View::Inbox) | (false, _) => {
                     // The open thread stays listed under Unread even once it is read.
                     !self.done[*i]
@@ -1071,6 +1462,7 @@ fn view_key(view: View) -> usize {
         View::Drafts => 7,
         View::Sent => 8,
         View::Done => 9,
+        View::Search => 10,
         View::Label(index) => 100 + index,
     }
 }
@@ -1269,19 +1661,12 @@ impl Nimbra {
                     .border_color(t.border)
                     .cursor_pointer()
                     .id("jump")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.palette = true;
-                        cx.notify();
-                    }))
+                    .cursor(gpui::CursorStyle::IBeam)
+                    .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
+                    .when(self.mailbox == View::Search, |d| d.border_color(t.violet))
                     .child(icon("search", 16., t.text3))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_color(t.text3)
-                            .child("Search or jump to…"),
-                    )
-                    .child(kbd(t, "⌘"))
-                    .child(kbd(t, "K")),
+                    .child(div().flex_1().min_w(px(0.)).child(self.search.clone()))
+                    .child(kbd(t, "/")),
             )
             .child(section(t, "SPLIT INBOX"))
             .child(mailbox(
@@ -1641,9 +2026,9 @@ impl Nimbra {
                             .child(
                                 button(t, ButtonKind::Secondary, "Compose", Some("C"))
                                     .id("compose")
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.open_compose(false, cx)),
-                                    ),
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_compose(ComposeKind::New, cx)
+                                    })),
                             ),
                     ),
             )
@@ -1932,7 +2317,7 @@ impl Nimbra {
             div()
                 .id("reply-box")
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.open_compose(true, cx)))
+                .on_click(cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx)))
                 .flex()
                 .flex_col()
                 .gap(px(12.))
@@ -2011,6 +2396,8 @@ impl Nimbra {
             .position(|i| *i == self.selected)
             .unwrap_or(0)
             + 1;
+        // Only switch panes when this thread really has HTML to show.
+        let original = self.original && m.html.is_some();
         let divider = || div().h(px(1.)).bg(t.border);
 
         let earlier = |tone: Tone, initials: &str, name: &str, snippet: &str, when: &str| {
@@ -2077,6 +2464,7 @@ impl Nimbra {
             .min_w(px(0.))
             .h_full()
             .bg(t.surface)
+            .relative()
             // Toolbar
             .child(
                 div()
@@ -2109,16 +2497,45 @@ impl Nimbra {
                             .when(m.starred, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
                     )
-                    .child(icon_button(t, "tag"))
+                    .child(
+                        icon_button(t, "tag")
+                            .id("label")
+                            .when(self.menu == Some(Menu::Labels), |d| d.bg(t.selected))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Labels, cx)),
+                            ),
+                    )
                     .child(
                         icon_button(t, "trash")
                             .id("trash")
                             .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
                     )
                     .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
-                    .child(icon_button(t, "reply"))
-                    .child(icon_button(t, "reply-all"))
-                    .child(icon_button(t, "forward"))
+                    .child(icon_button(t, "reply").id("reply").on_click(
+                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx)),
+                    ))
+                    .child(icon_button(t, "reply-all").id("reply-all").on_click(
+                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::ReplyAll, cx)),
+                    ))
+                    .child(icon_button(t, "forward").id("forward").on_click(
+                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Forward, cx)),
+                    ))
+                    .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
+                    .child(
+                        button(
+                            t,
+                            ButtonKind::Ghost,
+                            if original {
+                                "Reader view"
+                            } else {
+                                "Show original"
+                            },
+                            Some("V"),
+                        )
+                        .id("original")
+                        .when(original, |d| d.bg(t.selected))
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
+                    )
                     .child(div().flex_1())
                     .child(mono(format!("{pos} / {}", visible.len()), t.text3).mr(px(6.)))
                     .child(
@@ -2131,175 +2548,184 @@ impl Nimbra {
                             .id("next")
                             .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
                     )
-                    .child(icon_button(t, "more")),
-            )
-            // Conversation
-            .child(
-                div()
-                    .id("conversation")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(22.))
-                            .px(px(64.))
-                            .pt(px(40.))
-                            .pb(px(24.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap(px(6.))
-                                    .when(m.rich, |d| d.child(pill(t, "Product", t.violet)))
-                                    .children(
-                                        m.tag
-                                            .clone()
-                                            .map(|(label, a)| pill(t, &label, t.accent(a))),
-                                    )
-                                    .when(m.rich, |d| d.child(pill(t, "Due Fri", t.amber)))
-                                    .when(!m.rich && m.tag.is_none(), |d| {
-                                        d.child(pill(
-                                            t,
-                                            &self.inbox_name(),
-                                            t.accent(Accent::Violet),
-                                        ))
-                                    }),
-                            )
-                            .child(serif(&m.subject, 38., t.text))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(10.))
-                                    .child(
-                                        div()
-                                            .relative()
-                                            .flex_none()
-                                            .h(px(28.))
-                                            .w(px(if m.rich { 68. } else { 48. }))
-                                            .children(
-                                                [
-                                                    Some((m.tone, m.initials.clone())),
-                                                    m.rich.then(|| {
-                                                        (Tone::Mint, SharedString::from("JR"))
+                        icon_button(t, "more")
+                            .id("more")
+                            .when(self.menu == Some(Menu::More), |d| d.bg(t.selected))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.toggle_menu(Menu::More, cx)),
+                            ),
+                    ),
+            )
+            // Conversation (native reader)
+            .when(!original, |d| {
+                d.child(
+                    div()
+                        .id("conversation")
+                        .flex_1()
+                        .min_h(px(0.))
+                        .overflow_y_scroll()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(22.))
+                                .px(px(64.))
+                                .pt(px(40.))
+                                .pb(px(24.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(px(6.))
+                                        .when(m.rich, |d| d.child(pill(t, "Product", t.violet)))
+                                        .children(
+                                            m.tag
+                                                .clone()
+                                                .map(|(label, a)| pill(t, &label, t.accent(a))),
+                                        )
+                                        .when(m.rich, |d| d.child(pill(t, "Due Fri", t.amber)))
+                                        .when(!m.rich && m.tag.is_none(), |d| {
+                                            d.child(pill(
+                                                t,
+                                                &self.inbox_name(),
+                                                t.accent(Accent::Violet),
+                                            ))
+                                        }),
+                                )
+                                .child(serif(&m.subject, 38., t.text))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(10.))
+                                        .child(
+                                            div()
+                                                .relative()
+                                                .flex_none()
+                                                .h(px(28.))
+                                                .w(px(if m.rich { 68. } else { 48. }))
+                                                .children(
+                                                    [
+                                                        Some((m.tone, m.initials.clone())),
+                                                        m.rich.then(|| {
+                                                            (Tone::Mint, SharedString::from("JR"))
+                                                        }),
+                                                        Some((
+                                                            Tone::Graphite,
+                                                            self.me_initials.clone(),
+                                                        )),
+                                                    ]
+                                                    .into_iter()
+                                                    .flatten()
+                                                    .enumerate()
+                                                    .map(|(n, (tone, initials))| {
+                                                        avatar(tone, &initials, 28.)
+                                                            .absolute()
+                                                            .top_0()
+                                                            .left(px(n as f32 * 20.))
                                                     }),
-                                                    Some((
-                                                        Tone::Graphite,
-                                                        self.me_initials.clone(),
-                                                    )),
-                                                ]
-                                                .into_iter()
-                                                .flatten()
-                                                .enumerate()
-                                                .map(|(n, (tone, initials))| {
-                                                    avatar(tone, &initials, 28.)
-                                                        .absolute()
-                                                        .top_0()
-                                                        .left(px(n as f32 * 20.))
-                                                }),
-                                            ),
-                                    )
-                                    .child(meta(m.participants.clone(), t.text3).flex_1())
-                                    .child(mono(m.time.clone(), t.text3)),
-                            )
-                            .when(!m.brief.is_empty(), |d| d.child(self.brief(t, m)))
-                            .when(!m.earlier.is_empty(), |d| {
-                                d.child(div().children(m.earlier.iter().enumerate().map(
-                                    |(k, e)| {
-                                        // Click a collapsed message to read it in full.
-                                        div()
-                                            .child(
-                                                earlier(
-                                                    e.tone,
-                                                    &e.initials,
-                                                    &e.sender,
-                                                    if e.expanded { "" } else { &e.snippet },
-                                                    &e.when,
-                                                )
-                                                .id(("earlier", k))
-                                                .cursor_pointer()
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    let selected = this.selected;
-                                                    if let Some(e) = this
-                                                        .mails
-                                                        .get_mut(selected)
-                                                        .and_then(|m| m.earlier.get_mut(k))
-                                                    {
-                                                        e.expanded = !e.expanded;
-                                                        cx.notify();
-                                                    }
-                                                })),
-                                            )
-                                            .when(e.expanded, |d| {
-                                                d.child(
-                                                    self.message_body(
-                                                        t,
-                                                        &e.blocks,
-                                                        (k + 1) * 1000,
-                                                        cx,
+                                                ),
+                                        )
+                                        .child(meta(m.participants.clone(), t.text3).flex_1())
+                                        .child(mono(m.time.clone(), t.text3)),
+                                )
+                                .when(!m.brief.is_empty(), |d| d.child(self.brief(t, m)))
+                                .when(!m.earlier.is_empty(), |d| {
+                                    d.child(div().children(m.earlier.iter().enumerate().map(
+                                        |(k, e)| {
+                                            // Click a collapsed message to read it in full.
+                                            div()
+                                                .child(
+                                                    earlier(
+                                                        e.tone,
+                                                        &e.initials,
+                                                        &e.sender,
+                                                        if e.expanded { "" } else { &e.snippet },
+                                                        &e.when,
                                                     )
-                                                    .pl(px(36.))
-                                                    .pb(px(14.)),
+                                                    .id(("earlier", k))
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        let selected = this.selected;
+                                                        if let Some(e) = this
+                                                            .mails
+                                                            .get_mut(selected)
+                                                            .and_then(|m| m.earlier.get_mut(k))
+                                                        {
+                                                            e.expanded = !e.expanded;
+                                                            cx.notify();
+                                                        }
+                                                    })),
                                                 )
-                                            })
-                                    },
-                                )))
-                            })
-                            .child(divider())
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(12.))
-                                    .child(avatar(m.tone, &m.initials, 28.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .child(
-                                                div()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child(m.sender.clone()),
-                                            )
-                                            .child(meta(
-                                                if m.rich { "to you, Jonah" } else { "to you" },
-                                                t.text3,
-                                            )),
-                                    )
-                                    .child(mono(m.time.clone(), t.text3)),
-                            )
-                            .child(
-                                self.message_body(t, &m.body, 0, cx).pl(px(40.)).when(
+                                                .when(e.expanded, |d| {
+                                                    d.child(
+                                                        self.message_body(
+                                                            t,
+                                                            &e.blocks,
+                                                            (k + 1) * 1000,
+                                                            cx,
+                                                        )
+                                                        .pl(px(36.))
+                                                        .pb(px(14.)),
+                                                    )
+                                                })
+                                        },
+                                    )))
+                                })
+                                .child(divider())
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(12.))
+                                        .child(avatar(m.tone, &m.initials, 28.))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .child(
+                                                    div()
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .child(m.sender.clone()),
+                                                )
+                                                .child(meta(
+                                                    if m.rich { "to you, Jonah" } else { "to you" },
+                                                    t.text3,
+                                                )),
+                                        )
+                                        .child(mono(m.time.clone(), t.text3)),
+                                )
+                                .child(self.message_body(t, &m.body, 0, cx).pl(px(40.)).when(
                                     !m.loaded,
                                     |d| {
                                         d.child(div().text_color(t.text3).child("Loading message…"))
                                     },
-                                ),
-                            )
-                            .when(m.rich, |d| {
-                                d.child(
-                                    div()
-                                        .flex()
-                                        .gap(px(10.))
-                                        .pl(px(40.))
-                                        .child(attachment(
-                                            "Q4-Launch-Plan.pdf",
-                                            "PDF · 4.2 MB",
-                                            0xff7ab6,
-                                            0xff4f7b,
-                                        ))
-                                        .child(attachment(
-                                            "Pricing-tiers.fig",
-                                            "Figma · 1.1 MB",
-                                            0x8b7cff,
-                                            0x5b47e0,
-                                        )),
-                                )
-                            }),
-                    ),
-            )
+                                ))
+                                .when(m.rich, |d| {
+                                    d.child(
+                                        div()
+                                            .flex()
+                                            .gap(px(10.))
+                                            .pl(px(40.))
+                                            .child(attachment(
+                                                "Q4-Launch-Plan.pdf",
+                                                "PDF · 4.2 MB",
+                                                0xff7ab6,
+                                                0xff4f7b,
+                                            ))
+                                            .child(attachment(
+                                                "Pricing-tiers.fig",
+                                                "Figma · 1.1 MB",
+                                                0x8b7cff,
+                                                0x5b47e0,
+                                            )),
+                                    )
+                                }),
+                        ),
+                )
+            })
+            .when(original, |d| d.child(self.original_pane(t, cx)))
             .child(self.composer(t, m, cx))
+            .children(self.menu_view(t, cx))
     }
 
     /// Shown in place of the mail panes while signed out, signing in, loading or failed.
@@ -2472,61 +2898,247 @@ impl Nimbra {
             )
     }
 
-    fn compose_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The area the web view covers, with a strip above it explaining what is blocked.
+    fn original_pane(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = self.html_view.clone();
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(10.))
+                    .pl(px(28.))
+                    .pr(px(20.))
+                    .py(px(8.))
+                    .border_b_1()
+                    .border_color(t.border)
+                    .child(icon("image", 15., t.text3))
+                    .child(
+                        meta(
+                            if self.original_images {
+                                "Original formatting. Scripts are off; remote images are loading."
+                            } else {
+                                "Original formatting. Scripts are off and remote images are blocked."
+                            },
+                            t.text3,
+                        )
+                        .flex_1(),
+                    )
+                    .when(!self.original_images, |d| {
+                        d.child(
+                            button(t, ButtonKind::Secondary, "Load images", None)
+                                .id("original-images")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.original_images = true;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+            // The web view is a native layer; this element only reserves its space and
+            // tells it where that space is each frame.
+            .child(
+                gpui::canvas(
+                    move |bounds, _, _| {
+                        if let Some(view) = &view {
+                            view.set_bounds(
+                                f32::from(bounds.origin.x),
+                                f32::from(bounds.origin.y),
+                                f32::from(bounds.size.width),
+                                f32::from(bounds.size.height),
+                            );
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .flex_1()
+                .w_full()
+                .bg(gpui::white()),
+            )
+    }
+
+    /// The Labels or More menu, dropped under its toolbar button.
+    fn menu_view(&self, t: &Theme, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        let menu = self.menu?;
+        let hover = t.hover;
+        let item = move |id: usize, icon_name: &str, label: SharedString, tint: Hsla| {
+            div()
+                .id(("menu-item", id))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(px(8.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(icon(icon_name, 16., tint))
+                .child(div().flex_1().child(label))
+        };
+        let panel = div()
+            .id("menu")
+            .absolute()
+            .top(px(50.))
+            .flex()
+            .flex_col()
+            .min_w(px(220.))
+            .p(px(6.))
+            .rounded(px(12.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border_strong)
+            .shadow(vec![shadow(t.shadow, 14., 36., -6.)])
+            .occlude()
+            // Any click outside the menu closes it.
+            .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
+                this.menu = None;
+                this.menu_dismissed = Some((menu, std::time::Instant::now()));
+                cx.notify();
+            }));
+        Some(match menu {
+            Menu::Labels => {
+                let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
+                panel
+                    .left(px(150.))
+                    .when(self.labels.is_empty(), |d| {
+                        d.child(div().px(px(10.)).py(px(7.)).text_color(t.text3).child(
+                            if self.is_demo() {
+                                "Labels need a connected Gmail account."
+                            } else {
+                                "You have no labels in Gmail yet."
+                            },
+                        ))
+                    })
+                    .children(
+                        self.labels
+                            .iter()
+                            .enumerate()
+                            .take(12)
+                            .map(|(index, label)| {
+                                item(
+                                    index,
+                                    "tag",
+                                    short(&label.name, 28),
+                                    tints[index % tints.len()],
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.apply_label(index, cx)),
+                                )
+                            }),
+                    )
+            }
+            Menu::More => panel
+                .right(px(20.))
+                .child(
+                    item(0, "inbox", "Mark as unread".into(), t.text2)
+                        .on_click(cx.listener(|this, _, _, cx| this.mark_unread(cx))),
+                )
+                .when(!self.is_demo(), |d| {
+                    d.child(
+                        item(1, "link", "Open in Gmail".into(), t.text2)
+                            .on_click(cx.listener(|this, _, _, cx| this.open_in_gmail(cx))),
+                    )
+                }),
+        })
+    }
+
+    fn compose_view(
+        &self,
+        t: &Theme,
+        viewport: (f32, f32),
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let Some(composer) = &self.compose else {
             return div().into_any_element();
+        };
+        let full = composer.full;
+        let (width, height) = composer.size;
+        let (left, top) = composer
+            .position
+            .unwrap_or((((viewport.0 - width) / 2.).max(0.), 96.));
+        // Full page keeps the text in a readable column instead of stretching it edge to edge.
+        let column = |d: Div| {
+            if full {
+                d.w_full().max_w(px(860.))
+            } else {
+                d.w_full()
+            }
         };
         let field = |label: &str, input: &Entity<TextInput>| {
             div()
                 .flex()
-                .items_center()
-                .gap(px(12.))
-                .px(px(20.))
-                .py(px(10.))
+                .justify_center()
                 .border_b_1()
                 .border_color(t.border)
                 .child(
-                    div()
-                        .w(px(56.))
-                        .flex_none()
-                        .text_color(t.text3)
-                        .child(label.to_string()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .text_size(px(14.))
-                        .child(input.clone()),
+                    column(div())
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .px(px(20.))
+                        .py(px(10.))
+                        .child(
+                            div()
+                                .w(px(56.))
+                                .flex_none()
+                                .text_color(t.text3)
+                                .child(label.to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(px(14.))
+                                .child(input.clone()),
+                        ),
                 )
         };
-        div()
-            .id("compose-scrim")
-            .absolute()
-            .inset_0()
+        let card = div()
             .flex()
-            .items_start()
-            .justify_center()
-            .pt(px(96.))
-            .bg(t.scrim)
-            .occlude()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .w(px(720.))
+            .flex_col()
+            .bg(t.raised)
+            .when(full, |d| d.size_full().bg(t.surface))
+            .when(!full, |d| {
+                d.absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(width))
+                    .h(px(height))
                     .rounded(px(18.))
-                    .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
                     .shadow(vec![
                         shadow(c(0x8b7cff, 0.18), 0., 120., 10.),
                         shadow(c(0x000000, if t.dark { 0.6 } else { 0.2 }), 30., 80., -10.),
                     ])
+            })
+            .child(
+                div()
+                    .flex()
+                    .justify_center()
+                    // In full page the header also clears the traffic lights and is the
+                    // strip you drag or double-click.
+                    .when(full, |d| {
+                        d.pt(px(36.)).on_mouse_down(MouseButton::Left, drag_or_zoom)
+                    })
+                    .when(!full, |d| {
+                        d.cursor(gpui::CursorStyle::OpenHand).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event, _, cx| {
+                                this.grab_composer(Grab::Move, event, cx)
+                            }),
+                        )
+                    })
                     .child(
-                        div()
+                        column(div())
                             .flex()
                             .items_center()
+                            .gap(px(8.))
                             .px(px(20.))
                             .pt(px(16.))
                             .pb(px(8.))
@@ -2537,37 +3149,54 @@ impl Nimbra {
                                     } else {
                                         "New message"
                                     },
-                                    26.,
+                                    if full { 38. } else { 26. },
                                     t.text,
                                 )
                                 .flex_1(),
                             )
+                            .child(
+                                icon_button(t, if full { "shrink" } else { "expand" })
+                                    .id("compose-size")
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.toggle_full_compose(cx)),
+                                    ),
+                            )
                             .child(kbd(t, "esc")),
-                    )
-                    .child(field("To", &composer.to))
-                    .child(field("Subject", &composer.subject))
+                    ),
+            )
+            .child(field("To", &composer.to))
+            .child(field("Subject", &composer.subject))
+            .child(
+                div()
+                    .id("compose-body")
+                    .flex()
+                    .justify_center()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_y_scroll()
                     .child(
-                        div()
-                            .id("compose-body")
+                        column(div())
                             .flex()
                             .flex_col()
                             .px(px(20.))
-                            .py(px(14.))
-                            .min_h(px(240.))
-                            .max_h(px(420.))
-                            .overflow_y_scroll()
+                            .py(px(if full { 24. } else { 14. }))
                             .text_size(px(15.))
                             .children(composer.lines.iter().cloned()),
-                    )
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_center()
+                    .border_t_1()
+                    .border_color(t.border)
                     .child(
-                        div()
+                        column(div())
                             .flex()
                             .items_center()
                             .gap(px(8.))
                             .px(px(14.))
                             .py(px(12.))
-                            .border_t_1()
-                            .border_color(t.border)
                             .child(
                                 div()
                                     .flex_1()
@@ -2598,6 +3227,56 @@ impl Nimbra {
                             ),
                     ),
             )
+            // Bottom-right corner grip for resizing the floating card.
+            .when(!full, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .bottom_0()
+                        .size(px(18.))
+                        .cursor(gpui::CursorStyle::ResizeUpLeftDownRight)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event, _, cx| {
+                                this.grab_composer(Grab::Resize, event, cx)
+                            }),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .right(px(5.))
+                                .bottom(px(5.))
+                                .size(px(8.))
+                                .border_r_2()
+                                .border_b_2()
+                                .border_color(t.border_strong),
+                        ),
+                )
+            });
+        div()
+            .id("compose-scrim")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_start()
+            .justify_center()
+            .when(!full, |d| d.bg(t.scrim))
+            // A grabbed composer follows the mouse anywhere in the window.
+            .on_mouse_move(
+                cx.listener(move |this, event, _, cx| this.drag_composer(event, viewport, cx)),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if let Some(composer) = &mut this.compose {
+                        composer.grab = None;
+                        cx.notify();
+                    }
+                }),
+            )
+            .occlude()
+            .child(card)
             .into_any_element()
     }
 
@@ -2614,7 +3293,11 @@ impl Nimbra {
             .gap(px(14.))
             .bg(t.surface)
             .child(serif(
-                &format!("Nothing in {}", self.inbox_name()),
+                &if self.mailbox == View::Search {
+                    "No results".to_string()
+                } else {
+                    format!("Nothing in {}", self.inbox_name())
+                },
                 56.,
                 t.text,
             ))
@@ -2623,7 +3306,11 @@ impl Nimbra {
                     .text_size(px(15.))
                     .line_height(px(24.))
                     .text_color(t.text2)
-                    .child("Threads will show up here."),
+                    .child(if self.mailbox == View::Search {
+                        format!("Nothing matches “{}”.", short(&self.query, 60))
+                    } else {
+                        "Threads will show up here.".to_string()
+                    }),
             )
     }
 
@@ -2982,6 +3669,15 @@ impl Render for Nimbra {
             window.focus(&focus);
         }
         let t = self.theme();
+        let viewport = window.viewport_size();
+        let viewport = (f32::from(viewport.width), f32::from(viewport.height));
+        // The floating composer needs a concrete position before it can be dragged.
+        if let Some(composer) = &mut self.compose
+            && composer.position.is_none()
+        {
+            composer.position = Some((((viewport.0 - composer.size.0) / 2.).max(0.), 96.));
+        }
+        self.sync_html_view(window);
         let empty = self.visible().is_empty();
 
         div()
@@ -3000,9 +3696,18 @@ impl Render for Nimbra {
                 }
             }))
             .on_action(cx.listener(|this, _: &Undo, _, cx| this.undo(cx)))
-            .on_action(cx.listener(|this, _: &Compose, _, cx| this.open_compose(false, cx)))
-            .on_action(cx.listener(|this, _: &Reply, _, cx| this.open_compose(true, cx)))
+            .on_action(
+                cx.listener(|this, _: &Compose, _, cx| this.open_compose(ComposeKind::New, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &Reply, _, cx| this.open_compose(ComposeKind::Reply, cx)),
+            )
             .on_action(cx.listener(|this, _: &SendMail, _, cx| this.send_mail(cx)))
+            .on_action(cx.listener(|this, _: &ToggleOriginal, _, cx| this.toggle_original(cx)))
+            .on_action(cx.listener(|this, _: &FocusSearch, _, cx| this.focus_search(cx)))
+            .on_action(
+                cx.listener(|this, _: &ToggleFullCompose, _, cx| this.toggle_full_compose(cx)),
+            )
             .on_action(cx.listener(|this, _: &ToggleStar, _, cx| this.toggle_star(cx)))
             .on_action(cx.listener(|this, _: &Trash, _, cx| {
                 if !this.palette {
@@ -3015,8 +3720,12 @@ impl Render for Nimbra {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
-                if this.compose.is_some() {
+                if this.menu.take().is_some() {
+                    cx.notify();
+                } else if this.compose.is_some() {
                     this.close_compose(cx);
+                } else if this.mailbox == View::Search || !this.search.read(cx).text().is_empty() {
+                    this.clear_search(cx);
                 } else {
                     this.palette = false;
                     cx.notify();
@@ -3068,7 +3777,7 @@ impl Render for Nimbra {
             .child(self.window_controls(&t, cx))
             .when(self.palette && !empty, |d| d.child(self.palette(&t, cx)))
             .when(self.compose.is_some(), |d| {
-                d.child(self.compose_view(&t, cx))
+                d.child(self.compose_view(&t, viewport, cx))
             })
             .when_some(self.notice.clone(), |d, notice| {
                 d.child(
