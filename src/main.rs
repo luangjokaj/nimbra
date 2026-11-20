@@ -1,0 +1,139 @@
+//! Nimbra — a mail client concept, mocked in GPUI with static data.
+
+mod app;
+mod blur;
+mod data;
+mod theme;
+mod ui;
+
+use std::borrow::Cow;
+
+use gpui::{
+    App, Application, AssetSource, Bounds, KeyBinding, SharedString, TitlebarOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, point, prelude::*, px, size,
+};
+
+use app::{Confirm, Dismiss, MarkDone, Next, Nimbra, Prev, Quit, TogglePalette, ToggleTheme, Undo};
+
+/// Icons are compiled into the binary so the app has no runtime file dependencies.
+macro_rules! icons {
+    ($($name:literal),* $(,)?) => {
+        &[$((
+            concat!("icons/", $name, ".svg"),
+            include_bytes!(concat!("../assets/icons/", $name, ".svg")) as &[u8],
+        )),*]
+    };
+}
+
+static ICONS: &[(&str, &[u8])] = icons![
+    "inbox",
+    "star",
+    "clock",
+    "send",
+    "draft",
+    "done",
+    "trash",
+    "search",
+    "reply",
+    "reply-all",
+    "forward",
+    "up",
+    "down",
+    "sparkles",
+    "clip",
+    "more",
+    "tag",
+    "bell",
+    "users",
+    "calendar",
+    "news",
+    "zap",
+    "file",
+    "image",
+    "link",
+    "sun",
+    "moon",
+];
+
+struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        Ok(ICONS
+            .iter()
+            .find(|(name, _)| *name == path)
+            .map(|(_, bytes)| Cow::Borrowed(*bytes)))
+    }
+
+    fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(ICONS.iter().map(|(name, _)| (*name).into()).collect())
+    }
+}
+
+fn main() {
+    Application::new().with_assets(Assets).run(|cx: &mut App| {
+        cx.text_system()
+            .add_fonts(vec![
+                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Regular.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Medium.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-SemiBold.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-Regular.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-Medium.ttf").as_slice()),
+                Cow::Borrowed(
+                    include_bytes!("../assets/fonts/InstrumentSerif-Regular.ttf").as_slice(),
+                ),
+                Cow::Borrowed(
+                    include_bytes!("../assets/fonts/InstrumentSerif-Italic.ttf").as_slice(),
+                ),
+            ])
+            .expect("bundled fonts should load");
+
+        cx.bind_keys([
+            KeyBinding::new("j", Next, None),
+            KeyBinding::new("down", Next, None),
+            KeyBinding::new("k", Prev, None),
+            KeyBinding::new("up", Prev, None),
+            KeyBinding::new("e", MarkDone, None),
+            KeyBinding::new("z", Undo, None),
+            KeyBinding::new("cmd-k", TogglePalette, None),
+            KeyBinding::new("ctrl-k", TogglePalette, None),
+            KeyBinding::new("h", TogglePalette, None),
+            KeyBinding::new("escape", Dismiss, None),
+            KeyBinding::new("enter", Confirm, None),
+            KeyBinding::new("cmd-shift-l", ToggleTheme, None),
+            KeyBinding::new("ctrl-shift-l", ToggleTheme, None),
+            KeyBinding::new("cmd-q", Quit, None),
+        ]);
+
+        let mut bounds = Bounds::centered(None, size(px(1480.), px(920.)), cx);
+        // NIMBRA_SHIFT=<px> nudges the window sideways (used to test the backdrop blur).
+        if let Some(shift) = std::env::var("NIMBRA_SHIFT")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+        {
+            bounds.origin.x += px(shift);
+        }
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Nimbra".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(18.), px(18.))),
+                }),
+                window_background: WindowBackgroundAppearance::Blurred,
+                window_min_size: Some(size(px(1120.), px(720.))),
+                ..Default::default()
+            },
+            |window, cx| {
+                blur::apply(window, 40);
+                let view = cx.new(Nimbra::new);
+                window.focus(&view.read(cx).focus_handle());
+                view
+            },
+        )
+        .expect("window should open");
+        cx.on_window_closed(|cx| cx.quit()).detach();
+        cx.activate(true);
+    });
+}
