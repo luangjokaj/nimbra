@@ -24,7 +24,7 @@ use gpui::{
 
 use app::{
     Back, Compose, Confirm, Dismiss, FocusSearch, Forward, HideApp, HideOthers, HideWindow,
-    MarkDone, MarkUnread, MenuMarkDone, MenuMarkUnread, MenuReply, MenuSearch, MenuSnooze,
+    MarkDone, MarkUnread, MenuMarkDone, MenuMarkUnread, MenuReply, MenuReplyAll, MenuForwardMessage, ReplyAll, ForwardMessage, MenuSearch, MenuSnooze,
     MenuStar, MenuToggleOriginal, MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra,
     OpenSettings, Prev, Print, Quit, Reload, Reply, SaveDraft, SelectAllThreads, SendMail, ShowAll,
     ToggleFullCompose, ToggleList, ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar,
@@ -158,6 +158,8 @@ fn main() {
             KeyBinding::new("ctrl-f", FocusSearch, Some("Mail")),
             KeyBinding::new("c", Compose, mail),
             KeyBinding::new("r", Reply, mail),
+            KeyBinding::new("a", ReplyAll, mail),
+            KeyBinding::new("f", ForwardMessage, mail),
             KeyBinding::new("cmd-enter", SendMail, Some("Composer")),
             KeyBinding::new("cmd-s", SaveDraft, Some("Composer")),
             KeyBinding::new("ctrl-s", SaveDraft, Some("Composer")),
@@ -276,6 +278,8 @@ fn main() {
                 name: "Message".into(),
                 items: vec![
                     MenuItem::action("Reply  (R)", MenuReply),
+                    MenuItem::action("Reply All  (A)", MenuReplyAll),
+                    MenuItem::action("Forward  (F)", MenuForwardMessage),
                     MenuItem::separator(),
                     MenuItem::action("Mark Done  (E)", MenuMarkDone),
                     MenuItem::action("Mark Read or Unread  (U)", MenuMarkUnread),

@@ -46,6 +46,8 @@ actions!(
         Trash,
         Compose,
         Reply,
+        ReplyAll,
+        ForwardMessage,
         SendMail,
         SaveDraft,
         ToggleFullCompose,
@@ -66,6 +68,8 @@ actions!(
         // takes its action's shortcut as a system key equivalent, which would fire while
         // typing; these have no shortcut of their own.
         MenuReply,
+        MenuReplyAll,
+        MenuForwardMessage,
         MenuMarkDone,
         MenuMarkUnread,
         MenuStar,
@@ -310,7 +314,9 @@ enum MoveTarget {
 #[derive(Clone, Copy, PartialEq)]
 enum Grab {
     Move,
-    Resize,
+    /// Resizing from an edge or corner: which way each side moves (-1 the left or top
+    /// edge, 1 the right or bottom one, 0 that axis stays).
+    Resize(i8, i8),
 }
 
 const COMPOSER_MIN: (f32, f32) = (460., 320.);
@@ -953,6 +959,11 @@ pub struct Nimbra {
     settings: crate::settings::Settings,
     /// What was copied last from a message's details, and when (shows "Copied").
     copied: Option<(String, std::time::Instant)>,
+    /// The composer is in a window of its own (detached), so it always fills it.
+    compose_detached: bool,
+    /// The formatting button under the mouse: its name and keys, shown in the toolbar (a
+    /// tooltip would open under the editor, which is a native view and covers it).
+    format_hint: Option<(&'static str, &'static str)>,
     /// The window showing the composer when it is not the main one (a message window it
     /// was started from, or a window of its own).
     compose_host: Option<gpui::AnyWindowHandle>,
@@ -1288,6 +1299,8 @@ impl Nimbra {
             settings_window: None,
             message_windows: Vec::new(),
             compose_host: None,
+            format_hint: None,
+            compose_detached: false,
             editor_window: None,
             copied: None,
             parked: Vec::new(),
@@ -3610,17 +3623,24 @@ impl Nimbra {
                     (position.1 + dy).clamp(0., viewport.1 - 60.),
                 ));
             }
-            Grab::Resize => {
-                composer.size = (
-                    (size.0 + dx).clamp(
-                        COMPOSER_MIN.0,
-                        (viewport.0 - position.0).max(COMPOSER_MIN.0),
-                    ),
-                    (size.1 + dy).clamp(
-                        COMPOSER_MIN.1,
-                        (viewport.1 - position.1).max(COMPOSER_MIN.1),
-                    ),
-                );
+            Grab::Resize(hx, hy) => {
+                // One axis: the far edge stays put, the grabbed one follows the mouse,
+                // within the window and never below the smallest size.
+                let axis = |side: i8, start: f32, length: f32, delta: f32, room: f32, min: f32| {
+                    match side {
+                        1 => (start, (length + delta).clamp(min, (room - start).max(min))),
+                        -1 => {
+                            let end = start + length;
+                            let begin = (start + delta).clamp(0., end - min);
+                            (begin, end - begin)
+                        }
+                        _ => (start, length),
+                    }
+                };
+                let (x, w) = axis(hx, position.0, size.0, dx, viewport.0, COMPOSER_MIN.0);
+                let (y, h) = axis(hy, position.1, size.1, dy, viewport.1, COMPOSER_MIN.1);
+                composer.position = Some((x, y));
+                composer.size = (w, h);
             }
         }
         cx.notify();
@@ -5757,16 +5777,31 @@ impl Nimbra {
         if self.compose.is_none() || self.compose_host != Some(window.window_handle()) {
             return None;
         }
+        let size = window.viewport_size();
+        let viewport = (f32::from(size.width), f32::from(size.height));
+        let detached = self.compose_detached;
         if let Some(composer) = &mut self.compose {
-            composer.full = true;
+            // A window of its own is all composer; elsewhere it floats as in the main window.
+            if detached {
+                composer.full = true;
+            } else if composer.position.is_none() {
+                // In the bottom-right corner, sized to fit the window with a margin.
+                const MARGIN: f32 = 20.;
+                composer.size = (
+                    composer.size.0.min(620.).min(viewport.0 - 2. * MARGIN).max(COMPOSER_MIN.0),
+                    composer.size.1.min(viewport.1 - 92.).max(COMPOSER_MIN.1),
+                );
+                composer.position = Some((
+                    (viewport.0 - composer.size.0 - MARGIN).max(0.),
+                    (viewport.1 - composer.size.1 - MARGIN).max(0.),
+                ));
+            }
         }
         if let Some(focus) = self.pending_focus.take() {
             window.focus(&focus);
         }
         self.sync_editor(window, cx);
         let t = self.theme();
-        let size = window.viewport_size();
-        let viewport = (f32::from(size.width), f32::from(size.height));
         Some(
             div()
                 .absolute()
@@ -5819,6 +5854,7 @@ impl Nimbra {
             if let Ok(handle) = opened {
                 me.update(cx, |n, cx| {
                     n.compose_host = Some(handle.into());
+                    n.compose_detached = true;
                     if let Some(composer) = &n.compose {
                         n.pending_focus = Some(composer.to.read(cx).focus_handle(cx));
                     }
@@ -5829,7 +5865,7 @@ impl Nimbra {
     }
 
     fn toggle_full_compose(&mut self, cx: &mut Context<Self>) {
-        if self.compose_host.is_some() {
+        if self.compose_detached {
             return;
         }
         if let Some(composer) = &mut self.compose {
@@ -9452,9 +9488,9 @@ impl Nimbra {
                         icon_button(t, "reply-all")
                             .id("reply-all")
                             .press(t)
-                            .tooltip(tip(t.dark, "Reply all", ""))
+                            .tooltip(tip(t.dark, "Reply all", "A"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Reply all", "", cx)
+                                this.set_hint(*hovered, "Reply all", "A", cx)
                             }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::ReplyAll, cx)
@@ -9464,9 +9500,9 @@ impl Nimbra {
                         icon_button(t, "forward")
                             .id("forward")
                             .press(t)
-                            .tooltip(tip(t.dark, "Forward", ""))
+                            .tooltip(tip(t.dark, "Forward", "F"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Forward", "", cx)
+                                this.set_hint(*hovered, "Forward", "F", cx)
                             }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::Forward, cx)
@@ -11040,7 +11076,9 @@ impl Nimbra {
                                             cx.listener(|this, _, _, cx| this.detach_compose(cx)),
                                         ),
                                 )
-                                .child(
+                            })
+                            .when(!self.compose_detached, |d| {
+                                d.child(
                                     icon_button(t, if full { "shrink" } else { "expand" })
                                         .id("compose-size")
                                         .press(t)
@@ -11114,7 +11152,14 @@ impl Nimbra {
                         .hover(move |s| s.bg(hover))
                         .when(active, |d| d.bg(t.hover).border_1().border_color(t.border))
                         .child(icon(name, 15., if active { t.text } else { t.text2 }))
-                        .tooltip(tip(t.dark, label, key))
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            if *hovered {
+                                this.format_hint = Some((label, key));
+                            } else if this.format_hint.is_some_and(|(l, _)| l == label) {
+                                this.format_hint = None;
+                            }
+                            cx.notify();
+                        }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(editor) = &this.editor {
                                 editor.exec(command);
@@ -11169,7 +11214,20 @@ impl Nimbra {
                                     "",
                                     "removeFormat",
                                     false,
-                                )),
+                                ))
+                                .child(div().flex_1())
+                                .when_some(self.format_hint, |d, (label, key)| {
+                                    d.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .text_size(px(12.))
+                                            .text_color(t.text2)
+                                            .child(label)
+                                            .when(!key.is_empty(), |d| d.child(kbd(t, key))),
+                                    )
+                                }),
                         ),
                 )
                 // The editor is a native web view: this element only reserves its space and
@@ -11331,32 +11389,50 @@ impl Nimbra {
                             ),
                     ),
             )
-            // Bottom-right corner grip for resizing the floating card.
+            // Every edge and corner resizes the floating card (no visible grip).
             .when(!full, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .right_0()
-                        .bottom_0()
-                        .size(px(18.))
-                        .cursor(gpui::CursorStyle::ResizeUpLeftDownRight)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, event, _, cx| {
-                                this.grab_composer(Grab::Resize, event, cx)
-                            }),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .right(px(5.))
-                                .bottom(px(5.))
-                                .size(px(8.))
-                                .border_r_2()
-                                .border_b_2()
-                                .border_color(t.border_strong),
-                        ),
-                )
+                use gpui::CursorStyle as C;
+                const EDGE: f32 = 6.;
+                const CORNER: f32 = 16.;
+                let handles: [(i8, i8, C); 8] = [
+                    (-1, -1, C::ResizeUpLeftDownRight),
+                    (1, 1, C::ResizeUpLeftDownRight),
+                    (1, -1, C::ResizeUpRightDownLeft),
+                    (-1, 1, C::ResizeUpRightDownLeft),
+                    (0, -1, C::ResizeUpDown),
+                    (0, 1, C::ResizeUpDown),
+                    (-1, 0, C::ResizeLeftRight),
+                    (1, 0, C::ResizeLeftRight),
+                ];
+                // Edges first, so the corners sit on top of them.
+                d.children(handles.into_iter().rev().map(|(hx, hy, cursor)| {
+                    let corner = hx != 0 && hy != 0;
+                    let mut h = div().absolute().cursor(cursor);
+                    h = match hx {
+                        -1 => h.left(px(-EDGE / 2.)),
+                        1 => h.right(px(-EDGE / 2.)),
+                        _ => h.left(px(CORNER)).right(px(CORNER)),
+                    };
+                    h = match hy {
+                        -1 => h.top(px(-EDGE / 2.)),
+                        1 => h.bottom(px(-EDGE / 2.)),
+                        _ => h.top(px(CORNER)).bottom(px(CORNER)),
+                    };
+                    if corner {
+                        h = h.size(px(CORNER));
+                    } else if hx == 0 {
+                        h = h.h(px(EDGE));
+                    } else {
+                        h = h.w(px(EDGE));
+                    }
+                    h.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event, _, cx| {
+                            cx.stop_propagation();
+                            this.grab_composer(Grab::Resize(hx, hy), event, cx)
+                        }),
+                    )
+                }))
             });
         div()
             .id("compose-scrim")
@@ -11806,6 +11882,7 @@ impl Render for Nimbra {
             && (self.compose.is_none() || !cx.windows().contains(&host))
         {
             self.compose_host = None;
+            self.compose_detached = false;
             if self.compose.is_some() {
                 self.close_compose(cx);
             }
@@ -11829,6 +11906,7 @@ impl Render for Nimbra {
         // The floating composer needs a concrete position before it can be dragged.
         if let Some(composer) = &mut self.compose
             && composer.position.is_none()
+            && !composing_elsewhere
         {
             composer.position = Some((((viewport.0 - composer.size.0) / 2.).max(0.), 96.));
         }
@@ -11951,6 +12029,18 @@ impl Render for Nimbra {
             .on_action(
                 cx.listener(|this, _: &MenuReply, _, cx| this.open_compose(ComposeKind::Reply, cx)),
             )
+            .on_action(cx.listener(|this, _: &ReplyAll, _, cx| {
+                this.open_compose(ComposeKind::ReplyAll, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MenuReplyAll, _, cx| {
+                this.open_compose(ComposeKind::ReplyAll, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ForwardMessage, _, cx| {
+                this.open_compose(ComposeKind::Forward, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MenuForwardMessage, _, cx| {
+                this.open_compose(ComposeKind::Forward, cx)
+            }))
             .on_action(cx.listener(|this, _: &MenuMarkDone, _, cx| this.mark_done(cx)))
             .on_action(cx.listener(|this, _: &MenuMarkUnread, _, cx| this.toggle_unread(cx)))
             .on_action(cx.listener(|this, _: &MenuStar, _, cx| this.toggle_star(cx)))

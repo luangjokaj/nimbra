@@ -14,6 +14,9 @@ pub(super) struct MessageWindow {
     original: bool,
     html_view: Option<std::rc::Rc<HtmlView>>,
     html_shown: Option<(String, bool, bool)>,
+    /// Holds the keyboard so R, A, F, E and ⌫ work here.
+    focus: FocusHandle,
+    focused_once: bool,
     _observe: gpui::Subscription,
 }
 
@@ -32,6 +35,8 @@ impl MessageWindow {
             original,
             html_view: None,
             html_shown: None,
+            focus: cx.focus_handle(),
+            focused_once: false,
             _observe: observe,
         }
     }
@@ -80,8 +85,12 @@ impl MessageWindow {
         let here = window.window_handle();
         self.owner.update(cx, |n, cx| {
             n.open_compose_from(kind, Some(Source::latest(&mail)), cx);
-            if n.compose.is_some() {
+            if let Some(composer) = &mut n.compose {
+                // Floating over the message, as in the main window.
+                composer.full = false;
+                composer.position = None;
                 n.compose_host = Some(here);
+                n.compose_detached = false;
             }
             cx.notify();
         });
@@ -136,10 +145,17 @@ impl Render for MessageWindow {
         let width = f32::from(window.viewport_size().width);
 
         let tool = |name: &'static str, label: &'static str, id: usize| {
+            let key = match id {
+                0 => "R",
+                1 => "A",
+                2 => "F",
+                3 => "E",
+                _ => "⌫",
+            };
             icon_button(&t, name)
                 .id(("message-window-tool", id))
                 .press(&t)
-                .tooltip(tip(t.dark, label, ""))
+                .tooltip(tip(t.dark, label, key))
         };
         let toolbar = div()
             .flex()
@@ -307,11 +323,33 @@ impl Render for MessageWindow {
                 .into_any_element()
         };
 
+        if !self.focused_once {
+            self.focused_once = true;
+            window.focus(&self.focus);
+        }
         div()
             .relative()
             .flex()
             .flex_col()
             .size_full()
+            // The same single-letter keys as in the main window, unless a reply is open here.
+            .key_context(if compose.is_some() { "Composer" } else { "Mail" })
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &Reply, window, cx| {
+                this.reply(ComposeKind::Reply, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ReplyAll, window, cx| {
+                this.reply(ComposeKind::ReplyAll, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ForwardMessage, window, cx| {
+                this.reply(ComposeKind::Forward, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MarkDone, window, cx| {
+                this.act(window, cx, |n, cx| n.mark_done(cx), true)
+            }))
+            .on_action(cx.listener(|this, _: &Trash, window, cx| {
+                this.act(window, cx, |n, cx| n.trash(cx), true)
+            }))
             .bg(t.surface)
             .font_family(crate::theme::SANS)
             .text_size(px(13.))

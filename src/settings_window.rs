@@ -920,6 +920,8 @@ impl SettingsWindow {
             ("Writing", &[
                 ("C / ⌘N", "New message"),
                 ("R", "Reply"),
+                ("A", "Reply all"),
+                ("F", "Forward"),
                 ("⌘↵", "Send"),
                 ("⌘S", "Save draft"),
                 ("⌘⇧F", "Full page composer"),
