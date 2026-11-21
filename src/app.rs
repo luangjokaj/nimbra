@@ -42,6 +42,7 @@ actions!(
         ToggleFullCompose,
         ToggleOriginal,
         FocusSearch,
+        HideWindow,
         Back,
         Forward,
         Reload,
@@ -1121,6 +1122,8 @@ impl Nimbra {
                     }
                     continue;
                 };
+                // The window may be hidden (closed with ⌘W): bring it back first.
+                cx.update(crate::show_main_window).ok();
                 this.update(cx, |this, cx| this.open_thread(id, cx)).ok();
             }
         })
@@ -5485,6 +5488,7 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &Back, _, cx| this.go_back(cx)))
             .on_action(cx.listener(|this, _: &Forward, _, cx| this.go_forward(cx)))
             .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
+            .on_action(|_: &HideWindow, window, _| crate::blur::set_visible(window, false))
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 let Some((start, width)) = this.list_grab else {

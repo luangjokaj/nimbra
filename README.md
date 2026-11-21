@@ -79,6 +79,7 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 | `↵` / `esc` | Run command / close palette |
 | `⌘⇧L` | Toggle light and dark |
 | `⌘B` | Show or hide the sidebar |
+| `⌘W` | Close the window; Nimbra keeps running and checking mail (click the Dock icon to bring it back, `⌘Q` to quit) |
 | `⌘⇧B` | Show or hide the message list (also the first toolbar button; drag the list's right edge to resize it) |
 | `⌘[` / `⌘]` | Back / forward through opened threads |
 | `⌘R` | Reload (mock mail check: restores the inbox) |

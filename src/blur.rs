@@ -144,3 +144,40 @@ pub fn mouse_down() -> bool {
 pub fn mouse_down() -> bool {
     false
 }
+
+/// Hides or shows a window without closing it (macOS `orderOut:` / `makeKeyAndOrderFront:`).
+/// Closing the main window with ⌘W or the red button hides it, so Nimbra keeps checking for
+/// mail in the background, as Mail and other macOS mail apps do.
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)] // emitted by the objc crate's macros
+pub fn set_visible(window: &gpui::Window, visible: bool) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: main thread; `ns_view` is this window's live content view.
+    unsafe {
+        let view = handle.ns_view.as_ptr() as *mut Object;
+        let ns_window: *mut Object = msg_send![view, window];
+        if ns_window.is_null() {
+            return;
+        }
+        let nil: *mut Object = std::ptr::null_mut();
+        if visible {
+            let _: () = msg_send![ns_window, makeKeyAndOrderFront: nil];
+            let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+            let _: () = msg_send![app, activateIgnoringOtherApps: true];
+        } else {
+            let _: () = msg_send![ns_window, orderOut: nil];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_visible(_window: &gpui::Window, _visible: bool) {}

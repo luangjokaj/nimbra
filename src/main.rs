@@ -20,9 +20,9 @@ use gpui::{
 };
 
 use app::{
-    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, MarkDone, MarkUnread, Next, Nimbra,
-    Prev, Quit, Reload, Reply, SaveDraft, SendMail, ToggleFullCompose, ToggleList, ToggleOriginal,
-    TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
+    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, HideWindow, MarkDone, MarkUnread, Next,
+    Nimbra, Prev, Quit, Reload, Reply, SaveDraft, SendMail, ToggleFullCompose, ToggleList,
+    ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -88,8 +88,26 @@ impl AssetSource for Assets {
     }
 }
 
+thread_local! {
+    /// The main window, to bring back when the Dock icon is clicked.
+    static MAIN_WINDOW: std::cell::Cell<Option<gpui::AnyWindowHandle>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Shows the main window again (Dock icon click while it is hidden).
+fn show_main_window(cx: &mut App) {
+    if let Some(handle) = MAIN_WINDOW.with(|main| main.get()) {
+        handle
+            .update(cx, |_, window, _| blur::set_visible(window, true))
+            .ok();
+    }
+}
+
 fn main() {
-    Application::new().with_assets(Assets).run(|cx: &mut App| {
+    let app = Application::new().with_assets(Assets);
+    // Clicking the Dock icon while the window is hidden brings it back.
+    app.on_reopen(show_main_window);
+    app.run(|cx: &mut App| {
         cx.text_system()
             .add_fonts(vec![
                 Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Regular.ttf").as_slice()),
@@ -151,6 +169,8 @@ fn main() {
             KeyBinding::new("cmd-r", Reload, None),
             KeyBinding::new("ctrl-r", Reload, None),
             KeyBinding::new("cmd-q", Quit, None),
+            // ⌘W hides the window; Nimbra keeps running and checking mail until ⌘Q.
+            KeyBinding::new("cmd-w", HideWindow, None),
         ]);
 
         let mut bounds = Bounds::centered(None, size(px(1480.), px(920.)), cx);
@@ -161,26 +181,33 @@ fn main() {
         {
             bounds.origin.x += px(shift);
         }
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Nimbra".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(18.), px(18.))),
-                }),
-                window_background: WindowBackgroundAppearance::Blurred,
-                window_min_size: Some(size(px(1120.), px(720.))),
-                ..Default::default()
-            },
-            |window, cx| {
-                blur::apply(window, 40);
-                let view = cx.new(Nimbra::new);
-                window.focus(&view.read(cx).focus_handle());
-                view
-            },
-        )
-        .expect("window should open");
+        let main_window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Nimbra".into()),
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(18.), px(18.))),
+                    }),
+                    window_background: WindowBackgroundAppearance::Blurred,
+                    window_min_size: Some(size(px(1120.), px(720.))),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    blur::apply(window, 40);
+                    // The red close button hides the window too, instead of quitting.
+                    window.on_window_should_close(cx, |window, _| {
+                        blur::set_visible(window, false);
+                        false
+                    });
+                    let view = cx.new(Nimbra::new);
+                    window.focus(&view.read(cx).focus_handle());
+                    view
+                },
+            )
+            .expect("window should open");
+        MAIN_WINDOW.with(|main| main.set(Some(main_window.into())));
         // Quit with the main window. A menu pop-up closing must not end the app.
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
