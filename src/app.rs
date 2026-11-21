@@ -108,6 +108,7 @@ enum RowAction {
     Done,
     MoveToInbox,
     Trash,
+    ReportSpam,
     OpenInGmail,
 }
 
@@ -122,6 +123,7 @@ impl RowAction {
             RowAction::Done => ("done", "Mark done"),
             RowAction::MoveToInbox => ("inbox", "Move to inbox"),
             RowAction::Trash => ("trash", "Move to trash"),
+            RowAction::ReportSpam => ("bell", "Report spam"),
             RowAction::OpenInGmail => ("link", "Open in Gmail"),
         }
     }
@@ -344,6 +346,123 @@ fn record(view: View) -> String {
     format!("view-{}", view_key(view))
 }
 
+/// The message a reply or forward is about.
+struct Source {
+    subject: String,
+    sender: String,
+    header: crate::data::Header,
+    body: Vec<Block>,
+    reply_to: Option<gmail::ReplyTo>,
+    /// For sample data, which has no real headers.
+    fallback_to: Option<String>,
+    fallback_all: Vec<String>,
+}
+
+impl Source {
+    /// The latest message of a thread.
+    fn latest(mail: &Mail) -> Self {
+        Source {
+            subject: mail.subject.to_string(),
+            sender: mail.sender.to_string(),
+            header: mail.header.clone(),
+            body: mail.body.clone(),
+            reply_to: mail.reply.as_ref().map(|(_, reply)| reply.clone()),
+            fallback_to: mail.reply.as_ref().map(|(address, _)| address.clone()),
+            fallback_all: mail.reply_all.clone(),
+        }
+    }
+
+    /// An earlier message in a thread.
+    fn earlier(mail: &Mail, earlier: &crate::data::Earlier) -> Self {
+        let reply_to = mail
+            .id
+            .clone()
+            .filter(|_| !earlier.header.message_id.is_empty())
+            .map(|thread_id| gmail::ReplyTo {
+                thread_id,
+                message_id: earlier.header.message_id.clone(),
+            });
+        Source {
+            subject: mail.subject.to_string(),
+            sender: earlier.sender.to_string(),
+            header: earlier.header.clone(),
+            body: earlier.blocks.clone(),
+            reply_to,
+            fallback_to: None,
+            fallback_all: Vec::new(),
+        }
+    }
+}
+
+/// "Fri, Nov 21, 2026 at 09:41", in local time; empty when unknown.
+fn long_date(timestamp_ms: i64) -> String {
+    use chrono::{Local, TimeZone};
+    if timestamp_ms <= 0 {
+        return String::new();
+    }
+    Local
+        .timestamp_millis_opt(timestamp_ms)
+        .single()
+        .map(|when| when.format("%a, %b %-d, %Y at %H:%M").to_string())
+        .unwrap_or_default()
+}
+
+/// A free path in Downloads for `name` ("Plan.pdf", then "Plan 2.pdf", ...).
+fn unique_download_path(name: &str) -> anyhow::Result<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("no home folder"))?;
+    let dir = std::path::PathBuf::from(home).join("Downloads");
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), format!(".{ext}")),
+        _ => (name.to_string(), String::new()),
+    };
+    for n in 1..1000 {
+        let file = if n == 1 {
+            format!("{stem}{ext}")
+        } else {
+            format!("{stem} {n}{ext}")
+        };
+        let path = dir.join(file);
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    anyhow::bail!("too many files with that name in Downloads")
+}
+
+/// A private temporary folder for Quick Look previews.
+fn preview_path(name: &str) -> anyhow::Result<std::path::PathBuf> {
+    let mut id = [0u8; 8];
+    getrandom::getrandom(&mut id).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let dir = std::env::temp_dir()
+        .join("nimbra-previews")
+        .join(id.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(dir.join(name))
+}
+
+fn restrict_file(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+/// "1.2 MB", "340 KB".
+fn file_size(bytes: u64) -> String {
+    match bytes {
+        0 => String::new(),
+        b if b < 1024 => format!("{b} B"),
+        b if b < 1024 * 1024 => format!("{} KB", b / 1024),
+        b => format!("{:.1} MB", b as f64 / (1024. * 1024.)),
+    }
+}
+
 /// Which composer field an event came from.
 #[derive(Clone, Copy, PartialEq)]
 enum Field {
@@ -370,6 +489,9 @@ pub struct Nimbra {
     /// Switching back shows it at once while a refresh runs in the background.
     /// Backed by the encrypted store on disk (see `persist`).
     cache: HashMap<View, Vec<Mail>>,
+    /// The message whose full header (all recipients, date) is expanded: thread id and
+    /// message index (0 is the latest).
+    details: Option<(String, usize)>,
     /// A thread to open once it appears in the list (from a clicked notification).
     open_when_listed: Option<String>,
     /// A background fetch of thread contents is running.
@@ -521,6 +643,7 @@ impl Nimbra {
             cache: HashMap::new(),
             prefetching: false,
             open_when_listed: None,
+            details: None,
             store: None,
             notify_from: None,
             synced_to: HashMap::new(),
@@ -1546,6 +1669,21 @@ impl Nimbra {
 
     /// Opens the composer, empty or as a reply to the open thread.
     fn open_compose(&mut self, kind: ComposeKind, cx: &mut Context<Self>) {
+        let source = self
+            .mails
+            .get(self.selected)
+            .filter(|_| !self.visible().is_empty())
+            .map(|mail| Source::latest(mail));
+        self.open_compose_from(kind, source, cx);
+    }
+
+    /// Opens the composer to reply to, reply to all on, or forward one message.
+    fn open_compose_from(
+        &mut self,
+        kind: ComposeKind,
+        source: Option<Source>,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         if self.compose.is_some() || self.palette {
             return;
@@ -1573,63 +1711,104 @@ impl Nimbra {
         };
         let mut focus = composer.to.read(cx).focus_handle(cx);
         if kind != ComposeKind::New
-            && let Some(mail) = self
-                .mails
-                .get(self.selected)
-                .filter(|_| !self.visible().is_empty())
-                .cloned()
+            && let Some(source) = source
         {
             let prefix = if kind == ComposeKind::Forward {
                 "Fwd: "
             } else {
                 "Re: "
             };
-            let subject = if mail
+            let subject = if source
                 .subject
                 .to_lowercase()
                 .starts_with(&prefix.trim().to_lowercase())
             {
-                mail.subject.to_string()
+                source.subject.clone()
             } else {
-                format!("{prefix}{}", mail.subject)
+                format!("{prefix}{}", source.subject)
             };
             composer
                 .subject
                 .update(cx, |input, cx| input.set(subject, usize::MAX, cx));
+            let header = &source.header;
+            let when = long_date(header.date_ms);
+            let from = if header.from.address.is_empty() {
+                source.sender.clone()
+            } else if header.from.name.is_empty() {
+                header.from.address.clone()
+            } else {
+                format!("{} <{}>", header.from.name, header.from.address)
+            };
+            let body: Vec<String> = source
+                .body
+                .iter()
+                .flat_map(|block| {
+                    block
+                        .text
+                        .lines()
+                        .map(str::to_string)
+                        .chain([String::new()])
+                })
+                .take(2000)
+                .collect();
             if kind == ComposeKind::Forward {
-                // The forwarded message goes in as plain text under a divider.
+                // The forwarded message is folded behind "•••" and added when sent.
+                let to = header
+                    .to
+                    .iter()
+                    .map(|p| p.address.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let mut quoted = vec![
-                    String::new(),
                     "---------- Forwarded message ----------".to_string(),
-                    format!("From: {}", mail.sender),
-                    format!("Subject: {}", mail.subject),
-                    String::new(),
+                    format!("From: {from}"),
                 ];
-                for block in &mail.body {
-                    quoted.extend(block.text.lines().map(str::to_string));
-                    quoted.push(String::new());
+                if !when.is_empty() {
+                    quoted.push(format!("Date: {when}"));
                 }
-                for text in quoted.into_iter().take(400) {
-                    let index = composer.lines.len();
-                    let (line, subscription) = self.new_field(Field::Line(index), "", cx);
-                    line.update(cx, |input, cx| input.set(text, 0, cx));
-                    composer.lines.push(line);
-                    composer._subscriptions.push(subscription);
+                quoted.push(format!("Subject: {}", source.subject));
+                if !to.is_empty() {
+                    quoted.push(format!("To: {to}"));
                 }
-            } else if let Some((address, reply_to)) = mail.reply.clone() {
-                let mut to = vec![address];
-                if kind == ComposeKind::ReplyAll {
-                    for other in &mail.reply_all {
-                        let me = other.eq_ignore_ascii_case(&self.account);
-                        if !me && !to.iter().any(|known| known.eq_ignore_ascii_case(other)) {
-                            to.push(other.clone());
+                quoted.push(String::new());
+                quoted.extend(body);
+                composer.quoted = Some(quoted.join("\n").trim_end().to_string());
+            } else {
+                let address = if header.from.address.is_empty() {
+                    source.fallback_to.clone()
+                } else {
+                    Some(header.reply_address().to_string())
+                };
+                if let Some(address) = address {
+                    let mut to = vec![address];
+                    if kind == ComposeKind::ReplyAll {
+                        let others = if header.from.address.is_empty() {
+                            source.fallback_all.clone()
+                        } else {
+                            header.everyone()
+                        };
+                        for other in others {
+                            let me = other.eq_ignore_ascii_case(&self.account);
+                            if !me && !to.iter().any(|known| known.eq_ignore_ascii_case(&other)) {
+                                to.push(other);
+                            }
                         }
                     }
+                    composer
+                        .to
+                        .update(cx, |input, cx| input.set(to.join(", "), usize::MAX, cx));
                 }
-                composer
-                    .to
-                    .update(cx, |input, cx| input.set(to.join(", "), usize::MAX, cx));
-                composer.reply = Some(reply_to);
+                composer.reply = source.reply_to.clone();
+                // The message being answered is quoted below, folded behind "•••".
+                let intro = if when.is_empty() {
+                    format!("{from} wrote:")
+                } else {
+                    format!("On {when}, {from} wrote:")
+                };
+                let quoted: Vec<String> = std::iter::once(intro)
+                    .chain(body.iter().map(|line| format!("> {line}")))
+                    .collect();
+                composer.quoted = Some(quoted.join("\n").trim_end().to_string());
                 focus = composer.lines[0].read(cx).focus_handle(cx);
             }
         }
@@ -1815,6 +1994,7 @@ impl Nimbra {
             Menu::More => vec![
                 ("inbox", "Mark as unread".into(), t.text2),
                 ("link", "Open in Gmail".into(), t.text2),
+                ("bell", "Report spam".into(), t.text2),
             ],
             Menu::Row(index) => {
                 let Some(mail) = self.mails.get(index) else {
@@ -1843,6 +2023,9 @@ impl Nimbra {
                     actions.push(RowAction::MoveToInbox);
                 }
                 actions.push(RowAction::Trash);
+                if !self.is_demo() {
+                    actions.push(RowAction::ReportSpam);
+                }
                 if !self.is_demo() {
                     actions.push(RowAction::OpenInGmail);
                 }
@@ -1978,7 +2161,8 @@ impl Nimbra {
         match (menu, index) {
             (Menu::Labels, index) => self.apply_label(index, cx),
             (Menu::More, 0) => self.mark_unread(cx),
-            (Menu::More, _) => self.open_in_gmail(cx),
+            (Menu::More, 1) => self.open_in_gmail(cx),
+            (Menu::More, _) => self.remove_selected(gmail::Change::Spam, cx),
             (Menu::Row(row), index) => {
                 if let Some(action) = self.row_actions.get(index).copied() {
                     self.row_action(row, action, cx);
@@ -2058,6 +2242,89 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// Downloads an attachment, then either previews it with Quick Look (from a private
+    /// temporary folder) or saves it to Downloads and shows it in Finder. Nothing is opened
+    /// with another app automatically.
+    fn fetch_attachment(&mut self, att: gmail::Attachment, save: bool, cx: &mut Context<Self>) {
+        let Some(client) = self.gmail.clone() else {
+            self.notice = Some("Attachments need a connected Gmail account.".into());
+            cx.notify();
+            return;
+        };
+        self.notice = Some(format!("Downloading {}…", short(&att.name, 40)).into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let bytes = client.download(&att.message_id, &att.attachment_id)?;
+                    let name = gmail::safe_file_name(&att.name);
+                    let path = if save {
+                        unique_download_path(&name)?
+                    } else {
+                        preview_path(&name)?
+                    };
+                    std::fs::write(&path, &bytes)?;
+                    restrict_file(&path);
+                    anyhow::Ok(path)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(path) => {
+                        let tool = if save {
+                            ("/usr/bin/open", "-R")
+                        } else {
+                            ("/usr/bin/qlmanage", "-p")
+                        };
+                        let _ = std::process::Command::new(tool.0)
+                            .arg(tool.1)
+                            .arg(&path)
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                        this.notice = save.then(|| {
+                            format!(
+                                "Saved to Downloads: {}",
+                                path.file_name().unwrap_or_default().to_string_lossy()
+                            )
+                            .into()
+                        });
+                    }
+                    Err(error) => {
+                        this.notice = Some(format!("Could not get the attachment: {error}").into())
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Leaves a mailing list: an https link opens in the browser (where the list asks for
+    /// confirmation); a mailto address opens a prepared message in the composer.
+    fn unsubscribe(&mut self, link: String, cx: &mut Context<Self>) {
+        if link.to_ascii_lowercase().starts_with("https://") {
+            cx.open_url(&link);
+            return;
+        }
+        let rest = &link["mailto:".len().min(link.len())..];
+        let (address, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let subject = query
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("subject="))
+            .map(|s| s.replace("%20", " ").replace('+', " "))
+            .unwrap_or_else(|| "unsubscribe".to_string());
+        self.open_compose(ComposeKind::New, cx);
+        if let Some(composer) = &self.compose {
+            let (to, subj) = (composer.to.clone(), composer.subject.clone());
+            let address = address.to_string();
+            to.update(cx, |input, cx| input.set(address, usize::MAX, cx));
+            subj.update(cx, |input, cx| input.set(subject, usize::MAX, cx));
+        }
+    }
+
     /// Opens the right-click menu for a row of the list.
     fn open_row_menu(
         &mut self,
@@ -2091,12 +2358,12 @@ impl Nimbra {
                 self.sync(row, change, false, cx);
             }
             // These take the row out of the list, which works on the open thread.
-            RowAction::Done | RowAction::MoveToInbox | RowAction::Trash => {
+            RowAction::Done | RowAction::MoveToInbox | RowAction::Trash | RowAction::ReportSpam => {
                 self.selected = row;
-                if action == RowAction::Trash {
-                    self.trash(cx);
-                } else {
-                    self.mark_done(cx);
+                match action {
+                    RowAction::Trash => self.trash(cx),
+                    RowAction::ReportSpam => self.remove_selected(gmail::Change::Spam, cx),
+                    _ => self.mark_done(cx),
                 }
             }
             RowAction::OpenInGmail => {
@@ -2805,7 +3072,8 @@ impl Nimbra {
         self.offer_undo(
             match change {
                 gmail::Change::Trash => "Moved to trash",
-                gmail::Change::Unarchive => "Moved to inbox",
+                gmail::Change::Unarchive | gmail::Change::NotSpam => "Moved to inbox",
+                gmail::Change::Spam => "Reported as spam",
                 _ => "Marked done",
             },
             cx,
@@ -4239,6 +4507,7 @@ impl Nimbra {
                                         }),
                                 )
                                 .child(serif(&m.subject, 38., t.text))
+                                .child(self.thread_banners(t, m, cx))
                                 .child(
                                     div()
                                         .flex()
@@ -4305,47 +4574,60 @@ impl Nimbra {
                                                 )
                                                 .when(e.expanded, |d| {
                                                     d.child(
-                                                        self.message_body(
-                                                            t,
-                                                            &e.blocks,
-                                                            (k + 1) * 1000,
-                                                            cx,
-                                                        )
-                                                        .pl(px(36.))
-                                                        .pb(px(14.)),
+                                                        div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap(px(12.))
+                                                            .pb(px(14.))
+                                                            .child(self.message_header(
+                                                                t,
+                                                                m,
+                                                                k + 1,
+                                                                true,
+                                                                cx,
+                                                            ))
+                                                            .child(
+                                                                self.message_body(
+                                                                    t,
+                                                                    &e.blocks,
+                                                                    (k + 1) * 1000,
+                                                                    cx,
+                                                                )
+                                                                .pl(px(40.)),
+                                                            )
+                                                            .when(
+                                                                !e.header.attachments.is_empty(),
+                                                                |d| {
+                                                                    d.child(
+                                                                        self.attachment_row(
+                                                                            t,
+                                                                            &e.header.attachments,
+                                                                            (k + 1) * 100,
+                                                                            cx,
+                                                                        )
+                                                                        .pl(px(40.)),
+                                                                    )
+                                                                },
+                                                            ),
                                                     )
                                                 })
                                         },
                                     )))
                                 })
                                 .child(divider())
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(12.))
-                                        .child(avatar(m.tone, &m.initials, 28.))
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .child(
-                                                    div()
-                                                        .font_weight(FontWeight::SEMIBOLD)
-                                                        .child(m.sender.clone()),
-                                                )
-                                                .child(meta(
-                                                    if m.rich { "to you, Jonah" } else { "to you" },
-                                                    t.text3,
-                                                )),
-                                        )
-                                        .child(mono(m.time.clone(), t.text3)),
-                                )
+                                .child(self.message_header(t, m, 0, true, cx))
                                 .child(self.message_body(t, &m.body, 0, cx).pl(px(40.)).when(
                                     !m.loaded,
                                     |d| {
                                         d.child(div().text_color(t.text3).child("Loading message…"))
                                     },
                                 ))
+                                .when(!m.header.attachments.is_empty(), |d| {
+                                    d.child(
+                                        self.attachment_row(t, &m.header.attachments, 0, cx)
+                                            .pl(px(40.)),
+                                    )
+                                })
                                 .when(m.rich, |d| {
                                     d.child(
                                         div()
@@ -4369,7 +4651,7 @@ impl Nimbra {
                         ),
                 )
             })
-            .when(original, |d| d.child(self.original_pane(t, cx)))
+            .when(original, |d| d.child(self.original_pane(t, m, cx)))
             .children(self.menu_view(t, cx))
     }
 
@@ -4561,14 +4843,345 @@ impl Nimbra {
             .child(meta("Loading message…", t.text3))
     }
 
+    /// One message's header: sender, a one-line recipient summary that expands into every
+    /// field (From, To, Cc, Reply-To, Date), and, for earlier messages, reply actions.
+    fn message_header(
+        &self,
+        t: &Theme,
+        mail: &Mail,
+        index: usize,
+        actions: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (header, sender, tone, initials, time) = match index {
+            0 => (
+                &mail.header,
+                mail.sender.clone(),
+                mail.tone,
+                mail.initials.clone(),
+                mail.time.clone(),
+            ),
+            k => {
+                let e = &mail.earlier[k - 1];
+                (
+                    &e.header,
+                    e.sender.clone(),
+                    e.tone,
+                    e.initials.clone(),
+                    e.when.clone(),
+                )
+            }
+        };
+        let thread = mail.id.clone().unwrap_or_default();
+        let open = self.details.as_ref() == Some(&(thread.clone(), index));
+        let me = self.account.to_string();
+        let label = |p: &gmail::Person| {
+            if p.address.eq_ignore_ascii_case(&me) {
+                "me".to_string()
+            } else {
+                p.label().to_string()
+            }
+        };
+        let recipients: Vec<String> = header.to.iter().chain(&header.cc).map(label).collect();
+        let summary = match recipients.len() {
+            0 if header.from.address.is_empty() => "to you".to_string(),
+            0 => "to undisclosed recipients".to_string(),
+            1..=3 => format!("to {}", recipients.join(", ")),
+            n => format!("to {}, {} and {} more", recipients[0], recipients[1], n - 2),
+        };
+        let row = |name: &str, value: String| {
+            div()
+                .flex()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .w(px(64.))
+                        .flex_none()
+                        .text_color(t.text3)
+                        .child(name.to_string()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_color(t.text2)
+                        .child(value),
+                )
+        };
+        let person = |p: &gmail::Person| {
+            if p.name.is_empty() {
+                p.address.clone()
+            } else {
+                format!("{} <{}>", p.name, p.address)
+            }
+        };
+        let list =
+            |people: &[gmail::Person]| people.iter().map(person).collect::<Vec<_>>().join(", ");
+        let source_index = index;
+        let reply_button =
+            |name: &'static str, tip_text: &'static str, kind: ComposeKind, id: usize| {
+                icon_button(t, name)
+                    .id(("message-action", id))
+                    .tooltip(tip(t.dark, tip_text, ""))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let source =
+                            this.mails
+                                .get(this.selected)
+                                .and_then(|mail| match source_index {
+                                    0 => Some(Source::latest(mail)),
+                                    k => mail.earlier.get(k - 1).map(|e| Source::earlier(mail, e)),
+                                });
+                        this.open_compose_from(kind, source, cx);
+                    }))
+            };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(avatar(tone, &initials, 28.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(div().font_weight(FontWeight::SEMIBOLD).child(sender))
+                                    .when(!header.from.address.is_empty(), |d| {
+                                        d.child(meta(header.from.address.clone(), t.text3))
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .id(("recipients", index))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let key = (thread.clone(), index);
+                                        this.details = if this.details.as_ref() == Some(&key) {
+                                            None
+                                        } else {
+                                            Some(key)
+                                        };
+                                        cx.notify();
+                                    }))
+                                    .child(meta(short(&summary, 90), t.text3))
+                                    .child(icon(if open { "up" } else { "down" }, 12., t.text3)),
+                            ),
+                    )
+                    .when(actions, |d| {
+                        d.child(reply_button(
+                            "reply",
+                            "Reply to this message",
+                            ComposeKind::Reply,
+                            index * 3,
+                        ))
+                        .child(reply_button(
+                            "reply-all",
+                            "Reply all to this message",
+                            ComposeKind::ReplyAll,
+                            index * 3 + 1,
+                        ))
+                        .child(reply_button(
+                            "forward",
+                            "Forward this message",
+                            ComposeKind::Forward,
+                            index * 3 + 2,
+                        ))
+                    })
+                    .child(mono(time, t.text3)),
+            )
+            .when(open && !header.from.address.is_empty(), |d| {
+                d.child(
+                    div()
+                        .ml(px(40.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .p(px(12.))
+                        .rounded(px(10.))
+                        .bg(t.hover)
+                        .border_1()
+                        .border_color(t.border)
+                        .text_size(px(12.5))
+                        .line_height(px(18.))
+                        .child(row("From", person(&header.from)))
+                        .when(!header.to.is_empty(), |d| {
+                            d.child(row("To", list(&header.to)))
+                        })
+                        .when(!header.cc.is_empty(), |d| {
+                            d.child(row("Cc", list(&header.cc)))
+                        })
+                        .when_some(header.reply_to.as_ref(), |d, p| {
+                            d.child(row("Reply-To", person(p)))
+                        })
+                        .when(header.date_ms > 0, |d| {
+                            d.child(row("Date", long_date(header.date_ms)))
+                        }),
+                )
+            })
+    }
+
+    /// A message's attachments, each with Quick Look and Save.
+    fn attachment_row(
+        &self,
+        t: &Theme,
+        attachments: &[gmail::Attachment],
+        base: usize,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(px(10.))
+            .children(attachments.iter().enumerate().map(|(i, att)| {
+                let (preview, save) = (att.clone(), att.clone());
+                let kind = att
+                    .name
+                    .rsplit('.')
+                    .next()
+                    .filter(|e| *e != att.name)
+                    .unwrap_or("file")
+                    .to_uppercase();
+                card(t)
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .pl(px(8.))
+                    .pr(px(6.))
+                    .py(px(6.))
+                    .max_w(px(360.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(30.))
+                            .rounded(px(8.))
+                            .bg(gradient(135., c(0x8b7cff, 1.), c(0x5b47e0, 1.)))
+                            .child(icon("file", 16., gpui::white())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(short(&att.name, 34)),
+                            )
+                            .child(meta(
+                                [kind, file_size(att.size)]
+                                    .into_iter()
+                                    .filter(|s| !s.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                                t.text3,
+                            )),
+                    )
+                    .child(
+                        icon_button(t, "search")
+                            .id(("attachment-preview", base + i))
+                            .tooltip(tip(t.dark, "Quick Look", ""))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.fetch_attachment(preview.clone(), false, cx)
+                            })),
+                    )
+                    .child(
+                        icon_button(t, "down")
+                            .id(("attachment-save", base + i))
+                            .tooltip(tip(t.dark, "Save to Downloads", ""))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.fetch_attachment(save.clone(), true, cx)
+                            })),
+                    )
+            }))
+    }
+
+    /// The Spam warning and the Unsubscribe link for the open thread, when they apply.
+    fn thread_banners(&self, t: &Theme, mail: &Mail, cx: &mut Context<Self>) -> Div {
+        let spam = mail.labels.iter().any(|l| l == "SPAM");
+        let unsubscribe = mail.header.unsubscribe.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .when(spam, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(14.))
+                        .py(px(8.))
+                        .rounded(px(10.))
+                        .bg(t.rose.opacity(0.12))
+                        .border_1()
+                        .border_color(t.rose.opacity(0.4))
+                        .child(icon("bell", 15., t.rose))
+                        .child(div().flex_1().child(
+                            "This message is in Spam. Be careful with its links and attachments.",
+                        ))
+                        .child(
+                            button(t, ButtonKind::Secondary, "Not spam", None)
+                                .id("not-spam")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.remove_selected(gmail::Change::NotSpam, cx)
+                                })),
+                        ),
+                )
+            })
+            .when_some(unsubscribe, |d, link| {
+                d.child(
+                    div().flex().child(
+                        button(t, ButtonKind::Ghost, "Unsubscribe", None)
+                            .id("unsubscribe")
+                            .tooltip(tip(t.dark, "Leave this mailing list", ""))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.unsubscribe(link.clone(), cx)
+                            })),
+                    ),
+                )
+            })
+    }
+
     /// The area the web view covers, with a strip above it explaining what is blocked.
-    fn original_pane(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn original_pane(&self, t: &Theme, m: &Mail, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.html_view.clone();
         div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h(px(0.))
+            // Subject, sender, recipients and attachments stay native above the email.
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .flex_col()
+                    .gap(px(12.))
+                    .px(px(28.))
+                    .pt(px(16.))
+                    .pb(px(12.))
+                    .border_b_1()
+                    .border_color(t.border)
+                    .child(serif(&m.subject, 26., t.text))
+                    .child(self.thread_banners(t, m, cx))
+                    .child(self.message_header(t, m, 0, false, cx))
+                    .when(!m.header.attachments.is_empty(), |d| {
+                        d.child(self.attachment_row(t, &m.header.attachments, 0, cx).pl(px(40.)))
+                    }),
+            )
             .child(
                 div()
                     .flex()

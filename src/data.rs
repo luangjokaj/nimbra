@@ -40,6 +40,57 @@ pub struct Mail {
     /// relabel its time ("9:41", "Wed") when the app reopens on another day.
     #[serde(default)]
     pub timestamp_ms: i64,
+    /// Headers of the latest message (sender, recipients, date, attachments).
+    #[serde(default)]
+    pub header: Header,
+    /// Gmail labels on the thread (for the Spam warning).
+    #[serde(default)]
+    pub labels: Vec<String>,
+}
+
+/// What a message says about itself, for the header block in the reading pane.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Header {
+    pub from: gmail::Person,
+    pub to: Vec<gmail::Person>,
+    pub cc: Vec<gmail::Person>,
+    pub reply_to: Option<gmail::Person>,
+    pub date_ms: i64,
+    pub attachments: Vec<gmail::Attachment>,
+    pub unsubscribe: Option<String>,
+    /// The RFC 5322 Message-ID, to reply to this message specifically.
+    pub message_id: String,
+}
+
+impl Header {
+    fn from_message(message: &gmail::Message) -> Self {
+        Header {
+            from: message.from.clone(),
+            to: message.to.clone(),
+            cc: message.cc.clone(),
+            reply_to: message.reply_to.clone(),
+            date_ms: message.timestamp_ms,
+            attachments: message.attachments.clone(),
+            unsubscribe: message.unsubscribe.clone(),
+            message_id: message.message_id.clone(),
+        }
+    }
+
+    /// Who replies go to: Reply-To if set, else the sender.
+    pub fn reply_address(&self) -> &str {
+        self.reply_to
+            .as_ref()
+            .map_or(self.from.address.as_str(), |p| p.address.as_str())
+    }
+
+    /// Everyone on To and Cc, for reply-all.
+    pub fn everyone(&self) -> Vec<String> {
+        self.to
+            .iter()
+            .chain(&self.cc)
+            .map(|p| p.address.clone())
+            .collect()
+    }
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -52,6 +103,8 @@ pub struct Earlier {
     pub blocks: Vec<Block>,
     /// Collapsed to one line until clicked.
     pub expanded: bool,
+    #[serde(default)]
+    pub header: Header,
 }
 
 impl Mail {
@@ -71,6 +124,8 @@ impl Mail {
             thread: (summary.message_count > 1).then(|| summary.message_count.to_string().into()),
             unread: summary.unread,
             starred: summary.starred,
+            labels: summary.labels.clone(),
+            header: Header::default(),
             tag: None,
             yesterday: earlier,
             brief: "".into(),
@@ -108,6 +163,7 @@ impl Mail {
             senders.join(", ").into()
         };
         if let Some(latest) = messages.pop() {
+            self.header = Header::from_message(&latest);
             self.reply_all = latest.others.clone();
             self.reply = self.id.clone().map(|thread_id| {
                 (
@@ -128,6 +184,7 @@ impl Mail {
             .into_iter()
             .rev()
             .map(|message| Earlier {
+                header: Header::from_message(&message),
                 tone: tone_for(&message.sender),
                 initials: initials(&message.sender).into(),
                 when: format_time(message.timestamp_ms).0.into(),
@@ -158,6 +215,7 @@ pub fn merge(cached: &[Mail], fresh: Vec<Mail>) -> Vec<Mail> {
                 mail.earlier = old.earlier.clone();
                 mail.participants = old.participants.clone();
                 mail.reply = old.reply.clone();
+                mail.header = old.header.clone();
                 mail.reply_all = old.reply_all.clone();
                 mail.html = old.html.clone();
                 mail.loaded = true;
@@ -235,9 +293,18 @@ fn mail(
         rich: false,
         loaded: true,
         timestamp_ms: 0,
+        header: Header::default(),
+        labels: Vec::new(),
         reply: None,
         reply_all: Vec::new(),
         html: None,
+    }
+}
+
+fn person(name: &str, address: &str) -> gmail::Person {
+    gmail::Person {
+        name: name.into(),
+        address: address.into(),
     }
 }
 
@@ -276,6 +343,16 @@ pub fn inbox() -> Vec<Mail> {
             unread: true,
             tag: Some(("Needs reply".into(), Accent::Rose)),
             rich: true,
+            header: Header {
+                from: person("Mira Kovač", "mira@northwind.studio"),
+                to: vec![person("Luan Gjokaj", "luan@example.com"), person("Jonah Reyes", "jonah@northwind.studio")],
+                cc: vec![person("", "launch@northwind.studio")],
+                reply_to: None,
+                date_ms: 0,
+                attachments: Vec::new(),
+                unsubscribe: None,
+                message_id: String::new(),
+            },
             participants: "Mira, Jonah and you · 3 messages".into(),
             earlier: vec![
                 Earlier {
@@ -289,6 +366,7 @@ pub fn inbox() -> Vec<Mail> {
                         "The only open question on my side is the embargo date.",
                     ]),
                     expanded: false,
+                    header: Header::default(),
                 },
                 Earlier {
                     tone: Tone::Violet,
@@ -301,6 +379,7 @@ pub fn inbox() -> Vec<Mail> {
                         "Draft is here: https://example.com/q4-launch-plan",
                     ]),
                     expanded: false,
+                    header: Header::default(),
                 },
             ],
             brief: "Mira needs your sign-off by Friday. Public launch moves to Dec 9 so onboarding gets one more test round; budget is unchanged.".into(),
@@ -447,6 +526,12 @@ pub fn inbox() -> Vec<Mail> {
             )
         },
         Mail {
+            header: Header {
+                from: person("Notion", "notify@mail.notion.so"),
+                to: vec![person("", "luan@example.com")],
+                unsubscribe: Some("https://example.com/unsubscribe".into()),
+                ..Header::default()
+            },
             yesterday: true,
             body: paragraphs(&["12 pages updated and 4 new comments in Roadmap 2027."]),
             ..mail(
