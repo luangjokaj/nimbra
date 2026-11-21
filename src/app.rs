@@ -15,7 +15,8 @@ use crate::input::{InputEvent, TextInput};
 use crate::rich::{self, Block, Kind};
 use crate::theme::{Accent, SERIF, Theme, Tone, c, fade, gradient};
 use crate::ui::{
-    ButtonKind, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill, shadow, tip,
+    ButtonKind, Press, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill, shadow,
+    tip,
 };
 use crate::webview::HtmlView;
 
@@ -540,6 +541,7 @@ impl Render for NoticeToast {
                     .child(
                         button(&t, ButtonKind::Ghost, "Dismiss", None)
                             .id("dismiss-notice")
+                            .press_soft()
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 owner
                                     .update(cx, |owner, cx| {
@@ -592,6 +594,7 @@ impl Render for UndoToast {
                     .child(
                         button(&t, ButtonKind::Ghost, "Undo", Some("⌘Z"))
                             .id("undo")
+                            .press_soft()
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 owner.update(cx, |owner, cx| owner.undo(cx)).ok();
                             })),
@@ -659,8 +662,10 @@ impl Render for MenuPopup {
                                     .child(div().flex_1().child(label.clone()))
                                     .when(!enabled, |d| d.text_color(t.text3))
                                     .when(enabled, |d| {
-                                        d.cursor_pointer().hover(move |s| s.bg(hover)).on_click(
-                                            cx.listener(move |this, _, window, cx| {
+                                        d.cursor_pointer()
+                                            .hover(move |s| s.bg(hover))
+                                            .press(&t)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
                                                 let menu = this.menu;
                                                 window.remove_window();
                                                 this.owner
@@ -668,8 +673,7 @@ impl Render for MenuPopup {
                                                         owner.menu_choice(menu, index, cx)
                                                     })
                                                     .ok();
-                                            }),
-                                        )
+                                            }))
                                     })
                             }),
                     ),
@@ -3774,6 +3778,7 @@ impl Nimbra {
                             .child(
                                 button(t, ButtonKind::Ghost, "Cancel", Some("esc"))
                                     .id("confirm-cancel")
+                                    .press_soft()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.confirm = None;
                                         cx.notify();
@@ -3782,6 +3787,7 @@ impl Nimbra {
                             .child(
                                 button(t, ButtonKind::Secondary, yes, None)
                                     .id("confirm-yes")
+                                    .press_soft()
                                     .text_color(t.rose)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         match this.confirm.take() {
@@ -4158,6 +4164,7 @@ impl Nimbra {
         let action = |id: &'static str, name: &'static str, label: &'static str| {
             button(t, ButtonKind::Secondary, label, None)
                 .id(id)
+                .press_soft()
                 .child(icon(name, 14., t.text2))
         };
         let inbox_like = matches!(
@@ -4252,6 +4259,7 @@ impl Nimbra {
             .child(
                 button(t, ButtonKind::Ghost, "Clear selection", Some("esc"))
                     .id("bulk-clear")
+                    .press_soft()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.picked.clear();
                         cx.notify();
@@ -4526,7 +4534,7 @@ impl Nimbra {
                             .gap(px(8.))
                             .child(
                                 button(t, ButtonKind::Ghost, "Cancel", None)
-                                    .id("label-cancel")
+                                    .id("label-cancel").press_soft()
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.close_new_label(cx)),
                                     ),
@@ -4538,7 +4546,7 @@ impl Nimbra {
                                     if matches!(self.label_sheet, LabelSheet::Rename(_)) { "Rename" } else { "Create" },
                                     Some("↵"),
                                 )
-                                    .id("label-create")
+                                    .id("label-create").press_soft()
                                     .on_click(cx.listener(|this, _, _, cx| this.create_label(cx))),
                             ),
                     ),
@@ -6198,6 +6206,7 @@ impl Nimbra {
                         d.child(
                             button(t, ButtonKind::Ghost, "Add account", None)
                                 .id("add-account")
+                                .press_soft()
                                 .on_click(cx.listener(|this, _, _, cx| this.add_account(cx))),
                         )
                     })
@@ -6214,6 +6223,7 @@ impl Nimbra {
                                 None,
                             )
                             .id("sign-out")
+                            .press_soft()
                             .when(armed, |d| d.text_color(t.rose))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let armed = this
@@ -6359,6 +6369,7 @@ impl Nimbra {
                 div().flex().justify_end().pt(px(20.)).child(
                     button(t, ButtonKind::Primary, "Done", None)
                         .id("settings-done")
+                        .press_soft()
                         .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx))),
                 ),
             );
@@ -7191,6 +7202,7 @@ impl Nimbra {
             .child(
                 control("sidebar", true)
                     .id("toggle-sidebar")
+                    .press(t)
                     // Highlighted while the sidebar is hidden, like the list button.
                     .when(!self.sidebar_open, |d| d.bg(t.selected))
                     .tooltip(tip(t.dark, "Show or hide sidebar", "⌘B"))
@@ -7200,12 +7212,14 @@ impl Nimbra {
             .child(
                 control("back", self.can_go_back())
                     .id("go-back")
+                    .press(t)
                     .tooltip(tip(t.dark, "Back", "⌘["))
                     .on_click(cx.listener(|this, _, _, cx| this.go_back(cx))),
             )
             .child(
                 control("next", self.can_go_forward())
                     .id("go-forward")
+                    .press(t)
                     .tooltip(tip(t.dark, "Forward", "⌘]"))
                     .on_click(cx.listener(|this, _, _, cx| this.go_forward(cx))),
             )
@@ -7324,6 +7338,7 @@ impl Nimbra {
                 None,
             )
             .id(("mailbox", view_key(view)))
+            .press(t)
             .on_click(cx.listener(move |this, _, _, cx| this.select_mailbox(view, cx)))
         };
 
@@ -7595,6 +7610,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, if self.dark { "sun" } else { "moon" })
                             .id("theme")
+                            .press(t)
                             .tooltip(tip(t.dark, "Light or dark theme", "⌘⇧L"))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
                     ),
@@ -7643,6 +7659,7 @@ impl Nimbra {
 
         div()
             .id(("row", i))
+            .press(t)
             .flex()
             .gap(px(12.))
             .pl(px(10.))
@@ -7697,14 +7714,109 @@ impl Nimbra {
                             .children(tag.map(|(label, a)| pill(t, &label, t.accent(a))))
                             .child(div().flex_1())
                             .when(!selected, |d| d.child(mono(m.time.clone(), t.text3)))
+                            // Quick actions on the open row: done, snooze, remind me.
                             .when(selected, |d| {
+                                let quick = |id: &'static str, name: &'static str| {
+                                    let (hover, bright) = (t.hover, t.text);
+                                    div()
+                                        .id((id, i))
+                                        .group("quick")
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .size(px(24.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .hover(move |s| s.bg(hover))
+                                        .press(t)
+                                        .child(
+                                            icon(name, 15., t.text2)
+                                                .group_hover("quick", move |s| {
+                                                    s.text_color(bright)
+                                                }),
+                                        )
+                                };
+                                let archivable = matches!(
+                                    self.mailbox,
+                                    View::Inbox
+                                        | View::Primary
+                                        | View::Updates
+                                        | View::Promotions
+                                        | View::Social
+                                        | View::Done
+                                        | View::Spam
+                                        | View::Trash
+                                        | View::Snoozed
+                                );
                                 d.child(
                                     div()
                                         .flex()
-                                        .gap(px(8.))
-                                        .child(icon("done", 15., t.text2))
-                                        .child(icon("clock", 15., t.text2))
-                                        .child(icon("bell", 15., t.text2)),
+                                        .gap(px(2.))
+                                        .when(archivable, |d| {
+                                            d.child(
+                                                quick("quick-done", "done")
+                                                    .tooltip(tip(
+                                                        t.dark,
+                                                        if matches!(
+                                                            self.mailbox,
+                                                            View::Done
+                                                                | View::Spam
+                                                                | View::Trash
+                                                                | View::Snoozed
+                                                        ) {
+                                                            "Move to inbox"
+                                                        } else {
+                                                            "Mark done"
+                                                        },
+                                                        "E",
+                                                    ))
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            this.selected = i;
+                                                            this.mark_done(cx);
+                                                        },
+                                                    )),
+                                            )
+                                        })
+                                        .child(
+                                            quick("quick-snooze", "clock")
+                                                .tooltip(tip(t.dark, "Snooze", "H"))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.selected = i;
+                                                    this.picked.clear();
+                                                    this.snooze_choices = Self::snooze_choices();
+                                                    this.palette_sel = 0;
+                                                    this.palette = true;
+                                                    cx.notify();
+                                                })),
+                                        )
+                                        .child(
+                                            quick("quick-remind", "bell")
+                                                .tooltip(tip(
+                                                    t.dark,
+                                                    "Remind me if no reply in 3 days",
+                                                    "",
+                                                ))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.selected = i;
+                                                    this.picked.clear();
+                                                    if this.is_demo() {
+                                                        this.palette = true;
+                                                        this.palette_sel = 0;
+                                                        cx.notify();
+                                                        return;
+                                                    }
+                                                    if let Some(choice) = Self::snooze_choices()
+                                                        .into_iter()
+                                                        .find(|c| c.no_reply)
+                                                    {
+                                                        this.snooze(choice, cx);
+                                                    }
+                                                })),
+                                        ),
                                 )
                             }),
                     )
@@ -7877,6 +7989,7 @@ impl Nimbra {
                             .child(
                                 button(t, ButtonKind::Secondary, "Compose", Some("C"))
                                     .id("compose")
+                                    .press_soft()
                                     .tooltip(tip(t.dark, "New message", "C"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.open_compose(ComposeKind::New, cx)
@@ -8024,6 +8137,7 @@ impl Nimbra {
                         .child(
                             button(t, ButtonKind::Secondary, "Load images", None)
                                 .id(("load-images", base))
+                                .press_soft()
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.load_images(sources.clone(), cx)
                                 })),
@@ -8329,6 +8443,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "list")
                             .id("toggle-list")
+                            .press(t)
                             .tooltip(tip(t.dark, "Show or hide message list", "⌘⇧B"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Show or hide message list", "⌘⇧B", cx)
@@ -8341,6 +8456,7 @@ impl Nimbra {
                         d.child(
                             button(t, ButtonKind::Primary, "Edit draft", None)
                                 .id("edit-draft")
+                                .press_soft()
                                 .tooltip(tip(t.dark, "Open this draft in the editor", ""))
                                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                     this.set_hint(*hovered, "Open this draft in the editor", "", cx)
@@ -8357,6 +8473,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "done")
                             .id("mark-done")
+                            .press(t)
                             .tooltip(tip(t.dark, "Mark done (archive)", "E"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Mark done (archive)", "E", cx)
@@ -8368,6 +8485,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "clock")
                             .id("snooze")
+                            .press(t)
                             .tooltip(tip(t.dark, "Snooze", "H"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Snooze", "H", cx)
@@ -8380,6 +8498,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "star")
                             .id("star")
+                            .press(t)
                             .tooltip(tip(t.dark, "Star", "S"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Star", "S", cx)
@@ -8390,6 +8509,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "mail")
                             .id("toggle-unread")
+                            .press(t)
                             .tooltip(tip(t.dark, "Mark as unread or read", "U"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Mark as unread or read", "U", cx)
@@ -8401,6 +8521,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "tag")
                             .id("label")
+                            .press(t)
                             .tooltip(tip(t.dark, "Add a label", ""))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Add a label", "", cx)
@@ -8413,6 +8534,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "folder")
                             .id("move-to")
+                            .press(t)
                             .tooltip(tip(t.dark, "Move to", ""))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Move to", "", cx)
@@ -8424,6 +8546,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "trash")
                             .id("trash")
+                            .press(t)
                             .tooltip(tip(t.dark, "Move to trash", "⌫"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Move to trash", "⌫", cx)
@@ -8434,6 +8557,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "reply")
                             .id("reply")
+                            .press(t)
                             .tooltip(tip(t.dark, "Reply", "R"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Reply", "R", cx)
@@ -8445,6 +8569,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "reply-all")
                             .id("reply-all")
+                            .press(t)
                             .tooltip(tip(t.dark, "Reply all", ""))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Reply all", "", cx)
@@ -8456,6 +8581,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "forward")
                             .id("forward")
+                            .press(t)
                             .tooltip(tip(t.dark, "Forward", ""))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Forward", "", cx)
@@ -8477,6 +8603,7 @@ impl Nimbra {
                             Some("V"),
                         )
                         .id("original")
+                        .press_soft()
                         .tooltip(tip(t.dark, "Switch between original and reader view", "V"))
                         .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                             this.set_hint(
@@ -8494,6 +8621,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "up")
                             .id("prev")
+                            .press(t)
                             .tooltip(tip(t.dark, "Previous thread", "K"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Previous thread", "K", cx)
@@ -8503,6 +8631,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "down")
                             .id("next")
+                            .press(t)
                             .tooltip(tip(t.dark, "Next thread", "J"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Next thread", "J", cx)
@@ -8512,6 +8641,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "more")
                             .id("more")
+                            .press(t)
                             .tooltip(tip(t.dark, "More actions", ""))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "More actions", "", cx)
@@ -8775,6 +8905,7 @@ impl Nimbra {
                 div().pt(px(10.)).child(
                     button(t, ButtonKind::Primary, label, None)
                         .id("status-action")
+                        .press_soft()
                         .on_click(cx.listener(|this, _, _, cx| {
                             if this.gmail.is_some() {
                                 this.fetch_inbox(cx);
@@ -8996,6 +9127,7 @@ impl Nimbra {
             |name: &'static str, tip_text: &'static str, kind: ComposeKind, id: usize| {
                 icon_button(t, name)
                     .id(("message-action", id))
+                    .press(t)
                     .tooltip(tip(t.dark, tip_text, ""))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let source =
@@ -9167,6 +9299,7 @@ impl Nimbra {
                         let busy = self.attachment_busy.get(&att.attachment_id) == Some(&false);
                         attachment_button(t, "eye", busy, false)
                             .id(("attachment-preview", base + i))
+                            .press(t)
                             .tooltip(tip(t.dark, "Quick Look", ""))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.fetch_attachment(preview.clone(), false, cx)
@@ -9177,6 +9310,7 @@ impl Nimbra {
                         let saved = self.attachment_saved.contains_key(&att.attachment_id);
                         attachment_button(t, if saved { "done" } else { "down" }, busy, saved)
                             .id(("attachment-save", base + i))
+                            .press(t)
                             .tooltip(tip(
                                 t.dark,
                                 if saved {
@@ -9272,6 +9406,7 @@ impl Nimbra {
                         .child(
                             button(t, ButtonKind::Secondary, "Restore", None)
                                 .id("restore")
+                                .press_soft()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.remove_selected(gmail::Change::Untrash, cx)
                                 })),
@@ -9297,6 +9432,7 @@ impl Nimbra {
                         .child(
                             button(t, ButtonKind::Secondary, "Not spam", None)
                                 .id("not-spam")
+                                .press_soft()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.remove_selected(gmail::Change::NotSpam, cx)
                                 })),
@@ -9308,6 +9444,7 @@ impl Nimbra {
                     div().flex().child(
                         button(t, ButtonKind::Ghost, "Unsubscribe", None)
                             .id("unsubscribe")
+                            .press_soft()
                             .tooltip(tip(t.dark, "Leave this mailing list", ""))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.unsubscribe(link.clone(), cx)
@@ -9383,7 +9520,7 @@ impl Nimbra {
                             if self.original_images { "Block images" } else { "Load images" },
                             None,
                         )
-                        .id("original-images")
+                        .id("original-images").press_soft()
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.original_images = !this.original_images;
                             cx.notify();
@@ -9419,6 +9556,7 @@ impl Nimbra {
         let item = move |id: usize, icon_name: &str, label: SharedString, tint: Hsla| {
             div()
                 .id(("menu-item", id))
+                .press(t)
                 .flex()
                 .items_center()
                 .gap(px(10.))
@@ -9651,6 +9789,7 @@ impl Nimbra {
                     let hover = t.hover;
                     div()
                         .id(("suggest", i))
+                        .press(t)
                         .flex()
                         .items_center()
                         .gap(px(10.))
@@ -9826,6 +9965,7 @@ impl Nimbra {
                             .child(
                                 icon_button(t, if full { "shrink" } else { "expand" })
                                     .id("compose-size")
+                                    .press(t)
                                     .tooltip(tip(t.dark, "Full page or floating", "⌘⇧F"))
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_full_compose(cx)),
@@ -9884,6 +10024,7 @@ impl Nimbra {
                     let hover = t.hover;
                     div()
                         .id(("format", id))
+                        .press(t)
                         .flex()
                         .flex_none()
                         .items_center()
@@ -10055,6 +10196,7 @@ impl Nimbra {
                             .child(
                                 icon_button(t, "clip")
                                     .id("attach")
+                                    .press(t)
                                     .tooltip(tip(t.dark, "Attach files", ""))
                                     .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
                             )
@@ -10082,6 +10224,7 @@ impl Nimbra {
                             .child(
                                 icon_button(t, "trash")
                                     .id("discard")
+                                    .press(t)
                                     .tooltip(tip(t.dark, "Discard draft", ""))
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.discard_compose(cx)),
@@ -10090,6 +10233,7 @@ impl Nimbra {
                             .child(
                                 button(t, ButtonKind::Secondary, "Send later", None)
                                     .id("send-later")
+                                    .press_soft()
                                     .tooltip(tip(
                                         t.dark,
                                         "Sent from this Mac while Nimbra is running",
@@ -10102,6 +10246,7 @@ impl Nimbra {
                             .child(
                                 button(t, ButtonKind::Primary, "Send", Some("⌘↵"))
                                     .id("send")
+                                    .press_soft()
                                     .when(composer.sending, |d| d.opacity(0.5))
                                     .on_click(cx.listener(|this, _, _, cx| this.send_mail(cx))),
                             ),
@@ -10413,6 +10558,7 @@ impl Nimbra {
                     });
                     let row = div()
                         .id(("command", i))
+                        .press(t)
                         .flex()
                         .items_center()
                         .gap(px(12.))

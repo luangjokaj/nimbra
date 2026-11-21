@@ -1,6 +1,8 @@
 //! Small stateless building blocks shared by every pane.
 
-use gpui::{BoxShadow, Div, FontWeight, Hsla, SharedString, Svg, div, point, prelude::*, px, svg};
+use gpui::{
+    BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point, prelude::*, px, svg,
+};
 
 use crate::theme::{MONO, Theme, Tone, c, gradient};
 
@@ -91,9 +93,12 @@ pub fn pill(t: &Theme, label: &str, dot: Hsla) -> Div {
         .child(meta(label.to_string(), t.text2))
 }
 
+/// A square icon button. On hover the background lights up and the icon brightens; give it
+/// an id and `.press(t)` for the pressed state.
 pub fn icon_button(t: &Theme, name: &str) -> Div {
-    let hover = t.hover;
+    let (hover, bright) = (t.hover, t.text);
     div()
+        .group("icon-button")
         .flex()
         .flex_none()
         .items_center()
@@ -102,7 +107,26 @@ pub fn icon_button(t: &Theme, name: &str) -> Div {
         .rounded(px(8.))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
-        .child(icon(name, 16., t.text2))
+        .child(icon(name, 16., t.text2).group_hover("icon-button", move |s| s.text_color(bright)))
+}
+
+/// The pressed look for anything clickable, so a click is felt the moment it lands.
+pub trait Press {
+    /// Icon buttons, rows and menu items: a firmer background while held.
+    fn press(self, t: &Theme) -> Self;
+    /// Text buttons (their own colours stay): dimmed a little while held.
+    fn press_soft(self) -> Self;
+}
+
+impl Press for Stateful<Div> {
+    fn press(self, t: &Theme) -> Self {
+        let held = t.selected;
+        self.active(move |s| s.bg(held))
+    }
+
+    fn press_soft(self) -> Self {
+        self.active(|s| s.opacity(0.72))
+    }
 }
 
 pub fn shadow(color: Hsla, y: f32, blur: f32, spread: f32) -> BoxShadow {
@@ -132,10 +156,13 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
         .rounded(px(9.))
         .cursor_pointer()
         .font_weight(FontWeight::SEMIBOLD);
+    let (hover, strong, selected) = (t.hover, t.border_strong, t.selected);
     match kind {
         ButtonKind::Primary => base
             .bg(gradient(90., c(0x8b7cff, 1.), c(0xff7ab6, 1.)))
             .shadow(vec![shadow(c(0x8b7cff, 0.35), 6., 18., -4.)])
+            // A brighter glow on hover.
+            .hover(|s| s.shadow(vec![shadow(c(0x8b7cff, 0.6), 8., 24., -2.)]))
             .text_color(gpui::white())
             .child(label.to_string())
             .children(key.map(|k| {
@@ -150,10 +177,12 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
             .bg(t.hover)
             .border_1()
             .border_color(t.border_strong)
+            .hover(move |s| s.bg(selected).border_color(strong))
             .text_color(t.text)
             .child(label.to_string())
             .children(key.map(|k| kbd(t, k))),
         ButtonKind::Ghost => base
+            .hover(move |s| s.bg(hover))
             .text_color(t.text)
             .child(label.to_string())
             .children(key.map(|k| kbd(t, k))),
