@@ -249,6 +249,44 @@ enum LabelSheet {
     Rename(String),
 }
 
+/// One result in the search panel.
+#[derive(Clone)]
+struct Hit {
+    id: Option<String>,
+    sender: SharedString,
+    initials: SharedString,
+    tone: Tone,
+    subject: SharedString,
+    snippet: SharedString,
+    time: SharedString,
+    unread: bool,
+    timestamp_ms: i64,
+}
+
+impl Hit {
+    fn from_mail(mail: &Mail) -> Self {
+        Hit {
+            id: mail.id.clone(),
+            sender: mail.sender.clone(),
+            initials: mail.initials.clone(),
+            tone: mail.tone,
+            subject: mail.subject.clone(),
+            snippet: mail.snippet.clone(),
+            time: mail.time.clone(),
+            unread: mail.unread,
+            timestamp_ms: mail.timestamp_ms,
+        }
+    }
+}
+
+/// Search tips shown while the search box is empty: what to type, and what it finds.
+const SEARCH_TIPS: &[(&str, &str)] = &[
+    ("from:", "From someone"),
+    ("has:attachment", "With attachments"),
+    ("is:unread", "Unread only"),
+    ("newer_than:7d", "From the last week"),
+];
+
 /// Where Move to sends the open thread.
 #[derive(Clone, PartialEq)]
 enum MoveTarget {
@@ -471,17 +509,25 @@ fn rubber_band(pull: f32) -> f32 {
     (1. - 1. / (pull * 0.55 / PULL_LIMIT + 1.)) * PULL_LIMIT
 }
 
-/// Where the indicator is, `start.elapsed()` after being let go: a critically damped
-/// spring from `from` to `to`. It eases in quickly and comes to rest without overshooting,
-/// so the list glides back into place and never bounces back into view.
+/// Where the indicator is, `start.elapsed()` after being let go.
+///
+/// Settling at the "checking" height uses a critically damped spring (no overshoot).
+/// Going back up (to 0) is a short, plain ease-out: quick, with no spring tail.
 fn settle(from: f32, to: f32, start: std::time::Instant) -> f32 {
     let t = start.elapsed().as_secs_f32();
+    if to == 0. {
+        let p = (t / CLOSE_SECONDS).min(1.);
+        return from * (1. - p).powi(3);
+    }
     if t >= SETTLE_SECONDS {
         return to;
     }
     let k = 13. * t;
     to + (from - to) * (-k).exp() * (1. + k)
 }
+
+/// How long the pull-to-refresh strip takes to close.
+const CLOSE_SECONDS: f32 = 0.22;
 
 const SETTLE_SECONDS: f32 = 0.7;
 
@@ -934,10 +980,27 @@ pub struct Nimbra {
     notice_window: Option<gpui::WindowHandle<NoticeToast>>,
     notice_shown: Option<SharedString>,
     notice_gen: usize,
+    /// The search panel (opened with / or ⌘F): its field, the results so far (from the mail
+    /// on this Mac, then Gmail's), the highlighted row (0 is "All results"), and whether
+    /// Gmail is still being asked.
+    finder_open: bool,
+    finder: Entity<TextInput>,
+    _finder_events: gpui::Subscription,
+    finder_hits: Vec<Hit>,
+    finder_sel: usize,
+    finder_gen: u64,
+    finder_loading: bool,
+    /// Counts All/Unread switches, to slide the highlight (0: never switched, no slide).
+    filter_gen: usize,
+    filter_switched: Option<std::time::Instant>,
     /// Sidebar sections folding or unfolding right now: when it started, and a number per
     /// fold (for its animation).
     folding: HashMap<&'static str, (std::time::Instant, usize)>,
     fold_gen: usize,
+    /// The time between frames while something animates (measured: 60 Hz, 120 Hz…), and
+    /// when the last frame was drawn.
+    frame_interval: std::cell::Cell<f32>,
+    last_frame: Option<std::time::Instant>,
     /// When the sidebar last started opening or closing (to keep the email still meanwhile).
     sidebar_toggled: Option<std::time::Instant>,
     /// Full view: the sidebar and list were hidden by a double-click (or Return); this is
@@ -1071,6 +1134,8 @@ pub struct Nimbra {
     pull_gen: usize,
     /// The indicator is held open while the refresh it started is running.
     pull_hold: bool,
+    /// The strip is closing after a finished check: it says "Done" on the way up.
+    pull_done: bool,
     /// Bumped on every toggle / reload so the matching animation replays.
     sidebar_gen: usize,
     reload_gen: usize,
@@ -1106,7 +1171,29 @@ impl Nimbra {
             }
             _ => {}
         });
+        let finder = cx.new(|cx| {
+            TextInput::new(
+                cx,
+                "Search mail, people and subjects",
+                Theme::dark().text3,
+                Theme::dark().violet,
+            )
+        });
+        let finder_events = cx.subscribe(&finder, |this, _, event: &InputEvent, cx| match event {
+            InputEvent::Changed => this.finder_changed(cx),
+            InputEvent::Down | InputEvent::Tab => this.finder_step(1, cx),
+            InputEvent::Up => this.finder_step(-1, cx),
+            InputEvent::Enter => this.finder_open_selected(cx),
+            _ => {}
+        });
         let mut this = Self {
+            finder_open: false,
+            finder,
+            _finder_events: finder_events,
+            finder_hits: Vec::new(),
+            finder_sel: 0,
+            finder_gen: 0,
+            finder_loading: false,
             search,
             query: String::new(),
             _search_events: search_events,
@@ -1146,7 +1233,11 @@ impl Nimbra {
             notice_gen: 0,
             focus_restore: None,
             sidebar_toggled: None,
+            frame_interval: std::cell::Cell::new(1. / 60.),
+            last_frame: None,
             folding: HashMap::new(),
+            filter_gen: 0,
+            filter_switched: None,
             fold_gen: 0,
             bar_shown: false,
             bar_fade: None,
@@ -1249,6 +1340,7 @@ impl Nimbra {
             pull_anim: None,
             pull_gen: 0,
             pull_hold: false,
+            pull_done: false,
             sidebar_open: std::env::var("NIMBRA_SIDEBAR").as_deref() != Ok("closed"),
             sidebar_gen: 0,
             reload_gen: 0,
@@ -1379,12 +1471,470 @@ impl Nimbra {
         }
     }
 
+    /// / or ⌘F: the search panel.
     fn focus_search(&mut self, cx: &mut Context<Self>) {
-        if !self.sidebar_open {
-            self.toggle_sidebar(cx);
+        if self.compose.is_some() || matches!(self.status, Status::SignedOut | Status::SigningIn) {
+            return;
         }
-        self.pending_focus = Some(self.search.read(cx).focus_handle(cx));
+        self.menu = None;
+        self.palette = false;
+        self.finder_open = true;
+        let query = self.query.clone();
+        self.finder
+            .update(cx, |input, cx| input.set(query, usize::MAX, cx));
+        self.finder_changed(cx);
+        self.pending_focus = Some(self.finder.read(cx).focus_handle(cx));
         cx.notify();
+    }
+
+    fn close_finder(&mut self, cx: &mut Context<Self>) {
+        self.finder_open = false;
+        self.finder_gen += 1;
+        self.finder_loading = false;
+        self.pending_focus = Some(self.focus.clone());
+        cx.notify();
+    }
+
+    /// What was typed changed: results from the mail on this Mac at once, then (after a
+    /// short pause) Gmail's own search, merged in below.
+    fn finder_changed(&mut self, cx: &mut Context<Self>) {
+        let query = self.finder.read(cx).text().trim().to_string();
+        self.finder_hits = self.local_hits(&query);
+        self.finder_sel = if self.finder_hits.is_empty() { 0 } else { 1 };
+        self.finder_gen += 1;
+        let generation = self.finder_gen;
+        self.finder_loading = false;
+        cx.notify();
+        let Some(client) = self.gmail.clone().filter(|_| query.chars().count() >= 2) else {
+            return;
+        };
+        self.finder_loading = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(350))
+                .await;
+            if this
+                .update(cx, |this, _| this.finder_gen != generation)
+                .unwrap_or(true)
+            {
+                return;
+            }
+            let q = query.clone();
+            let found = cx
+                .background_executor()
+                .spawn(async move { client.threads_page(View::Search, Some(&q), 10, None) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.finder_gen != generation {
+                    return;
+                }
+                this.finder_loading = false;
+                if let Ok((summaries, _)) = found {
+                    for summary in summaries {
+                        if this.finder_hits.len() >= 12 {
+                            break;
+                        }
+                        if this
+                            .finder_hits
+                            .iter()
+                            .any(|h| h.id.as_deref() == Some(summary.id.as_str()))
+                        {
+                            continue;
+                        }
+                        let mail = Mail::from_summary(summary);
+                        this.finder_hits.push(Hit::from_mail(&mail));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Mail on this Mac matching every word typed (Gmail operators like `from:` are left to
+    /// Gmail), newest first.
+    fn local_hits(&self, query: &str) -> Vec<Hit> {
+        let words: Vec<String> = query
+            .to_lowercase()
+            .split_whitespace()
+            .filter(|w| !w.contains(':'))
+            .map(str::to_string)
+            .collect();
+        if words.is_empty() {
+            return Vec::new();
+        }
+        let mut seen = HashSet::new();
+        let mut hits: Vec<Hit> = Vec::new();
+        for mail in self.mails.iter().chain(self.cache.values().flatten()) {
+            let key = mail.id.clone().unwrap_or_else(|| mail.subject.to_string());
+            if !seen.insert(key) {
+                continue;
+            }
+            let text = format!(
+                "{} {} {} {} {}",
+                mail.sender,
+                mail.header.from.address,
+                mail.subject,
+                mail.snippet,
+                mail.participants
+            )
+            .to_lowercase();
+            if words.iter().all(|w| text.contains(w.as_str())) {
+                hits.push(Hit::from_mail(mail));
+            }
+        }
+        hits.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+        hits.truncate(8);
+        hits
+    }
+
+    fn finder_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let empty = self.finder.read(cx).text().trim().is_empty();
+        let rows = if empty {
+            self.settings.recent_searches.len() + SEARCH_TIPS.len()
+        } else {
+            self.finder_hits.len() + 1
+        };
+        if rows == 0 {
+            return;
+        }
+        self.finder_sel = (self.finder_sel as isize + delta).rem_euclid(rows as isize) as usize;
+        cx.notify();
+    }
+
+    /// Return: open the highlighted result, or all results for what was typed.
+    fn finder_open_selected(&mut self, cx: &mut Context<Self>) {
+        let query = self.finder.read(cx).text().trim().to_string();
+        if query.is_empty() {
+            // A recent search or a tip.
+            let recent = self.settings.recent_searches.clone();
+            if let Some(text) = recent.get(self.finder_sel) {
+                let text = text.clone();
+                self.finder
+                    .update(cx, |input, cx| input.set(text, usize::MAX, cx));
+                self.finder_changed(cx);
+            } else if let Some((tip, _)) = SEARCH_TIPS.get(self.finder_sel - recent.len()) {
+                let text = tip.to_string();
+                let text = if text.ends_with(':') {
+                    text
+                } else {
+                    format!("{text} ")
+                };
+                self.finder
+                    .update(cx, |input, cx| input.set(text, usize::MAX, cx));
+                self.finder_changed(cx);
+            }
+            return;
+        }
+        let hit = self
+            .finder_sel
+            .checked_sub(1)
+            .and_then(|i| self.finder_hits.get(i))
+            .cloned();
+        self.search_for(&query, hit.and_then(|h| h.id), cx);
+    }
+
+    /// Runs a search: the results list, opening `open` in it if given.
+    fn search_for(&mut self, query: &str, open: Option<String>, cx: &mut Context<Self>) {
+        let recent = &mut self.settings.recent_searches;
+        recent.retain(|q| !q.eq_ignore_ascii_case(query));
+        recent.insert(0, query.to_string());
+        recent.truncate(6);
+        self.save_settings(cx);
+        self.close_finder(cx);
+        let text = query.to_string();
+        self.search
+            .update(cx, |input, cx| input.set(text, usize::MAX, cx));
+        // Already in the list on screen: just open it.
+        if let Some(id) = &open
+            && self.mailbox == View::Search
+            && self.query == query
+            && let Some(index) = self.mails.iter().position(|m| m.id.as_ref() == Some(id))
+        {
+            self.open(index);
+            self.open_selected(cx);
+            return;
+        }
+        self.open_when_listed = open;
+        self.run_search(cx);
+    }
+
+    /// The search panel.
+    fn finder_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let query = self.finder.read(cx).text().trim().to_string();
+        let empty = query.is_empty();
+        let hover = t.hover;
+        let row_base = move |id: usize, active: bool| {
+            div()
+                .id(("finder-row", id))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .px(px(12.))
+                .py(px(8.))
+                .rounded(px(10.))
+                .cursor_pointer()
+                .when(active, |d| d.bg(t.selected))
+                .when(!active, |d| d.hover(move |s| s.bg(hover)))
+                .press(t)
+        };
+        let section = |label: &str| {
+            div()
+                .pl(px(12.))
+                .pt(px(10.))
+                .pb(px(6.))
+                .child(overline(label.to_string(), t.faint))
+        };
+        let mut rows: Vec<AnyElement> = Vec::new();
+        if empty {
+            let recent = &self.settings.recent_searches;
+            if !recent.is_empty() {
+                rows.push(section("RECENT").into_any_element());
+            }
+            for (i, text) in recent.iter().enumerate() {
+                let value = text.clone();
+                rows.push(
+                    row_base(i, self.finder_sel == i)
+                        .child(icon("clock", 15., t.text3))
+                        .child(div().flex_1().min_w(px(0.)).child(short(text, 70)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let v = value.clone();
+                            this.finder
+                                .update(cx, |input, cx| input.set(v, usize::MAX, cx));
+                            this.finder_changed(cx);
+                            this.pending_focus = Some(this.finder.read(cx).focus_handle(cx));
+                        }))
+                        .into_any_element(),
+                );
+            }
+            rows.push(section("SEARCH TIPS").into_any_element());
+            for (k, (tip, what)) in SEARCH_TIPS.iter().enumerate() {
+                let i = recent.len() + k;
+                rows.push(
+                    row_base(i, self.finder_sel == i)
+                        .child(icon("zap", 15., t.text3))
+                        .child(
+                            div()
+                                .font_family(crate::theme::MONO)
+                                .text_size(px(12.5))
+                                .child(*tip),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_color(t.text3)
+                                .child(*what),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let text = if tip.ends_with(':') {
+                                tip.to_string()
+                            } else {
+                                format!("{tip} ")
+                            };
+                            this.finder
+                                .update(cx, |input, cx| input.set(text, usize::MAX, cx));
+                            this.finder_changed(cx);
+                            this.pending_focus = Some(this.finder.read(cx).focus_handle(cx));
+                        }))
+                        .into_any_element(),
+                );
+            }
+        } else {
+            let q = query.clone();
+            rows.push(
+                row_base(0, self.finder_sel == 0)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(28.))
+                            .rounded(px(8.))
+                            .bg(gradient(135., c(0x8b7cff, 1.), c(0xff7ab6, 1.)))
+                            .child(icon("search", 15., gpui::white())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(format!("All results for “{}”", short(&query, 50))),
+                    )
+                    .when(self.finder_sel == 0, |d| d.child(kbd(t, "↵")))
+                    .on_click(cx.listener(move |this, _, _, cx| this.search_for(&q, None, cx)))
+                    .into_any_element(),
+            );
+            if !self.finder_hits.is_empty() {
+                rows.push(section("CONVERSATIONS").into_any_element());
+            }
+            for (k, hit) in self.finder_hits.iter().enumerate() {
+                let i = k + 1;
+                let (q, id) = (query.clone(), hit.id.clone());
+                rows.push(
+                    row_base(i, self.finder_sel == i)
+                        .child(avatar(hit.tone, &hit.initials, 28.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .font_weight(if hit.unread {
+                                                    FontWeight::SEMIBOLD
+                                                } else {
+                                                    FontWeight::MEDIUM
+                                                })
+                                                .child(short(&hit.sender, 30)),
+                                        )
+                                        .when(hit.unread, |d| {
+                                            d.child(div().size(px(6.)).rounded_full().bg(t.violet))
+                                        })
+                                        .child(div().flex_1())
+                                        .child(mono(hit.time.clone(), t.text3)),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .text_color(t.text2)
+                                                .child(short(&hit.subject, 46)),
+                                        )
+                                        .child(
+                                            div()
+                                                .min_w(px(0.))
+                                                .text_color(t.text3)
+                                                .child(short(&hit.snippet, 50)),
+                                        ),
+                                ),
+                        )
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.search_for(&q, id.clone(), cx)),
+                        )
+                        .into_any_element(),
+                );
+            }
+            if self.finder_hits.is_empty() && !self.finder_loading {
+                rows.push(
+                    div()
+                        .px(px(12.))
+                        .py(px(14.))
+                        .text_color(t.text3)
+                        .child("Nothing here yet. Press Return to search all of Gmail.")
+                        .into_any_element(),
+                );
+            }
+        }
+        let hint = |keys: &[&str], label: &str| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .children(keys.iter().map(|k| kbd(t, k)))
+                .child(meta(label.to_string(), t.text3))
+        };
+        div()
+            .id("finder-scrim")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(140.))
+            .bg(t.scrim)
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.close_finder(cx)),
+            )
+            .child(
+                div()
+                    .id("finder")
+                    .w(px(680.))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .rounded(px(18.))
+                    .bg(t.raised)
+                    .border_1()
+                    .border_color(t.border_strong)
+                    .shadow(vec![
+                        shadow(c(0x8b7cff, 0.22), 0., 120., 10.),
+                        shadow(c(0x000000, if t.dark { 0.6 } else { 0.2 }), 30., 80., -10.),
+                    ])
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .pl(px(20.))
+                            .pr(px(16.))
+                            .py(px(16.))
+                            .child(icon("search", 18., t.text3))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_size(px(17.))
+                                    .child(self.finder.clone()),
+                            )
+                            .when(self.finder_loading, |d| {
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(icon("reload", 13., t.violet).with_animation(
+                                            "finder-busy",
+                                            Animation::new(Duration::from_millis(900)).repeat(),
+                                            |svg, delta| {
+                                                svg.with_transformation(Transformation::rotate(
+                                                    percentage(delta),
+                                                ))
+                                            },
+                                        ))
+                                        .child(meta("Searching Gmail", t.text3)),
+                                )
+                            }),
+                    )
+                    .child(div().h(px(1.)).bg(t.border))
+                    .child(
+                        div()
+                            .id("finder-rows")
+                            .flex()
+                            .flex_col()
+                            .max_h(px(420.))
+                            .overflow_y_scroll()
+                            .p(px(8.))
+                            .children(rows),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(16.))
+                            .px(px(20.))
+                            .py(px(12.))
+                            .border_t_1()
+                            .border_color(t.border)
+                            .bg(t.hover)
+                            .child(hint(&["↑", "↓"], "Navigate"))
+                            .child(hint(&["↵"], "Open"))
+                            .child(hint(&["esc"], "Close"))
+                            .child(div().flex_1())
+                            .child(serif("Nimbra", 18., t.text2)),
+                    ),
+            )
     }
 
     /// Runs the typed query: against Gmail (its full search syntax works), or locally
@@ -2915,6 +3465,7 @@ impl Nimbra {
         let ready = matches!(self.status, Status::Demo | Status::Ready);
         // (A toolbar menu does not hide it: menus open in a window of their own, above it.)
         let covered = self.palette
+            || self.finder_open
             || self.picked.len() >= 2
             || self.compose.is_some()
             || self.settings_open
@@ -3831,38 +4382,43 @@ impl Nimbra {
         }
     }
 
-    /// Where the reading pane starts right now (following a sidebar or list slide), and how
-    /// much wider than its space the email's web view should be meanwhile. The web view
-    /// keeps a single width for the whole slide (the wider of before and after) and only
-    /// moves, so the email is laid out once instead of on every frame.
+    /// Where the reading pane starts right now (following a sidebar or list slide), and
+    /// where it will start once the slide ends.
     fn pane_layout(&self) -> (f32, f32) {
-        const SLIDE: f32 = 0.26;
-        // The same curve as the slide itself (`ease_out_quint`).
-        let ease = |t: f32| 1. - (1. - t.clamp(0., 1.)).powi(5);
-        let part = |open: bool, at: Option<std::time::Instant>, size: f32| {
-            let to = if open { 1. } else { 0. };
-            match at.map(|at| at.elapsed().as_secs_f32()) {
-                Some(elapsed) if elapsed < SLIDE => {
-                    let from = 1. - to;
-                    (
-                        size * (from + (to - from) * ease(elapsed / SLIDE)),
-                        size * from,
-                    )
-                }
-                _ => (size * to, size * to),
-            }
-        };
-        let (side_now, side_start) = part(self.sidebar_open, self.sidebar_toggled, 236.);
-        let (list_now, list_start) = part(self.list_open, self.list_toggled, self.list_width);
-        let end = if self.sidebar_open { 236. } else { 0. }
-            + if self.list_open { self.list_width } else { 0. };
-        let now = side_now + list_now;
-        (now, (now - (side_start + list_start).min(end)).max(0.))
+        self.pane_layout_at(0.)
     }
 
-    /// How much wider than its space the email's web view should be (see `pane_layout`).
-    fn pane_motion(&self) -> f32 {
-        self.pane_layout().1
+    /// `pane_layout` as it will be `ahead` seconds from now.
+    fn pane_layout_at(&self, ahead: f32) -> (f32, f32) {
+        const SLIDE: f32 = PANEL_SLIDE_SECONDS;
+        // The same curve as the slide itself.
+        let ease = panel_ease;
+        let part = |open: bool, at: Option<std::time::Instant>, size: f32| {
+            let to = if open { 1. } else { 0. };
+            match at.map(|at| at.elapsed().as_secs_f32() + ahead) {
+                Some(elapsed) if elapsed < SLIDE => {
+                    let from = 1. - to;
+                    size * (from + (to - from) * ease(elapsed / SLIDE))
+                }
+                _ => size * to,
+            }
+        };
+        let side_now = part(self.sidebar_open, self.sidebar_toggled, 236.);
+        let list_now = part(self.list_open, self.list_toggled, self.list_width);
+        let end = if self.sidebar_open { 236. } else { 0. }
+            + if self.list_open { self.list_width } else { 0. };
+        (side_now + list_now, end)
+    }
+
+    /// How far the reading pane's left edge will move during the next frame of a sidebar or
+    /// list slide. The email is a native view that is placed one frame after the rest of the
+    /// window is drawn; moving it by this much in advance keeps it in step with the slide.
+    fn pane_lead(&self) -> f32 {
+        let (now, end) = self.pane_layout();
+        if (now - end).abs() < 0.5 {
+            return 0.;
+        }
+        self.pane_layout_at(self.frame_interval.get()).0 - now
     }
 
     /// Where the reading pane starts right now, following any slide in progress.
@@ -6636,6 +7192,7 @@ impl Nimbra {
                 let shown = rubber_band(self.pull);
                 self.pull = 0.;
                 self.pull_gen += 1;
+                self.pull_done = false;
                 if shown >= PULL_TRIGGER && !self.fetching {
                     // Settle at the resting height and stay there while mail is fetched.
                     self.pull_anim = Some((shown, PULL_REST, std::time::Instant::now()));
@@ -6714,6 +7271,8 @@ impl Nimbra {
         let (from, to, start) = self.pull_anim?;
         let label = if self.pull_hold {
             "Checking for mail…"
+        } else if self.pull_done {
+            "Done"
         } else {
             ""
         };
@@ -6732,7 +7291,7 @@ impl Nimbra {
     /// The message list in a wrapper whose width slides open or shut after a toggle, the
     /// same way the sidebar does. Once it has finished closing it is not drawn at all.
     fn list_slot(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        const SLIDE: Duration = Duration::from_millis(260);
+        const SLIDE: Duration = Duration::from_millis((PANEL_SLIDE_SECONDS * 1000.) as u64);
         let moving = self.list_toggled.is_some_and(|at| at.elapsed() < SLIDE);
         if !self.list_open && !moving {
             return None;
@@ -6760,7 +7319,7 @@ impl Nimbra {
         Some(
             slot.with_animation(
                 ("list-width", self.list_gen),
-                Animation::new(SLIDE).with_easing(ease_out_quint()),
+                Animation::new(SLIDE).with_easing(panel_ease),
                 move |slot, delta| slot.w(px(width * (from + (to - from) * delta))),
             )
             .into_any_element(),
@@ -6802,13 +7361,19 @@ impl Nimbra {
         } else {
             (1., 0.)
         };
-        if self.sidebar_gen == 0 {
+        // Only while the sidebar is actually sliding. Without this an element that is drawn
+        // again later (the list, each time it opens) would replay the old slide.
+        let sliding = self
+            .sidebar_toggled
+            .is_some_and(|at| at.elapsed().as_secs_f32() < PANEL_SLIDE_SECONDS);
+        if self.sidebar_gen == 0 || !sliding {
             return apply(element, to).into_any_element();
         }
         element
             .with_animation(
                 (key, self.sidebar_gen),
-                Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
+                Animation::new(Duration::from_secs_f32(PANEL_SLIDE_SECONDS))
+                    .with_easing(panel_ease),
                 move |element, delta| apply(element, from + (to - from) * delta),
             )
             .into_any_element()
@@ -7155,6 +7720,10 @@ impl Nimbra {
     }
 
     fn set_unread_only(&mut self, unread_only: bool, cx: &mut Context<Self>) {
+        if self.unread_only != unread_only {
+            self.filter_gen += 1;
+            self.filter_switched = Some(std::time::Instant::now());
+        }
         self.unread_only = unread_only;
         if !self.visible().contains(&self.selected) {
             self.selected = self.visible().first().copied().unwrap_or(0);
@@ -7200,6 +7769,22 @@ fn short(text: &str, max: usize) -> SharedString {
     }
 }
 
+/// How long the sidebar and the message list take to slide open or shut.
+const PANEL_SLIDE_SECONDS: f32 = 0.3;
+
+/// The curve of those slides: a symmetric ease-in-out (cubic). It starts gently, so the
+/// first frame after a click is not already halfway, and settles softly.
+fn panel_ease(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    if t < 0.5 {
+        4. * t * t * t
+    } else {
+        1. - (-2. * t + 2.).powi(3) / 2.
+    }
+}
+
+/// The height of an option in the All / Unread switch.
+const SEGMENT_H: f32 = 26.;
 /// The height of a sidebar row (folding animates rows to and from it).
 const NAV_ROW: f32 = 30.;
 /// How long a sidebar section takes to fold or unfold.
@@ -7496,7 +8081,23 @@ impl Nimbra {
                     .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
                     .when(self.mailbox == View::Search, |d| d.border_color(t.violet))
                     .child(icon("search", 16., t.text3))
-                    .child(div().flex_1().min_w(px(0.)).child(self.search.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_color(if self.query.is_empty() {
+                                t.text3
+                            } else {
+                                t.text
+                            })
+                            .child(if self.query.is_empty() {
+                                SharedString::from("Search mail")
+                            } else {
+                                short(&self.query, 24)
+                            }),
+                    )
                     .child(kbd(t, "/")),
             )
             .child(split_toggle)
@@ -8037,29 +8638,65 @@ impl Nimbra {
             .filter(|i| self.mails[*i].yesterday)
             .collect();
 
-        let segment = |label: &str, count: Option<(&str, Hsla)>, active: bool| {
+        // Each option has a fixed width, so the highlight behind them can slide from one to
+        // the other (and nothing shifts when it does).
+        let unread_text = unread.to_string();
+        let widths = [44., 70. + 7. * unread_text.len() as f32];
+        let segment = |label: &str, count: Option<(&str, Hsla)>, active: bool, width: f32| {
             div()
                 .flex()
+                .flex_none()
                 .items_center()
+                .justify_center()
                 .gap(px(6.))
-                .px(px(12.))
-                .py(px(4.))
+                .w(px(width))
+                .h(px(SEGMENT_H))
                 .rounded(px(7.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(if active { t.text } else { t.text3 })
-                .when(active, |d| {
-                    d.bg(t.raised)
-                        .border_1()
-                        .border_color(t.border)
-                        .shadow(vec![shadow(
-                            c(0x000000, if t.dark { 0.25 } else { 0.08 }),
-                            1.,
-                            3.,
-                            0.,
-                        )])
-                })
                 .child(label.to_string())
                 .children(count.map(|(n, color)| mono(n.to_string(), color)))
+        };
+        // The highlight: where it is, and where it was before the last switch.
+        let spot = |unread: bool| {
+            if unread {
+                (widths[0] + 2., widths[1])
+            } else {
+                (0., widths[0])
+            }
+        };
+        let (to_x, to_w) = spot(self.unread_only);
+        let (from_x, from_w) = spot(!self.unread_only);
+        let pill = div()
+            .absolute()
+            .top(px(3.))
+            .h(px(SEGMENT_H))
+            .rounded(px(7.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border)
+            .shadow(vec![shadow(
+                c(0x000000, if t.dark { 0.25 } else { 0.08 }),
+                1.,
+                3.,
+                0.,
+            )]);
+        // Only right after a switch (not again each time the list is drawn anew).
+        let switching = self
+            .filter_switched
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(260));
+        let pill = if self.filter_gen == 0 || !switching {
+            pill.left(px(3. + to_x)).w(px(to_w)).into_any_element()
+        } else {
+            pill.with_animation(
+                ("filter-pill", self.filter_gen),
+                Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
+                move |d, delta| {
+                    d.left(px(3. + from_x + (to_x - from_x) * delta))
+                        .w(px(from_w + (to_w - from_w) * delta))
+                },
+            )
+            .into_any_element()
         };
 
         div()
@@ -8120,6 +8757,7 @@ impl Nimbra {
                             .mt(px(8.))
                             .child(
                                 div()
+                                    .relative()
                                     .flex()
                                     .gap(px(2.))
                                     .p(px(3.))
@@ -8127,8 +8765,9 @@ impl Nimbra {
                                     .bg(t.hover)
                                     .border_1()
                                     .border_color(t.border)
+                                    .child(pill)
                                     .child(
-                                        segment("All", None, !self.unread_only)
+                                        segment("All", None, !self.unread_only, widths[0])
                                             .id("filter-all")
                                             .cursor_pointer()
                                             .on_click(cx.listener(|this, _, _, cx| {
@@ -8138,8 +8777,9 @@ impl Nimbra {
                                     .child(
                                         segment(
                                             "Unread",
-                                            Some((&unread.to_string(), t.faint)),
+                                            Some((&unread_text, t.faint)),
                                             self.unread_only,
+                                            widths[1],
                                         )
                                         .id("filter-unread")
                                         .cursor_pointer()
@@ -8150,7 +8790,12 @@ impl Nimbra {
                                         ),
                                     )
                                     .when(self.is_demo(), |d| {
-                                        d.child(segment("Needs reply", Some(("2", t.rose)), false))
+                                        d.child(segment(
+                                            "Needs reply",
+                                            Some(("2", t.rose)),
+                                            false,
+                                            112.,
+                                        ))
                                     }),
                             )
                             .child(div().flex_1())
@@ -8590,6 +9235,8 @@ impl Nimbra {
             .h_full()
             .bg(t.surface)
             .relative()
+            // While a panel slides, the email keeps one width and the extra is cut off here.
+            .overflow_hidden()
             // Toolbar
             .child(
                 div()
@@ -9625,7 +10272,9 @@ impl Nimbra {
     /// The area the web view covers, with a strip above it explaining what is blocked.
     fn original_pane(&self, t: &Theme, m: &Mail, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.html_view.clone();
-        let extra = self.pane_motion();
+        // The email is a native view: it is moved one frame ahead while a panel slides
+        // (see `pane_lead`), so it keeps up with the rest of the window.
+        let lead = self.pane_lead();
         div()
             .flex()
             .flex_col()
@@ -9702,9 +10351,9 @@ impl Nimbra {
                     move |bounds, _, _| {
                         if let Some(view) = &view {
                             view.set_bounds(
-                                f32::from(bounds.origin.x),
+                                f32::from(bounds.origin.x) + lead,
                                 f32::from(bounds.origin.y),
-                                f32::from(bounds.size.width) + extra,
+                                f32::from(bounds.size.width) - lead,
                                 f32::from(bounds.size.height),
                             );
                         }
@@ -10910,6 +11559,17 @@ impl Render for Nimbra {
         {
             composer.position = Some((((viewport.0 - composer.size.0) / 2.).max(0.), 96.));
         }
+        // Measure the display's frame interval from back-to-back frames (an animation keeps
+        // them coming), smoothed; long gaps between idle frames are ignored.
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_frame {
+            let dt = now.duration_since(last).as_secs_f32();
+            if (0.004..0.035).contains(&dt) {
+                let smooth = self.frame_interval.get() * 0.8 + dt * 0.2;
+                self.frame_interval.set(smooth);
+            }
+        }
+        self.last_frame = Some(now);
         self.sync_html_view(window);
         self.sync_editor(window, cx);
         // A new message (or none): show it in its window, after this frame.
@@ -10960,6 +11620,7 @@ impl Render for Nimbra {
         self.frame = Some(window.bounds());
         if self.pull_hold && !self.fetching {
             self.pull_hold = false;
+            self.pull_done = true;
             // Close from wherever the strip is right now, so a fast refresh does not jump.
             let now = self
                 .pull_anim
@@ -11041,6 +11702,8 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
                 if this.menu.take().is_some() {
                     cx.notify();
+                } else if this.finder_open {
+                    this.close_finder(cx);
                 } else if this.settings_open {
                     this.close_settings(cx);
                 } else if this.confirm.take().is_some() {
@@ -11147,5 +11810,6 @@ impl Render for Nimbra {
             .when(self.confirm.is_some(), |d| {
                 d.child(self.confirm_view(&t, cx))
             })
+            .when(self.finder_open, |d| d.child(self.finder_view(&t, cx)))
     }
 }
