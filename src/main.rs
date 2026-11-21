@@ -19,8 +19,8 @@ use gpui::{
 
 use app::{
     Back, Compose, Confirm, Dismiss, FocusSearch, Forward, MarkDone, Next, Nimbra, Prev, Quit,
-    Reload, Reply, SendMail, ToggleFullCompose, ToggleOriginal, TogglePalette, ToggleSidebar,
-    ToggleStar, ToggleTheme, Trash, Undo,
+    Reload, Reply, SaveDraft, SendMail, ToggleFullCompose, ToggleOriginal, TogglePalette,
+    ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -113,6 +113,8 @@ fn main() {
             KeyBinding::new("c", Compose, mail),
             KeyBinding::new("r", Reply, mail),
             KeyBinding::new("cmd-enter", SendMail, Some("Composer")),
+            KeyBinding::new("cmd-s", SaveDraft, Some("Composer")),
+            KeyBinding::new("ctrl-s", SaveDraft, Some("Composer")),
             KeyBinding::new("cmd-shift-f", ToggleFullCompose, Some("Composer")),
             KeyBinding::new("ctrl-shift-f", ToggleFullCompose, Some("Composer")),
             KeyBinding::new("ctrl-enter", SendMail, Some("Composer")),

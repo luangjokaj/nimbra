@@ -36,6 +36,7 @@ actions!(
         Compose,
         Reply,
         SendMail,
+        SaveDraft,
         ToggleFullCompose,
         ToggleOriginal,
         FocusSearch,
@@ -64,6 +65,15 @@ struct Composer {
     subject: Entity<TextInput>,
     lines: Vec<Entity<TextInput>>,
     reply: Option<gmail::ReplyTo>,
+    /// The Gmail draft being edited, if this message was saved or opened from Drafts.
+    draft_id: Option<String>,
+    /// The earlier message a draft quotes or forwards. Kept out of the editor behind a
+    /// "…" toggle and added back when the message is saved or sent.
+    quoted: Option<String>,
+    show_quoted: bool,
+    saving: bool,
+    /// The last save succeeded (shown in the footer).
+    saved: bool,
     /// Fills the window instead of floating over the mail.
     full: bool,
     /// Top-left corner of the floating card; `None` until it is first laid out, centred.
@@ -100,6 +110,23 @@ enum Grab {
 }
 
 const COMPOSER_MIN: (f32, f32) = (460., 320.);
+
+impl Composer {
+    /// The whole message text: the edited lines, then the quoted earlier message.
+    fn body(&self, cx: &App) -> String {
+        let mut body = self
+            .lines
+            .iter()
+            .map(|line| line.read(cx).text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(quoted) = &self.quoted {
+            body.push_str("\n\n");
+            body.push_str(quoted);
+        }
+        body
+    }
+}
 
 /// Which composer field an event came from.
 #[derive(Clone, Copy, PartialEq)]
@@ -285,6 +312,23 @@ impl Nimbra {
         // Mail opens in its original formatting by default; NIMBRA_READER=1 starts in the
         // native reader instead. Messages without HTML always use the reader.
         this.original = std::env::var_os("NIMBRA_READER").is_none();
+        // NIMBRA_SCREEN=draft opens a sample draft in the composer (screenshots).
+        if screen == "draft" {
+            this.edit_draft(
+                gmail::Draft {
+                    id: "sample".into(),
+                    to: "mira@example.com".into(),
+                    subject: "Fwd: Billing problem".into(),
+                    body: "Hi Mira,\n\nCan you take a look at this one?\n\nLuan Gjokaj\nUX Engineer & Designer".into(),
+                    quoted: Some("---------- Forwarded message ---------\nFrom: Stripe\nSubject: Billing problem\n\nYour last payment could not be processed.".into()),
+                    reply: None,
+                },
+                cx,
+            );
+            if let Some(composer) = &mut this.compose {
+                composer.show_quoted = true;
+            }
+        }
         // NIMBRA_SCREEN=loading holds the loading skeleton on screen (screenshots).
         if screen == "loading" {
             this.status = Status::Loading;
@@ -698,6 +742,11 @@ impl Nimbra {
             position: None,
             size: (720., 440.),
             grab: None,
+            draft_id: None,
+            quoted: None,
+            show_quoted: false,
+            saving: false,
+            saved: false,
             sending: false,
             error: None,
             _subscriptions: vec![s1, s2, s3],
@@ -961,6 +1010,122 @@ impl Nimbra {
         }
     }
 
+    /// Opens the draft behind a row of the Drafts mailbox in the composer.
+    fn open_draft(&mut self, index: usize, cx: &mut Context<Self>) {
+        let (Some(client), Some(thread_id)) = (
+            self.gmail.clone(),
+            self.mails.get(index).and_then(|m| m.id.clone()),
+        ) else {
+            return;
+        };
+        if self.compose.is_some() {
+            return;
+        }
+        self.notice = None;
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { client.draft_for_thread(&thread_id) })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(draft) => this.edit_draft(draft, cx),
+                Err(error) => this.fail(error, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn edit_draft(&mut self, draft: gmail::Draft, cx: &mut Context<Self>) {
+        self.open_compose(ComposeKind::New, cx);
+        let Some(mut composer) = self.compose.take() else {
+            return;
+        };
+        composer
+            .to
+            .update(cx, |input, cx| input.set(draft.to, usize::MAX, cx));
+        composer
+            .subject
+            .update(cx, |input, cx| input.set(draft.subject, usize::MAX, cx));
+        // One field per line of the part the user wrote.
+        for (n, text) in draft.body.lines().take(400).enumerate() {
+            let text = text.to_string();
+            if n == 0 {
+                composer.lines[0].update(cx, |input, cx| input.set(text, 0, cx));
+            } else {
+                let (line, subscription) = self.new_field(Field::Line(n), "", cx);
+                line.update(cx, |input, cx| input.set(text, 0, cx));
+                composer.lines.push(line);
+                composer._subscriptions.push(subscription);
+            }
+        }
+        composer.draft_id = Some(draft.id);
+        composer.quoted = draft.quoted;
+        composer.reply = draft.reply;
+        composer.full = true;
+        self.pending_focus = Some(composer.lines[0].read(cx).focus_handle(cx));
+        self.compose = Some(composer);
+        cx.notify();
+    }
+
+    /// Saves the composer's contents to Gmail's Drafts without sending anything.
+    fn save_draft(&mut self, cx: &mut Context<Self>) {
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        if composer.saving || composer.sending {
+            return;
+        }
+        let Some(client) = self.gmail.clone() else {
+            composer.error = Some("Sample mode: drafts are not saved.".into());
+            cx.notify();
+            return;
+        };
+        let outgoing = gmail::Outgoing {
+            to: composer.to.read(cx).text(),
+            subject: composer.subject.read(cx).text(),
+            body: composer.body(cx),
+            reply: composer.reply.clone(),
+        };
+        let draft_id = composer.draft_id.clone();
+        composer.saving = true;
+        composer.error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { client.save_draft(draft_id.as_deref(), &outgoing) })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(id) => {
+                        if let Some(composer) = &mut this.compose {
+                            composer.saving = false;
+                            composer.draft_id = Some(id);
+                            composer.saved = true;
+                        }
+                        if this.mailbox == View::Drafts {
+                            this.fetch_inbox(cx);
+                        }
+                    }
+                    Err(error) if error.is::<gmail::SignedOut>() => {
+                        this.compose = None;
+                        this.fail(error, cx);
+                    }
+                    Err(error) => {
+                        if let Some(composer) = &mut this.compose {
+                            composer.saving = false;
+                            composer.error = Some(error.to_string().into());
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn close_compose(&mut self, cx: &mut Context<Self>) {
         self.compose = None;
         self.pending_focus = Some(self.focus.clone());
@@ -1066,14 +1231,10 @@ impl Nimbra {
         let outgoing = gmail::Outgoing {
             to: composer.to.read(cx).text(),
             subject: composer.subject.read(cx).text(),
-            body: composer
-                .lines
-                .iter()
-                .map(|line| line.read(cx).text())
-                .collect::<Vec<_>>()
-                .join("\n"),
+            body: composer.body(cx),
             reply: composer.reply.clone(),
         };
+        let draft_id = composer.draft_id.clone();
         if let Err(error) = outgoing.recipients() {
             composer.error = Some(error.to_string().into());
             cx.notify();
@@ -1096,13 +1257,18 @@ impl Nimbra {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { client.send_message(&outgoing) })
+                .spawn(async move {
+                    match draft_id {
+                        Some(id) => client.send_draft(&id, &outgoing),
+                        None => client.send_message(&outgoing),
+                    }
+                })
                 .await;
             this.update(cx, |this, cx| match result {
                 Ok(()) => {
                     this.close_compose(cx);
                     this.notice = Some("Message sent.".into());
-                    if this.mailbox == View::Sent {
+                    if matches!(this.mailbox, View::Sent | View::Drafts) {
                         this.fetch_inbox(cx);
                     }
                 }
@@ -1831,6 +1997,10 @@ impl Nimbra {
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.open(i);
                 this.load_selected(cx);
+                // A draft opens straight into the composer for editing.
+                if this.mailbox == View::Drafts && !this.is_demo() {
+                    this.open_draft(i, cx);
+                }
                 cx.notify();
             }))
             .child(
@@ -3148,7 +3318,9 @@ impl Nimbra {
                             .pb(px(8.))
                             .child(
                                 serif(
-                                    if composer.reply.is_some() {
+                                    if composer.draft_id.is_some() {
+                                        "Draft"
+                                    } else if composer.reply.is_some() {
                                         "Reply"
                                     } else {
                                         "New message"
@@ -3185,7 +3357,43 @@ impl Nimbra {
                             .px(px(20.))
                             .py(px(if full { 24. } else { 14. }))
                             .text_size(px(15.))
-                            .children(composer.lines.iter().cloned()),
+                            .children(composer.lines.iter().cloned())
+                            // The quoted earlier message stays folded behind "…".
+                            .when_some(composer.quoted.clone(), |d, quoted| {
+                                d.child(
+                                    div().flex().pt(px(10.)).child(
+                                        div()
+                                            .id("toggle-quoted")
+                                            .px(px(8.))
+                                            .rounded(px(6.))
+                                            .bg(t.hover)
+                                            .border_1()
+                                            .border_color(t.border)
+                                            .text_color(t.text3)
+                                            .cursor_pointer()
+                                            .child("•••")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                if let Some(composer) = &mut this.compose {
+                                                    composer.show_quoted = !composer.show_quoted;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    ),
+                                )
+                                .when(composer.show_quoted, |d| {
+                                    d.child(
+                                        div()
+                                            .mt(px(10.))
+                                            .pl(px(14.))
+                                            .border_l_2()
+                                            .border_color(t.border_strong)
+                                            .text_size(px(14.))
+                                            .line_height(px(22.))
+                                            .text_color(t.text3)
+                                            .child(short(&quoted, 6000)),
+                                    )
+                                })
+                            }),
                     ),
             )
             .child(
@@ -3213,15 +3421,32 @@ impl Nimbra {
                                     .child(match &composer.error {
                                         Some(error) => error.clone(),
                                         None if composer.sending => "Sending…".into(),
+                                        None if composer.saving => "Saving draft…".into(),
+                                        None if composer.saved => "Draft saved to Gmail.".into(),
                                         None => {
                                             "Sent as plain text from your Gmail address.".into()
                                         }
                                     }),
                             )
                             .child(
-                                button(t, ButtonKind::Ghost, "Discard", None)
-                                    .id("discard")
-                                    .on_click(cx.listener(|this, _, _, cx| this.close_compose(cx))),
+                                button(
+                                    t,
+                                    ButtonKind::Ghost,
+                                    if composer.draft_id.is_some() {
+                                        "Close"
+                                    } else {
+                                        "Discard"
+                                    },
+                                    None,
+                                )
+                                .id("discard")
+                                .on_click(cx.listener(|this, _, _, cx| this.close_compose(cx))),
+                            )
+                            .child(
+                                button(t, ButtonKind::Secondary, "Save draft", Some("⌘S"))
+                                    .id("save-draft")
+                                    .when(composer.saving, |d| d.opacity(0.5))
+                                    .on_click(cx.listener(|this, _, _, cx| this.save_draft(cx))),
                             )
                             .child(
                                 button(t, ButtonKind::Primary, "Send", Some("⌘↵"))
@@ -3707,6 +3932,7 @@ impl Render for Nimbra {
                 cx.listener(|this, _: &Reply, _, cx| this.open_compose(ComposeKind::Reply, cx)),
             )
             .on_action(cx.listener(|this, _: &SendMail, _, cx| this.send_mail(cx)))
+            .on_action(cx.listener(|this, _: &SaveDraft, _, cx| this.save_draft(cx)))
             .on_action(cx.listener(|this, _: &ToggleOriginal, _, cx| this.toggle_original(cx)))
             .on_action(cx.listener(|this, _: &FocusSearch, _, cx| this.focus_search(cx)))
             .on_action(
