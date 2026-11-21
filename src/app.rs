@@ -961,6 +961,8 @@ pub struct Nimbra {
     copied: Option<(String, std::time::Instant)>,
     /// Closing a composer with something in it: asking whether to save it as a draft.
     compose_ask: bool,
+    /// When that question opened (a stray Esc right after it must not cancel it).
+    compose_ask_at: Option<std::time::Instant>,
     /// The composer is in a window of its own (detached), so it always fills it.
     compose_detached: bool,
     /// The formatting button under the mouse: its name and keys, shown in the toolbar (a
@@ -1136,6 +1138,12 @@ pub struct Nimbra {
     /// Shown in the sidebar footer.
     account: SharedString,
     me_initials: SharedString,
+    /// The account's Google profile photo, shown in place of the initial.
+    me_photo: Option<Arc<gpui::Image>>,
+    /// The sign-in does not include the profile (asked for in Settings › Accounts).
+    photo_not_allowed: bool,
+    /// The account generation the photo was last looked up for.
+    photo_gen: Option<u64>,
     /// A short message shown at the bottom of the window (errors, hints).
     notice: Option<SharedString>,
     mails: Vec<Mail>,
@@ -1304,6 +1312,7 @@ impl Nimbra {
             format_hint: None,
             compose_detached: false,
             compose_ask: false,
+            compose_ask_at: None,
             editor_window: None,
             copied: None,
             parked: Vec::new(),
@@ -1345,6 +1354,9 @@ impl Nimbra {
                 "Gmail".into()
             },
             me_initials: if demo { "LG".into() } else { "ME".into() },
+            me_photo: None,
+            photo_not_allowed: false,
+            photo_gen: None,
             notice: None,
             done: vec![zero; mails.len()],
             history: if zero {
@@ -2883,6 +2895,9 @@ impl Nimbra {
         self.html_shown = None;
         self.account = "".into();
         self.me_initials = "".into();
+        self.me_photo = None;
+        self.photo_not_allowed = false;
+        self.photo_gen = None;
         self.pending_focus = Some(self.focus.clone());
         cx.notify();
     }
@@ -3026,10 +3041,114 @@ impl Nimbra {
         if self.account_gen != generation {
             return; // it was a second sign-in to an account already here
         }
+        if self.photo_gen != Some(self.account_gen) {
+            self.load_profile_photo(cx);
+        }
         self.account = email.into();
 
         let fresh = threads.into_iter().map(Mail::from_summary).collect();
         self.install(fresh, cx);
+    }
+
+    /// The account's profile photo: the copy kept on this Mac first, then Google's current
+    /// one (kept for next time). Once per account per session.
+    fn load_profile_photo(&mut self, cx: &mut Context<Self>) {
+        let generation = self.account_gen;
+        self.photo_gen = Some(generation);
+        self.me_photo = None;
+        let (Some(client), store) = (self.gmail.clone(), self.store.clone()) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let kept: Option<Vec<u8>> = match &store {
+                Some(store) => {
+                    let store = store.clone();
+                    cx.background_executor()
+                        .spawn(async move { store.load::<Vec<u8>>("profile-photo") })
+                        .await
+                }
+                None => None,
+            };
+            if let Some(bytes) = kept {
+                this.update(cx, |this, cx| {
+                    if this.account_gen == generation {
+                        this.me_photo = photo_image(bytes);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }
+            let fetched = cx
+                .background_executor()
+                .spawn(async move { client.profile_photo() })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.account_gen != generation {
+                    return;
+                }
+                match fetched {
+                    Ok(gmail::Photo::Image(bytes)) => {
+                        this.photo_not_allowed = false;
+                        this.me_photo = photo_image(bytes.clone());
+                        if let Some(store) = this.store.clone() {
+                            cx.background_executor()
+                                .spawn(async move {
+                                    let _ = store.save("profile-photo", &bytes);
+                                })
+                                .detach();
+                        }
+                    }
+                    Ok(gmail::Photo::NoPhoto) => {
+                        this.photo_not_allowed = false;
+                        this.me_photo = None;
+                    }
+                    Ok(gmail::Photo::NotAllowed) => this.photo_not_allowed = true,
+                    Err(error) => {
+                        // Counts only: never the address or the photo's link.
+                        eprintln!("nimbra: profile photo not loaded ({error})");
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Settings › Accounts: signs in again to add the profile (name and photo) to this
+    /// account's sign-in, then shows the photo.
+    fn allow_profile_photo(&mut self, cx: &mut Context<Self>) {
+        let Some(config) = self.config.clone() else {
+            return;
+        };
+        let account = self.account_id.clone();
+        match gmail::SignIn::start(&config, false) {
+            Ok((pending, url)) => {
+                cx.open_url(&url);
+                self.notice = Some("Allow your profile in your browser, then come back.".into());
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { pending.finish(&config, &account) })
+                        .await;
+                    this.update(cx, |this, cx| match result {
+                        Ok(client) => {
+                            this.gmail = Some(Arc::new(client));
+                            this.notice = None;
+                            this.load_profile_photo(cx);
+                        }
+                        Err(error) => {
+                            this.notice = Some(format!("The photo was not added: {error}").into());
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            Err(error) => self.notice = Some(error.to_string().into()),
+        }
+        cx.notify();
     }
 
     /// Puts a new listing on screen, keeping downloaded thread contents, the open thread and
@@ -6217,7 +6336,6 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Esc: closes the composer. Its last edits are still saved to Drafts.
     /// Esc, ⌘W or a window's close button on the composer: asks whether to keep what was
     /// written as a draft or throw it away. An empty composer just closes; asked again
     /// (Esc while asking), it goes back to writing.
@@ -6226,10 +6344,19 @@ impl Nimbra {
             return;
         };
         if self.compose_ask {
+            // Hiding the editor (a native view with the keyboard) for the question makes
+            // macOS send a cancel (Esc) straight after the click that asked: not an answer.
+            if self
+                .compose_ask_at
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(400))
+            {
+                return;
+            }
             self.compose_ask = false;
             self.pending_focus = Some(self.editor_focus.clone());
         } else if composer.has_content(cx) {
             self.compose_ask = true;
+            self.compose_ask_at = Some(std::time::Instant::now());
         } else {
             self.close_compose(cx);
             return;
@@ -6244,6 +6371,7 @@ impl Nimbra {
         if here && self.compose.as_ref().is_some_and(|c| c.has_content(cx)) {
             if !self.compose_ask {
                 self.compose_ask = true;
+                self.compose_ask_at = Some(std::time::Instant::now());
                 cx.notify();
             }
             return false;
@@ -6261,6 +6389,7 @@ impl Nimbra {
         }
     }
 
+    /// Closes the composer. Its last edits are still saved to Drafts.
     fn close_compose(&mut self, cx: &mut Context<Self>) {
         self.compose_ask = false;
         self.pending_focus = Some(self.focus.clone());
@@ -8543,7 +8672,7 @@ impl Nimbra {
                                     this.toggle_menu(Menu::Accounts, window, cx)
                                 }
                             }))
-                            .child(avatar(Tone::Graphite, &self.me_initials, 28.))
+                            .child(me_avatar(self.me_photo.as_ref(), &self.me_initials, 28.))
                             .child(
                                 div()
                                     .flex_1()
@@ -11185,7 +11314,27 @@ impl Nimbra {
                                         })),
                                 )
                             })
-                            .child(kbd(t, "esc")),
+                            // Close (asks about the draft if there is one). A window of
+                            // its own has its close button in the title bar instead.
+                            .when(!self.compose_detached, |d| {
+                                d.child(
+                                    icon_button(t, "x")
+                                        .id("compose-close")
+                                        .press(t)
+                                        .tooltip(tip(t.dark, "Close", "esc"))
+                                        // On press, not release: a press that takes the
+                                        // keyboard from the editor (a native view) can lose
+                                        // its release, which made a click need doing twice.
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.request_close_compose(cx)
+                                            }),
+                                        ),
+                                )
+                            })
+                            .when(self.compose_detached, |d| d.child(kbd(t, "esc"))),
                     ),
             )
             .child(field(
@@ -12394,5 +12543,37 @@ impl Render for ComposeWindow {
                 });
             }))
             .children(content)
+    }
+}
+
+/// A profile photo's bytes as an image, if they are one of the formats Google serves.
+fn photo_image(bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
+    let format = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        gpui::ImageFormat::Png
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        gpui::ImageFormat::Jpeg
+    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        gpui::ImageFormat::Webp
+    } else if bytes.starts_with(b"GIF8") {
+        gpui::ImageFormat::Gif
+    } else {
+        return None;
+    };
+    Some(Arc::new(gpui::Image::from_bytes(format, bytes)))
+}
+
+/// The signed-in account's avatar: its profile photo, or its initial.
+fn me_avatar(photo: Option<&Arc<gpui::Image>>, initials: &str, size: f32) -> AnyElement {
+    match photo {
+        Some(photo) => div()
+            .flex_none()
+            .size(px(size))
+            .rounded_full()
+            .overflow_hidden()
+            .border_1()
+            .border_color(c(0xffffff, 0.18))
+            .child(gpui::img(photo.clone()).size_full().rounded_full())
+            .into_any_element(),
+        None => avatar(Tone::Graphite, initials, size).into_any_element(),
     }
 }

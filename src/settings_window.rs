@@ -495,6 +495,8 @@ impl SettingsWindow {
         let connected = n.gmail.is_some();
         let can_add = n.config.is_some();
         let active_email = n.account.to_string();
+        let photo = n.me_photo.clone();
+        let photo_not_allowed = n.photo_not_allowed && connected;
         let mut rows: Vec<AnyElement> = accounts
             .iter()
             .enumerate()
@@ -513,11 +515,12 @@ impl SettingsWindow {
                     .gap(px(12.))
                     .px(px(16.))
                     .py(px(12.))
-                    .child(avatar(
-                        crate::data::tone_for(&account.email),
-                        &initials,
-                        32.,
-                    ))
+                    .child(if shown {
+                        me_avatar(photo.as_ref(), &initials, 32.)
+                    } else {
+                        avatar(crate::data::tone_for(&account.email), &initials, 32.)
+                            .into_any_element()
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -590,6 +593,19 @@ impl SettingsWindow {
                     })),
                 )
             });
+        if photo_not_allowed {
+            rows.push(row(
+                t,
+                "Show your Google photo",
+                "This sign-in predates profile photos. Allow your basic profile once in your browser to show it here.",
+                button(t, ButtonKind::Secondary, "Allow", None)
+                    .id("allow-photo")
+                    .press_soft()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.owner.update(cx, |n, cx| n.allow_profile_photo(cx));
+                    })),
+            ));
+        }
         vec![
             group(t, None, rows),
             div()
