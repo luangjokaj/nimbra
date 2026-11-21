@@ -811,6 +811,10 @@ pub struct Nimbra {
     outbox: Outbox,
     /// The offline retry loop is running.
     retrying: bool,
+    /// The checking-for-mail bar was showing at the last frame.
+    bar_shown: bool,
+    /// When the bar started fading out (and a number per fade, for its animation).
+    bar_fade: Option<(std::time::Instant, usize)>,
     /// The number shown on the Dock icon.
     badge: Option<u32>,
     /// A document waiting to be printed (it is loaded into the web view first).
@@ -998,6 +1002,8 @@ impl Nimbra {
             offline: false,
             outbox: Outbox::default(),
             retrying: false,
+            bar_shown: false,
+            bar_fade: None,
             badge: None,
             print_pending: None,
             login_item: false,
@@ -7091,6 +7097,53 @@ impl Nimbra {
                             ),
                     ),
             )
+            // While mail is checked, a thin bar glides along the top of the list. Its 2px
+            // strip is always there, so nothing below it moves.
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .h(px(2.))
+                    .mx(px(18.))
+                    .rounded_full()
+                    .overflow_hidden()
+                    .when(self.bar_shown || self.bar_fade.is_some(), |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .bg(t.border)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .h_full()
+                                        .w(relative(0.45))
+                                        .rounded_full()
+                                        .bg(gradient(90., c(0x8b7cff, 0.), c(0xff7ab6, 1.)))
+                                        .with_animation(
+                                            "checking-mail",
+                                            Animation::new(Duration::from_millis(1150))
+                                                .repeat()
+                                                .with_easing(gpui::ease_in_out),
+                                            |bar, delta| bar.left(relative(-0.45 + 1.45 * delta)),
+                                        ),
+                                )
+                                .map(|strip| match self.bar_fade {
+                                    // Done: fade the whole strip out.
+                                    Some((_, n)) => strip
+                                        .with_animation(
+                                            ("checking-mail-fade", n),
+                                            Animation::new(Duration::from_millis(450))
+                                                .with_easing(ease_out_quint()),
+                                            |strip, delta| strip.opacity(1. - delta),
+                                        )
+                                        .into_any_element(),
+                                    None => strip.into_any_element(),
+                                }),
+                        )
+                    }),
+            )
             .child(
                 div()
                     .id("rows")
@@ -7104,16 +7157,6 @@ impl Nimbra {
                     .track_scroll(&self.list_scroll)
                     .on_scroll_wheel(cx.listener(|this, event, _, cx| this.pull_list(event, cx)))
                     .children(self.pull_indicator(t))
-                    .when(self.fetching && !self.pull_hold && self.pull == 0., |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .flex_none()
-                                .justify_center()
-                                .py(px(8.))
-                                .child(meta("Checking for mail…", t.text3)),
-                        )
-                    })
                     .when(!today.is_empty(), |d| d.child(group("TODAY")))
                     .children(today.into_iter().map(|i| self.row(t, i, cx)))
                     .when(!earlier.is_empty(), |d| d.child(group("EARLIER")))
@@ -9737,6 +9780,21 @@ impl Render for Nimbra {
         }
         self.sync_html_view(window);
         self.sync_editor(window, cx);
+        // The checking-for-mail bar fades out when the check is done, instead of vanishing.
+        let bar = self.fetching && !self.pull_hold && self.pull == 0.;
+        if self.bar_shown && !bar {
+            let n = self.bar_fade.map_or(0, |(_, n)| n + 1);
+            self.bar_fade = Some((std::time::Instant::now(), n));
+        } else if bar {
+            self.bar_fade = None;
+        }
+        self.bar_shown = bar;
+        if self
+            .bar_fade
+            .is_some_and(|(at, _)| at.elapsed() > Duration::from_millis(600))
+        {
+            self.bar_fade = None;
+        }
         // The inbox's unread count on the Dock icon.
         let unread = if self.gmail.is_some() {
             self.counts.get("INBOX").map_or(0, |(unread, _)| *unread)
