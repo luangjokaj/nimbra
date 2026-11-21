@@ -15,7 +15,7 @@ use crate::input::{InputEvent, TextInput};
 use crate::rich::{self, Block, Kind};
 use crate::theme::{Accent, SERIF, Theme, Tone, c, fade, gradient};
 use crate::ui::{
-    ButtonKind, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill, shadow,
+    ButtonKind, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill, shadow, tip,
 };
 use crate::webview::HtmlView;
 
@@ -130,15 +130,29 @@ impl Composer {
 }
 
 /// Pull-to-refresh distances, in points: where a release triggers a refresh, where the
-/// indicator rests while refreshing, and the most the list can stretch.
-const PULL_TRIGGER: f32 = 58.;
-const PULL_REST: f32 = 44.;
-const PULL_LIMIT: f32 = 150.;
+/// indicator rests while refreshing, and the distance the resistance is scaled to.
+const PULL_TRIGGER: f32 = 64.;
+const PULL_REST: f32 = 46.;
+const PULL_LIMIT: f32 = 420.;
 
 /// Rubber-band resistance: the further the pull, the less the list follows.
 fn rubber_band(pull: f32) -> f32 {
     (1. - 1. / (pull * 0.55 / PULL_LIMIT + 1.)) * PULL_LIMIT
 }
+
+/// Where the indicator is, `start.elapsed()` after being let go: a critically damped
+/// spring from `from` to `to`. It eases in quickly and comes to rest without overshooting,
+/// so the list glides back into place and never bounces back into view.
+fn settle(from: f32, to: f32, start: std::time::Instant) -> f32 {
+    let t = start.elapsed().as_secs_f32();
+    if t >= SETTLE_SECONDS {
+        return to;
+    }
+    let k = 13. * t;
+    to + (from - to) * (-k).exp() * (1. + k)
+}
+
+const SETTLE_SECONDS: f32 = 0.7;
 
 /// Which composer field an event came from.
 #[derive(Clone, Copy, PartialEq)]
@@ -224,7 +238,7 @@ pub struct Nimbra {
     pull: f32,
     pull_armed: bool,
     /// The indicator settling after release: (from height, to height). `pull_gen` restarts it.
-    pull_anim: Option<(f32, f32)>,
+    pull_anim: Option<(f32, f32, std::time::Instant)>,
     pull_gen: usize,
     /// The indicator is held open while the refresh it started is running.
     pull_hold: bool,
@@ -1514,11 +1528,11 @@ impl Nimbra {
                 self.pull_gen += 1;
                 if shown >= PULL_TRIGGER && !self.fetching {
                     // Settle at the resting height and stay there while mail is fetched.
-                    self.pull_anim = Some((shown, PULL_REST));
+                    self.pull_anim = Some((shown, PULL_REST, std::time::Instant::now()));
                     self.pull_hold = true;
                     self.reload(cx);
                 } else {
-                    self.pull_anim = Some((shown, 0.));
+                    self.pull_anim = Some((shown, 0., std::time::Instant::now()));
                 }
                 cx.notify();
                 return;
@@ -1532,6 +1546,9 @@ impl Nimbra {
         if (dy > 0. && at_top) || (dy < 0. && self.pull > 0.) {
             self.pull = (self.pull + dy).max(0.);
             self.pull_anim = None;
+            // While the list is being pulled it must not scroll as well, or the two
+            // movements fight each other.
+            self.list_scroll.set_offset(gpui::point(px(0.), px(0.)));
             cx.notify();
         }
     }
@@ -1584,22 +1601,19 @@ impl Nimbra {
                 .into_any_element(),
             );
         }
-        let (from, to) = self.pull_anim?;
+        let (from, to, start) = self.pull_anim?;
         let label = if self.pull_hold {
             "Checking for mail…"
         } else {
             ""
         };
         Some(
-            strip(from, label, self.pull_hold, 0.75)
+            strip(settle(from, to, start), label, self.pull_hold, 0.75)
                 .with_animation(
                     ("pull-settle", self.pull_gen),
-                    // A spring-like ease that overshoots slightly before coming to rest.
-                    Animation::new(Duration::from_millis(520)).with_easing(|x| {
-                        let (c1, c3) = (1.70158_f32, 2.70158_f32);
-                        1. + c3 * (x - 1.).powi(3) + c1 * (x - 1.).powi(2)
-                    }),
-                    move |strip, delta| strip.h(px((from + (to - from) * delta).max(0.))),
+                    // The animation only keeps frames coming; the height follows the spring.
+                    Animation::new(Duration::from_secs_f32(SETTLE_SECONDS + 0.1)),
+                    move |strip, _| strip.h(px(settle(from, to, start))),
                 )
                 .into_any_element(),
         )
@@ -1877,23 +1891,27 @@ impl Nimbra {
             .child(
                 control("sidebar", true)
                     .id("toggle-sidebar")
+                    .tooltip(tip(t.dark, "Show or hide sidebar", "⌘B"))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
             .child(div().w(px(6.)))
             .child(
                 control("back", self.can_go_back())
                     .id("go-back")
+                    .tooltip(tip(t.dark, "Back", "⌘["))
                     .on_click(cx.listener(|this, _, _, cx| this.go_back(cx))),
             )
             .child(
                 control("next", self.can_go_forward())
                     .id("go-forward")
+                    .tooltip(tip(t.dark, "Forward", "⌘]"))
                     .on_click(cx.listener(|this, _, _, cx| this.go_forward(cx))),
             )
             .child(div().w(px(6.)))
             .child(
                 div()
                     .id("reload")
+                    .tooltip(tip(t.dark, "Check for mail", "⌘R"))
                     .flex()
                     .flex_none()
                     .items_center()
@@ -2134,6 +2152,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, if self.dark { "sun" } else { "moon" })
                             .id("theme")
+                            .tooltip(tip(t.dark, "Light or dark theme", "⌘⇧L"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.dark = !this.dark;
                                 cx.notify();
@@ -2396,6 +2415,7 @@ impl Nimbra {
                             .child(
                                 button(t, ButtonKind::Secondary, "Compose", Some("C"))
                                     .id("compose")
+                                    .tooltip(tip(t.dark, "New message", "C"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.open_compose(ComposeKind::New, cx)
                                     })),
@@ -2681,96 +2701,6 @@ impl Nimbra {
             )
     }
 
-    fn composer(&self, t: &Theme, m: &Mail, cx: &mut Context<Self>) -> impl IntoElement {
-        let (typed, ghost) = (&m.draft.0, &m.draft.1);
-        let first = m.sender.split(' ').next().unwrap_or(&m.sender).to_string();
-        let draft: SharedString = if typed.is_empty() {
-            format!("Write a reply to {first}…").into()
-        } else {
-            format!("{typed}{ghost}").into()
-        };
-        let ghost_style = HighlightStyle {
-            color: Some(t.faint),
-            ..Default::default()
-        };
-        let ghost_from = if typed.is_empty() { 0 } else { typed.len() };
-        let len = draft.len();
-
-        div().px(px(32.)).pt(px(6.)).pb(px(24.)).child(
-            div()
-                .id("reply-box")
-                .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx)))
-                .flex()
-                .flex_col()
-                .gap(px(12.))
-                .pl(px(18.))
-                .pr(px(14.))
-                .pt(px(14.))
-                .pb(px(12.))
-                .rounded(px(16.))
-                .bg(t.raised)
-                .border_1()
-                .border_color(t.border_strong)
-                .shadow(vec![shadow(t.shadow, 18., 48., -8.)])
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(icon("reply", 16., t.text3))
-                        .child(
-                            div()
-                                .flex_1()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(t.text2)
-                                .child(format!("Reply to {first}")),
-                        )
-                        .when(!typed.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .px(px(8.))
-                                    .py(px(3.))
-                                    .rounded_full()
-                                    .bg(t.selected)
-                                    .child(icon("sparkles", 14., t.violet))
-                                    .child(meta("Draft in your voice", t.violet)),
-                            )
-                        }),
-                )
-                .child(div().text_size(px(15.)).line_height(px(26.)).child(
-                    StyledText::new(draft).with_highlights([(ghost_from..len, ghost_style)]),
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(2.))
-                        .child(icon_button(t, "clip"))
-                        .child(icon_button(t, "image"))
-                        .child(icon_button(t, "link"))
-                        .child(icon_button(t, "clock"))
-                        .when(!ghost.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .pl(px(8.))
-                                    .child(kbd(t, "Tab"))
-                                    .child(meta("to accept", t.text3)),
-                            )
-                        })
-                        .child(div().flex_1())
-                        .child(button(t, ButtonKind::Ghost, "Send later", None))
-                        .child(button(t, ButtonKind::Primary, "Send", Some("⌘↵"))),
-                ),
-        )
-    }
-
     fn reading(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let m = &self.mails[self.selected];
         let visible = self.visible();
@@ -2870,6 +2800,7 @@ impl Nimbra {
                     .child(
                         icon_button(t, "list")
                             .id("toggle-list")
+                            .tooltip(tip(t.dark, "Show or hide message list", "⌘⇧B"))
                             .when(!self.list_open, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
                     )
@@ -2878,6 +2809,7 @@ impl Nimbra {
                         d.child(
                             button(t, ButtonKind::Primary, "Edit draft", None)
                                 .id("edit-draft")
+                                .tooltip(tip(t.dark, "Open this draft in the editor", ""))
                                 .on_click(
                                     cx.listener(|this, _, _, cx| {
                                         this.open_draft(this.selected, cx)
@@ -2890,25 +2822,31 @@ impl Nimbra {
                     .child(
                         icon_button(t, "done")
                             .id("mark-done")
+                            .tooltip(tip(t.dark, "Mark done (archive)", "E"))
                             .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
                     )
                     .child(kbd(t, "E"))
                     .child(div().w(px(6.)))
-                    .child(icon_button(t, "clock").id("snooze").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.palette = true;
-                            cx.notify();
-                        },
-                    )))
+                    .child(
+                        icon_button(t, "clock")
+                            .id("snooze")
+                            .tooltip(tip(t.dark, "Snooze", "H"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.palette = true;
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         icon_button(t, "star")
                             .id("star")
+                            .tooltip(tip(t.dark, "Star", "S"))
                             .when(m.starred, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
                     )
                     .child(
                         icon_button(t, "tag")
                             .id("label")
+                            .tooltip(tip(t.dark, "Add a label", ""))
                             .when(self.menu == Some(Menu::Labels), |d| d.bg(t.selected))
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Labels, cx)),
@@ -2917,18 +2855,34 @@ impl Nimbra {
                     .child(
                         icon_button(t, "trash")
                             .id("trash")
+                            .tooltip(tip(t.dark, "Move to trash", "⌘⌫"))
                             .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
                     )
                     .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
-                    .child(icon_button(t, "reply").id("reply").on_click(
-                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx)),
-                    ))
-                    .child(icon_button(t, "reply-all").id("reply-all").on_click(
-                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::ReplyAll, cx)),
-                    ))
-                    .child(icon_button(t, "forward").id("forward").on_click(
-                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Forward, cx)),
-                    ))
+                    .child(
+                        icon_button(t, "reply")
+                            .id("reply")
+                            .tooltip(tip(t.dark, "Reply", "R"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_compose(ComposeKind::Reply, cx)
+                            })),
+                    )
+                    .child(
+                        icon_button(t, "reply-all")
+                            .id("reply-all")
+                            .tooltip(tip(t.dark, "Reply all", ""))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_compose(ComposeKind::ReplyAll, cx)
+                            })),
+                    )
+                    .child(
+                        icon_button(t, "forward")
+                            .id("forward")
+                            .tooltip(tip(t.dark, "Forward", ""))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_compose(ComposeKind::Forward, cx)
+                            })),
+                    )
                     .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
                     .child(
                         button(
@@ -2942,6 +2896,7 @@ impl Nimbra {
                             Some("V"),
                         )
                         .id("original")
+                        .tooltip(tip(t.dark, "Switch between original and reader view", "V"))
                         .when(original, |d| d.bg(t.selected))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
                     )
@@ -2950,16 +2905,19 @@ impl Nimbra {
                     .child(
                         icon_button(t, "up")
                             .id("prev")
+                            .tooltip(tip(t.dark, "Previous thread", "K"))
                             .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
                     )
                     .child(
                         icon_button(t, "down")
                             .id("next")
+                            .tooltip(tip(t.dark, "Next thread", "J"))
                             .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
                     )
                     .child(
                         icon_button(t, "more")
                             .id("more")
+                            .tooltip(tip(t.dark, "More actions", ""))
                             .when(self.menu == Some(Menu::More), |d| d.bg(t.selected))
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.toggle_menu(Menu::More, cx)),
@@ -3139,7 +3097,6 @@ impl Nimbra {
                 )
             })
             .when(original, |d| d.child(self.original_pane(t, cx)))
-            .child(self.composer(t, m, cx))
             .children(self.menu_view(t, cx))
     }
 
@@ -3577,6 +3534,7 @@ impl Nimbra {
                             .child(
                                 icon_button(t, if full { "shrink" } else { "expand" })
                                     .id("compose-size")
+                                    .tooltip(tip(t.dark, "Full page or floating", "⌘⇧F"))
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.toggle_full_compose(cx)),
                                     ),
@@ -4153,7 +4111,11 @@ impl Render for Nimbra {
         self.sync_html_view(window);
         if self.pull_hold && !self.fetching {
             self.pull_hold = false;
-            self.pull_anim = Some((PULL_REST, 0.));
+            // Close from wherever the strip is right now, so a fast refresh does not jump.
+            let now = self
+                .pull_anim
+                .map_or(PULL_REST, |(from, to, start)| settle(from, to, start));
+            self.pull_anim = Some((now, 0., std::time::Instant::now()));
             self.pull_gen += 1;
         }
         let empty = self.visible().is_empty();

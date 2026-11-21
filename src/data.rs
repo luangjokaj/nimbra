@@ -26,8 +26,6 @@ pub struct Mail {
     /// Older messages in the thread, shown collapsed above the latest one.
     pub earlier: Vec<Earlier>,
     pub body: Vec<Block>,
-    /// (already typed, AI suggestion shown as ghost text)
-    pub draft: (SharedString, SharedString),
     /// The demo hero thread shows action items and attachments.
     pub rich: bool,
     /// Whether `body` and `earlier` have been fetched.
@@ -73,7 +71,6 @@ impl Mail {
             brief: "".into(),
             earlier: Vec::new(),
             body: Vec::new(),
-            draft: ("".into(), "".into()),
             rich: false,
             loaded: false,
             reply: None,
@@ -221,7 +218,6 @@ fn mail(
         participants: format!("{sender} and you").into(),
         earlier: Vec::new(),
         body: Vec::new(),
-        draft: ("".into(), "".into()),
         rich: false,
         loaded: true,
         reply: None,
@@ -299,7 +295,6 @@ pub fn inbox() -> Vec<Mail> {
                 "Two things before Friday: the pricing tiers on slide 14, and a date for the press embargo.",
                 "Thanks,\nMira",
             ]),
-            draft: ("Looks great, approved for Dec 9.".into(), " Let’s lock the embargo for Dec 4 and I’ll confirm the tiers by Thursday.".into()),
             ..mail(
                 "Mira Kovač",
                 "MK",
@@ -335,7 +330,6 @@ pub fn inbox() -> Vec<Mail> {
                 "Went through Button and Input end to end. Two edge cases with focus rings in dark mode, otherwise solid.",
                 "I can pair on it tomorrow morning if that works.",
             ]),
-            draft: ("Tomorrow works.".into(), " 10:00 at my desk?".into()),
             ..mail(
                 "Jonah Reyes",
                 "JR",
