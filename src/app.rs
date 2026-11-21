@@ -273,6 +273,8 @@ pub struct Nimbra {
     /// Switching back shows it at once while a refresh runs in the background.
     /// Memory only: nothing is written to disk.
     cache: HashMap<View, Vec<Mail>>,
+    /// Sidebar counts per label id: (unread threads still in the inbox, total threads for Drafts).
+    counts: HashMap<String, (u32, u32)>,
     /// The user's own Gmail labels, shown in the sidebar.
     labels: Vec<gmail::Label>,
     /// A mailbox request is in flight.
@@ -396,6 +398,7 @@ impl Nimbra {
                 _ => View::Inbox,
             },
             cache: HashMap::new(),
+            counts: HashMap::new(),
             labels: Vec::new(),
             fetching: false,
             hint: None,
@@ -702,6 +705,7 @@ impl Nimbra {
             _ => None,
         };
         let need_labels = self.labels.is_empty();
+        let known_labels: Vec<String> = self.labels.iter().map(|l| l.id.clone()).collect();
         let sent_query = self.query.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -711,7 +715,23 @@ impl Nimbra {
                     let threads = client.threads(view, label_id.as_deref(), 30)?;
                     // Labels are a nicety; the mailbox still loads without them.
                     let labels = need_labels.then(|| client.labels().unwrap_or_default());
-                    anyhow::Ok((email, threads, labels))
+                    // Sidebar counts: the system mailboxes plus the labels that are listed.
+                    let mut ids: Vec<String> = [
+                        "INBOX",
+                        "DRAFT",
+                        "CATEGORY_PERSONAL",
+                        "CATEGORY_UPDATES",
+                        "CATEGORY_PROMOTIONS",
+                        "CATEGORY_SOCIAL",
+                    ]
+                    .map(String::from)
+                    .to_vec();
+                    ids.extend(match &labels {
+                        Some(labels) => labels.iter().take(8).map(|l| l.id.clone()).collect(),
+                        None => known_labels.into_iter().take(8).collect::<Vec<_>>(),
+                    });
+                    let counts = client.counts(&ids);
+                    anyhow::Ok((email, threads, labels, counts))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -721,7 +741,10 @@ impl Nimbra {
                 }
                 this.fetching = false;
                 match result {
-                    Ok((email, threads, labels)) => {
+                    Ok((email, threads, labels, counts)) => {
+                        if !counts.is_empty() {
+                            this.counts = counts;
+                        }
                         if let Some(labels) = labels {
                             this.labels = labels;
                         }
@@ -775,10 +798,11 @@ impl Nimbra {
         self.cache.insert(self.mailbox, self.mails.clone());
         // Counts only; never log addresses, subjects or message text.
         eprintln!(
-            "nimbra: {:?} loaded ({} threads, {} already in memory)",
+            "nimbra: {:?} loaded ({} threads, {} already in memory, {} sidebar counts)",
             self.mailbox,
             self.mails.len(),
-            self.mails.iter().filter(|m| m.loaded).count()
+            self.mails.iter().filter(|m| m.loaded).count(),
+            self.counts.len()
         );
         self.load_selected(cx);
         cx.notify();
@@ -1046,8 +1070,7 @@ impl Nimbra {
     /// always sits on top of everything GPUI paints.
     fn original_target(&self) -> Option<(String, SharedString)> {
         let ready = matches!(self.status, Status::Demo | Status::Ready);
-        // (A toolbar menu does not hide it: the view moves down to make room, see
-        // `original_pane`.)
+        // (A toolbar menu does not hide it: menus open in a window of their own, above it.)
         let covered = self.palette || self.compose.is_some() || self.notice.is_some();
         if !self.original
             || !ready
@@ -2223,6 +2246,21 @@ impl Nimbra {
         // The other mailboxes are not connected yet, so their counts only show in the demo.
         let demo = self.is_demo();
         let fake = |n: &str| demo.then(|| n.to_string());
+        // Real counts from Gmail: unread in the inbox for mailboxes and labels (archived
+        // "Done" threads left out), total for Drafts.
+        let unread_in = |id: &str| {
+            self.counts
+                .get(id)
+                .map(|(unread, _)| *unread)
+                .filter(|n| *n > 0)
+                .map(|n| n.to_string())
+        };
+        let drafts = self
+            .counts
+            .get("DRAFT")
+            .map(|(_, total)| *total)
+            .filter(|n| *n > 0)
+            .map(|n| n.to_string());
         let mailbox = |view: View, icon_name: &'static str, count: Option<String>| {
             nav(
                 t,
@@ -2279,7 +2317,11 @@ impl Nimbra {
             .child(mailbox(
                 View::Inbox,
                 "inbox",
-                (unread > 0 && self.mailbox == View::Inbox).then(|| unread.to_string()),
+                if demo {
+                    (unread > 0 && self.mailbox == View::Inbox).then(|| unread.to_string())
+                } else {
+                    unread_in("INBOX")
+                },
             ))
             .when(demo, |d| {
                 d.child(nav(t, "users", "Team", fake("4"), false, None))
@@ -2289,16 +2331,36 @@ impl Nimbra {
             })
             // With real mail the split inbox is Gmail's own categories.
             .when(!demo, |d| {
-                d.child(mailbox(View::Primary, "users", None))
-                    .child(mailbox(View::Updates, "bell", None))
-                    .child(mailbox(View::Promotions, "tag", None))
-                    .child(mailbox(View::Social, "news", None))
+                d.child(mailbox(
+                    View::Primary,
+                    "users",
+                    unread_in("CATEGORY_PERSONAL"),
+                ))
+                .child(mailbox(
+                    View::Updates,
+                    "bell",
+                    unread_in("CATEGORY_UPDATES"),
+                ))
+                .child(mailbox(
+                    View::Promotions,
+                    "tag",
+                    unread_in("CATEGORY_PROMOTIONS"),
+                ))
+                .child(mailbox(
+                    View::Social,
+                    "news",
+                    unread_in("CATEGORY_SOCIAL"),
+                ))
             })
             .child(section(t, "MAILBOX"))
             .child(mailbox(View::Starred, "star", None))
             .child(mailbox(View::Snoozed, "clock", fake("3")))
             .child(nav(t, "bell", "Reminders", fake("2"), false, None))
-            .child(mailbox(View::Drafts, "draft", fake("1")))
+            .child(mailbox(
+                View::Drafts,
+                "draft",
+                if demo { fake("1") } else { drafts },
+            ))
             .child(mailbox(View::Sent, "send", None))
             .child(mailbox(
                 View::Done,
@@ -2325,7 +2387,7 @@ impl Nimbra {
                                 t,
                                 "tag",
                                 &short(&label.name, 22),
-                                None,
+                                unread_in(&label.id),
                                 self.mailbox == view,
                                 Some(tints[index % tints.len()]),
                             )
