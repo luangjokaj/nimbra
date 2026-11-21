@@ -168,6 +168,9 @@ fn main() {
             KeyBinding::new("u", MarkUnread, mail),
             KeyBinding::new("v", ToggleOriginal, mail),
             KeyBinding::new("cmd-backspace", Trash, mail),
+            // Backspace or Delete on its own moves the open (or picked) thread to the trash too.
+            KeyBinding::new("backspace", Trash, mail),
+            KeyBinding::new("delete", Trash, mail),
             KeyBinding::new("ctrl-backspace", Trash, mail),
             KeyBinding::new("cmd-k", TogglePalette, None),
             KeyBinding::new("ctrl-k", TogglePalette, None),

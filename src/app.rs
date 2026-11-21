@@ -7688,9 +7688,9 @@ impl Nimbra {
                     .child(
                         icon_button(t, "trash")
                             .id("trash")
-                            .tooltip(tip(t.dark, "Move to trash", "⌘⌫"))
+                            .tooltip(tip(t.dark, "Move to trash", "⌫"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Move to trash", "⌘⌫", cx)
+                                this.set_hint(*hovered, "Move to trash", "⌫", cx)
                             }))
                             .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
                     )

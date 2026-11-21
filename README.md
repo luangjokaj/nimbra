@@ -40,6 +40,7 @@ What it does with your mailbox:
 - The menu bar has File (New Message ⌘N, Check for Mail ⌘R, Print ⌘P), Edit, View and Message menus; the Dock icon shows the inbox’s unread count. The mail store keeps the newest 300 threads per mailbox, with full text for the newest 100.
 - Settings (⌘, or click your account in the sidebar): signature, light, dark or system appearance, original formatting and remote images, notifications, open at login, and Sign out (which removes the mail kept on this Mac).
 - The composer has Cc and Bcc (click “Cc Bcc”), suggests addresses from your mail as you type (Tab or Enter picks one), and takes attachments from the paperclip or by dropping files on it (25 MB in total). Drafts save themselves a moment after you stop typing. Sending waits six seconds so you can undo it (⌘Z), and Discard can be undone the same way. Send later sends the saved draft from this Mac at the chosen time while Nimbra is running.
+- `⌫` (or ⌘⌫) moves the open thread to the trash; `Z` undoes it.
 - `E` archives the thread in Gmail (removes it from the inbox) and `Z` puts it back. Both only work in the Inbox. 
 - The sign-in is stored in the system keychain under `nimbra`. Delete that entry to sign out.
 
