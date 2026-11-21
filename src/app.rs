@@ -287,6 +287,8 @@ struct Saved {
     initials: String,
     counts: HashMap<String, (u32, u32)>,
     labels: Vec<gmail::Label>,
+    #[serde(default)]
+    synced_to: HashMap<String, String>,
 }
 
 /// The store record a mailbox is saved under.
@@ -318,13 +320,16 @@ pub struct Nimbra {
     mailbox: View,
     /// The last listing of each mailbox this session, with downloaded thread contents.
     /// Switching back shows it at once while a refresh runs in the background.
-    /// Memory only: nothing is written to disk.
+    /// Backed by the encrypted store on disk (see `persist`).
     cache: HashMap<View, Vec<Mail>>,
     /// The encrypted on-disk mail store, once opened (real mail only).
     store: Option<Arc<crate::store::Store>>,
-    /// Unread inbox threads already known to the new-mail check; `None` until its first
+    /// Where the new-mail check reads Gmail's change feed from; `None` until its first
     /// look, which only takes stock and notifies about nothing.
-    known_unread: Option<HashSet<String>>,
+    notify_from: Option<String>,
+    /// Per mailbox (by store record name): the change-feed point its listing is current
+    /// to, so a refresh only fetches what changed since.
+    synced_to: HashMap<String, String>,
     /// Sidebar counts per label id: (unread threads still in the inbox, total threads for Drafts).
     counts: HashMap<String, (u32, u32)>,
     /// The user's own Gmail labels, shown in the sidebar.
@@ -457,7 +462,8 @@ impl Nimbra {
             },
             cache: HashMap::new(),
             store: None,
-            known_unread: None,
+            notify_from: None,
+            synced_to: HashMap::new(),
             counts: HashMap::new(),
             labels: Vec::new(),
             fetching: false,
@@ -571,7 +577,6 @@ impl Nimbra {
                     Some(token) => {
                         this.gmail = Some(Arc::new(gmail::Client::new(config, token)));
                         this.open_store(cx);
-                        this.fetch_inbox(cx);
                     }
                     None => {
                         this.status = Status::SignedOut;
@@ -719,18 +724,141 @@ impl Nimbra {
                 self.status = Status::Ready;
                 self.load_selected(cx);
             }
-            self.fetch_inbox(cx);
+            self.refresh(cx);
         }
     }
 
     // ------------------------------------------------------------ gmail
+
+    // ------------------------------------------------------------ syncing
+
+    /// Brings the open mailbox up to date: only what changed since it was last synced when
+    /// that is known, otherwise a full fetch of its newest threads.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.sync_view(cx) {
+            self.fetch_inbox(cx);
+        }
+    }
+
+    /// Applies Gmail's change feed to the open mailbox. Returns false when it cannot (no
+    /// starting point, nothing on screen, or a search-based mailbox) so the caller fetches.
+    fn sync_view(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(client) = self.gmail.clone() else {
+            return false;
+        };
+        let view = self.mailbox;
+        let label_id = match view {
+            View::Label(index) => self.labels.get(index).map(|label| label.id.clone()),
+            _ => None,
+        };
+        if view.holds(&[], label_id.as_deref()).is_none() || self.mails.is_empty() {
+            return false;
+        }
+        let Some(start) = self.synced_to.get(&record(view)).cloned() else {
+            return false;
+        };
+        if self.fetching {
+            return true;
+        }
+        self.fetching = true;
+        cx.notify();
+        let recipient = matches!(view, View::Sent | View::Drafts);
+        let count_ids: Vec<String> = [
+            "INBOX",
+            "DRAFT",
+            "CATEGORY_PERSONAL",
+            "CATEGORY_UPDATES",
+            "CATEGORY_PROMOTIONS",
+            "CATEGORY_SOCIAL",
+        ]
+        .map(String::from)
+        .into_iter()
+        .chain(self.labels.iter().take(8).map(|l| l.id.clone()))
+        .collect();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let changes = client.history(&start)?;
+                    if changes.threads.len() > 40 {
+                        return Err(gmail::HistoryExpired.into());
+                    }
+                    // Fresh details for each changed thread; `None` when it is gone.
+                    let mut updates = Vec::new();
+                    for id in &changes.threads {
+                        match client.summary(id, recipient) {
+                            Ok(summary) => updates.push((id.clone(), Some(summary))),
+                            Err(error) if error.to_string().starts_with("Gmail error 404") => {
+                                updates.push((id.clone(), None))
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    let counts = (!updates.is_empty()).then(|| client.counts(&count_ids));
+                    anyhow::Ok((changes.latest, updates, counts))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.mailbox != view {
+                    return;
+                }
+                this.fetching = false;
+                match result {
+                    Ok((latest, updates, counts)) => {
+                        this.synced_to.insert(record(view), latest);
+                        if let Some(counts) = counts.filter(|c| !c.is_empty()) {
+                            this.counts = counts;
+                        }
+                        // Count only; never log subjects or addresses.
+                        eprintln!(
+                            "nimbra: {view:?} synced ({} changed threads)",
+                            updates.len()
+                        );
+                        if updates.is_empty() {
+                            this.persist(cx);
+                            cx.notify();
+                            return;
+                        }
+                        let mut list: Vec<Mail> = this.mails.clone();
+                        for (id, summary) in updates {
+                            list.retain(|mail| mail.id.as_deref() != Some(id.as_str()));
+                            if let Some(summary) = summary
+                                && view.holds(&summary.labels, label_id.as_deref()) == Some(true)
+                            {
+                                list.push(Mail::from_summary(summary));
+                            }
+                        }
+                        list.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+                        this.install(list, cx);
+                    }
+                    Err(error) if error.is::<gmail::HistoryExpired>() => this.fetch_inbox(cx),
+                    Err(error) => this.fail(error, cx),
+                }
+            })
+            .ok();
+        })
+        .detach();
+        true
+    }
 
     // ------------------------------------------------------------ local store
 
     /// Opens the encrypted mail store in the background and, if nothing has arrived from
     /// Gmail yet, shows what was saved last time straight away.
     fn open_store(&mut self, cx: &mut Context<Self>) {
+        // Ask once for permission to notify about new mail (macOS remembers the answer).
+        static ASKED: std::sync::Once = std::sync::Once::new();
+        ASKED.call_once(|| {
+            crate::notify::show_while_active();
+            crate::notify::request_permission();
+            crate::notify::log_permission();
+        });
+        // NIMBRA_NOTIFY_TEST=1 posts one sample notification, to check the setup.
+        if std::env::var_os("NIMBRA_NOTIFY_TEST").is_some() {
+            crate::notify::show("test", "Nimbra", "Notifications are working.");
+        }
         if self.store.is_some() {
+            self.refresh(cx);
             return;
         }
         let view = self.mailbox;
@@ -746,13 +874,14 @@ impl Nimbra {
                 .await;
             let Ok((store, saved, mails)) = opened else {
                 eprintln!("nimbra: mail store unavailable; continuing without it");
+                this.update(cx, |this, cx| this.fetch_inbox(cx)).ok();
                 return;
             };
             this.update(cx, |this, cx| {
                 this.store = Some(Arc::new(store));
-                // Gmail answered first: its fresh data wins, and is saved from now on.
+                // Something is already on screen (a sign-in in this session): just refresh.
                 if !this.mails.is_empty() || this.mailbox != view {
-                    this.persist(cx);
+                    this.refresh(cx);
                     return;
                 }
                 if let Some(saved) = saved {
@@ -760,6 +889,7 @@ impl Nimbra {
                     this.me_initials = saved.initials.into();
                     this.counts = saved.counts;
                     this.labels = saved.labels;
+                    this.synced_to = saved.synced_to;
                 }
                 let mut mails = mails.unwrap_or_default();
                 for mail in &mut mails {
@@ -773,6 +903,8 @@ impl Nimbra {
                     this.status = Status::Ready;
                     this.load_selected(cx);
                 }
+                // Bring it up to date: only what changed, when the store knows from where.
+                this.refresh(cx);
                 cx.notify();
             })
             .ok();
@@ -815,6 +947,7 @@ impl Nimbra {
             initials: self.me_initials.to_string(),
             counts: self.counts.clone(),
             labels: self.labels.clone(),
+            synced_to: self.synced_to.clone(),
         };
         cx.background_executor()
             .spawn(async move {
@@ -828,8 +961,9 @@ impl Nimbra {
             .detach();
     }
 
-    /// Checks Gmail for new mail once a minute while the app is open, shows a notification
-    /// for each new unread thread, and refreshes the inbox so it appears in the list.
+    /// Reads Gmail's change feed every 30 seconds while the app is open: shows a
+    /// notification for each thread with a new unread message in the inbox, and applies
+    /// any change to the open mailbox.
     fn watch_for_mail(&mut self, cx: &mut Context<Self>) {
         const EVERY: Duration = Duration::from_secs(30);
         cx.spawn(async move |this, cx| {
@@ -854,27 +988,43 @@ impl Nimbra {
                 let Some(client) = client else {
                     continue; // not signed in
                 };
-                let ids = {
+                let from = this
+                    .update(cx, |this, _| this.notify_from.clone())
+                    .ok()
+                    .flatten();
+                let check = {
                     let client = client.clone();
                     cx.background_executor()
-                        .spawn(async move { client.unread_inbox_ids() })
+                        .spawn(async move {
+                            match from {
+                                // First look: just remember where the feed is now.
+                                None => client.profile().map(|(_, at)| (at, None)),
+                                Some(from) => match client.history(&from) {
+                                    Ok(changes) => Ok((changes.latest.clone(), Some(changes))),
+                                    Err(error) if error.is::<gmail::HistoryExpired>() => {
+                                        client.profile().map(|(_, at)| (at, None))
+                                    }
+                                    Err(error) => Err(error),
+                                },
+                            }
+                        })
                         .await
                 };
-                let Ok(ids) = ids else {
+                let Ok((at, changes)) = check else {
                     continue; // offline or signed out: try again next time
                 };
                 first = false;
                 let fresh = this
-                    .update(cx, |this, _| {
-                        let now: HashSet<String> = ids.iter().cloned().collect();
-                        let fresh: Vec<String> = match &this.known_unread {
-                            Some(known) => {
-                                ids.into_iter().filter(|id| !known.contains(id)).collect()
-                            }
-                            None => Vec::new(),
+                    .update(cx, |this, cx| {
+                        this.notify_from = Some(at);
+                        let Some(changes) = changes else {
+                            return Vec::new();
                         };
-                        this.known_unread = Some(now);
-                        fresh
+                        // Anything changed: bring the open mailbox up to date, cheaply.
+                        if !changes.threads.is_empty() && this.compose.is_none() {
+                            this.sync_view(cx);
+                        }
+                        changes.new_unread_inbox
                     })
                     .unwrap_or_default();
                 if fresh.is_empty() {
@@ -892,7 +1042,7 @@ impl Nimbra {
                     })
                     .await;
                 let extra = fresh.len().saturating_sub(summaries.len());
-                this.update(cx, |this, cx| {
+                this.update(cx, |_, _| {
                     for mail in &summaries {
                         crate::notify::show(&mail.id, &mail.sender, &mail.subject);
                     }
@@ -905,9 +1055,6 @@ impl Nimbra {
                     }
                     // Count only; never log senders or subjects.
                     eprintln!("nimbra: {} new unread threads", fresh.len());
-                    if this.mailbox == View::Inbox && this.compose.is_none() {
-                        this.fetch_inbox(cx);
-                    }
                 })
                 .ok();
             }
@@ -934,7 +1081,6 @@ impl Nimbra {
                         Ok(client) => {
                             this.gmail = Some(Arc::new(client));
                             this.open_store(cx);
-                            this.fetch_inbox(cx);
                         }
                         Err(error) => {
                             this.status = Status::Failed(error.to_string().into());
@@ -972,7 +1118,9 @@ impl Nimbra {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let email = client.email_address()?;
+                    // Read the history point first, so nothing that changes during the
+                    // fetch is missed by the next sync.
+                    let (email, history_id) = client.profile()?;
                     let threads = client.threads(view, label_id.as_deref(), 30)?;
                     // Labels are a nicety; the mailbox still loads without them.
                     let labels = need_labels.then(|| client.labels().unwrap_or_default());
@@ -992,7 +1140,7 @@ impl Nimbra {
                         None => known_labels.into_iter().take(8).collect::<Vec<_>>(),
                     });
                     let counts = client.counts(&ids);
-                    anyhow::Ok((email, threads, labels, counts))
+                    anyhow::Ok((email, history_id, threads, labels, counts))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1002,7 +1150,10 @@ impl Nimbra {
                 }
                 this.fetching = false;
                 match result {
-                    Ok((email, threads, labels, counts)) => {
+                    Ok((email, history_id, threads, labels, counts)) => {
+                        if view.holds(&[], None).is_some() {
+                            this.synced_to.insert(record(view), history_id);
+                        }
                         if !counts.is_empty() {
                             this.counts = counts;
                         }
@@ -1039,6 +1190,13 @@ impl Nimbra {
             .into();
         self.account = email.into();
 
+        let fresh = threads.into_iter().map(Mail::from_summary).collect();
+        self.install(fresh, cx);
+    }
+
+    /// Puts a new listing on screen, keeping downloaded thread contents, the open thread and
+    /// threads cleared in the meantime, then saves it.
+    fn install(&mut self, fresh: Vec<Mail>, cx: &mut Context<Self>) {
         let open_id = self.mails.get(self.selected).and_then(|m| m.id.clone());
         // Threads cleared while this request was in flight must stay cleared.
         let cleared: Vec<Option<String>> = self
@@ -1046,8 +1204,6 @@ impl Nimbra {
             .iter()
             .filter_map(|i| self.mails.get(*i).map(|m| m.id.clone()))
             .collect();
-
-        let fresh = threads.into_iter().map(Mail::from_summary).collect();
         self.mails = crate::data::merge(&self.mails, fresh);
         let position = |id: &Option<String>| self.mails.iter().position(|m| &m.id == id);
         self.history = cleared.iter().filter_map(position).collect();
@@ -1063,24 +1219,13 @@ impl Nimbra {
         }
         self.back.clear();
         self.forward.clear();
-        // Ask once for permission to notify about new mail (macOS remembers the answer).
-        static ASKED: std::sync::Once = std::sync::Once::new();
-        ASKED.call_once(|| {
-            crate::notify::show_while_active();
-            crate::notify::request_permission();
-            crate::notify::log_permission();
-        });
-        // NIMBRA_NOTIFY_TEST=1 posts one sample notification, to check the setup.
-        if std::env::var_os("NIMBRA_NOTIFY_TEST").is_some() {
-            crate::notify::show("test", "Nimbra", "Notifications are working.");
-        }
         self.notice = None;
         self.status = Status::Ready;
         self.cache.insert(self.mailbox, self.mails.clone());
         self.persist(cx);
         // Counts only; never log addresses, subjects or message text.
         eprintln!(
-            "nimbra: {:?} loaded ({} threads, {} already in memory, {} sidebar counts)",
+            "nimbra: {:?} listed ({} threads, {} already in memory, {} sidebar counts)",
             self.mailbox,
             self.mails.len(),
             self.mails.iter().filter(|m| m.loaded).count(),
@@ -2034,7 +2179,7 @@ impl Nimbra {
                     this.close_compose(cx);
                     this.notice = Some("Message sent.".into());
                     if matches!(this.mailbox, View::Sent | View::Drafts) {
-                        this.fetch_inbox(cx);
+                        this.refresh(cx);
                     }
                 }
                 Err(error) if error.is::<gmail::SignedOut>() => {
@@ -2400,7 +2545,7 @@ impl Nimbra {
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.reload_gen += 1;
         if !self.is_demo() {
-            self.fetch_inbox(cx);
+            self.refresh(cx);
             return;
         }
         self.done.fill(false);
