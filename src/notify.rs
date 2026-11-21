@@ -2,8 +2,8 @@
 //!
 //! macOS only for now, through the UserNotifications framework. That framework needs a
 //! real app bundle (it identifies the app by its bundle id), so nothing happens when the
-//! bare binary is run with `cargo run`. macOS shows these banners while the app is in the
-//! background; with the app in front, the new mail simply appears in the list.
+//! bare binary is run with `cargo run`. Banners show whether or not Nimbra is the front app
+//! (see `show_while_active`).
 
 /// Whether notifications can work in this process.
 #[cfg(target_os = "macos")]
@@ -22,6 +22,92 @@ pub fn available() -> bool {
 #[cfg(target_os = "macos")]
 #[link(name = "UserNotifications", kind = "framework")]
 unsafe extern "C" {}
+
+/// Logs (to stderr) whether macOS currently allows this app to notify. Diagnostic only:
+/// prints a status number, never any mail content.
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+pub fn log_permission() {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    if !available() {
+        eprintln!("nimbra: notifications unavailable (not running from Nimbra.app)");
+        return;
+    }
+    let handler = block::ConcreteBlock::new(|settings: *mut Object| {
+        // 0 not decided, 1 denied, 2 allowed, 3 provisional, 4 ephemeral.
+        // SAFETY: the framework passes a live UNNotificationSettings.
+        let status: isize = unsafe { msg_send![settings, authorizationStatus] };
+        let alert: isize = unsafe { msg_send![settings, alertSetting] };
+        eprintln!("nimbra: notification permission status={status} alerts={alert}");
+    })
+    .copy();
+    // SAFETY: main thread, inside an app bundle; the block is heap-copied.
+    unsafe {
+        let center: *mut Object =
+            msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
+        let _: () = msg_send![center, getNotificationSettingsWithCompletionHandler: &*handler];
+    }
+}
+
+/// Lets banners appear while Nimbra is the front app too. By default macOS drops a
+/// notification silently when its app is active, which made new-mail alerts look broken.
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+pub fn show_while_active() {
+    use objc::declare::ClassDecl;
+    use objc::runtime::{Class, Object, Protocol, Sel};
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::sync::Once;
+
+    // Banner, list (Notification Center) and sound.
+    const PRESENT: usize = (1 << 4) | (1 << 3) | (1 << 1);
+
+    extern "C" fn will_present(
+        _: &Object,
+        _: Sel,
+        _center: *mut Object,
+        _notification: *mut Object,
+        handler: *mut Object,
+    ) {
+        // SAFETY: the framework passes a live completion block taking the options.
+        let handler = handler as *mut block::Block<(usize,), ()>;
+        unsafe { (*handler).call((PRESENT,)) };
+    }
+
+    static SET: Once = Once::new();
+    if !available() {
+        return;
+    }
+    SET.call_once(|| {
+        let Some(mut decl) = ClassDecl::new("NimbraNotificationDelegate", class!(NSObject)) else {
+            return;
+        };
+        if let Some(protocol) = Protocol::get("UNUserNotificationCenterDelegate") {
+            decl.add_protocol(protocol);
+        }
+        // SAFETY: the signature matches the delegate method
+        // userNotificationCenter:willPresentNotification:withCompletionHandler:.
+        unsafe {
+            decl.add_method(
+                sel!(userNotificationCenter:willPresentNotification:withCompletionHandler:),
+                will_present as extern "C" fn(&Object, Sel, *mut Object, *mut Object, *mut Object),
+            );
+        }
+        decl.register();
+        let Some(class) = Class::get("NimbraNotificationDelegate") else {
+            return;
+        };
+        // SAFETY: main thread; the delegate is created once and deliberately never freed,
+        // because the notification center only keeps a weak reference to it.
+        unsafe {
+            let delegate: *mut Object = msg_send![class, new];
+            let center: *mut Object =
+                msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
+            let _: () = msg_send![center, setDelegate: delegate];
+        }
+    });
+}
 
 /// Asks the user, once, for permission to show notifications. macOS remembers the answer.
 #[cfg(target_os = "macos")]
@@ -80,6 +166,12 @@ pub fn show(id: &str, title: &str, body: &str) {
 
 #[cfg(not(target_os = "macos"))]
 pub fn request_permission() {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn show_while_active() {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn log_permission() {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn show(_id: &str, _title: &str, _body: &str) {}

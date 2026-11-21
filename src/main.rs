@@ -7,6 +7,7 @@ mod gmail;
 mod input;
 mod notify;
 mod rich;
+mod store;
 mod theme;
 mod ui;
 mod webview;

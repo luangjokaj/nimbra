@@ -280,6 +280,20 @@ impl Render for MenuPopup {
     }
 }
 
+/// The account and sidebar state saved alongside the mailboxes.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Saved {
+    account: String,
+    initials: String,
+    counts: HashMap<String, (u32, u32)>,
+    labels: Vec<gmail::Label>,
+}
+
+/// The store record a mailbox is saved under.
+fn record(view: View) -> String {
+    format!("view-{}", view_key(view))
+}
+
 /// Which composer field an event came from.
 #[derive(Clone, Copy, PartialEq)]
 enum Field {
@@ -306,6 +320,8 @@ pub struct Nimbra {
     /// Switching back shows it at once while a refresh runs in the background.
     /// Memory only: nothing is written to disk.
     cache: HashMap<View, Vec<Mail>>,
+    /// The encrypted on-disk mail store, once opened (real mail only).
+    store: Option<Arc<crate::store::Store>>,
     /// Unread inbox threads already known to the new-mail check; `None` until its first
     /// look, which only takes stock and notifies about nothing.
     known_unread: Option<HashSet<String>>,
@@ -440,6 +456,7 @@ impl Nimbra {
                 _ => View::Inbox,
             },
             cache: HashMap::new(),
+            store: None,
             known_unread: None,
             counts: HashMap::new(),
             labels: Vec::new(),
@@ -553,6 +570,7 @@ impl Nimbra {
                 this.update(cx, |this, cx| match token {
                     Some(token) => {
                         this.gmail = Some(Arc::new(gmail::Client::new(config, token)));
+                        this.open_store(cx);
                         this.fetch_inbox(cx);
                     }
                     None => {
@@ -689,7 +707,11 @@ impl Nimbra {
             cx.notify();
         } else {
             // Show what we already have for this mailbox, then refresh it quietly.
-            self.mails = self.cache.get(&view).cloned().unwrap_or_default();
+            self.mails = match self.cache.get(&view) {
+                Some(mails) => mails.clone(),
+                // Not visited this session: start from what is stored on disk.
+                None => self.stored_mails(view),
+            };
             self.done = vec![false; self.mails.len()];
             self.history.clear();
             self.selected = 0;
@@ -703,13 +725,129 @@ impl Nimbra {
 
     // ------------------------------------------------------------ gmail
 
+    // ------------------------------------------------------------ local store
+
+    /// Opens the encrypted mail store in the background and, if nothing has arrived from
+    /// Gmail yet, shows what was saved last time straight away.
+    fn open_store(&mut self, cx: &mut Context<Self>) {
+        if self.store.is_some() {
+            return;
+        }
+        let view = self.mailbox;
+        cx.spawn(async move |this, cx| {
+            let opened = cx
+                .background_executor()
+                .spawn(async move {
+                    let store = crate::store::Store::open()?;
+                    let saved: Option<Saved> = store.load("meta");
+                    let mails: Option<Vec<Mail>> = store.load(&record(view));
+                    anyhow::Ok((store, saved, mails))
+                })
+                .await;
+            let Ok((store, saved, mails)) = opened else {
+                eprintln!("nimbra: mail store unavailable; continuing without it");
+                return;
+            };
+            this.update(cx, |this, cx| {
+                this.store = Some(Arc::new(store));
+                // Gmail answered first: its fresh data wins, and is saved from now on.
+                if !this.mails.is_empty() || this.mailbox != view {
+                    this.persist(cx);
+                    return;
+                }
+                if let Some(saved) = saved {
+                    this.account = saved.account.into();
+                    this.me_initials = saved.initials.into();
+                    this.counts = saved.counts;
+                    this.labels = saved.labels;
+                }
+                let mut mails = mails.unwrap_or_default();
+                for mail in &mut mails {
+                    mail.refresh_time();
+                }
+                if !mails.is_empty() {
+                    eprintln!("nimbra: opened {} stored threads", mails.len());
+                    this.done = vec![false; mails.len()];
+                    this.mails = mails;
+                    this.selected = 0;
+                    this.status = Status::Ready;
+                    this.load_selected(cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// What the store holds for a mailbox, or nothing.
+    fn stored_mails(&self, view: View) -> Vec<Mail> {
+        let mut mails: Vec<Mail> = self
+            .store
+            .as_ref()
+            .and_then(|store| store.load(&record(view)))
+            .unwrap_or_default();
+        for mail in &mut mails {
+            mail.refresh_time();
+        }
+        mails
+    }
+
+    /// Saves the open mailbox and the sidebar state, in the background. Search results are
+    /// never stored.
+    fn persist(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        if self.mailbox == View::Search || self.status != Status::Ready {
+            return;
+        }
+        let mails: Vec<Mail> = self
+            .mails
+            .iter()
+            .zip(&self.done)
+            .filter(|(_, done)| !**done)
+            .map(|(mail, _)| mail.clone())
+            .collect();
+        let name = record(self.mailbox);
+        let saved = Saved {
+            account: self.account.to_string(),
+            initials: self.me_initials.to_string(),
+            counts: self.counts.clone(),
+            labels: self.labels.clone(),
+        };
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(error) = store
+                    .save(&name, &mails)
+                    .and_then(|_| store.save("meta", &saved))
+                {
+                    eprintln!("nimbra: saving the mail store failed: {error}");
+                }
+            })
+            .detach();
+    }
+
     /// Checks Gmail for new mail once a minute while the app is open, shows a notification
     /// for each new unread thread, and refreshes the inbox so it appears in the list.
     fn watch_for_mail(&mut self, cx: &mut Context<Self>) {
-        const EVERY: Duration = Duration::from_secs(60);
+        const EVERY: Duration = Duration::from_secs(30);
         cx.spawn(async move |this, cx| {
+            // The first look happens as soon as the account is ready, so it only takes stock
+            // of what is already unread; anything arriving after that is announced.
+            let mut first = true;
             loop {
-                cx.background_executor().timer(EVERY).await;
+                let ready = this
+                    .update(cx, |this, _| this.gmail.is_some())
+                    .unwrap_or(false);
+                let wait = if first && !ready {
+                    Duration::from_secs(3)
+                } else if first {
+                    Duration::ZERO
+                } else {
+                    EVERY
+                };
+                cx.background_executor().timer(wait).await;
                 let Ok(client) = this.update(cx, |this, _| this.gmail.clone()) else {
                     break; // the window is gone
                 };
@@ -725,6 +863,7 @@ impl Nimbra {
                 let Ok(ids) = ids else {
                     continue; // offline or signed out: try again next time
                 };
+                first = false;
                 let fresh = this
                     .update(cx, |this, _| {
                         let now: HashSet<String> = ids.iter().cloned().collect();
@@ -794,6 +933,7 @@ impl Nimbra {
                     this.update(cx, |this, cx| match result {
                         Ok(client) => {
                             this.gmail = Some(Arc::new(client));
+                            this.open_store(cx);
                             this.fetch_inbox(cx);
                         }
                         Err(error) => {
@@ -882,6 +1022,15 @@ impl Nimbra {
     /// Shows a freshly fetched listing, reusing thread contents already in memory and
     /// keeping the open thread and any just-cleared threads as they were.
     fn show_inbox(&mut self, email: String, threads: Vec<gmail::Summary>, cx: &mut Context<Self>) {
+        // A different Google account than the one the store was saved for: start clean.
+        if self.account.contains('@') && self.account.as_ref() != email.as_str() {
+            if let Some(store) = &self.store {
+                store.clear();
+            }
+            self.cache.clear();
+            self.counts.clear();
+            self.labels.clear();
+        }
         self.me_initials = email
             .chars()
             .next()
@@ -916,7 +1065,11 @@ impl Nimbra {
         self.forward.clear();
         // Ask once for permission to notify about new mail (macOS remembers the answer).
         static ASKED: std::sync::Once = std::sync::Once::new();
-        ASKED.call_once(crate::notify::request_permission);
+        ASKED.call_once(|| {
+            crate::notify::show_while_active();
+            crate::notify::request_permission();
+            crate::notify::log_permission();
+        });
         // NIMBRA_NOTIFY_TEST=1 posts one sample notification, to check the setup.
         if std::env::var_os("NIMBRA_NOTIFY_TEST").is_some() {
             crate::notify::show("test", "Nimbra", "Notifications are working.");
@@ -924,6 +1077,7 @@ impl Nimbra {
         self.notice = None;
         self.status = Status::Ready;
         self.cache.insert(self.mailbox, self.mails.clone());
+        self.persist(cx);
         // Counts only; never log addresses, subjects or message text.
         eprintln!(
             "nimbra: {:?} loaded ({} threads, {} already in memory, {} sidebar counts)",
@@ -967,6 +1121,7 @@ impl Nimbra {
                     if let Some(mail) = this.mails.iter_mut().find(|m| m.id.as_deref() == Some(&id))
                     {
                         mail.fill(messages);
+                        this.persist(cx);
                         cx.notify();
                     }
                 }
@@ -1948,6 +2103,9 @@ impl Nimbra {
         eprintln!("nimbra: {error}");
         if error.is::<gmail::SignedOut>() {
             self.gmail = None;
+            // The stored mail belongs to that sign-in: remove it, and its key.
+            self.store = None;
+            std::thread::spawn(crate::store::wipe);
             self.cache.clear();
             self.mails.clear();
             self.done.clear();

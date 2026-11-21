@@ -28,7 +28,7 @@ What it does with your mailbox:
 - The sidebar switches between Inbox, Gmail's categories (Primary, Updates, Promotions, Social), Starred, Snoozed, Drafts, Sent, Done (Gmail's archive) and your own labels, 30 newest threads each.
 - Opening a thread marks it read. `S` stars, `⌘⌫` moves to Gmail's trash (kept 30 days), and `E` in Done moves a thread back to the inbox. `Z` undoes the last removal.
 - While the app is open it checks for new mail once a minute and shows a macOS notification (sender and subject) for each new unread inbox thread. This needs the bundled `Nimbra.app` and your permission; macOS shows the banners when Nimbra is not the front app.
-- Mailboxes and opened threads are cached in memory for the session: going back to a mailbox shows it at once and refreshes in the background. Nothing is written to disk.
+- Mailboxes, opened threads and sidebar counts are saved in an encrypted local store (`~/Library/Application Support/Nimbra/store`), so the app opens straight into your mail and refreshes in the background. Each record is encrypted with ChaCha20-Poly1305 using a key kept only in the system keychain (`nimbra` / `store-key`); the files alone, or a backup of them, are unreadable. When the Google sign-in ends, the store and its key are deleted. Search results are never stored.
 - `E` archives the thread in Gmail (removes it from the inbox) and `Z` puts it back. Both only work in the Inbox. 
 - The sign-in is stored in the system keychain under `nimbra`. Delete that entry to sign out.
 
@@ -98,6 +98,7 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/gmail.rs`: OAuth sign-in (PKCE, loopback redirect), keychain storage, Gmail REST calls
 - `src/input.rs`: the text field (adapted from GPUI's example) used by the composer
 - `src/webview.rs`: the locked-down web view behind Show original
+- `src/store.rs`: the encrypted on-disk mail store
 - `src/rich.rs`: turns HTML or plain-text mail into styled blocks; fetches images on request
 - `src/data.rs`: the mail model, sample inbox and palette commands
 - `src/ui.rs`: icon, kbd, avatar, pill, buttons

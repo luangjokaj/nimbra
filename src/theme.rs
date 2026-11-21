@@ -111,7 +111,7 @@ impl Theme {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum Accent {
     Violet,
     Rose,
@@ -122,7 +122,7 @@ pub enum Accent {
     Sky,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum Tone {
     Violet,
     Rose,

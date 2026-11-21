@@ -4,7 +4,7 @@ use crate::gmail;
 use crate::rich::{self, Block};
 use crate::theme::{Accent, Tone};
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Mail {
     /// Gmail thread id; `None` for the built-in demo data.
     pub id: Option<String>,
@@ -36,9 +36,13 @@ pub struct Mail {
     pub reply_all: Vec<String>,
     /// The latest message's original HTML, for "Show original".
     pub html: Option<SharedString>,
+    /// When the latest message arrived (Gmail's internal date), so a stored thread can
+    /// relabel its time ("9:41", "Wed") when the app reopens on another day.
+    #[serde(default)]
+    pub timestamp_ms: i64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Earlier {
     pub tone: Tone,
     pub initials: SharedString,
@@ -63,6 +67,7 @@ impl Mail {
             subject: summary.subject.into(),
             snippet: summary.snippet.into(),
             time: time.into(),
+            timestamp_ms: summary.timestamp_ms,
             thread: (summary.message_count > 1).then(|| summary.message_count.to_string().into()),
             unread: summary.unread,
             starred: summary.starred,
@@ -76,6 +81,15 @@ impl Mail {
             reply: None,
             reply_all: Vec::new(),
             html: None,
+        }
+    }
+
+    /// Recomputes the time label and the Today / Earlier grouping for a stored thread.
+    pub fn refresh_time(&mut self) {
+        if self.timestamp_ms > 0 {
+            let (time, earlier) = format_time(self.timestamp_ms);
+            self.time = time.into();
+            self.yesterday = earlier;
         }
     }
 
@@ -220,6 +234,7 @@ fn mail(
         body: Vec::new(),
         rich: false,
         loaded: true,
+        timestamp_ms: 0,
         reply: None,
         reply_all: Vec::new(),
         html: None,
