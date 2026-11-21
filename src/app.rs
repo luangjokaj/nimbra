@@ -934,6 +934,10 @@ pub struct Nimbra {
     notice_window: Option<gpui::WindowHandle<NoticeToast>>,
     notice_shown: Option<SharedString>,
     notice_gen: usize,
+    /// Sidebar sections folding or unfolding right now: when it started, and a number per
+    /// fold (for its animation).
+    folding: HashMap<&'static str, (std::time::Instant, usize)>,
+    fold_gen: usize,
     /// When the sidebar last started opening or closing (to keep the email still meanwhile).
     sidebar_toggled: Option<std::time::Instant>,
     /// Full view: the sidebar and list were hidden by a double-click (or Return); this is
@@ -1142,6 +1146,8 @@ impl Nimbra {
             notice_gen: 0,
             focus_restore: None,
             sidebar_toggled: None,
+            folding: HashMap::new(),
+            fold_gen: 0,
             bar_shown: false,
             bar_fade: None,
             badge: None,
@@ -3862,6 +3868,99 @@ impl Nimbra {
     /// Where the reading pane starts right now, following any slide in progress.
     fn pane_left(&self) -> f32 {
         self.pane_layout().0
+    }
+
+    fn section_open(&self, key: &str) -> bool {
+        !self.settings.collapsed.iter().any(|k| k == key)
+    }
+
+    /// A sidebar row inside a section that can fold: shown, hidden, or (while the section
+    /// folds or unfolds) growing or shrinking to and from nothing as it fades. The open
+    /// mailbox always stays.
+    fn fold_row(
+        &self,
+        key: &'static str,
+        keep: bool,
+        id: usize,
+        row: AnyElement,
+    ) -> Option<AnyElement> {
+        let open = self.section_open(key);
+        let moving = self
+            .folding
+            .get(key)
+            .filter(|(at, _)| at.elapsed() < FOLD)
+            .map(|(_, n)| *n);
+        if keep || (open && moving.is_none()) {
+            return Some(row);
+        }
+        let n = moving?;
+        Some(
+            div()
+                .flex_none()
+                .overflow_hidden()
+                .child(row)
+                .with_animation(
+                    ("fold-row", n * 1000 + id),
+                    Animation::new(FOLD).with_easing(ease_out_quint()),
+                    move |d, delta| {
+                        let shown = if open { delta } else { 1. - delta };
+                        // The text fades well before the row gets thin, so no slivers show.
+                        d.h(px(NAV_ROW * shown)).opacity(shown.powi(3))
+                    },
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// A sidebar section title that folds its section away and back (remembered).
+    fn section_toggle(
+        &self,
+        t: &Theme,
+        key: &'static str,
+        label: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let open = self.section_open(key);
+        let bright = t.text2;
+        div()
+            .id(("section", view_key_for_section(key)))
+            .group("section")
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .pl(px(10.))
+            .pt(px(18.))
+            .pb(px(8.))
+            .cursor_pointer()
+            .child(overline(label, t.text3).group_hover("section", move |s| s.text_color(bright)))
+            .child(
+                icon(if open { "down" } else { "next" }, 11., t.text3)
+                    .group_hover("section", move |s| s.text_color(bright)),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.section_open(key) {
+                    this.settings.collapsed.push(key.to_string());
+                } else {
+                    this.settings.collapsed.retain(|k| k != key);
+                }
+                this.fold_gen += 1;
+                this.folding
+                    .insert(key, (std::time::Instant::now(), this.fold_gen));
+                this.save_settings(cx);
+                // Once folded, the rows leave the layout.
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(FOLD + Duration::from_millis(20))
+                        .await;
+                    this.update(cx, |this, cx| {
+                        this.folding.retain(|_, (at, _)| at.elapsed() < FOLD);
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+                cx.notify();
+            }))
     }
 
     /// Full view: the open message across the whole window, without the sidebar and list
@@ -7101,6 +7200,19 @@ fn short(text: &str, max: usize) -> SharedString {
     }
 }
 
+/// The height of a sidebar row (folding animates rows to and from it).
+const NAV_ROW: f32 = 30.;
+/// How long a sidebar section takes to fold or unfold.
+const FOLD: Duration = Duration::from_millis(240);
+
+fn view_key_for_section(key: &str) -> usize {
+    match key {
+        "split" => 0,
+        "mailbox" => 1,
+        _ => 2,
+    }
+}
+
 /// A stable number per mailbox, for element ids.
 fn view_key(view: View) -> usize {
     match view {
@@ -7123,14 +7235,6 @@ fn view_key(view: View) -> usize {
     }
 }
 
-fn section(t: &Theme, label: &str) -> Div {
-    div()
-        .pl(px(10.))
-        .pt(px(18.))
-        .pb(px(8.))
-        .child(overline(label.to_string(), t.text3))
-}
-
 fn nav(
     t: &Theme,
     name: &str,
@@ -7145,7 +7249,8 @@ fn nav(
         .items_center()
         .gap(px(10.))
         .px(px(10.))
-        .py(px(6.))
+        .h(px(NAV_ROW))
+        .flex_none()
         .rounded(px(8.))
         .cursor_pointer()
         .when(selected, |d| {
@@ -7328,8 +7433,19 @@ impl Nimbra {
             .map(|(_, total)| *total)
             .filter(|n| *n > 0)
             .map(|n| n.to_string());
+        let split_toggle = self.section_toggle(t, "split", "SPLIT INBOX", cx);
+        let mailbox_toggle = self.section_toggle(t, "mailbox", "MAILBOX", cx);
+        let labels_toggle = self.section_toggle(t, "labels", "LABELS", cx);
         let mailbox = |view: View, icon_name: &'static str, count: Option<String>| {
-            nav(
+            // A folded section still shows the mailbox that is open.
+            let section = match view {
+                View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social => {
+                    "split"
+                }
+                View::Label(_) => "labels",
+                _ => "mailbox",
+            };
+            let row = nav(
                 t,
                 icon_name,
                 &self.title(view),
@@ -7340,6 +7456,8 @@ impl Nimbra {
             .id(("mailbox", view_key(view)))
             .press(t)
             .on_click(cx.listener(move |this, _, _, cx| this.select_mailbox(view, cx)))
+            .into_any_element();
+            self.fold_row(section, self.mailbox == view, view_key(view), row)
         };
 
         div()
@@ -7381,8 +7499,8 @@ impl Nimbra {
                     .child(div().flex_1().min_w(px(0.)).child(self.search.clone()))
                     .child(kbd(t, "/")),
             )
-            .child(section(t, "SPLIT INBOX"))
-            .child(mailbox(
+            .child(split_toggle)
+            .children(mailbox(
                 View::Inbox,
                 "inbox",
                 if demo {
@@ -7392,60 +7510,87 @@ impl Nimbra {
                 },
             ))
             .when(demo, |d| {
-                d.child(nav(t, "users", "Team", fake("4"), false, None))
-                    .child(nav(t, "calendar", "Calendar", fake("2"), false, None))
-                    .child(nav(t, "news", "Newsletters", fake("31"), false, None))
-                    .child(nav(t, "zap", "Other", fake("23"), false, None))
+                d.children(self.fold_row(
+                    "split",
+                    false,
+                    910,
+                    nav(t, "users", "Team", fake("4"), false, None).into_any_element(),
+                ))
+                .children(self.fold_row(
+                    "split",
+                    false,
+                    911,
+                    nav(t, "calendar", "Calendar", fake("2"), false, None).into_any_element(),
+                ))
+                .children(self.fold_row(
+                    "split",
+                    false,
+                    912,
+                    nav(t, "news", "Newsletters", fake("31"), false, None).into_any_element(),
+                ))
+                .children(self.fold_row(
+                    "split",
+                    false,
+                    913,
+                    nav(t, "zap", "Other", fake("23"), false, None).into_any_element(),
+                ))
             })
             // With real mail the split inbox is Gmail's own categories.
             .when(!demo, |d| {
-                d.child(mailbox(
+                d.children(mailbox(
                     View::Primary,
                     "users",
                     unread_in("CATEGORY_PERSONAL"),
                 ))
-                .child(mailbox(
+                .children(mailbox(
                     View::Updates,
                     "bell",
                     unread_in("CATEGORY_UPDATES"),
                 ))
-                .child(mailbox(
+                .children(mailbox(
                     View::Promotions,
                     "tag",
                     unread_in("CATEGORY_PROMOTIONS"),
                 ))
-                .child(mailbox(
+                .children(mailbox(
                     View::Social,
                     "news",
                     unread_in("CATEGORY_SOCIAL"),
                 ))
             })
-            .child(section(t, "MAILBOX"))
-            .child(mailbox(View::Starred, "star", None))
-            .when(!demo, |d| d.child(mailbox(View::Important, "pulse", None)))
-            .child(mailbox(View::Snoozed, "clock", fake("3")))
-            .child(nav(t, "bell", "Reminders", fake("2"), false, None))
-            .child(mailbox(
+            .child(mailbox_toggle)
+            .children(mailbox(View::Starred, "star", None))
+            .when(!demo, |d| {
+                d.children(mailbox(View::Important, "pulse", None))
+            })
+            .children(mailbox(View::Snoozed, "clock", fake("3")))
+            .children(self.fold_row(
+                "mailbox",
+                false,
+                900,
+                nav(t, "bell", "Reminders", fake("2"), false, None).into_any_element(),
+            ))
+            .children(mailbox(
                 View::Drafts,
                 "draft",
                 if demo { fake("1") } else { drafts },
             ))
-            .child(mailbox(View::Sent, "send", None))
-            .child(mailbox(
+            .children(mailbox(View::Sent, "send", None))
+            .children(mailbox(
                 View::Done,
                 "done",
                 (!self.history.is_empty()).then(|| self.history.len().to_string()),
             ))
             .when(!demo, |d| {
-                d.child(mailbox(View::AllMail, "archive", None))
-                    .child(mailbox(View::Spam, "ban", None))
-                    .child(mailbox(View::Trash, "trash", None))
+                d.children(mailbox(View::AllMail, "archive", None))
+                    .children(mailbox(View::Spam, "ban", None))
+                    .children(mailbox(View::Trash, "trash", None))
             })
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .child(section(t, "LABELS").flex_1())
+                    .child(labels_toggle.flex_1())
                     .when(!demo && self.gmail.is_some(), |d| {
                         let hover = t.hover;
                         d.child(
@@ -7470,10 +7615,30 @@ impl Nimbra {
                     }),
             )
             .when(demo, |d| {
-                d.child(nav(t, "tag", "Product", None, false, Some(t.violet)))
-                    .child(nav(t, "tag", "Design", None, false, Some(t.rose)))
-                    .child(nav(t, "tag", "Finance", None, false, Some(t.amber)))
-                    .child(nav(t, "tag", "Travel", None, false, Some(t.sky)))
+                d.children(self.fold_row(
+                    "labels",
+                    false,
+                    920,
+                    nav(t, "tag", "Product", None, false, Some(t.violet)).into_any_element(),
+                ))
+                .children(self.fold_row(
+                    "labels",
+                    false,
+                    921,
+                    nav(t, "tag", "Design", None, false, Some(t.rose)).into_any_element(),
+                ))
+                .children(self.fold_row(
+                    "labels",
+                    false,
+                    922,
+                    nav(t, "tag", "Finance", None, false, Some(t.amber)).into_any_element(),
+                ))
+                .children(self.fold_row(
+                    "labels",
+                    false,
+                    923,
+                    nav(t, "tag", "Travel", None, false, Some(t.sky)).into_any_element(),
+                ))
             })
             .when(!demo, |d| {
                 let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
@@ -7482,9 +7647,9 @@ impl Nimbra {
                         .iter()
                         .enumerate()
                         .take(40)
-                        .map(|(index, label)| {
+                        .filter_map(|(index, label)| {
                             let view = View::Label(index);
-                            nav(
+                            let row = nav(
                                 t,
                                 "tag",
                                 &short(&label.name, 22),
@@ -7510,6 +7675,9 @@ impl Nimbra {
                                     },
                                 ),
                             )
+                            .press(t)
+                            .into_any_element();
+                            self.fold_row("labels", self.mailbox == view, view_key(view), row)
                         }),
                 )
             })
