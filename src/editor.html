@@ -1,0 +1,286 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-__NONCE__'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'">
+<style>
+@font-face { font-family: Geist; font-weight: 400; src: url(data:font/ttf;base64,__REGULAR__); }
+@font-face { font-family: Geist; font-weight: 700; src: url(data:font/ttf;base64,__BOLD__); }
+:root { --bg: #16151c; --text: #eeeef2; --dim: #8c8a99; --accent: #8b7cff; --line: rgba(255,255,255,.12); --max: none; --pad: 14px; }
+html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -webkit-font-smoothing: antialiased; }
+#wrap { box-sizing: border-box; max-width: var(--max); margin: 0 auto; padding: var(--pad) 20px 28px; }
+#editor { outline: none; min-height: 160px; overflow-wrap: break-word; caret-color: var(--accent); }
+#editor:empty::before { content: attr(data-placeholder); color: var(--dim); pointer-events: none; }
+#editor a { color: var(--accent); }
+#editor blockquote { margin: 0 0 0 2px; padding-left: 12px; border-left: 2px solid var(--line); color: var(--dim); }
+#editor ul, #editor ol { padding-left: 24px; margin: 4px 0; }
+#editor .sig { color: var(--dim); }
+::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+#more { display: none; margin-top: 12px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--dim); font: inherit; line-height: 18px; cursor: pointer; }
+#quote { display: none; margin-top: 10px; padding-left: 14px; border-left: 2px solid var(--line); color: var(--dim); font-size: 14px; line-height: 22px; white-space: pre-wrap; overflow-wrap: break-word; }
+#quote.open { display: block; }
+#linkbar { position: fixed; display: none; gap: 6px; align-items: center; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); box-shadow: 0 12px 32px -6px rgba(0,0,0,.45); }
+#linkbar.open { display: flex; }
+#url { width: 280px; border: 0; outline: none; background: transparent; color: var(--text); font: 13px Geist, -apple-system, sans-serif; padding: 4px 6px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="editor" contenteditable="true" spellcheck="true" data-placeholder="Write your message…"></div>
+  <button id="more" title="Show the quoted message">•••</button>
+  <div id="quote"></div>
+</div>
+<div id="linkbar"><input id="url" placeholder="Paste or type a link, then press Return" autocomplete="off" spellcheck="false"></div>
+<script nonce="__NONCE__">
+(() => {
+  const editor = document.getElementById('editor');
+  const more = document.getElementById('more');
+  const quote = document.getElementById('quote');
+  const bar = document.getElementById('linkbar');
+  const url = document.getElementById('url');
+  let session = 0;
+  let saved = null;
+
+  const post = (message) => window.ipc.postMessage(JSON.stringify(message));
+
+  // Only plain formatting survives, whatever is loaded or pasted: no styles, classes,
+  // images, scripts, frames or forms. Links keep http, https and mailto targets only.
+  const KEEP = new Set(['P', 'DIV', 'BR', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'A', 'UL', 'OL', 'LI',
+    'BLOCKQUOTE', 'H1', 'H2', 'H3', 'PRE', 'CODE']);
+  const DROP = new Set(['SCRIPT', 'STYLE', 'HEAD', 'TITLE', 'META', 'LINK', 'TEMPLATE', 'IFRAME',
+    'OBJECT', 'EMBED', 'SVG', 'MATH', 'NOSCRIPT', 'IMG', 'VIDEO', 'AUDIO', 'CANVAS', 'FORM',
+    'INPUT', 'BUTTON', 'SELECT', 'TEXTAREA']);
+  const safeHref = (href) => {
+    const value = (href || '').trim();
+    return /^(https?:|mailto:)/i.test(value) ? value : null;
+  };
+  function clean(html) {
+    // An inert document: nothing in it runs or loads while it is parsed.
+    const doc = document.implementation.createHTMLDocument('');
+    doc.body.innerHTML = html;
+    const out = document.createDocumentFragment();
+    const walk = (from, into) => {
+      for (const node of Array.from(from.childNodes)) {
+        if (node.nodeType === 3) {
+          into.appendChild(document.createTextNode(node.textContent));
+        } else if (node.nodeType === 1 && !DROP.has(node.tagName)) {
+          const href = node.tagName === 'A' ? safeHref(node.getAttribute('href')) : null;
+          // A link to anywhere else keeps its text but stops being a link.
+          if (KEEP.has(node.tagName) && (node.tagName !== 'A' || href)) {
+            const el = document.createElement(node.tagName);
+            if (href) el.setAttribute('href', href);
+            if (node.tagName === 'DIV' && node.classList.contains('sig')) el.className = 'sig';
+            walk(node, el);
+            into.appendChild(el);
+          } else {
+            walk(node, into);
+          }
+        }
+      }
+    };
+    walk(doc.body, out);
+    return out;
+  }
+
+  const changed = () => post({ t: 'change', s: session, html: editor.innerHTML, text: editor.innerText });
+  const state = () => post({
+    t: 'state',
+    s: session,
+    b: document.queryCommandState('bold'),
+    i: document.queryCommandState('italic'),
+    u: document.queryCommandState('underline'),
+    ul: document.queryCommandState('insertUnorderedList'),
+    ol: document.queryCommandState('insertOrderedList'),
+  });
+
+  // Puts the cursor back where it was before a toolbar button took the focus. A live
+  // selection in the editor is left alone.
+  function restore() {
+    const live = window.getSelection();
+    const inside = live.rangeCount && editor.contains(live.anchorNode);
+    editor.focus();
+    if (saved && !inside) {
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(saved);
+    }
+  }
+
+  function atStart() {
+    const selection = window.getSelection();
+    if (!selection.rangeCount || !selection.isCollapsed) return false;
+    const before = document.createRange();
+    before.selectNodeContents(editor);
+    before.setEnd(selection.anchorNode, selection.anchorOffset);
+    return before.toString().length === 0 && !before.cloneContents().querySelector('br, div, p, li');
+  }
+
+  function openLink() {
+    restore();
+    const selection = window.getSelection();
+    const anchor = selection.anchorNode && (selection.anchorNode.nodeType === 1
+      ? selection.anchorNode : selection.anchorNode.parentElement).closest('a');
+    url.value = anchor ? anchor.getAttribute('href') || '' : '';
+    let rect = selection.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
+    if (!rect || (!rect.width && !rect.height)) rect = editor.getBoundingClientRect();
+    bar.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 310)) + 'px';
+    bar.style.top = Math.min(rect.bottom + 8, window.innerHeight - 50) + 'px';
+    bar.classList.add('open');
+    url.focus();
+    url.select();
+  }
+
+  function closeLink(apply) {
+    bar.classList.remove('open');
+    if (apply) {
+      let value = url.value.trim();
+      if (value && !/^[a-z]+:/i.test(value)) {
+        value = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value) ? 'mailto:' + value : 'https://' + value;
+      }
+      restore();
+      const href = safeHref(value);
+      if (!value) {
+        document.execCommand('unlink');
+      } else if (href) {
+        if (window.getSelection().isCollapsed) {
+          const a = document.createElement('a');
+          a.setAttribute('href', href);
+          a.textContent = href.replace(/^mailto:/i, '');
+          document.execCommand('insertHTML', false, a.outerHTML);
+        } else {
+          document.execCommand('createLink', false, href);
+        }
+      }
+      changed();
+    } else {
+      restore();
+    }
+  }
+
+  const COMMANDS = new Set(['bold', 'italic', 'underline', 'insertUnorderedList',
+    'insertOrderedList', 'removeFormat', 'outdent', 'indent']);
+
+  window.nimbra = {
+    load(id, html, quoted, focus) {
+      session = id;
+      saved = null;
+      bar.classList.remove('open');
+      editor.replaceChildren(clean(html));
+      quote.textContent = quoted || '';
+      quote.classList.remove('open');
+      more.style.display = quoted ? 'inline-block' : 'none';
+      window.scrollTo(0, 0);
+      post({ t: 'loaded', s: session, html: editor.innerHTML, text: editor.innerText });
+      if (focus) {
+        editor.focus();
+        const range = document.createRange();
+        range.setStart(editor, 0);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    },
+    theme(vars) {
+      for (const [name, value] of Object.entries(vars)) {
+        if (/^--[a-z]+$/.test(name)) document.documentElement.style.setProperty(name, String(value));
+      }
+    },
+    exec(command) {
+      if (command === 'link') return openLink();
+      if (command === 'blockquote') {
+        restore();
+        const inQuote = window.getSelection().anchorNode?.parentElement?.closest('blockquote');
+        document.execCommand('formatBlock', false, inQuote ? 'div' : 'blockquote');
+      } else if (COMMANDS.has(command)) {
+        restore();
+        document.execCommand(command, false, null);
+      }
+      changed();
+      state();
+    },
+    focus() { restore(); },
+  };
+
+  editor.addEventListener('input', () => { changed(); state(); });
+  editor.addEventListener('focus', () => post({ t: 'focus', s: session }));
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (selection.rangeCount && editor.contains(selection.anchorNode)) {
+      saved = selection.getRangeAt(0).cloneRange();
+      state();
+    }
+  });
+  more.addEventListener('click', () => quote.classList.toggle('open'));
+
+  editor.addEventListener('paste', (event) => {
+    event.preventDefault();
+    const html = event.clipboardData.getData('text/html');
+    if (html) {
+      const box = document.createElement('div');
+      box.appendChild(clean(html));
+      document.execCommand('insertHTML', false, box.innerHTML);
+    } else {
+      document.execCommand('insertText', false, event.clipboardData.getData('text/plain'));
+    }
+  });
+  // Dropped text or markup goes through the same filter as a paste.
+  editor.addEventListener('drop', (event) => {
+    const html = event.dataTransfer && event.dataTransfer.getData('text/html');
+    if (html) {
+      event.preventDefault();
+      const box = document.createElement('div');
+      box.appendChild(clean(html));
+      document.execCommand('insertHTML', false, box.innerHTML);
+    }
+  });
+
+  editor.addEventListener('keydown', (event) => {
+    const mod = event.metaKey || event.ctrlKey;
+    const key = event.key.toLowerCase();
+    const run = (command) => { event.preventDefault(); window.nimbra.exec(command); };
+    // The app's own shortcuts, while typing here.
+    if (mod && key === 'enter') { event.preventDefault(); post({ t: 'key', k: 'send' }); }
+    else if (mod && !event.shiftKey && key === 's') { event.preventDefault(); post({ t: 'key', k: 'save' }); }
+    else if (mod && event.shiftKey && key === 'f') { event.preventDefault(); post({ t: 'key', k: 'full' }); }
+    else if (mod && !event.shiftKey && key === 'b') run('bold');
+    else if (mod && !event.shiftKey && key === 'i') run('italic');
+    else if (mod && !event.shiftKey && key === 'u') run('underline');
+    else if (mod && !event.shiftKey && key === 'k') run('link');
+    else if (mod && event.shiftKey && key === '7') run('insertOrderedList');
+    else if (mod && event.shiftKey && key === '8') run('insertUnorderedList');
+    else if (mod && key === 'z') {
+      event.preventDefault();
+      document.execCommand(event.shiftKey ? 'redo' : 'undo');
+      changed();
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      if (document.queryCommandState('insertUnorderedList') || document.queryCommandState('insertOrderedList')) {
+        document.execCommand(event.shiftKey ? 'outdent' : 'indent');
+        changed();
+      } else if (event.shiftKey) {
+        post({ t: 'key', k: 'up' });
+      } else {
+        document.execCommand('insertText', false, '\t');
+      }
+    } else if (event.key === 'ArrowUp' && !mod && !event.shiftKey && atStart()) {
+      event.preventDefault();
+      post({ t: 'key', k: 'up' });
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      post({ t: 'key', k: 'esc' });
+    }
+  });
+
+  url.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); closeLink(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); closeLink(false); }
+  });
+  url.addEventListener('blur', () => { if (bar.classList.contains('open')) bar.classList.remove('open'); });
+
+  post({ t: 'ready' });
+})();
+</script>
+</body>
+</html>

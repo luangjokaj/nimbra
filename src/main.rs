@@ -3,10 +3,12 @@
 mod app;
 mod blur;
 mod data;
+mod editor;
 mod gmail;
 mod input;
 mod notify;
 mod rich;
+mod settings;
 mod store;
 mod theme;
 mod ui;
@@ -21,8 +23,8 @@ use gpui::{
 
 use app::{
     Back, Compose, Confirm, Dismiss, FocusSearch, Forward, HideWindow, MarkDone, MarkUnread, Next,
-    Nimbra, Prev, Quit, Reload, Reply, SaveDraft, SendMail, ToggleFullCompose, ToggleList,
-    ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
+    Nimbra, OpenSettings, Prev, Quit, Reload, Reply, SaveDraft, SendMail, ToggleFullCompose,
+    ToggleList, ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -71,6 +73,13 @@ static ICONS: &[(&str, &[u8])] = icons![
     "mail",
     "expand",
     "shrink",
+    "bold",
+    "italic",
+    "underline",
+    "bullets",
+    "numbers",
+    "quote",
+    "clear-format",
 ];
 
 struct Assets;
@@ -169,8 +178,48 @@ fn main() {
             KeyBinding::new("cmd-r", Reload, None),
             KeyBinding::new("ctrl-r", Reload, None),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-,", OpenSettings, None),
             // ⌘W hides the window; Nimbra keeps running and checking mail until ⌘Q.
             KeyBinding::new("cmd-w", HideWindow, None),
+            // While writing in the message editor these keys format text (bold, link) or
+            // belong to the editor (Escape closes its link box), so the app leaves them.
+            KeyBinding::new("cmd-b", gpui::NoAction, Some("Editor")),
+            KeyBinding::new("ctrl-b", gpui::NoAction, Some("Editor")),
+            KeyBinding::new("cmd-k", gpui::NoAction, Some("Editor")),
+            KeyBinding::new("ctrl-k", gpui::NoAction, Some("Editor")),
+            KeyBinding::new("escape", gpui::NoAction, Some("Editor")),
+            // The editor page reports these itself (see editor.html), so they run once.
+            KeyBinding::new("cmd-enter", gpui::NoAction, Some("Editor")),
+            KeyBinding::new("ctrl-enter", gpui::NoAction, Some("Editor")),
+            KeyBinding::new("cmd-s", gpui::NoAction, Some("Editor")),
+            KeyBinding::new("ctrl-s", gpui::NoAction, Some("Editor")),
+            KeyBinding::new("cmd-shift-f", gpui::NoAction, Some("Editor")),
+            KeyBinding::new("ctrl-shift-f", gpui::NoAction, Some("Editor")),
+        ]);
+        // The Edit menu gives ⌘X, ⌘C, ⌘V and ⌘A to whichever view has the keyboard,
+        // including the message editor (a web view only gets them through the menu).
+        cx.set_menus(vec![
+            gpui::Menu {
+                name: "Nimbra".into(),
+                items: vec![
+                    gpui::MenuItem::action("Settings…", OpenSettings),
+                    gpui::MenuItem::separator(),
+                    gpui::MenuItem::action("Quit Nimbra", Quit),
+                ],
+            },
+            gpui::Menu {
+                name: "Edit".into(),
+                items: vec![
+                    gpui::MenuItem::os_action("Cut", input::Cut, gpui::OsAction::Cut),
+                    gpui::MenuItem::os_action("Copy", input::Copy, gpui::OsAction::Copy),
+                    gpui::MenuItem::os_action("Paste", input::Paste, gpui::OsAction::Paste),
+                    gpui::MenuItem::os_action(
+                        "Select All",
+                        input::SelectAll,
+                        gpui::OsAction::SelectAll,
+                    ),
+                ],
+            },
         ]);
 
         let mut bounds = Bounds::centered(None, size(px(1480.), px(920.)), cx);
@@ -202,6 +251,11 @@ fn main() {
                         false
                     });
                     let view = cx.new(Nimbra::new);
+                    // Re-render when the Mac switches between light and dark.
+                    view.update(cx, |_, cx| {
+                        cx.observe_window_appearance(window, |_, _, cx| cx.notify())
+                            .detach()
+                    });
                     window.focus(&view.read(cx).focus_handle());
                     view
                 },

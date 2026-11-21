@@ -46,6 +46,7 @@ actions!(
         Back,
         Forward,
         Reload,
+        OpenSettings,
         Quit
     ]
 );
@@ -85,6 +86,17 @@ struct Composer {
     resave: bool,
     /// What to do once the draft is saved.
     after_save: Option<After>,
+    /// Written in the formatted editor (a web view) rather than the plain line fields.
+    rich: bool,
+    /// The editor's content, as HTML and as plain text.
+    html: String,
+    text: String,
+    /// Content still to be put into the editor.
+    load: Option<String>,
+    /// Bold, italic, underline, bullets, numbers at the cursor.
+    format: [bool; 5],
+    /// Put the keyboard in the message body once the editor shows it.
+    focus_body: bool,
     subject: Entity<TextInput>,
     lines: Vec<Entity<TextInput>>,
     reply: Option<gmail::ReplyTo>,
@@ -220,13 +232,16 @@ impl Composer {
 
     /// The message as it would be saved or sent.
     fn outgoing(&self, cx: &App) -> gmail::Outgoing {
+        let html = self
+            .rich
+            .then(|| crate::editor::message_html(&self.html, self.quoted.as_deref()));
         gmail::Outgoing {
             to: self.to.read(cx).text(),
             cc: self.cc.read(cx).text(),
             bcc: self.bcc.read(cx).text(),
             subject: self.subject.read(cx).text(),
             body: self.body(cx),
-            html: None,
+            html,
             files: self.files.clone(),
             kept: self.kept.clone(),
             reply: self.reply.clone(),
@@ -235,7 +250,8 @@ impl Composer {
 
     /// Anything typed or attached.
     fn has_content(&self, cx: &App) -> bool {
-        !self.files.is_empty()
+        (self.rich && !self.text.trim().is_empty())
+            || !self.files.is_empty()
             || !self.kept.is_empty()
             || [&self.to, &self.cc, &self.bcc, &self.subject]
                 .iter()
@@ -249,12 +265,15 @@ impl Composer {
 
     /// The whole message text: the edited lines, then the quoted earlier message.
     fn body(&self, cx: &App) -> String {
-        let mut body = self
-            .lines
-            .iter()
-            .map(|line| line.read(cx).text())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let mut body = if self.rich {
+            self.text.trim_end().to_string()
+        } else {
+            self.lines
+                .iter()
+                .map(|line| line.read(cx).text())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         if let Some(quoted) = &self.quoted {
             body.push_str("\n\n");
             body.push_str(quoted);
@@ -593,6 +612,28 @@ pub struct Nimbra {
     /// The message whose full header (all recipients, date) is expanded: thread id and
     /// message index (0 is the latest).
     details: Option<(String, usize)>,
+    /// The formatted message editor (a web view), made the first time it is needed.
+    editor: Option<std::rc::Rc<crate::editor::EditorView>>,
+    /// No editor on this system: composers use the plain line fields.
+    editor_failed: bool,
+    /// The editor's page has loaded.
+    editor_ready: bool,
+    /// Which composer the editor shows.
+    editor_shown: Option<u64>,
+    /// The colours and layout last given to the editor.
+    editor_theme: Option<(bool, bool)>,
+    /// GPUI's keyboard focus while typing in the editor (its "Editor" key context).
+    editor_focus: FocusHandle,
+    /// The editor had the keyboard at the last frame.
+    editor_keys: bool,
+    settings: crate::settings::Settings,
+    /// The Settings sheet is open.
+    settings_open: bool,
+    /// One field per line of the signature, while Settings is open.
+    signature_lines: Vec<Entity<TextInput>>,
+    _settings_subscriptions: Vec<gpui::Subscription>,
+    /// "Sign out" was clicked once; a second click within a few seconds signs out.
+    sign_out_armed: Option<std::time::Instant>,
     /// Composers that are closed but still saving, waiting to send, or discarded.
     parked: Vec<(Parked, Composer)>,
     composer_serial: u64,
@@ -754,6 +795,18 @@ impl Nimbra {
             cache: HashMap::new(),
             prefetching: false,
             open_when_listed: None,
+            editor: None,
+            editor_failed: false,
+            editor_ready: false,
+            editor_shown: None,
+            editor_theme: None,
+            editor_focus: cx.focus_handle(),
+            editor_keys: false,
+            settings: crate::settings::load(),
+            settings_open: false,
+            signature_lines: Vec::new(),
+            _settings_subscriptions: Vec::new(),
+            sign_out_armed: None,
             parked: Vec::new(),
             composer_serial: 0,
             scheduled: Vec::new(),
@@ -842,7 +895,8 @@ impl Nimbra {
         }
         // Mail opens in its original formatting by default; NIMBRA_READER=1 starts in the
         // native reader instead. Messages without HTML always use the reader.
-        this.original = std::env::var_os("NIMBRA_READER").is_none();
+        this.original = this.settings.original_view && std::env::var_os("NIMBRA_READER").is_none();
+        this.original_images = this.settings.load_images;
         // NIMBRA_SCREEN=draft opens a sample draft in the composer (screenshots).
         if screen == "draft" {
             this.edit_draft(
@@ -855,6 +909,7 @@ impl Nimbra {
                     subject: "Fwd: Billing problem".into(),
                     body: "Hi Mira,\n\nCan you take a look at this one?\n\nLuan Gjokaj\nUX Engineer & Designer".into(),
                     quoted: Some("---------- Forwarded message ---------\nFrom: Stripe\nSubject: Billing problem\n\nYour last payment could not be processed.".into()),
+                    html: None,
                     reply: None,
                 },
                 cx,
@@ -862,6 +917,10 @@ impl Nimbra {
             if let Some(composer) = &mut this.compose {
                 composer.show_quoted = true;
             }
+        }
+        // NIMBRA_SCREEN=settings opens the Settings sheet (screenshots).
+        if screen == "settings" {
+            this.open_settings(cx);
         }
         // NIMBRA_SCREEN=loading holds the loading skeleton on screen (screenshots).
         if screen == "loading" {
@@ -1494,7 +1553,10 @@ impl Nimbra {
                     })
                     .await;
                 let extra = fresh.len().saturating_sub(summaries.len());
-                this.update(cx, |_, _| {
+                this.update(cx, |this, _| {
+                    if !this.settings.notifications {
+                        return;
+                    }
                     for mail in &summaries {
                         crate::notify::show(&mail.id, &mail.sender, &mail.subject);
                     }
@@ -1835,6 +1897,12 @@ impl Nimbra {
             saved_edits: 0,
             resave: false,
             after_save: None,
+            rich: !self.editor_failed && cfg!(any(target_os = "macos", target_os = "windows")),
+            html: String::new(),
+            text: String::new(),
+            load: None,
+            format: [false; 5],
+            focus_body: false,
             subject,
             lines: vec![line],
             reply: None,
@@ -1954,8 +2022,171 @@ impl Nimbra {
                 focus = composer.lines[0].read(cx).focus_handle(cx);
             }
         }
+        // The editor starts with the signature, below room to write.
+        let signature = self.settings.signature.trim_end();
+        let mut start = String::from("<div><br></div>");
+        if !signature.is_empty() {
+            start.push_str("<div><br></div><div class=\"sig\">");
+            start.push_str(&crate::editor::text_to_html(signature));
+            start.push_str("</div>");
+        }
+        composer.load = Some(start);
+        if composer.rich
+            && composer
+                .lines
+                .first()
+                .is_some_and(|l| l.read(cx).focus_handle(cx) == focus)
+        {
+            composer.focus_body = true;
+            focus = self.editor_focus.clone();
+        }
         self.pending_focus = Some(focus);
         self.compose = Some(composer);
+        cx.notify();
+    }
+
+    /// Creates, fills, shows or hides the message editor to match the composer.
+    fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(serial) = self.compose.as_ref().filter(|c| c.rich).map(|c| c.serial) else {
+            if self.editor_shown.take().is_some()
+                && let Some(editor) = &self.editor
+            {
+                editor.set_visible(false);
+                editor.blur();
+            }
+            return;
+        };
+        if self.editor.is_none() && !self.editor_failed {
+            let (events, mut incoming) = futures::channel::mpsc::unbounded();
+            match crate::editor::EditorView::new(window, events) {
+                Some(view) => {
+                    self.editor = Some(std::rc::Rc::new(view));
+                    cx.spawn(async move |this, cx| {
+                        use futures::StreamExt as _;
+                        while let Some(event) = incoming.next().await {
+                            if this
+                                .update(cx, |this, cx| this.editor_event(event, cx))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                }
+                None => self.editor_failed = true,
+            }
+        }
+        let Some(editor) = self.editor.clone().filter(|_| !self.editor_failed) else {
+            // No editor here: fall back to the plain fields, which hold the same text.
+            if let Some(composer) = &mut self.compose {
+                composer.rich = false;
+            }
+            return;
+        };
+        if !self.editor_ready {
+            return;
+        }
+        // Focus moved from the editor to one of the app's own fields (a click, Tab, ↑):
+        // the web view must also give up the keyboard, or typing would still go there.
+        let focused = self.editor_focus.is_focused(window);
+        if self.editor_keys && !focused {
+            editor.blur();
+        }
+        self.editor_keys = focused;
+        let t = self.theme();
+        let full = self.compose.as_ref().is_some_and(|c| c.full);
+        if self.editor_theme != Some((self.dark, full)) {
+            let css = |color: Hsla| {
+                let c = color.to_rgb();
+                format!(
+                    "rgba({},{},{},{:.3})",
+                    (c.r * 255.).round(),
+                    (c.g * 255.).round(),
+                    (c.b * 255.).round(),
+                    c.a
+                )
+            };
+            editor.theme(serde_json::json!({
+                "--bg": css(if full { t.surface } else { t.raised }),
+                "--text": css(t.text),
+                "--dim": css(t.text3),
+                "--accent": css(t.violet),
+                "--line": css(t.border_strong),
+                "--max": if full { "860px" } else { "none" },
+                "--pad": if full { "24px" } else { "14px" },
+            }));
+            self.editor_theme = Some((self.dark, full));
+        }
+        let shown = self.editor_shown;
+        let Some(composer) = self.compose.as_mut() else {
+            return;
+        };
+        let focus = std::mem::take(&mut composer.focus_body);
+        if shown != Some(serial) || composer.load.is_some() {
+            let html = composer
+                .load
+                .take()
+                .unwrap_or_else(|| composer.html.clone());
+            editor.load(
+                serial,
+                &html,
+                composer.quoted.as_deref().unwrap_or(""),
+                focus,
+            );
+            self.editor_shown = Some(serial);
+        } else if focus {
+            editor.focus();
+        }
+        editor.set_visible(true);
+    }
+
+    fn editor_event(&mut self, event: crate::editor::EditorEvent, cx: &mut Context<Self>) {
+        use crate::editor::EditorEvent;
+        match event {
+            EditorEvent::Ready => {
+                self.editor_ready = true;
+                self.editor_shown = None;
+                self.editor_theme = None;
+            }
+            EditorEvent::Content {
+                session,
+                html,
+                text,
+                edited,
+            } => {
+                let on_screen = self.compose.as_ref().is_some_and(|c| c.serial == session);
+                let Some(composer) = self.composer_mut(session) else {
+                    return;
+                };
+                let differs = composer.html != html;
+                composer.html = html;
+                composer.text = text;
+                if edited && differs && on_screen {
+                    if let Some(composer) = &mut self.compose {
+                        composer.suggest = None;
+                    }
+                    self.composer_changed(cx);
+                }
+            }
+            EditorEvent::Format { session, state } => {
+                if let Some(composer) = self.compose.as_mut().filter(|c| c.serial == session) {
+                    composer.format = state;
+                }
+            }
+            EditorEvent::Focused => {
+                if let Some(composer) = &mut self.compose {
+                    composer.suggest = None;
+                }
+                self.pending_focus = Some(self.editor_focus.clone());
+            }
+            EditorEvent::Up => self.focus_field(Field::Subject, None, cx),
+            EditorEvent::Escape => self.close_compose(cx),
+            EditorEvent::Send => self.send_mail(cx),
+            EditorEvent::Save => self.save_draft(cx),
+            EditorEvent::ToggleFull => self.toggle_full_compose(cx),
+            EditorEvent::Dropped(paths) => self.attach_files(paths, cx),
+        }
         cx.notify();
     }
 
@@ -2033,7 +2264,8 @@ impl Nimbra {
     fn original_target(&self) -> Option<(String, SharedString)> {
         let ready = matches!(self.status, Status::Demo | Status::Ready);
         // (A toolbar menu does not hide it: menus open in a window of their own, above it.)
-        let covered = self.palette || self.compose.is_some() || self.notice.is_some();
+        let covered =
+            self.palette || self.compose.is_some() || self.notice.is_some() || self.settings_open;
         if !self.original
             || !ready
             || covered
@@ -2075,7 +2307,7 @@ impl Nimbra {
             .as_ref()
             .is_some_and(|(shown, _)| *shown != key)
         {
-            self.original_images = true;
+            self.original_images = self.settings.load_images;
         }
         let wanted = (key, self.original_images);
         if self.html_shown.as_ref() != Some(&wanted) {
@@ -2620,11 +2852,28 @@ impl Nimbra {
             .bcc
             .update(cx, |input, cx| input.set(bcc, usize::MAX, cx));
         composer.kept = draft.attachments;
+        let html = draft
+            .html
+            .as_deref()
+            .and_then(|html| {
+                if draft.quoted.is_some() {
+                    crate::editor::own_html(html)
+                } else {
+                    Some(html.to_string())
+                }
+            })
+            .unwrap_or_else(|| crate::editor::text_to_html(&draft.body));
+        composer.load = Some(html);
+        composer.focus_body = composer.rich;
         composer.draft_id = Some(draft.id);
         composer.quoted = draft.quoted;
         composer.reply = draft.reply;
         composer.full = true;
-        self.pending_focus = Some(composer.lines[0].read(cx).focus_handle(cx));
+        self.pending_focus = Some(if composer.rich {
+            self.editor_focus.clone()
+        } else {
+            composer.lines[0].read(cx).focus_handle(cx)
+        });
         self.compose = Some(composer);
         cx.notify();
     }
@@ -2827,7 +3076,10 @@ impl Nimbra {
         }
         let (_, mut composer) = self.parked.remove(pos);
         composer.sending = false;
-        if let Some(first) = composer.lines.first() {
+        if composer.rich {
+            composer.focus_body = true;
+            self.pending_focus = Some(self.editor_focus.clone());
+        } else if let Some(first) = composer.lines.first() {
             self.pending_focus = Some(first.read(cx).focus_handle(cx));
         }
         self.compose = Some(composer);
@@ -3333,6 +3585,17 @@ impl Nimbra {
         let Some(composer) = &self.compose else {
             return;
         };
+        if composer.rich && matches!(field, Field::Line(_)) {
+            if let Some(editor) = &self.editor {
+                editor.focus();
+            }
+            self.pending_focus = Some(self.editor_focus.clone());
+            cx.notify();
+            return;
+        }
+        if let Some(editor) = &self.editor {
+            editor.blur();
+        }
         let Some(input) = composer.input(field) else {
             return;
         };
@@ -3531,6 +3794,406 @@ impl Nimbra {
             self.notice = Some("Snooze isn’t connected to Gmail yet. Nothing was changed.".into());
             cx.notify();
         }
+    }
+
+    /// ⌘⇧L and the sun/moon button: switch to the other theme, and remember it.
+    fn toggle_theme(&mut self, cx: &mut Context<Self>) {
+        self.dark = !self.dark;
+        self.settings.theme = if self.dark {
+            crate::settings::ThemeChoice::Dark
+        } else {
+            crate::settings::ThemeChoice::Light
+        };
+        self.save_settings(cx);
+        cx.notify();
+    }
+
+    fn save_settings(&self, cx: &mut Context<Self>) {
+        let settings = self.settings.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if crate::settings::save(&settings).is_err() {
+                    eprintln!("nimbra: could not save settings");
+                }
+            })
+            .detach();
+    }
+
+    /// ⌘, or the account row: the Settings sheet.
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        if self.compose.is_some() || self.settings_open {
+            return;
+        }
+        self.menu = None;
+        self.palette = false;
+        self.sign_out_armed = None;
+        let t = self.theme();
+        let mut lines = Vec::new();
+        let mut subscriptions = Vec::new();
+        let text: Vec<String> = self
+            .settings
+            .signature
+            .lines()
+            .map(str::to_string)
+            .collect();
+        for index in 0..6 {
+            let placeholder = if index == 0 { "Your name" } else { "" };
+            let input = cx.new(|cx| TextInput::new(cx, placeholder, t.faint, t.violet));
+            if let Some(line) = text.get(index).cloned() {
+                input.update(cx, |input, cx| input.set(line, usize::MAX, cx));
+            }
+            subscriptions.push(
+                cx.subscribe(&input, move |this, _, event: &InputEvent, cx| match event {
+                    InputEvent::Changed => this.signature_changed(cx),
+                    InputEvent::Enter | InputEvent::Down | InputEvent::Tab => {
+                        if let Some(next) = this.signature_lines.get(index + 1) {
+                            this.pending_focus = Some(next.read(cx).focus_handle(cx));
+                            cx.notify();
+                        }
+                    }
+                    InputEvent::Up | InputEvent::BackspaceAtStart if index > 0 => {
+                        let previous = this.signature_lines[index - 1].clone();
+                        this.pending_focus = Some(previous.read(cx).focus_handle(cx));
+                        cx.notify();
+                    }
+                    _ => {}
+                }),
+            );
+            lines.push(input);
+        }
+        self.signature_lines = lines;
+        self._settings_subscriptions = subscriptions;
+        self.settings_open = true;
+        if let Some(view) = &self.html_view {
+            view.set_visible(false);
+        }
+        cx.notify();
+    }
+
+    fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.settings_open = false;
+        self.signature_lines.clear();
+        self._settings_subscriptions.clear();
+        self.pending_focus = Some(self.focus.clone());
+        cx.notify();
+    }
+
+    fn signature_changed(&mut self, cx: &mut Context<Self>) {
+        let lines: Vec<String> = self
+            .signature_lines
+            .iter()
+            .map(|line| line.read(cx).text().trim_end().to_string())
+            .collect();
+        let signature = lines.join("\n").trim_end().to_string();
+        if signature != self.settings.signature {
+            self.settings.signature = signature;
+            self.save_settings(cx);
+        }
+    }
+
+    /// Signs out: forgets the Google sign-in and removes the mail kept on this Mac and its
+    /// key. Settings (signature, theme) stay.
+    fn sign_out(&mut self, cx: &mut Context<Self>) {
+        gmail::forget_refresh_token();
+        self.gmail = None;
+        self.store = None;
+        std::thread::spawn(crate::store::wipe);
+        self.cache.clear();
+        self.mails.clear();
+        self.done.clear();
+        self.history.clear();
+        self.back.clear();
+        self.forward.clear();
+        self.scheduled.clear();
+        self.parked.clear();
+        self.compose = None;
+        self.selected = 0;
+        self.palette = false;
+        self.account = "".into();
+        self.status = Status::SignedOut;
+        self.close_settings(cx);
+        self.notice = Some("Signed out. The mail kept on this Mac was removed.".into());
+        cx.notify();
+    }
+
+    /// The Settings sheet.
+    fn settings_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::settings::ThemeChoice;
+        let section = |title: &str| {
+            div()
+                .pt(px(18.))
+                .pb(px(8.))
+                .child(overline(title.to_uppercase(), t.text3))
+        };
+        let switch = |on: bool| {
+            div()
+                .flex_none()
+                .w(px(34.))
+                .h(px(20.))
+                .rounded_full()
+                .p(px(2.))
+                .flex()
+                .when(on, |d| d.justify_end().bg(t.violet))
+                .when(!on, |d| {
+                    d.bg(t.hover).border_1().border_color(t.border_strong)
+                })
+                .child(div().size(px(16.)).rounded_full().bg(gpui::white()))
+        };
+        let toggle = |id: &'static str, label: &'static str, detail: &'static str, on: bool| {
+            let hover = t.hover;
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(9.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .child(div().font_weight(FontWeight::MEDIUM).child(label))
+                        .child(meta(detail, t.text3)),
+                )
+                .child(switch(on))
+        };
+        let choice = |id: &'static str, label: &'static str, on: bool| {
+            div()
+                .id(id)
+                .flex_1()
+                .flex()
+                .justify_center()
+                .py(px(6.))
+                .rounded(px(8.))
+                .cursor_pointer()
+                .when(on, |d| {
+                    d.bg(t.raised)
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .font_weight(FontWeight::SEMIBOLD)
+                })
+                .when(!on, |d| d.text_color(t.text2))
+                .child(label)
+        };
+        let theme = self.settings.theme;
+        let armed = self
+            .sign_out_armed
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(4));
+        let connected = self.gmail.is_some();
+        let card = div()
+            .id("settings")
+            .w(px(560.))
+            .max_h(px(720.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .px(px(24.))
+            .pt(px(22.))
+            .pb(px(20.))
+            .rounded(px(18.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border_strong)
+            .shadow(vec![
+                shadow(c(0x8b7cff, 0.18), 0., 120., 10.),
+                shadow(c(0x000000, if t.dark { 0.6 } else { 0.2 }), 30., 80., -10.),
+            ])
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(serif("Settings", 30., t.text).flex_1())
+                    .child(kbd(t, "esc")),
+            )
+            .child(section("Account"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .px(px(10.))
+                    .child(avatar(Tone::Graphite, &self.me_initials, 32.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(if connected {
+                                short(&self.account, 40)
+                            } else {
+                                "Not connected".into()
+                            }))
+                            .child(meta(
+                                if connected {
+                                    "Gmail. Mail is kept on this Mac, encrypted."
+                                } else {
+                                    "Sample mail. Connect Gmail from the main window."
+                                },
+                                t.text3,
+                            )),
+                    )
+                    .when(connected, |d| {
+                        d.child(
+                            button(
+                                t,
+                                ButtonKind::Secondary,
+                                if armed {
+                                    "Click again to sign out"
+                                } else {
+                                    "Sign out"
+                                },
+                                None,
+                            )
+                            .id("sign-out")
+                            .when(armed, |d| d.text_color(t.rose))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let armed = this
+                                    .sign_out_armed
+                                    .is_some_and(|at| at.elapsed() < Duration::from_secs(4));
+                                if armed {
+                                    this.sign_out(cx);
+                                } else {
+                                    this.sign_out_armed = Some(std::time::Instant::now());
+                                    cx.notify();
+                                }
+                            })),
+                        )
+                    }),
+            )
+            .child(section("Signature"))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .mx(px(10.))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(10.))
+                    .bg(t.hover)
+                    .border_1()
+                    .border_color(t.border)
+                    .text_size(px(14.))
+                    .line_height(px(22.))
+                    // The used lines and one more, at least three.
+                    .children({
+                        let used = self
+                            .signature_lines
+                            .iter()
+                            .rposition(|line| !line.read(cx).text().is_empty())
+                            .map_or(0, |last| last + 1);
+                        self.signature_lines.iter().take((used + 1).max(3)).cloned()
+                    }),
+            )
+            .child(div().px(px(10.)).pt(px(6.)).child(meta(
+                "Added below new messages, replies and forwards.",
+                t.text3,
+            )))
+            .child(section("Appearance"))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(4.))
+                    .mx(px(10.))
+                    .p(px(3.))
+                    .rounded(px(10.))
+                    .bg(t.hover)
+                    .child(
+                        choice("theme-system", "System", theme == ThemeChoice::System).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.settings.theme = ThemeChoice::System;
+                                this.save_settings(cx);
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        choice("theme-light", "Light", theme == ThemeChoice::Light).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.settings.theme = ThemeChoice::Light;
+                                this.dark = false;
+                                this.save_settings(cx);
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        choice("theme-dark", "Dark", theme == ThemeChoice::Dark).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.settings.theme = ThemeChoice::Dark;
+                                this.dark = true;
+                                this.save_settings(cx);
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            )
+            .child(section("Reading"))
+            .child(
+                toggle(
+                    "set-original",
+                    "Open mail in its original formatting",
+                    "Off shows every message in Nimbra’s reader. V switches either way.",
+                    self.settings.original_view,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.original_view = !this.settings.original_view;
+                    this.original = this.settings.original_view;
+                    this.save_settings(cx);
+                    cx.notify();
+                })),
+            )
+            .child(
+                toggle(
+                    "set-images",
+                    "Show remote images",
+                    "Off waits until you ask: remote images can tell a sender you opened the mail.",
+                    self.settings.load_images,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.load_images = !this.settings.load_images;
+                    this.original_images = this.settings.load_images;
+                    this.save_settings(cx);
+                    cx.notify();
+                })),
+            )
+            .child(section("Notifications"))
+            .child(
+                toggle(
+                    "set-notify",
+                    "Notify me about new mail",
+                    "New unread mail in the inbox, while Nimbra is running.",
+                    self.settings.notifications,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.notifications = !this.settings.notifications;
+                    this.save_settings(cx);
+                    cx.notify();
+                })),
+            )
+            .child(
+                div().flex().justify_end().pt(px(20.)).child(
+                    button(t, ButtonKind::Primary, "Done", None)
+                        .id("settings-done")
+                        .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx))),
+                ),
+            );
+        div()
+            .id("settings-scrim")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(t.scrim)
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.close_settings(cx)),
+            )
+            .child(card)
     }
 
     fn fail(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
@@ -4430,31 +5093,41 @@ impl Nimbra {
                     .gap(px(10.))
                     .mt(px(10.))
                     .p(px(6.))
-                    .child(avatar(Tone::Graphite, &self.me_initials, 28.))
+                    .rounded(px(10.))
                     .child(
                         div()
+                            .id("account")
+                            .flex()
                             .flex_1()
                             .min_w(px(0.))
+                            .items_center()
+                            .gap(px(10.))
+                            .cursor_pointer()
+                            .tooltip(tip(t.dark, "Settings", "⌘,"))
+                            .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
+                            .child(avatar(Tone::Graphite, &self.me_initials, 28.))
                             .child(
                                 div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .child(short(&self.account, 22)),
-                            )
-                            .child(meta(
-                                if demo { "Work · 3 accounts" } else { "Gmail" },
-                                t.text3,
-                            )),
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .whitespace_nowrap()
+                                            .overflow_hidden()
+                                            .child(short(&self.account, 22)),
+                                    )
+                                    .child(meta(
+                                        if demo { "Work · 3 accounts" } else { "Gmail" },
+                                        t.text3,
+                                    )),
+                            ),
                     )
                     .child(
                         icon_button(t, if self.dark { "sun" } else { "moon" })
                             .id("theme")
                             .tooltip(tip(t.dark, "Light or dark theme", "⌘⇧L"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.dark = !this.dark;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
                     ),
             )
     }
@@ -6242,14 +6915,11 @@ impl Nimbra {
                 }))
                 .into_any_element()
         });
-        // Address suggestions, drawn over whatever is below the field.
+        // Address suggestions, in a strip under the field. (Not floating over the fields
+        // below: the message editor is a native view that would cover it.)
         let mut dropdown: Option<(Field, AnyElement)> = composer.suggest.as_ref().map(|s| {
             let list = div()
-                .absolute()
-                .top(px(40.))
-                .left(px(88.))
                 .w(px(380.))
-                .occlude()
                 .flex()
                 .flex_col()
                 .p(px(4.))
@@ -6289,10 +6959,15 @@ impl Nimbra {
                             cx.listener(move |this, _, _, cx| this.accept_suggestion(Some(i), cx)),
                         )
                 }));
-            (
-                s.field,
-                gpui::deferred(list).with_priority(2).into_any_element(),
-            )
+            {
+                let strip = div()
+                    .flex()
+                    .justify_center()
+                    .border_b_1()
+                    .border_color(t.border)
+                    .child(column(div()).pl(px(84.)).pr(px(20.)).pb(px(8.)).child(list));
+                (s.field, strip.into_any_element())
+            }
         });
         let mut drop_for = |f: Field| -> Option<AnyElement> {
             if dropdown.as_ref().is_some_and(|(field, _)| *field == f) {
@@ -6440,10 +7115,13 @@ impl Nimbra {
                             .child(kbd(t, "esc")),
                     ),
             )
-            .child(field("To", &composer.to, cc_toggle, drop_for(Field::To)))
+            .child(field("To", &composer.to, cc_toggle, None))
+            .children(drop_for(Field::To))
             .when(composer.show_cc, |d| {
-                d.child(field("Cc", &composer.cc, None, drop_for(Field::Cc)))
-                    .child(field("Bcc", &composer.bcc, None, drop_for(Field::Bcc)))
+                d.child(field("Cc", &composer.cc, None, None))
+                    .children(drop_for(Field::Cc))
+                    .child(field("Bcc", &composer.bcc, None, None))
+                    .children(drop_for(Field::Bcc))
             })
             .child(field("Subject", &composer.subject, None, None))
             .when(!chips.is_empty(), |d| {
@@ -6464,60 +7142,172 @@ impl Nimbra {
                         ),
                 )
             })
-            .child(
-                div()
-                    .id("compose-body")
-                    .flex()
-                    .justify_center()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .child(
-                        column(div())
-                            .flex()
-                            .flex_col()
-                            .px(px(20.))
-                            .py(px(if full { 24. } else { 14. }))
-                            .text_size(px(15.))
-                            .children(composer.lines.iter().cloned())
-                            // The quoted earlier message stays folded behind "…".
-                            .when_some(composer.quoted.clone(), |d, quoted| {
-                                d.child(
-                                    div().flex().pt(px(10.)).child(
-                                        div()
-                                            .id("toggle-quoted")
-                                            .px(px(8.))
-                                            .rounded(px(6.))
-                                            .bg(t.hover)
-                                            .border_1()
-                                            .border_color(t.border)
-                                            .text_color(t.text3)
-                                            .cursor_pointer()
-                                            .child("•••")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                if let Some(composer) = &mut this.compose {
-                                                    composer.show_quoted = !composer.show_quoted;
-                                                    cx.notify();
-                                                }
-                                            })),
-                                    ),
-                                )
-                                .when(composer.show_quoted, |d| {
+            .when(composer.rich, |d| {
+                let editor = self.editor.clone();
+                let tool = |id: usize,
+                            name: &'static str,
+                            label: &'static str,
+                            key: &'static str,
+                            command: &'static str,
+                            active: bool| {
+                    let hover = t.hover;
+                    div()
+                        .id(("format", id))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(28.))
+                        .rounded(px(7.))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .when(active, |d| d.bg(t.hover).border_1().border_color(t.border))
+                        .child(icon(name, 15., if active { t.text } else { t.text2 }))
+                        .tooltip(tip(t.dark, label, key))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(editor) = &this.editor {
+                                editor.exec(command);
+                            }
+                            this.pending_focus = Some(this.editor_focus.clone());
+                            cx.notify();
+                        }))
+                };
+                let f = composer.format;
+                let gap = || div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(t.border);
+                d.child(
+                    div()
+                        .flex()
+                        .justify_center()
+                        .border_b_1()
+                        .border_color(t.border)
+                        .child(
+                            column(div())
+                                .flex()
+                                .items_center()
+                                .gap(px(2.))
+                                .px(px(14.))
+                                .py(px(5.))
+                                .child(tool(0, "bold", "Bold", "⌘B", "bold", f[0]))
+                                .child(tool(1, "italic", "Italic", "⌘I", "italic", f[1]))
+                                .child(tool(2, "underline", "Underline", "⌘U", "underline", f[2]))
+                                .child(gap())
+                                .child(tool(3, "link", "Link", "⌘K", "link", false))
+                                .child(gap())
+                                .child(tool(
+                                    4,
+                                    "bullets",
+                                    "Bulleted list",
+                                    "⌘⇧8",
+                                    "insertUnorderedList",
+                                    f[3],
+                                ))
+                                .child(tool(
+                                    5,
+                                    "numbers",
+                                    "Numbered list",
+                                    "⌘⇧7",
+                                    "insertOrderedList",
+                                    f[4],
+                                ))
+                                .child(tool(6, "quote", "Quote", "", "blockquote", false))
+                                .child(gap())
+                                .child(tool(
+                                    7,
+                                    "clear-format",
+                                    "Clear formatting",
+                                    "",
+                                    "removeFormat",
+                                    false,
+                                )),
+                        ),
+                )
+                // The editor is a native web view: this element only reserves its space and
+                // tells it where that space is each frame.
+                .child(
+                    div()
+                        .id("compose-body")
+                        .flex_1()
+                        .min_h(px(0.))
+                        .key_context("Editor")
+                        .track_focus(&self.editor_focus)
+                        .child(
+                            gpui::canvas(
+                                move |bounds, _, _| {
+                                    if let Some(editor) = &editor {
+                                        editor.set_bounds(
+                                            f32::from(bounds.origin.x),
+                                            f32::from(bounds.origin.y),
+                                            f32::from(bounds.size.width),
+                                            f32::from(bounds.size.height),
+                                        );
+                                    }
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .size_full(),
+                        ),
+                )
+            })
+            .when(!composer.rich, |d| {
+                d.child(
+                    div()
+                        .id("compose-body")
+                        .flex()
+                        .justify_center()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .overflow_y_scroll()
+                        .child(
+                            column(div())
+                                .flex()
+                                .flex_col()
+                                .px(px(20.))
+                                .py(px(if full { 24. } else { 14. }))
+                                .text_size(px(15.))
+                                .children(composer.lines.iter().cloned())
+                                // The quoted earlier message stays folded behind "…".
+                                .when_some(composer.quoted.clone(), |d, quoted| {
                                     d.child(
-                                        div()
-                                            .mt(px(10.))
-                                            .pl(px(14.))
-                                            .border_l_2()
-                                            .border_color(t.border_strong)
-                                            .text_size(px(14.))
-                                            .line_height(px(22.))
-                                            .text_color(t.text3)
-                                            .child(short(&quoted, 6000)),
+                                        div().flex().pt(px(10.)).child(
+                                            div()
+                                                .id("toggle-quoted")
+                                                .px(px(8.))
+                                                .rounded(px(6.))
+                                                .bg(t.hover)
+                                                .border_1()
+                                                .border_color(t.border)
+                                                .text_color(t.text3)
+                                                .cursor_pointer()
+                                                .child("•••")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if let Some(composer) = &mut this.compose {
+                                                        composer.show_quoted =
+                                                            !composer.show_quoted;
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                        ),
                                     )
-                                })
-                            }),
-                    ),
-            )
+                                    .when(
+                                        composer.show_quoted,
+                                        |d| {
+                                            d.child(
+                                                div()
+                                                    .mt(px(10.))
+                                                    .pl(px(14.))
+                                                    .border_l_2()
+                                                    .border_color(t.border_strong)
+                                                    .text_size(px(14.))
+                                                    .line_height(px(22.))
+                                                    .text_color(t.text3)
+                                                    .child(short(&quoted, 6000)),
+                                            )
+                                        },
+                                    )
+                                }),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -7027,6 +7817,15 @@ impl Render for Nimbra {
         if let Some(focus) = self.pending_focus.take() {
             window.focus(&focus);
         }
+        // "System" follows the Mac's light or dark appearance.
+        if self.settings.theme == crate::settings::ThemeChoice::System
+            && std::env::var_os("NIMBRA_THEME").is_none()
+        {
+            self.dark = matches!(
+                window.appearance(),
+                gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
+            );
+        }
         let t = self.theme();
         let viewport = window.viewport_size();
         let viewport = (f32::from(viewport.width), f32::from(viewport.height));
@@ -7037,6 +7836,7 @@ impl Render for Nimbra {
             composer.position = Some((((viewport.0 - composer.size.0) / 2.).max(0.), 96.));
         }
         self.sync_html_view(window);
+        self.sync_editor(window, cx);
         self.frame = Some(window.bounds());
         if self.pull_hold && !self.fetching {
             self.pull_hold = false;
@@ -7093,6 +7893,8 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
                 if this.menu.take().is_some() {
                     cx.notify();
+                } else if this.settings_open {
+                    this.close_settings(cx);
                 } else if let Some(composer) = this.compose.as_mut()
                     && composer.suggest.take().is_some()
                 {
@@ -7111,10 +7913,8 @@ impl Render for Nimbra {
                     this.run_command(cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &ToggleTheme, _, cx| {
-                this.dark = !this.dark;
-                cx.notify();
-            }))
+            .on_action(cx.listener(|this, _: &ToggleTheme, _, cx| this.toggle_theme(cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &Back, _, cx| this.go_back(cx)))
             .on_action(cx.listener(|this, _: &Forward, _, cx| this.go_forward(cx)))
@@ -7171,6 +7971,7 @@ impl Render for Nimbra {
             .when(self.compose.is_some(), |d| {
                 d.child(self.compose_view(&t, viewport, cx))
             })
+            .when(self.settings_open, |d| d.child(self.settings_view(&t, cx)))
             .when_some(self.notice.clone(), |d, notice| {
                 d.child(
                     div()

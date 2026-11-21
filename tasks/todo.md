@@ -22,13 +22,13 @@ to do, from reading the current code. Grouped into milestones; each one ships on
 - [x] **Cc and Bcc** fields in the composer (shown on demand), with validation like To.
 - [~] **Recipient chips and autocomplete** (autocomplete done; chips not yet) from people you have emailed (local, from the
       store; no contacts permission needed at first).
-- [ ] **Rich text editor**: bold, italic, links, lists, paste with formatting, line
+- [x] **Rich text editor**: bold, italic, links, lists, paste with formatting, line
       wrapping. Plan: the editor in a web view (same engine as the original view), sending
       multipart text and HTML.
 - [x] **Quoted reply**: include the original message, folded behind "•••", like drafts.
 - [x] **Attachments in outgoing mail**: attach files (picker and drag and drop), with a
       size check (Gmail limit 25 MB).
-- [ ] **Signature**: one editable signature, added to new messages and replies.
+- [x] **Signature**: one editable signature, added to new messages and replies.
 - [x] **Undo send**: hold a sent message for a few seconds with an Undo pill.
 - [x] **Send later**: the button exists but does nothing; schedule with a date picker.
 - [x] **Autosave drafts** while typing (today only on ⌘S).
@@ -49,9 +49,9 @@ to do, from reading the current code. Grouped into milestones; each one ships on
 
 ## Milestone 4: App essentials
 
-- [ ] **Settings window** (⌘,): account, signature, notifications on or off, theme, start
+- [~] **Settings window** (done: account, signature, theme, reading, notifications; start at login still to do) (⌘,): account, signature, notifications on or off, theme, start
       at login, original view on or off, images on or off.
-- [ ] **Sign out** that removes the token, store and key.
+- [x] **Sign out** that removes the token, store and key.
 - [ ] **Multiple accounts** with a unified inbox.
 - [ ] **Offline**: queue archive, star, read, send while offline and retry; show an
       offline indicator.
