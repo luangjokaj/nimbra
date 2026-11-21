@@ -174,10 +174,10 @@ pub fn request_permission() {
     }
 }
 
-/// Shows a notification. `id` identifies it, so the same thread never stacks up twice.
+/// Shows a notification. `id` identifies it, so the same thread never stacks up twice;
+/// `sound` plays the default notification sound with it.
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
-/// Posts a notification; `sound` plays the default notification sound with it.
 pub fn show(id: &str, title: &str, body: &str, sound: bool) {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};

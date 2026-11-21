@@ -1609,6 +1609,15 @@ impl Nimbra {
         hits
     }
 
+    /// Removes one search from the recent ones.
+    fn forget_search(&mut self, query: &str, cx: &mut Context<Self>) {
+        self.settings.recent_searches.retain(|q| q != query);
+        let rows = self.settings.recent_searches.len() + SEARCH_TIPS.len();
+        self.finder_sel = self.finder_sel.min(rows.saturating_sub(1));
+        self.save_settings(cx);
+        cx.notify();
+    }
+
     fn finder_step(&mut self, delta: isize, cx: &mut Context<Self>) {
         let empty = self.finder.read(cx).text().trim().is_empty();
         let rows = if empty {
@@ -1752,14 +1761,65 @@ impl Nimbra {
         if empty {
             let recent = &self.settings.recent_searches;
             if !recent.is_empty() {
-                rows.push(section("RECENT").into_any_element());
+                rows.push(
+                    div()
+                        .flex()
+                        .items_end()
+                        .pr(px(6.))
+                        .child(section("RECENT").flex_1())
+                        .child(
+                            div()
+                                .id("finder-clear-recent")
+                                .mb(px(3.))
+                                .px(px(6.))
+                                .py(px(2.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .text_size(px(11.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(t.text3)
+                                .hover(move |s| s.bg(hover).text_color(t.text))
+                                .press(t)
+                                .child("Clear all")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.settings.recent_searches.clear();
+                                    this.finder_sel = 0;
+                                    this.save_settings(cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                );
             }
             for (i, text) in recent.iter().enumerate() {
                 let value = text.clone();
                 rows.push(
                     row_base(i, self.finder_sel == i)
+                        .group("finder-recent")
                         .child(icon("clock", 15., t.text3))
                         .child(div().flex_1().min_w(px(0.)).child(short(text, 70)))
+                        .child({
+                            // Removes just this search.
+                            let gone = text.clone();
+                            div()
+                                .id(("finder-forget", i))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(22.))
+                                .rounded(px(6.))
+                                .when(self.finder_sel != i, |d| {
+                                    d.invisible().group_hover("finder-recent", |s| s.visible())
+                                })
+                                .hover(move |s| s.bg(hover))
+                                .press(t)
+                                .child(icon("x", 13., t.text3))
+                                .tooltip(tip(t.dark, "Remove from recent", ""))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.forget_search(&gone, cx);
+                                }))
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let v = value.clone();
                             this.finder

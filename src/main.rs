@@ -49,6 +49,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "draft",
     "done",
     "copy",
+    "x",
     "trash",
     "search",
     "reply",
