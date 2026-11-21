@@ -31,6 +31,7 @@ actions!(
         Confirm,
         ToggleTheme,
         ToggleSidebar,
+        ToggleList,
         ToggleStar,
         Trash,
         Compose,
@@ -201,6 +202,11 @@ pub struct Nimbra {
     palette_sel: usize,
     dark: bool,
     sidebar_open: bool,
+    /// The message list: shown or hidden, its width, and an in-progress resize
+    /// (mouse x at the start, width at the start).
+    list_open: bool,
+    list_width: f32,
+    list_grab: Option<(f32, f32)>,
     /// Bumped on every toggle / reload so the matching animation replays.
     sidebar_gen: usize,
     reload_gen: usize,
@@ -294,6 +300,9 @@ impl Nimbra {
             palette: screen == "palette",
             palette_sel: 0,
             dark: std::env::var("NIMBRA_THEME").as_deref() != Ok("light"),
+            list_open: std::env::var("NIMBRA_LIST").as_deref() != Ok("closed"),
+            list_width: 452.,
+            list_grab: None,
             sidebar_open: std::env::var("NIMBRA_SIDEBAR").as_deref() != Ok("closed"),
             sidebar_gen: 0,
             reload_gen: 0,
@@ -1448,6 +1457,13 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// Hides or shows the message list, leaving the reading pane the full width.
+    fn toggle_list(&mut self, cx: &mut Context<Self>) {
+        self.list_open = !self.list_open;
+        self.list_grab = None;
+        cx.notify();
+    }
+
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_open = !self.sidebar_open;
         self.sidebar_gen += 1;
@@ -2130,11 +2146,35 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(452.))
+            .relative()
+            .w(px(self.list_width))
             .h_full()
             .bg(t.surface)
             .border_r_1()
             .border_color(t.border)
+            // Drag the right edge to resize the list; double-click it to hide the list.
+            .child(
+                div()
+                    .id("list-resize")
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(px(-3.))
+                    .w(px(7.))
+                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .hover(|s| s.bg(gpui::white().opacity(0.06)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                            if event.click_count == 2 {
+                                this.toggle_list(cx);
+                            } else {
+                                this.list_grab =
+                                    Some((f32::from(event.position.x), this.list_width));
+                            }
+                        }),
+                    ),
+            )
             // Makes room for the window controls while the sidebar is hidden.
             .child(
                 self.with_sidebar_progress("list-top", div().flex_none(), |d, open| {
@@ -2643,12 +2683,23 @@ impl Nimbra {
                     .flex_none()
                     .items_center()
                     .gap(px(2.))
-                    .pl(px(28.))
+                    .pl(px(if !self.list_open && !self.sidebar_open {
+                        236.
+                    } else {
+                        20.
+                    }))
                     .pr(px(20.))
                     .py(px(11.))
                     .border_b_1()
                     .border_color(t.border)
                     .on_mouse_down(MouseButton::Left, drag_or_zoom)
+                    .child(
+                        icon_button(t, "list")
+                            .id("toggle-list")
+                            .when(!self.list_open, |d| d.bg(t.selected))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
+                    )
+                    .child(div().w(px(6.)))
                     .child(
                         icon_button(t, "done")
                             .id("mark-done")
@@ -3023,7 +3074,7 @@ impl Nimbra {
                     .flex()
                     .flex_col()
                     .flex_none()
-                    .w(px(452.))
+                    .w(px(self.list_width))
                     .h_full()
                     .border_r_1()
                     .border_color(t.border)
@@ -3975,6 +4026,22 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &Forward, _, cx| this.go_forward(cx)))
             .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                let Some((start, width)) = this.list_grab else {
+                    return;
+                };
+                if event.pressed_button != Some(MouseButton::Left) {
+                    this.list_grab = None;
+                    return;
+                }
+                this.list_width = (width + f32::from(event.position.x) - start).clamp(300., 720.);
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.list_grab = None),
+            )
+            .on_action(cx.listener(|this, _: &ToggleList, _, cx| this.toggle_list(cx)))
             .relative()
             .flex()
             .size_full()
@@ -3998,9 +4065,9 @@ impl Render for Nimbra {
                     d.child(self.zero(&t))
                 }
                 Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t)),
-                Status::Demo | Status::Ready => {
-                    d.child(self.list(&t, cx)).child(self.reading(&t, cx))
-                }
+                Status::Demo | Status::Ready => d
+                    .when(self.list_open, |d| d.child(self.list(&t, cx)))
+                    .child(self.reading(&t, cx)),
                 Status::Loading => d.child(self.skeleton(&t)),
                 _ => d.child(self.status_screen(&t, cx)),
             })
