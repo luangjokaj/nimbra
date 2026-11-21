@@ -52,7 +52,7 @@ to do, from reading the current code. Grouped into milestones; each one ships on
 - [x] **Settings window** (⌘,): account, signature, theme, reading, notifications, open at login.
 - [x] **Sign out** that removes the token, store and key.
 - [ ] **Multiple accounts** with a unified inbox.
-- [ ] **Offline**: queue archive, star, read, send while offline and retry; show an
+- [x] **Offline**: queue archive, star, read, send while offline and retry; show an
       offline indicator.
 - [x] **Menu bar** (File, Edit, View, Message, Window) with the shortcuts, so actions are
       discoverable; Dock badge with the unread count.

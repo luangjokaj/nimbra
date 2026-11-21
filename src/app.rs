@@ -259,6 +259,19 @@ enum Parked {
     Discarded,
 }
 
+/// Changes and messages made while offline, sent once Gmail can be reached again.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Outbox {
+    changes: Vec<(String, gmail::Change)>,
+    mail: Vec<QueuedMail>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct QueuedMail {
+    draft_id: Option<String>,
+    outgoing: gmail::Outgoing,
+}
+
 /// A message to send later: its saved draft and when.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Scheduled {
@@ -703,6 +716,12 @@ pub struct Nimbra {
     schedule_watch: bool,
     /// The times offered by the open Send later menu.
     send_later_times: Vec<i64>,
+    /// Gmail could not be reached the last time we tried.
+    offline: bool,
+    /// What is waiting to go out once Gmail can be reached.
+    outbox: Outbox,
+    /// The offline retry loop is running.
+    retrying: bool,
     /// The number shown on the Dock icon.
     badge: Option<u32>,
     /// A document waiting to be printed (it is loaded into the web view first).
@@ -885,6 +904,9 @@ impl Nimbra {
             cache: HashMap::new(),
             prefetching: false,
             open_when_listed: None,
+            offline: false,
+            outbox: Outbox::default(),
+            retrying: false,
             badge: None,
             print_pending: None,
             login_item: false,
@@ -1432,10 +1454,11 @@ impl Nimbra {
                     let mails: Option<Vec<Mail>> = store.load(&record(view));
                     let scheduled: Option<Vec<Scheduled>> = store.load("scheduled");
                     let snoozed: Option<Vec<Snooze>> = store.load("snoozed");
-                    anyhow::Ok((store, saved, mails, scheduled, snoozed))
+                    let outbox: Option<Outbox> = store.load("outbox");
+                    anyhow::Ok((store, saved, mails, scheduled, snoozed, outbox))
                 })
                 .await;
-            let Ok((store, saved, mails, scheduled, snoozed)) = opened else {
+            let Ok((store, saved, mails, scheduled, snoozed, outbox)) = opened else {
                 eprintln!("nimbra: mail store unavailable; continuing without it");
                 this.update(cx, |this, cx| this.fetch_inbox(cx)).ok();
                 return;
@@ -1444,6 +1467,10 @@ impl Nimbra {
                 this.store = Some(Arc::new(store));
                 this.scheduled = scheduled.unwrap_or_default();
                 this.snoozed = snoozed.unwrap_or_default();
+                this.outbox = outbox.unwrap_or_default();
+                if !this.outbox.changes.is_empty() || !this.outbox.mail.is_empty() {
+                    this.went_offline(cx);
+                }
                 if !this.scheduled.is_empty() || !this.snoozed.is_empty() {
                     this.watch_schedule(cx);
                 }
@@ -1967,6 +1994,12 @@ impl Nimbra {
                 return;
             };
             this.update(cx, |this, cx| {
+                // Offline: keep the change here and send it when the connection is back.
+                if error.is::<gmail::Offline>() {
+                    this.outbox.changes.push((id, change));
+                    this.went_offline(cx);
+                    return;
+                }
                 // Only roll back if this row is still the same thread.
                 if removed && this.mails.get(index).and_then(|m| m.id.as_deref()) == Some(&id) {
                     this.done[index] = false;
@@ -2799,6 +2832,116 @@ impl Nimbra {
             Some(menu)
         };
         cx.notify();
+    }
+
+    /// Gmail could not be reached: remember what is waiting, and keep checking.
+    fn went_offline(&mut self, cx: &mut Context<Self>) {
+        self.offline = true;
+        self.save_outbox(cx);
+        if self.retrying {
+            cx.notify();
+            return;
+        }
+        self.retrying = true;
+        eprintln!("nimbra: offline");
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(15)).await;
+                let Ok(Some((client, outbox))) =
+                    this.update(cx, |this, _| this.gmail.clone().map(|c| (c, this.outbox.clone())))
+                else {
+                    break;
+                };
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        // Is Gmail reachable again?
+                        if let Err(error) = client.profile() {
+                            return Err(error);
+                        }
+                        let mut changes = 0;
+                        for (id, change) in &outbox.changes {
+                            match client.change(id, *change) {
+                                Err(error) if error.is::<gmail::Offline>() => break,
+                                // Anything else (the thread is gone, say) is dropped.
+                                _ => changes += 1,
+                            }
+                        }
+                        let mut sent = 0;
+                        let mut kept = Vec::new();
+                        if changes == outbox.changes.len() {
+                            for item in &outbox.mail {
+                                let result = match &item.draft_id {
+                                    Some(id) => client.send_draft(id, &item.outgoing),
+                                    None => client.send_message(&item.outgoing),
+                                };
+                                match result {
+                                    Err(error) if error.is::<gmail::Offline>() => break,
+                                    Err(_) => {
+                                        // Not lost: kept as a draft to look at.
+                                        let _ = client.save_draft(item.draft_id.as_deref(), &item.outgoing);
+                                        kept.push(item.outgoing.subject.clone());
+                                    }
+                                    Ok(()) => {}
+                                }
+                                sent += 1;
+                            }
+                        }
+                        anyhow::Ok((changes, sent, kept))
+                    })
+                    .await;
+                let done = this.update(cx, |this, cx| {
+                    match result {
+                        Ok((changes, sent, kept)) => {
+                            this.outbox.changes.drain(..changes.min(this.outbox.changes.len()));
+                            this.outbox.mail.drain(..sent.min(this.outbox.mail.len()));
+                            this.save_outbox(cx);
+                            if this.outbox.changes.is_empty() && this.outbox.mail.is_empty() {
+                                this.offline = false;
+                                this.retrying = false;
+                                eprintln!("nimbra: back online ({changes} changes, {sent} messages caught up)");
+                                this.notice = Some(if !kept.is_empty() {
+                                    format!("Back online. “{}” could not be sent; it is in Drafts.", short(&kept[0], 40)).into()
+                                } else if sent > 0 {
+                                    format!("Back online. {sent} waiting message{} sent.", if sent == 1 { " was" } else { "s were" }).into()
+                                } else {
+                                    "Back online.".into()
+                                });
+                                this.refresh(cx);
+                                cx.notify();
+                                return true;
+                            }
+                        }
+                        Err(error) if error.is::<gmail::SignedOut>() => {
+                            this.retrying = false;
+                            this.fail(error, cx);
+                            return true;
+                        }
+                        Err(_) => {}
+                    }
+                    cx.notify();
+                    false
+                });
+                if !matches!(done, Ok(false)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn save_outbox(&self, cx: &mut Context<Self>) {
+        let (Some(store), outbox) = (self.store.clone(), self.outbox.clone()) else {
+            return;
+        };
+        cx.background_executor()
+            .spawn(async move {
+                if store.save("outbox", &outbox).is_err() {
+                    eprintln!("nimbra: could not save the offline queue");
+                }
+            })
+            .detach();
     }
 
     /// ⌘P: prints the open message with its sender, recipients and date.
@@ -4129,6 +4272,10 @@ impl Nimbra {
         };
         let outgoing = composer.outgoing(cx);
         let draft_id = composer.draft_id.clone();
+        let queued = QueuedMail {
+            draft_id: draft_id.clone(),
+            outgoing: outgoing.clone(),
+        };
         let serial = composer.serial;
         composer.sending = true;
         self.parked.push((Parked::InFlight, composer));
@@ -4155,6 +4302,15 @@ impl Nimbra {
                         this.parked.clear();
                         this.compose = None;
                         this.fail(error, cx);
+                    }
+                    Err(error) if error.is::<gmail::Offline>() => {
+                        this.parked.retain(|(_, c)| c.serial != serial);
+                        this.outbox.mail.push(queued);
+                        this.notice = Some(
+                            "You’re offline. The message will be sent when the connection is back."
+                                .into(),
+                        );
+                        this.went_offline(cx);
                     }
                     Err(error) => {
                         if let Some(composer) = this.composer_mut(serial) {
@@ -5180,6 +5336,16 @@ impl Nimbra {
     }
 
     fn fail(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
+        // Offline is a state, not an error: keep showing what is here, and catch up later.
+        if error.is::<gmail::Offline>() {
+            self.fetching = false;
+            if self.mails.is_empty() && !matches!(self.status, Status::Ready) {
+                self.status = Status::Failed(error.to_string().into());
+            }
+            self.went_offline(cx);
+            cx.notify();
+            return;
+        }
         eprintln!("nimbra: {error}");
         if error.is::<gmail::SignedOut>() {
             self.gmail = None;
@@ -5937,6 +6103,38 @@ impl Nimbra {
                             .into_any_element()
                     }),
             )
+            // Offline: say so, and how much is waiting to go out.
+            .when(self.offline, |d| {
+                let waiting = self.outbox.changes.len() + self.outbox.mail.len();
+                d.child(
+                    div()
+                        .id("offline")
+                        .ml(px(6.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded_full()
+                        .bg(t.amber.opacity(0.14))
+                        .border_1()
+                        .border_color(t.amber.opacity(0.4))
+                        .tooltip(tip(
+                            t.dark,
+                            "Changes are kept and sent when the connection is back",
+                            "",
+                        ))
+                        .child(div().size(px(6.)).rounded_full().bg(t.amber))
+                        .child(meta(
+                            if waiting == 0 {
+                                "Offline".to_string()
+                            } else {
+                                format!("Offline · {waiting} waiting")
+                            },
+                            t.text2,
+                        )),
+                )
+            })
     }
 
     fn sidebar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
