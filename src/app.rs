@@ -129,6 +129,17 @@ impl Composer {
     }
 }
 
+/// Pull-to-refresh distances, in points: where a release triggers a refresh, where the
+/// indicator rests while refreshing, and the most the list can stretch.
+const PULL_TRIGGER: f32 = 58.;
+const PULL_REST: f32 = 44.;
+const PULL_LIMIT: f32 = 150.;
+
+/// Rubber-band resistance: the further the pull, the less the list follows.
+fn rubber_band(pull: f32) -> f32 {
+    (1. - 1. / (pull * 0.55 / PULL_LIMIT + 1.)) * PULL_LIMIT
+}
+
 /// Which composer field an event came from.
 #[derive(Clone, Copy, PartialEq)]
 enum Field {
@@ -207,6 +218,16 @@ pub struct Nimbra {
     list_open: bool,
     list_width: f32,
     list_grab: Option<(f32, f32)>,
+    /// Pull to refresh: the list's scroll position, how far it has been pulled past the
+    /// top, and whether the current trackpad gesture started at the top.
+    list_scroll: gpui::ScrollHandle,
+    pull: f32,
+    pull_armed: bool,
+    /// The indicator settling after release: (from height, to height). `pull_gen` restarts it.
+    pull_anim: Option<(f32, f32)>,
+    pull_gen: usize,
+    /// The indicator is held open while the refresh it started is running.
+    pull_hold: bool,
     /// Bumped on every toggle / reload so the matching animation replays.
     sidebar_gen: usize,
     reload_gen: usize,
@@ -301,8 +322,18 @@ impl Nimbra {
             palette_sel: 0,
             dark: std::env::var("NIMBRA_THEME").as_deref() != Ok("light"),
             list_open: std::env::var("NIMBRA_LIST").as_deref() != Ok("closed"),
-            list_width: 452.,
+            // NIMBRA_LIST_WIDTH=<px> starts with the list at that width (screenshots).
+            list_width: std::env::var("NIMBRA_LIST_WIDTH")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .map_or(452., |w| w.clamp(300., 720.)),
             list_grab: None,
+            list_scroll: gpui::ScrollHandle::new(),
+            pull: 0.,
+            pull_armed: false,
+            pull_anim: None,
+            pull_gen: 0,
+            pull_hold: false,
             sidebar_open: std::env::var("NIMBRA_SIDEBAR").as_deref() != Ok("closed"),
             sidebar_gen: 0,
             reload_gen: 0,
@@ -902,7 +933,12 @@ impl Nimbra {
         let ready = matches!(self.status, Status::Demo | Status::Ready);
         let covered =
             self.palette || self.compose.is_some() || self.menu.is_some() || self.notice.is_some();
-        if !self.original || !ready || covered || !self.visible().contains(&self.selected) {
+        if !self.original
+            || !ready
+            || covered
+            || self.mailbox == View::Drafts
+            || !self.visible().contains(&self.selected)
+        {
             return None;
         }
         let mail = self.mails.get(self.selected)?;
@@ -1457,6 +1493,118 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// Pull to refresh, in the style of the system's: the list stretches with rubber-band
+    /// resistance, letting go past the threshold starts the refresh, and the indicator
+    /// springs back when it is done. Only a trackpad gesture that begins with the list
+    /// already at the top counts, so the momentum of a normal scroll up never triggers it.
+    fn pull_list(&mut self, event: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) {
+        let at_top = f32::from(self.list_scroll.offset().y) >= -0.5;
+        match event.touch_phase {
+            gpui::TouchPhase::Started => {
+                self.pull_armed = at_top && !self.pull_hold;
+                return;
+            }
+            gpui::TouchPhase::Ended => {
+                self.pull_armed = false;
+                if self.pull <= 0. {
+                    return;
+                }
+                let shown = rubber_band(self.pull);
+                self.pull = 0.;
+                self.pull_gen += 1;
+                if shown >= PULL_TRIGGER && !self.fetching {
+                    // Settle at the resting height and stay there while mail is fetched.
+                    self.pull_anim = Some((shown, PULL_REST));
+                    self.pull_hold = true;
+                    self.reload(cx);
+                } else {
+                    self.pull_anim = Some((shown, 0.));
+                }
+                cx.notify();
+                return;
+            }
+            gpui::TouchPhase::Moved => {}
+        }
+        if !self.pull_armed {
+            return;
+        }
+        let dy = f32::from(event.delta.pixel_delta(px(18.)).y);
+        if (dy > 0. && at_top) || (dy < 0. && self.pull > 0.) {
+            self.pull = (self.pull + dy).max(0.);
+            self.pull_anim = None;
+            cx.notify();
+        }
+    }
+
+    /// The strip at the top of the list while pulling, refreshing or settling.
+    fn pull_indicator(&self, t: &Theme) -> Option<AnyElement> {
+        let strip = |height: f32, label: &'static str, spin: bool, turn: f32| {
+            let arrow = icon("reload", 15., t.violet);
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .h(px(height.max(0.)))
+                .overflow_hidden()
+                .child(if spin {
+                    arrow
+                        .with_animation(
+                            "pull-spin",
+                            Animation::new(Duration::from_millis(800)).repeat(),
+                            |svg, delta| {
+                                svg.with_transformation(Transformation::rotate(percentage(delta)))
+                            },
+                        )
+                        .into_any_element()
+                } else {
+                    arrow
+                        .with_transformation(Transformation::rotate(percentage(turn)))
+                        .into_any_element()
+                })
+                .child(meta(label, t.text3))
+        };
+        if self.pull > 0. {
+            // Following the finger: no animation, just the stretched height.
+            let shown = rubber_band(self.pull);
+            let ready = shown >= PULL_TRIGGER;
+            return Some(
+                strip(
+                    shown,
+                    if ready {
+                        "Release to refresh"
+                    } else {
+                        "Pull to refresh"
+                    },
+                    false,
+                    (shown / PULL_TRIGGER).min(1.) * 0.75,
+                )
+                .opacity(0.45 + 0.55 * (shown / PULL_TRIGGER).min(1.))
+                .into_any_element(),
+            );
+        }
+        let (from, to) = self.pull_anim?;
+        let label = if self.pull_hold {
+            "Checking for mail…"
+        } else {
+            ""
+        };
+        Some(
+            strip(from, label, self.pull_hold, 0.75)
+                .with_animation(
+                    ("pull-settle", self.pull_gen),
+                    // A spring-like ease that overshoots slightly before coming to rest.
+                    Animation::new(Duration::from_millis(520)).with_easing(|x| {
+                        let (c1, c3) = (1.70158_f32, 2.70158_f32);
+                        1. + c3 * (x - 1.).powi(3) + c1 * (x - 1.).powi(2)
+                    }),
+                    move |strip, delta| strip.h(px((from + (to - from) * delta).max(0.))),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Hides or shows the message list, leaving the reading pane the full width.
     fn toggle_list(&mut self, cx: &mut Context<Self>) {
         self.list_open = !self.list_open;
@@ -1998,6 +2146,24 @@ impl Nimbra {
         let m = &self.mails[i];
         let selected = i == self.selected;
         let hover = t.hover;
+        // How many characters fit on a row at the list's current width (the text is cut
+        // with an ellipsis by character count, so this follows the resize handle).
+        let line = ((self.list_width - 116.) / 7.4).max(8.) as usize;
+        // On a narrow list the tag gives way so the sender's name stays readable.
+        let tag = m.tag.clone().filter(|_| line >= 36);
+        let tag_chars = tag
+            .as_ref()
+            .map_or(0, |(label, _)| label.chars().count() + 6);
+        let extras =
+            13 + tag_chars + if m.thread.is_some() { 3 } else { 0 } + if m.starred { 3 } else { 0 };
+        let sender_max = line.saturating_sub(extras).max(6);
+        let subject = short(m.subject.split(',').next().unwrap_or(&m.subject), line);
+        let snippet_max = line.saturating_sub(subject.chars().count() + 2);
+        let snippet = if snippet_max >= 8 {
+            short(&m.snippet, snippet_max)
+        } else {
+            SharedString::default()
+        };
 
         div()
             .id(("row", i))
@@ -2013,10 +2179,6 @@ impl Nimbra {
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.open(i);
                 this.load_selected(cx);
-                // A draft opens straight into the composer for editing.
-                if this.mailbox == View::Drafts && !this.is_demo() {
-                    this.open_draft(i, cx);
-                }
                 cx.notify();
             }))
             .child(
@@ -2047,11 +2209,11 @@ impl Nimbra {
                                     .min_w(px(0.))
                                     .whitespace_nowrap()
                                     .overflow_hidden()
-                                    .child(short(&m.sender, 30)),
+                                    .child(short(&m.sender, sender_max)),
                             )
                             .children(m.thread.clone().map(|n| mono(n, t.text3)))
                             .when(m.starred, |d| d.child(icon("star", 13., t.amber)))
-                            .children(m.tag.clone().map(|(label, a)| pill(t, &label, t.accent(a))))
+                            .children(tag.map(|(label, a)| pill(t, &label, t.accent(a))))
                             .child(div().flex_1())
                             .when(!selected, |d| d.child(mono(m.time.clone(), t.text3)))
                             .when(selected, |d| {
@@ -2078,10 +2240,7 @@ impl Nimbra {
                                     .overflow_hidden()
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(if selected { t.text } else { t.text2 })
-                                    .child(short(
-                                        m.subject.split(',').next().unwrap_or(&m.subject),
-                                        48,
-                                    )),
+                                    .child(subject),
                             )
                             .child(
                                 div()
@@ -2090,7 +2249,7 @@ impl Nimbra {
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .text_color(t.text3)
-                                    .child(short(&m.snippet, 70)),
+                                    .child(snippet),
                             ),
                     ),
             )
@@ -2253,6 +2412,19 @@ impl Nimbra {
                     .px(px(10.))
                     .pb(px(10.))
                     .overflow_y_scroll()
+                    .track_scroll(&self.list_scroll)
+                    .on_scroll_wheel(cx.listener(|this, event, _, cx| this.pull_list(event, cx)))
+                    .children(self.pull_indicator(t))
+                    .when(self.fetching && !self.pull_hold && self.pull == 0., |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .justify_center()
+                                .py(px(8.))
+                                .child(meta("Checking for mail…", t.text3)),
+                        )
+                    })
                     .when(!today.is_empty(), |d| d.child(group("TODAY")))
                     .children(today.into_iter().map(|i| self.row(t, i, cx)))
                     .when(!earlier.is_empty(), |d| d.child(group("EARLIER")))
@@ -2608,7 +2780,9 @@ impl Nimbra {
             .unwrap_or(0)
             + 1;
         // Only switch panes when this thread really has HTML to show.
-        let original = self.original && m.html.is_some();
+        // Drafts always use the reader, so a click on the text can open the editor.
+        let is_draft = self.mailbox == View::Drafts && !self.is_demo();
+        let original = self.original && m.html.is_some() && !is_draft;
         let divider = || div().h(px(1.)).bg(t.border);
 
         let earlier = |tone: Tone, initials: &str, name: &str, snippet: &str, when: &str| {
@@ -2700,6 +2874,19 @@ impl Nimbra {
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
                     )
                     .child(div().w(px(6.)))
+                    .when(is_draft, |d| {
+                        d.child(
+                            button(t, ButtonKind::Primary, "Edit draft", None)
+                                .id("edit-draft")
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.open_draft(this.selected, cx)
+                                    }),
+                                ),
+                        )
+                        .child(div().w(px(8.)))
+                    })
+                    .child(div().w(px(6.)))
                     .child(
                         icon_button(t, "done")
                             .id("mark-done")
@@ -2787,6 +2974,12 @@ impl Nimbra {
                         .flex_1()
                         .min_h(px(0.))
                         .overflow_y_scroll()
+                        // Clicking a draft's text opens it in the editor.
+                        .when(is_draft, |d| {
+                            d.cursor_pointer().on_click(
+                                cx.listener(|this, _, _, cx| this.open_draft(this.selected, cx)),
+                            )
+                        })
                         .child(
                             div()
                                 .flex()
@@ -3958,6 +4151,11 @@ impl Render for Nimbra {
             composer.position = Some((((viewport.0 - composer.size.0) / 2.).max(0.), 96.));
         }
         self.sync_html_view(window);
+        if self.pull_hold && !self.fetching {
+            self.pull_hold = false;
+            self.pull_anim = Some((PULL_REST, 0.));
+            self.pull_gen += 1;
+        }
         let empty = self.visible().is_empty();
 
         div()

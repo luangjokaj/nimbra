@@ -31,7 +31,7 @@ What it does with your mailbox:
 - `E` archives the thread in Gmail (removes it from the inbox) and `Z` puts it back. Both only work in the Inbox. 
 - The sign-in is stored in the system keychain under `nimbra`. Delete that entry to sign out.
 
-Without the file, or with `NIMBRA_DEMO=1`, the app uses sample data and never touches the network. Messages are written in a plain-text composer (`C`, or `R` to reply in the thread). Clicking a thread in Drafts opens it in the composer for editing; the quoted or forwarded message stays folded behind a `•••` toggle and is kept when you save (`⌘S`) or send. The floating composer can be dragged by its header and resized from its bottom-right corner. The toolbar also offers reply all, forward, adding a label, mark as unread and Open in Gmail. Search uses Gmail's own syntax (`from:ana has:attachment newer_than:7d`). Not connected yet: snooze, reminders, attachments, Cc/Bcc, and the AI brief.
+Without the file, or with `NIMBRA_DEMO=1`, the app uses sample data and never touches the network. Messages are written in a plain-text composer (`C`, or `R` to reply in the thread). A thread in Drafts previews first; **Edit draft** in the toolbar, or a click on its text, opens it in the composer; the quoted or forwarded message stays folded behind a `•••` toggle and is kept when you save (`⌘S`) or send. The floating composer can be dragged by its header and resized from its bottom-right corner. The toolbar also offers reply all, forward, adding a label, mark as unread and Open in Gmail. Search uses Gmail's own syntax (`from:ana has:attachment newer_than:7d`). Not connected yet: snooze, reminders, attachments, Cc/Bcc, and the AI brief.
 
 ## Run
 
@@ -79,6 +79,7 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 | `⌘⇧B` | Show or hide the message list (also the first toolbar button; drag the list's right edge to resize it) |
 | `⌘[` / `⌘]` | Back / forward through opened threads |
 | `⌘R` | Reload (mock mail check: restores the inbox) |
+| Pull the list down and let go | Refresh (trackpad, when the list is at the top) |
 
 ## Screenshot states
 
