@@ -26,7 +26,12 @@ pub(super) fn key_of(mail: &Mail) -> String {
 }
 
 impl MessageWindow {
-    pub(super) fn new(owner: Entity<Nimbra>, mail: Mail, original: bool, cx: &mut Context<Self>) -> Self {
+    pub(super) fn new(
+        owner: Entity<Nimbra>,
+        mail: Mail,
+        original: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let observe = cx.observe(&owner, |_, _, cx| cx.notify());
         MessageWindow {
             owner,
@@ -60,7 +65,13 @@ impl MessageWindow {
     }
 
     /// Runs `act` on the thread in the main window (selected there first).
-    fn act(&mut self, window: &mut Window, cx: &mut Context<Self>, act: impl FnOnce(&mut Nimbra, &mut Context<Nimbra>) + 'static, close: bool) {
+    fn act(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        act: impl FnOnce(&mut Nimbra, &mut Context<Nimbra>) + 'static,
+        close: bool,
+    ) {
         let key = self.key.clone();
         let done = self.owner.update(cx, |n, cx| {
             let Some(index) = n.mails.iter().position(|m| key_of(m) == key) else {
@@ -141,7 +152,9 @@ impl Render for MessageWindow {
         } else {
             self.sync_web_view(&m, dark, images, window);
         }
-        let original = self.original && m.html.is_some();
+        // While a reply floats here the email shows in the reader (drawn by the app, so the
+        // reply can sit on top of it; the original's web view is native and would cover it).
+        let original = self.original && m.html.is_some() && compose.is_none();
         let width = f32::from(window.viewport_size().width);
 
         let tool = |name: &'static str, label: &'static str, id: usize| {
@@ -167,37 +180,38 @@ impl Render for MessageWindow {
             .pr(px(14.))
             .border_b_1()
             .border_color(t.border)
-            .on_mouse_down(MouseButton::Left, |event, window, cx| drag_or_zoom(event, window, cx))
-            .child(
-                tool("reply", "Reply", 0)
-                    .on_click(cx.listener(|this, _, window, cx| this.reply(ComposeKind::Reply, window, cx))),
-            )
-            .child(
-                tool("reply-all", "Reply all", 1)
-                    .on_click(cx.listener(|this, _, window, cx| this.reply(ComposeKind::ReplyAll, window, cx))),
-            )
-            .child(
-                tool("forward", "Forward", 2)
-                    .on_click(cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx))),
-            )
+            .on_mouse_down(MouseButton::Left, |event, window, cx| {
+                drag_or_zoom(event, window, cx)
+            })
+            .child(tool("reply", "Reply", 0).on_click(
+                cx.listener(|this, _, window, cx| this.reply(ComposeKind::Reply, window, cx)),
+            ))
+            .child(tool("reply-all", "Reply all", 1).on_click(
+                cx.listener(|this, _, window, cx| this.reply(ComposeKind::ReplyAll, window, cx)),
+            ))
+            .child(tool("forward", "Forward", 2).on_click(
+                cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx)),
+            ))
             .child(div().w(px(1.)).h(px(18.)).mx(px(6.)).bg(t.border))
             .child(
                 tool("done", "Done", 3).on_click(cx.listener(|this, _, window, cx| {
                     this.act(window, cx, |n, cx| n.mark_done(cx), true)
                 })),
             )
-            .child(
-                tool("trash", "Move to trash", 4).on_click(cx.listener(|this, _, window, cx| {
-                    this.act(window, cx, |n, cx| n.trash(cx), true)
-                })),
-            )
+            .child(tool("trash", "Move to trash", 4).on_click(
+                cx.listener(|this, _, window, cx| this.act(window, cx, |n, cx| n.trash(cx), true)),
+            ))
             .child(div().flex_1())
             .when(m.html.is_some(), |d| {
                 d.child(
                     button(
                         &t,
                         ButtonKind::Ghost,
-                        if self.original { "Reader view" } else { "Show original" },
+                        if self.original {
+                            "Reader view"
+                        } else {
+                            "Show original"
+                        },
                         None,
                     )
                     .id("message-window-view")
@@ -214,7 +228,11 @@ impl Render for MessageWindow {
                 .flex()
                 .flex_col()
                 .gap(px(12.))
-                .child(serif(&balance_title(&m.subject, 28., title_w, cx), 28., t.text))
+                .child(serif(
+                    &balance_title(&m.subject, 28., title_w, cx),
+                    28.,
+                    t.text,
+                ))
                 .child(n.thread_banners(&t, &m, cx))
         };
 
@@ -290,7 +308,10 @@ impl Render for MessageWindow {
                             .border_t_1()
                             .border_color(t.border)
                             .child(n.message_header(&t, &m, k + 1, false, cx))
-                            .child(n.message_body(&t, &e.blocks, (k + 1) * 1000, cx).pl(px(40.)))
+                            .child(
+                                n.message_body(&t, &e.blocks, (k + 1) * 1000, cx)
+                                    .pl(px(40.)),
+                            )
                             .when(!e.header.attachments.is_empty(), |d| {
                                 d.child(
                                     n.attachment_row(&t, &e.header.attachments, (k + 1) * 100, cx)
@@ -310,7 +331,10 @@ impl Render for MessageWindow {
                         .child(n.message_header(&t, &m, 0, false, cx))
                         .child(n.message_body(&t, &m.body, 0, cx).pl(px(40.)))
                         .when(!m.header.attachments.is_empty(), |d| {
-                            d.child(n.attachment_row(&t, &m.header.attachments, 0, cx).pl(px(40.)))
+                            d.child(
+                                n.attachment_row(&t, &m.header.attachments, 0, cx)
+                                    .pl(px(40.)),
+                            )
                         }),
                 )
             });
@@ -333,11 +357,17 @@ impl Render for MessageWindow {
             .flex_col()
             .size_full()
             // The same single-letter keys as in the main window, unless a reply is open here.
-            .key_context(if compose.is_some() { "Composer" } else { "Mail" })
+            .key_context(if compose.is_some() {
+                "Composer"
+            } else {
+                "Mail"
+            })
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &Reply, window, cx| {
-                this.reply(ComposeKind::Reply, window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &Reply, window, cx| {
+                    this.reply(ComposeKind::Reply, window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &ReplyAll, window, cx| {
                 this.reply(ComposeKind::ReplyAll, window, cx)
             }))

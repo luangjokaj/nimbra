@@ -1960,7 +1960,9 @@ impl Nimbra {
                                 }),
                         )
                         .on_click(
-                            cx.listener(move |this, _, _, cx| this.search_for(&q, mail.clone(), cx)),
+                            cx.listener(move |this, _, _, cx| {
+                                this.search_for(&q, mail.clone(), cx)
+                            }),
                         )
                         .into_any_element(),
                 );
@@ -2701,7 +2703,12 @@ impl Nimbra {
                         return;
                     }
                     for mail in &summaries {
-                        crate::notify::show(&mail.id, &mail.sender, &mail.subject, this.settings.notify_sound);
+                        crate::notify::show(
+                            &mail.id,
+                            &mail.sender,
+                            &mail.subject,
+                            this.settings.notify_sound,
+                        );
                     }
                     if extra > 0 {
                         crate::notify::show(
@@ -3626,8 +3633,9 @@ impl Nimbra {
             Grab::Resize(hx, hy) => {
                 // One axis: the far edge stays put, the grabbed one follows the mouse,
                 // within the window and never below the smallest size.
-                let axis = |side: i8, start: f32, length: f32, delta: f32, room: f32, min: f32| {
-                    match side {
+                let axis =
+                    |side: i8, start: f32, length: f32, delta: f32, room: f32, min: f32| match side
+                    {
                         1 => (start, (length + delta).clamp(min, (room - start).max(min))),
                         -1 => {
                             let end = start + length;
@@ -3635,8 +3643,7 @@ impl Nimbra {
                             (begin, end - begin)
                         }
                         _ => (start, length),
-                    }
-                };
+                    };
                 let (x, w) = axis(hx, position.0, size.0, dx, viewport.0, COMPOSER_MIN.0);
                 let (y, h) = axis(hy, position.1, size.1, dy, viewport.1, COMPOSER_MIN.1);
                 composer.position = Some((x, y));
@@ -4754,10 +4761,13 @@ impl Nimbra {
             return;
         };
         let key = message_window::key_of(&mail);
-        self.message_windows.retain(|handle| handle.read(cx).is_ok());
+        self.message_windows
+            .retain(|handle| handle.read(cx).is_ok());
         for handle in &self.message_windows {
             if handle.read(cx).is_ok_and(|w| w.key() == key) {
-                handle.update(cx, |_, window, _| window.activate_window()).ok();
+                handle
+                    .update(cx, |_, window, _| window.activate_window())
+                    .ok();
                 return;
             }
         }
@@ -5026,7 +5036,12 @@ impl Nimbra {
                                     "Back from snooze"
                                 };
                                 if this.settings.notifications {
-                                    crate::notify::show(&item.thread_id, title, &item.mail.subject, this.settings.notify_sound);
+                                    crate::notify::show(
+                                        &item.thread_id,
+                                        title,
+                                        &item.mail.subject,
+                                        this.settings.notify_sound,
+                                    );
                                 }
                                 this.notice = Some(
                                     format!("{title}: {}", short(&item.mail.subject, 50)).into(),
@@ -5773,7 +5788,11 @@ impl Nimbra {
 
     /// The composer, shown in `window` when that is where it lives: full page, with the
     /// composer's keys, the editor and the keyboard focus. None anywhere else.
-    fn hosted_compose(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn hosted_compose(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if self.compose.is_none() || self.compose_host != Some(window.window_handle()) {
             return None;
         }
@@ -5788,7 +5807,12 @@ impl Nimbra {
                 // In the bottom-right corner, sized to fit the window with a margin.
                 const MARGIN: f32 = 20.;
                 composer.size = (
-                    composer.size.0.min(620.).min(viewport.0 - 2. * MARGIN).max(COMPOSER_MIN.0),
+                    composer
+                        .size
+                        .0
+                        .min(620.)
+                        .min(viewport.0 - 2. * MARGIN)
+                        .max(COMPOSER_MIN.0),
                     composer.size.1.min(viewport.1 - 92.).max(COMPOSER_MIN.1),
                 );
                 composer.position = Some((
@@ -7008,7 +7032,9 @@ impl Nimbra {
         self.copied = Some((key.clone(), std::time::Instant::now()));
         cx.notify();
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(1400)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(1400))
+                .await;
             this.update(cx, |this, cx| {
                 if this.copied.as_ref().is_some_and(|(k, _)| *k == key) {
                     this.copied = None;
@@ -7029,11 +7055,11 @@ impl Nimbra {
         self.cache.clear();
         self.synced_to.clear();
         self.notify_from = None;
-        self.notice = Some("Cleared the mail kept on this Mac. It is downloaded again as needed.".into());
+        self.notice =
+            Some("Cleared the mail kept on this Mac. It is downloaded again as needed.".into());
         self.fetch_inbox(cx);
         cx.notify();
     }
-
 
     /// Signs out: forgets the Google sign-in and removes the mail kept on this Mac and its
     /// key. Settings (signature, theme) stay.
@@ -7047,7 +7073,7 @@ impl Nimbra {
         self.settings.accounts.retain(|a| a.id != account);
         // Another account is signed in: show that one.
         if let Some(next) = self.settings.accounts.first().map(|a| a.id.clone()) {
-                self.switch_account(next, cx);
+            self.switch_account(next, cx);
             self.notice =
                 Some("Signed out of that account. Its mail was removed from this Mac.".into());
             return;
@@ -10201,7 +10227,9 @@ impl Nimbra {
                 )
                 .child(div().flex_1().min_w(px(0.)).child(value))
         };
-        let people = |list: &[gmail::Person], chip: &mut dyn FnMut(&gmail::Person, &mut Context<Self>) -> Stateful<Div>, cx: &mut Context<Self>| {
+        let people = |list: &[gmail::Person],
+                      chip: &mut dyn FnMut(&gmail::Person, &mut Context<Self>) -> Stateful<Div>,
+                      cx: &mut Context<Self>| {
             div()
                 .flex()
                 .flex_wrap()
@@ -11441,7 +11469,8 @@ impl Nimbra {
             .flex()
             .items_start()
             .justify_center()
-            .when(!full, |d| d.bg(t.scrim))
+            // Dimmed in the main window; over a message window the email stays readable.
+            .when(!full && self.compose_host.is_none(), |d| d.bg(t.scrim))
             // A grabbed composer follows the mouse anywhere in the window.
             .on_mouse_move(
                 cx.listener(move |this, event, _, cx| this.drag_composer(event, viewport, cx)),
@@ -11455,7 +11484,8 @@ impl Nimbra {
                     }
                 }),
             )
-            .occlude()
+            // Over a message window the email behind can still be scrolled.
+            .when(self.compose_host.is_none(), |d| d.occlude())
             .child(card)
             .into_any_element()
     }
@@ -12029,9 +12059,11 @@ impl Render for Nimbra {
             .on_action(
                 cx.listener(|this, _: &MenuReply, _, cx| this.open_compose(ComposeKind::Reply, cx)),
             )
-            .on_action(cx.listener(|this, _: &ReplyAll, _, cx| {
-                this.open_compose(ComposeKind::ReplyAll, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &ReplyAll, _, cx| {
+                    this.open_compose(ComposeKind::ReplyAll, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &MenuReplyAll, _, cx| {
                 this.open_compose(ComposeKind::ReplyAll, cx)
             }))
@@ -12196,7 +12228,11 @@ impl Render for ComposeWindow {
             // Sent, closed or discarded: the window goes with it.
             window.defer(cx, |window, _| window.remove_window());
         } else if let Some(composer) = &owner.read(cx).compose {
-            let title = if composer.reply.is_some() { "Reply" } else { "New message" };
+            let title = if composer.reply.is_some() {
+                "Reply"
+            } else {
+                "New message"
+            };
             window.set_window_title(title);
         }
         div()

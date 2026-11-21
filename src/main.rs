@@ -23,12 +23,12 @@ use gpui::{
 };
 
 use app::{
-    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, HideApp, HideOthers, HideWindow,
-    MarkDone, MarkUnread, MenuMarkDone, MenuMarkUnread, MenuReply, MenuReplyAll, MenuForwardMessage, ReplyAll, ForwardMessage, MenuSearch, MenuSnooze,
-    MenuStar, MenuToggleOriginal, MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra,
-    OpenSettings, Prev, Print, Quit, Reload, Reply, SaveDraft, SelectAllThreads, SendMail, ShowAll,
-    ToggleFullCompose, ToggleList, ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar,
-    ToggleTheme, Trash, Undo,
+    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, ForwardMessage, HideApp, HideOthers,
+    HideWindow, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReply,
+    MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal, MenuToggleSidebar,
+    MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenSettings, Prev, Print, Quit, Reload, Reply,
+    ReplyAll, SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList,
+    ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.

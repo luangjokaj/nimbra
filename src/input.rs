@@ -621,7 +621,9 @@ impl Element for TextElement {
             if caret < scroll_x {
                 scroll_x = caret;
             }
-            scroll_x = scroll_x.min((line.width - width + px(2.)).max(px(0.))).max(px(0.));
+            scroll_x = scroll_x
+                .min((line.width - width + px(2.)).max(px(0.)))
+                .max(px(0.));
         }
         let left = bounds.left() - scroll_x;
         let cursor_pos = caret;
@@ -640,14 +642,8 @@ impl Element for TextElement {
             (
                 Some(fill(
                     Bounds::from_corners(
-                        point(
-                            left + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            left + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
+                        point(left + line.x_for_index(selected_range.start), bounds.top()),
+                        point(left + line.x_for_index(selected_range.end), bounds.bottom()),
                     ),
                     input.accent.opacity(0.25),
                 )),

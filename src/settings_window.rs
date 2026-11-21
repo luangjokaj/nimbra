@@ -89,7 +89,12 @@ pub(super) struct SettingsWindow {
 impl SettingsWindow {
     /// `text` and `dark` come from the app (which is busy opening this window, so it
     /// cannot be read here).
-    pub(super) fn new(owner: Entity<Nimbra>, text: String, dark: bool, cx: &mut Context<Self>) -> Self {
+    pub(super) fn new(
+        owner: Entity<Nimbra>,
+        text: String,
+        dark: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let t = if dark { Theme::dark() } else { Theme::light() };
         let lines: Vec<String> = text.lines().map(str::to_string).collect();
         let mut signature = Vec::new();
@@ -100,8 +105,8 @@ impl SettingsWindow {
             if let Some(line) = lines.get(index).cloned() {
                 input.update(cx, |input, cx| input.set(line, usize::MAX, cx));
             }
-            subscriptions.push(cx.subscribe(&input, move |this, _, event: &InputEvent, cx| {
-                match event {
+            subscriptions.push(
+                cx.subscribe(&input, move |this, _, event: &InputEvent, cx| match event {
                     InputEvent::Changed => this.signature_changed(cx),
                     InputEvent::Enter | InputEvent::Down | InputEvent::Tab => {
                         if let Some(next) = this.signature.get(index + 1) {
@@ -115,8 +120,8 @@ impl SettingsWindow {
                         cx.notify();
                     }
                     _ => {}
-                }
-            }));
+                }),
+            );
             signature.push(input);
         }
         SettingsWindow {
@@ -322,8 +327,14 @@ fn row(t: &Theme, label: &str, detail: &str, control: impl IntoElement) -> AnyEl
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(div().font_weight(FontWeight::MEDIUM).child(label.to_string()))
-                .when(!detail.is_empty(), |d| d.child(meta(detail.to_string(), t.text3))),
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(label.to_string()),
+                )
+                .when(!detail.is_empty(), |d| {
+                    d.child(meta(detail.to_string(), t.text3))
+                }),
         )
         .child(control)
         .into_any_element()
@@ -340,7 +351,9 @@ fn switch(t: &Theme, on: bool) -> Div {
         .rounded_full()
         .cursor_pointer()
         .when(on, |d| d.justify_end().bg(t.violet))
-        .when(!on, |d| d.bg(t.hover).border_1().border_color(t.border_strong))
+        .when(!on, |d| {
+            d.bg(t.hover).border_1().border_color(t.border_strong)
+        })
         .child(
             div()
                 .size(px(17.))
@@ -426,15 +439,17 @@ impl SettingsWindow {
             t,
             "Open Nimbra at login",
             "New mail is checked and notified from the moment you sign in to your Mac.",
-            switch(t, login).id("login").on_click(cx.listener(|this, _, _, cx| {
-                this.owner.update(cx, |n, cx| {
-                    match crate::system::set_open_at_login(!n.login_item) {
-                        Ok(()) => n.login_item = !n.login_item,
-                        Err(message) => n.notice = Some(message.into()),
-                    }
-                    cx.notify();
-                });
-            })),
+            switch(t, login)
+                .id("login")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.owner.update(cx, |n, cx| {
+                        match crate::system::set_open_at_login(!n.login_item) {
+                            Ok(()) => n.login_item = !n.login_item,
+                            Err(message) => n.notice = Some(message.into()),
+                        }
+                        cx.notify();
+                    });
+                })),
         );
         let mark_row = row(
             t,
@@ -450,9 +465,7 @@ impl SettingsWindow {
                     MarkRead::Never => 2,
                 },
                 cx,
-                |n, i| {
-                    n.settings.mark_read = [MarkRead::Open, MarkRead::Delay, MarkRead::Never][i]
-                },
+                |n, i| n.settings.mark_read = [MarkRead::Open, MarkRead::Delay, MarkRead::Never][i],
             ),
         );
         let every_row = row(
@@ -500,13 +513,24 @@ impl SettingsWindow {
                     .gap(px(12.))
                     .px(px(16.))
                     .py(px(12.))
-                    .child(avatar(crate::data::tone_for(&account.email), &initials, 32.))
+                    .child(avatar(
+                        crate::data::tone_for(&account.email),
+                        &initials,
+                        32.,
+                    ))
                     .child(
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .child(div().font_weight(FontWeight::MEDIUM).child(account.email.clone()))
-                            .child(meta(if shown { "Shown now" } else { "Gmail" }, if shown { t.violet } else { t.text3 })),
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(account.email.clone()),
+                            )
+                            .child(meta(
+                                if shown { "Shown now" } else { "Gmail" },
+                                if shown { t.violet } else { t.text3 },
+                            )),
                     )
                     .when(!shown, |d| {
                         d.child(
@@ -549,7 +573,11 @@ impl SettingsWindow {
                     button(
                         t,
                         ButtonKind::Ghost,
-                        if armed { "Click again to sign out" } else { "Sign out of this account" },
+                        if armed {
+                            "Click again to sign out"
+                        } else {
+                            "Sign out of this account"
+                        },
                         None,
                     )
                     .id("sign-out")
@@ -584,66 +612,90 @@ impl SettingsWindow {
 
     fn appearance(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let n = self.owner.read(cx);
-        let (theme, size, badge) = (n.settings.theme, n.settings.reader_text, n.settings.dock_badge);
+        let (theme, size, badge) = (
+            n.settings.theme,
+            n.settings.reader_text,
+            n.settings.dock_badge,
+        );
         // Small previews of each look.
-        let tile = |id: usize, label: &'static str, choice: ThemeChoice, light: bool, dark: bool| {
-            let on = theme == choice;
-            let half = |th: Theme| {
+        let tile =
+            |id: usize, label: &'static str, choice: ThemeChoice, light: bool, dark: bool| {
+                let on = theme == choice;
+                let half = |th: Theme| {
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .flex()
+                        .bg(th.surface)
+                        .child(
+                            div()
+                                .w(px(22.))
+                                .h_full()
+                                .bg(th.sidebar)
+                                .border_r_1()
+                                .border_color(th.border),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .gap(px(5.))
+                                .p(px(8.))
+                                .child(div().h(px(5.)).w(px(40.)).rounded_full().bg(th.text2))
+                                .child(
+                                    div()
+                                        .h(px(4.))
+                                        .w(px(56.))
+                                        .rounded_full()
+                                        .bg(th.border_strong),
+                                )
+                                .child(
+                                    div()
+                                        .h(px(4.))
+                                        .w(px(48.))
+                                        .rounded_full()
+                                        .bg(th.border_strong),
+                                ),
+                        )
+                };
                 div()
-                    .flex_1()
-                    .h_full()
+                    .id(("theme-tile", id))
                     .flex()
-                    .bg(th.surface)
-                    .child(div().w(px(22.)).h_full().bg(th.sidebar).border_r_1().border_color(th.border))
+                    .flex_col()
+                    .gap(px(8.))
+                    .cursor_pointer()
                     .child(
                         div()
-                            .flex_1()
                             .flex()
-                            .flex_col()
-                            .gap(px(5.))
-                            .p(px(8.))
-                            .child(div().h(px(5.)).w(px(40.)).rounded_full().bg(th.text2))
-                            .child(div().h(px(4.)).w(px(56.)).rounded_full().bg(th.border_strong))
-                            .child(div().h(px(4.)).w(px(48.)).rounded_full().bg(th.border_strong)),
+                            .w(px(150.))
+                            .h(px(92.))
+                            .rounded(px(10.))
+                            .overflow_hidden()
+                            .border_2()
+                            .border_color(if on { t.violet } else { t.border })
+                            .when(light, |d| d.child(half(Theme::light())))
+                            .when(dark, |d| d.child(half(Theme::dark()))),
                     )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_center()
+                            .text_color(if on { t.text } else { t.text2 })
+                            .when(on, |d| d.font_weight(FontWeight::MEDIUM))
+                            .child(label),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set(cx, move |n| {
+                            n.settings.theme = choice;
+                            match choice {
+                                ThemeChoice::Light => n.dark = false,
+                                ThemeChoice::Dark => n.dark = true,
+                                ThemeChoice::System => {}
+                            }
+                        })
+                    }))
             };
-            div()
-                .id(("theme-tile", id))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .cursor_pointer()
-                .child(
-                    div()
-                        .flex()
-                        .w(px(150.))
-                        .h(px(92.))
-                        .rounded(px(10.))
-                        .overflow_hidden()
-                        .border_2()
-                        .border_color(if on { t.violet } else { t.border })
-                        .when(light, |d| d.child(half(Theme::light())))
-                        .when(dark, |d| d.child(half(Theme::dark()))),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_center()
-                        .text_color(if on { t.text } else { t.text2 })
-                        .when(on, |d| d.font_weight(FontWeight::MEDIUM))
-                        .child(label),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set(cx, move |n| {
-                        n.settings.theme = choice;
-                        match choice {
-                            ThemeChoice::Light => n.dark = false,
-                            ThemeChoice::Dark => n.dark = true,
-                            ThemeChoice::System => {}
-                        }
-                    })
-                }))
-        };
         let tiles = div()
             .flex()
             .gap(px(16.))
@@ -666,7 +718,10 @@ impl SettingsWindow {
                     TextSize::Large => 2,
                 },
                 cx,
-                |n, i| n.settings.reader_text = [TextSize::Small, TextSize::Default, TextSize::Large][i],
+                |n, i| {
+                    n.settings.reader_text =
+                        [TextSize::Small, TextSize::Default, TextSize::Large][i]
+                },
             ),
         );
         let badge_row = self.toggle(
@@ -746,7 +801,10 @@ impl SettingsWindow {
             .gap(px(8.))
             .p(px(16.))
             .child(div().font_weight(FontWeight::MEDIUM).child("Signature"))
-            .child(meta("Added below new messages, replies and forwards.", t.text3))
+            .child(meta(
+                "Added below new messages, replies and forwards.",
+                t.text3,
+            ))
             .child(
                 div()
                     .flex()
@@ -832,7 +890,12 @@ impl SettingsWindow {
                             .press_soft()
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let sound = this.owner.read(cx).settings.notify_sound;
-                                crate::notify::show("test", "Nimbra", "This is how new mail looks.", sound);
+                                crate::notify::show(
+                                    "test",
+                                    "Nimbra",
+                                    "This is how new mail looks.",
+                                    sound,
+                                );
                             })),
                     ),
                 ],
@@ -872,10 +935,26 @@ impl SettingsWindow {
                 t,
                 None,
                 vec![
-                    fact("ban", "Encrypted on disk", "Mail kept on this Mac is encrypted (ChaCha20-Poly1305) with a key that lives only in your Keychain."),
-                    fact("users", "Sign-in in the Keychain", "Google's sign-in is stored in the macOS Keychain, never in a file."),
-                    fact("mail", "Only what it needs", "Nimbra asks Google to read, organise and send mail. Deleting forever needs your one-time permission."),
-                    fact("image", "Mail is shown safely", "Scripts never run in email, remote content stays out unless allowed, and links open in your browser."),
+                    fact(
+                        "ban",
+                        "Encrypted on disk",
+                        "Mail kept on this Mac is encrypted (ChaCha20-Poly1305) with a key that lives only in your Keychain.",
+                    ),
+                    fact(
+                        "users",
+                        "Sign-in in the Keychain",
+                        "Google's sign-in is stored in the macOS Keychain, never in a file.",
+                    ),
+                    fact(
+                        "mail",
+                        "Only what it needs",
+                        "Nimbra asks Google to read, organise and send mail. Deleting forever needs your one-time permission.",
+                    ),
+                    fact(
+                        "image",
+                        "Mail is shown safely",
+                        "Scripts never run in email, remote content stays out unless allowed, and links open in your browser.",
+                    ),
                 ],
             ),
             group(
@@ -885,15 +964,24 @@ impl SettingsWindow {
                     t,
                     "Clear mail kept on this Mac",
                     "Removes the copies Nimbra keeps for speed. Your mail in Gmail is not touched; it is downloaded again as needed.",
-                    button(t, ButtonKind::Secondary, if armed { "Click again to clear" } else { "Clear" }, None)
-                        .id("clear-store")
-                        .press_soft()
-                        .when(armed, |d| d.text_color(t.rose))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if this.arm("clear", cx) {
-                                this.owner.update(cx, |n, cx| n.clear_local_mail(cx));
-                            }
-                        })),
+                    button(
+                        t,
+                        ButtonKind::Secondary,
+                        if armed {
+                            "Click again to clear"
+                        } else {
+                            "Clear"
+                        },
+                        None,
+                    )
+                    .id("clear-store")
+                    .press_soft()
+                    .when(armed, |d| d.text_color(t.rose))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.arm("clear", cx) {
+                            this.owner.update(cx, |n, cx| n.clear_local_mail(cx));
+                        }
+                    })),
                 )],
             ),
         ]
@@ -901,42 +989,54 @@ impl SettingsWindow {
 
     fn shortcuts(&self, t: &Theme) -> Vec<AnyElement> {
         let keys: &[(&str, &[(&str, &str)])] = &[
-            ("Reading", &[
-                ("J / ↓", "Next conversation"),
-                ("K / ↑", "Previous conversation"),
-                ("Return", "Full view"),
-                ("V", "Original formatting or reader"),
-                ("⌘[ / ⌘]", "Back / forward"),
-            ]),
-            ("Organising", &[
-                ("E", "Mark done"),
-                ("U", "Read or unread"),
-                ("S", "Star"),
-                ("H", "Snooze"),
-                ("⌫", "Move to trash"),
-                ("Z / ⌘Z", "Undo"),
-                ("⌘A", "Select all"),
-            ]),
-            ("Writing", &[
-                ("C / ⌘N", "New message"),
-                ("R", "Reply"),
-                ("A", "Reply all"),
-                ("F", "Forward"),
-                ("⌘↵", "Send"),
-                ("⌘S", "Save draft"),
-                ("⌘⇧F", "Full page composer"),
-                ("⌘B ⌘I ⌘U ⌘K", "Bold, italic, underline, link"),
-            ]),
-            ("App", &[
-                ("/ or ⌘F", "Search"),
-                ("⌘K", "Snooze palette"),
-                ("⌘R", "Check for mail"),
-                ("⌘B / ⌘⇧B", "Sidebar / message list"),
-                ("⌘⇧L", "Light or dark"),
-                ("⌘,", "Settings"),
-                ("⌘P", "Print"),
-                ("⌘H / ⌘M / ⌘W", "Hide / minimise / close window"),
-            ]),
+            (
+                "Reading",
+                &[
+                    ("J / ↓", "Next conversation"),
+                    ("K / ↑", "Previous conversation"),
+                    ("Return", "Full view"),
+                    ("V", "Original formatting or reader"),
+                    ("⌘[ / ⌘]", "Back / forward"),
+                ],
+            ),
+            (
+                "Organising",
+                &[
+                    ("E", "Mark done"),
+                    ("U", "Read or unread"),
+                    ("S", "Star"),
+                    ("H", "Snooze"),
+                    ("⌫", "Move to trash"),
+                    ("Z / ⌘Z", "Undo"),
+                    ("⌘A", "Select all"),
+                ],
+            ),
+            (
+                "Writing",
+                &[
+                    ("C / ⌘N", "New message"),
+                    ("R", "Reply"),
+                    ("A", "Reply all"),
+                    ("F", "Forward"),
+                    ("⌘↵", "Send"),
+                    ("⌘S", "Save draft"),
+                    ("⌘⇧F", "Full page composer"),
+                    ("⌘B ⌘I ⌘U ⌘K", "Bold, italic, underline, link"),
+                ],
+            ),
+            (
+                "App",
+                &[
+                    ("/ or ⌘F", "Search"),
+                    ("⌘K", "Snooze palette"),
+                    ("⌘R", "Check for mail"),
+                    ("⌘B / ⌘⇧B", "Sidebar / message list"),
+                    ("⌘⇧L", "Light or dark"),
+                    ("⌘,", "Settings"),
+                    ("⌘P", "Print"),
+                    ("⌘H / ⌘M / ⌘W", "Hide / minimise / close window"),
+                ],
+            ),
         ];
         keys.iter()
             .map(|(title, items)| {
