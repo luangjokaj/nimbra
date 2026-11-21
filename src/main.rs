@@ -23,8 +23,9 @@ use gpui::{
 
 use app::{
     Back, Compose, Confirm, Dismiss, FocusSearch, Forward, HideWindow, MarkDone, MarkUnread, Next,
-    Nimbra, OpenSettings, Prev, Quit, Reload, Reply, SaveDraft, SendMail, ToggleFullCompose,
-    ToggleList, ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
+    Nimbra, OpenSettings, Prev, Quit, Reload, Reply, SaveDraft, SelectAllThreads, SendMail,
+    ToggleFullCompose, ToggleList, ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar,
+    ToggleTheme, Trash, Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -183,6 +184,8 @@ fn main() {
             KeyBinding::new("ctrl-r", Reload, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("cmd-a", SelectAllThreads, mail),
+            KeyBinding::new("ctrl-a", SelectAllThreads, mail),
             // ⌘W hides the window; Nimbra keeps running and checking mail until ⌘Q.
             KeyBinding::new("cmd-w", HideWindow, None),
             // While writing in the message editor these keys format text (bold, link) or

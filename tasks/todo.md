@@ -40,9 +40,9 @@ to do, from reading the current code. Grouped into milestones; each one ships on
 - [x] **Move to**: Inbox, a label, Spam; **Not spam** from the Spam folder.
 - [~] **Spam and Trash mailboxes** (done, with Restore and Not spam; "Delete forever" left out on purpose, see Security) in the sidebar, with "Delete forever" in Trash
       (needs the full mail scope; see Security).
-- [ ] **Multi-select**: shift and ⌘ click, and select all, for bulk archive, trash, read,
+- [x] **Multi-select**: shift and ⌘ click, and select all, for bulk archive, trash, read,
       label.
-- [ ] **Snooze** (Gmail's API has no snooze: implement locally with a "Snoozed" label and
+- [x] **Snooze** (Gmail's API has no snooze: implement locally with a "Snoozed" label and
       a timer that moves the thread back to the inbox) and **Reminders**.
 - [x] **All Mail / Important** mailboxes; more than 30 threads per mailbox (load more on
       scroll).

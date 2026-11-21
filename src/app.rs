@@ -47,6 +47,7 @@ actions!(
         Forward,
         Reload,
         OpenSettings,
+        SelectAllThreads,
         Quit
     ]
 );
@@ -172,6 +173,32 @@ enum Menu {
     MoveTo,
     /// The right-click menu of a row in the list (by index into the loaded threads).
     Row(usize),
+}
+
+/// A thread put away until later (snooze), or until later unless someone replies
+/// (a reminder). Kept on this Mac: Gmail's API has no snooze.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Snooze {
+    thread_id: String,
+    /// When it comes back (or, for a reminder, when to check for a reply).
+    until_ms: i64,
+    /// Only come back if nobody has written since.
+    no_reply: bool,
+    /// The time of the thread's latest message when it was put away.
+    since_ms: i64,
+    /// The row, to list it under Snoozed.
+    mail: Mail,
+}
+
+/// One choice in the snooze palette.
+#[derive(Clone)]
+struct SnoozeChoice {
+    icon: &'static str,
+    label: String,
+    hint: String,
+    header: Option<&'static str>,
+    until_ms: i64,
+    no_reply: bool,
 }
 
 /// Where Move to sends the open thread.
@@ -654,6 +681,16 @@ pub struct Nimbra {
     schedule_watch: bool,
     /// The times offered by the open Send later menu.
     send_later_times: Vec<i64>,
+    /// Rows picked with ⌘-click, Shift-click or ⌘A, for actions on several threads.
+    picked: std::collections::BTreeSet<usize>,
+    /// How many rows each entry of the undo history covers (one, or a whole batch).
+    history_groups: Vec<usize>,
+    /// Threads snoozed or waiting for a reply, kept on this Mac.
+    snoozed: Vec<Snooze>,
+    /// Snoozed threads being brought back right now.
+    waking: HashSet<String>,
+    /// The choices in the open snooze palette.
+    snooze_choices: Vec<SnoozeChoice>,
     /// The next page of the open mailbox, when Gmail has more.
     next_page: Option<String>,
     loading_more: bool,
@@ -820,6 +857,11 @@ impl Nimbra {
             cache: HashMap::new(),
             prefetching: false,
             open_when_listed: None,
+            picked: Default::default(),
+            history_groups: Vec::new(),
+            snoozed: Vec::new(),
+            waking: HashSet::new(),
+            snooze_choices: Vec::new(),
             next_page: None,
             loading_more: false,
             moved: HashMap::new(),
@@ -948,6 +990,10 @@ impl Nimbra {
             if let Some(composer) = &mut this.compose {
                 composer.show_quoted = true;
             }
+        }
+        // NIMBRA_SCREEN=bulk picks three threads (screenshots).
+        if screen == "bulk" {
+            this.picked = this.visible().into_iter().take(3).collect();
         }
         // NIMBRA_SCREEN=settings opens the Settings sheet (screenshots).
         if screen == "settings" {
@@ -1354,10 +1400,11 @@ impl Nimbra {
                     let saved: Option<Saved> = store.load("meta");
                     let mails: Option<Vec<Mail>> = store.load(&record(view));
                     let scheduled: Option<Vec<Scheduled>> = store.load("scheduled");
-                    anyhow::Ok((store, saved, mails, scheduled))
+                    let snoozed: Option<Vec<Snooze>> = store.load("snoozed");
+                    anyhow::Ok((store, saved, mails, scheduled, snoozed))
                 })
                 .await;
-            let Ok((store, saved, mails, scheduled)) = opened else {
+            let Ok((store, saved, mails, scheduled, snoozed)) = opened else {
                 eprintln!("nimbra: mail store unavailable; continuing without it");
                 this.update(cx, |this, cx| this.fetch_inbox(cx)).ok();
                 return;
@@ -1365,7 +1412,8 @@ impl Nimbra {
             this.update(cx, |this, cx| {
                 this.store = Some(Arc::new(store));
                 this.scheduled = scheduled.unwrap_or_default();
-                if !this.scheduled.is_empty() {
+                this.snoozed = snoozed.unwrap_or_default();
+                if !this.scheduled.is_empty() || !this.snoozed.is_empty() {
                     this.watch_schedule(cx);
                 }
                 // Something is already on screen (a sign-in in this session): just refresh.
@@ -1748,6 +1796,28 @@ impl Nimbra {
     /// Puts a new listing on screen, keeping downloaded thread contents, the open thread and
     /// threads cleared in the meantime, then saves it.
     fn install(&mut self, fresh: Vec<Mail>, cx: &mut Context<Self>) {
+        let mut fresh = fresh;
+        // Snoozed lists Gmail's own snoozed threads and the ones snoozed here.
+        if self.mailbox == View::Snoozed {
+            for snooze in &self.snoozed {
+                if fresh
+                    .iter()
+                    .any(|m| m.id.as_deref() == Some(snooze.thread_id.as_str()))
+                {
+                    continue;
+                }
+                let mut mail = snooze.mail.clone();
+                mail.time = chrono::DateTime::from_timestamp_millis(snooze.until_ms)
+                    .map(|t| {
+                        t.with_timezone(&chrono::Local)
+                            .format("%a %H:%M")
+                            .to_string()
+                    })
+                    .unwrap_or_default()
+                    .into();
+                fresh.push(mail);
+            }
+        }
         let open_id = self.mails.get(self.selected).and_then(|m| m.id.clone());
         // Threads cleared while this request was in flight must stay cleared.
         let cleared: Vec<Option<String>> = self
@@ -2302,6 +2372,7 @@ impl Nimbra {
         let ready = matches!(self.status, Status::Demo | Status::Ready);
         // (A toolbar menu does not hide it: menus open in a window of their own, above it.)
         let covered = self.palette
+            || self.picked.len() >= 2
             || self.compose.is_some()
             || self.notice.is_some()
             || self.settings_open
@@ -2674,6 +2745,377 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// The rows an action applies to: the picked ones (in list order), or the open one.
+    fn targets(&self) -> Vec<usize> {
+        let visible = self.visible();
+        if self.picked.is_empty() {
+            visible
+                .into_iter()
+                .filter(|i| *i == self.selected)
+                .collect()
+        } else {
+            visible
+                .into_iter()
+                .filter(|i| self.picked.contains(i))
+                .collect()
+        }
+    }
+
+    /// A click on a row: plain opens it; ⌘ adds or removes it from the picked rows;
+    /// Shift picks everything from the open row to this one.
+    fn click_row(&mut self, i: usize, modifiers: gpui::Modifiers, cx: &mut Context<Self>) {
+        if modifiers.platform || modifiers.control {
+            if self.picked.is_empty() && self.visible().contains(&self.selected) {
+                self.picked.insert(self.selected);
+            }
+            if !self.picked.remove(&i) {
+                self.picked.insert(i);
+            }
+            if self.picked.len() == 1 {
+                let only = *self.picked.iter().next().unwrap_or(&i);
+                self.picked.clear();
+                self.open(only);
+                self.open_selected(cx);
+            }
+        } else if modifiers.shift {
+            let visible = self.visible();
+            let (Some(a), Some(b)) = (
+                visible.iter().position(|x| *x == self.selected),
+                visible.iter().position(|x| *x == i),
+            ) else {
+                return;
+            };
+            self.picked = visible[a.min(b)..=a.max(b)].iter().copied().collect();
+        } else {
+            self.picked.clear();
+            self.open(i);
+            self.open_selected(cx);
+        }
+        cx.notify();
+    }
+
+    /// Takes every picked thread out of the list at once; one Undo brings them all back.
+    fn remove_picked(&mut self, change: gmail::Change, cx: &mut Context<Self>) {
+        let targets = self.targets();
+        if targets.is_empty() {
+            return;
+        }
+        for &index in &targets {
+            self.done[index] = true;
+            self.history.push(index);
+            if let Some(id) = self.mails[index].id.clone() {
+                self.removed_by.insert(id, change);
+            }
+            self.sync(index, change, true, cx);
+        }
+        self.history_groups.push(targets.len());
+        self.picked.clear();
+        self.selected = self.visible().first().copied().unwrap_or(0);
+        self.open_selected(cx);
+        self.offer_undo(
+            match change {
+                gmail::Change::Trash => "Moved to trash",
+                gmail::Change::Unarchive | gmail::Change::NotSpam => "Moved to inbox",
+                gmail::Change::Spam => "Reported as spam",
+                gmail::Change::Untrash => "Restored",
+                _ => "Marked done",
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// The times offered when snoozing.
+    fn snooze_choices() -> Vec<SnoozeChoice> {
+        use chrono::{Datelike, Duration as Days, Local, TimeZone, Timelike, Weekday};
+        let now = Local::now();
+        let at = |date: chrono::NaiveDate, hour: u32| {
+            Local
+                .from_local_datetime(&date.and_hms_opt(hour, 0, 0).unwrap_or_default())
+                .single()
+        };
+        let label = |when: chrono::DateTime<Local>| when.format("%a %-d %b, %H:%M").to_string();
+        let mut choices = Vec::new();
+        let mut push =
+            |icon, name: &str, when: Option<chrono::DateTime<Local>>, header, no_reply| {
+                if let Some(when) = when {
+                    choices.push(SnoozeChoice {
+                        icon,
+                        label: name.to_string(),
+                        hint: label(when),
+                        header,
+                        until_ms: when.timestamp_millis(),
+                        no_reply,
+                    });
+                }
+            };
+        let today = now.date_naive();
+        if now.hour() < 17 {
+            push("clock", "Later today", at(today, 18), Some("SNOOZE"), false);
+        } else {
+            push(
+                "clock",
+                "In three hours",
+                Some(now + Days::hours(3)),
+                Some("SNOOZE"),
+                false,
+            );
+        }
+        let tomorrow = today + Days::days(1);
+        push("clock", "Tomorrow morning", at(tomorrow, 8), None, false);
+        if !matches!(now.weekday(), Weekday::Fri | Weekday::Sat | Weekday::Sun) {
+            let mut saturday = today;
+            while saturday.weekday() != Weekday::Sat {
+                saturday += Days::days(1);
+            }
+            push("calendar", "This weekend", at(saturday, 9), None, false);
+        }
+        let mut monday = today + Days::days(1);
+        while monday.weekday() != Weekday::Mon {
+            monday += Days::days(1);
+        }
+        push("calendar", "Next week", at(monday, 8), None, false);
+        push(
+            "bell",
+            "Remind me if no reply in 3 days",
+            at(today + Days::days(3), 9),
+            Some("REMINDER"),
+            true,
+        );
+        push(
+            "bell",
+            "Remind me if no reply in a week",
+            at(today + Days::days(7), 9),
+            None,
+            true,
+        );
+        choices
+    }
+
+    /// Snoozes the open (or picked) threads: out of the inbox now, back at the chosen time,
+    /// unread and with a notification. A reminder only comes back if nobody has replied.
+    fn snooze(&mut self, choice: SnoozeChoice, cx: &mut Context<Self>) {
+        let targets = self.targets();
+        for &index in &targets {
+            let mail = &self.mails[index];
+            let Some(thread_id) = mail.id.clone() else {
+                continue;
+            };
+            self.snoozed.retain(|s| s.thread_id != thread_id);
+            self.snoozed.push(Snooze {
+                thread_id,
+                until_ms: choice.until_ms,
+                no_reply: choice.no_reply,
+                since_ms: mail.timestamp_ms,
+                mail: mail.clone(),
+            });
+        }
+        self.save_snoozed(cx);
+        self.watch_schedule(cx);
+        let inbox_like = matches!(
+            self.mailbox,
+            View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social
+        );
+        if inbox_like {
+            self.remove_selected(gmail::Change::Archive, cx);
+        }
+        self.notice = Some(
+            if choice.no_reply {
+                format!("I’ll bring it back on {} if nobody replies.", choice.hint)
+            } else {
+                format!("Snoozed until {}.", choice.hint)
+            }
+            .into(),
+        );
+        cx.notify();
+    }
+
+    fn save_snoozed(&self, cx: &mut Context<Self>) {
+        let (Some(store), snoozed) = (self.store.clone(), self.snoozed.clone()) else {
+            return;
+        };
+        cx.background_executor()
+            .spawn(async move {
+                if store.save("snoozed", &snoozed).is_err() {
+                    eprintln!("nimbra: could not save the snoozed list");
+                }
+            })
+            .detach();
+    }
+
+    /// Brings back snoozed threads whose time has come (checked with the send-later list).
+    fn wake_due(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.gmail.clone() else {
+            return;
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let due: Vec<Snooze> = self
+            .snoozed
+            .iter()
+            .filter(|s| s.until_ms <= now && !self.waking.contains(&s.thread_id))
+            .cloned()
+            .collect();
+        for item in due {
+            self.waking.insert(item.thread_id.clone());
+            let client = client.clone();
+            cx.spawn(async move |this, cx| {
+                let (id, since, no_reply) = (item.thread_id.clone(), item.since_ms, item.no_reply);
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        if no_reply && client.summary(&id, false)?.timestamp_ms > since {
+                            return anyhow::Ok(false); // someone wrote: no reminder needed
+                        }
+                        client.relabel(&id, &["INBOX", "UNREAD"], &[])?;
+                        anyhow::Ok(true)
+                    })
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.waking.remove(&item.thread_id);
+                    let done = match &result {
+                        Ok(back) => {
+                            if *back {
+                                let title = if item.no_reply {
+                                    "No reply yet"
+                                } else {
+                                    "Back from snooze"
+                                };
+                                if this.settings.notifications {
+                                    crate::notify::show(&item.thread_id, title, &item.mail.subject);
+                                }
+                                this.notice = Some(
+                                    format!("{title}: {}", short(&item.mail.subject, 50)).into(),
+                                );
+                                if matches!(
+                                    this.mailbox,
+                                    View::Inbox | View::Primary | View::Snoozed
+                                ) {
+                                    this.refresh(cx);
+                                }
+                            }
+                            true
+                        }
+                        Err(error) => error.to_string().contains("404"),
+                    };
+                    if done {
+                        this.snoozed.retain(|s| s.thread_id != item.thread_id);
+                        this.save_snoozed(cx);
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
+    /// Several threads picked: what can be done to all of them.
+    fn bulk_pane(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let count = self.targets().len();
+        let action = |id: &'static str, name: &'static str, label: &'static str| {
+            button(t, ButtonKind::Secondary, label, None)
+                .id(id)
+                .child(icon(name, 14., t.text2))
+        };
+        let inbox_like = matches!(
+            self.mailbox,
+            View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social
+        );
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(18.))
+            .bg(t.surface)
+            .child(serif(
+                &format!("{count} conversations, selected"),
+                44.,
+                t.text,
+            ))
+            .child(meta(
+                "⌘-click adds or removes one, Shift-click picks a range, Esc clears.",
+                t.text3,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .justify_center()
+                    .gap(px(8.))
+                    .max_w(px(620.))
+                    .when(
+                        inbox_like
+                            || matches!(
+                                self.mailbox,
+                                View::Done | View::Spam | View::Trash | View::Snoozed
+                            ),
+                        |d| {
+                            d.child(
+                                action(
+                                    "bulk-done",
+                                    "done",
+                                    if inbox_like {
+                                        "Mark done"
+                                    } else {
+                                        "Move to inbox"
+                                    },
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
+                            )
+                        },
+                    )
+                    .child(
+                        action("bulk-read", "mail", "Read or unread")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
+                    )
+                    .child(
+                        action("bulk-star", "star", "Star")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
+                    )
+                    .child(action("bulk-label", "tag", "Label").on_click(cx.listener(
+                        |this, _, window, cx| this.toggle_menu(Menu::Labels, window, cx),
+                    )))
+                    .child(
+                        action("bulk-move", "folder", "Move to").on_click(cx.listener(
+                            |this, _, window, cx| this.toggle_menu(Menu::MoveTo, window, cx),
+                        )),
+                    )
+                    .when(inbox_like && !self.is_demo(), |d| {
+                        d.child(
+                            action("bulk-snooze", "clock", "Snooze").on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.snooze_choices = Self::snooze_choices();
+                                    this.palette = true;
+                                    this.palette_sel = 0;
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                    })
+                    .when(self.mailbox != View::Spam && !self.is_demo(), |d| {
+                        d.child(action("bulk-spam", "ban", "Spam").on_click(cx.listener(
+                            |this, _, _, cx| this.remove_selected(gmail::Change::Spam, cx),
+                        )))
+                    })
+                    .child(
+                        action("bulk-trash", "trash", "Trash")
+                            .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
+                    ),
+            )
+            .child(
+                button(t, ButtonKind::Ghost, "Clear selection", Some("esc"))
+                    .id("bulk-clear")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.picked.clear();
+                        cx.notify();
+                    })),
+            )
+    }
+
     /// "Load more" at the end of the list: the next page of the mailbox.
     fn load_more(&mut self, cx: &mut Context<Self>) {
         let (Some(client), Some(page)) = (self.gmail.clone(), self.next_page.clone()) else {
@@ -2941,6 +3383,18 @@ impl Nimbra {
     /// Adds one of the user's labels to the open thread.
     fn apply_label(&mut self, label: usize, cx: &mut Context<Self>) {
         self.menu = None;
+        if self.picked.len() >= 2 {
+            let selected = self.selected;
+            let targets = self.targets();
+            let picked = std::mem::take(&mut self.picked);
+            for index in targets {
+                self.selected = index;
+                self.apply_label(label, cx);
+            }
+            self.selected = selected;
+            self.picked = picked;
+            return;
+        }
         if let (Some(label), Some(mail)) =
             (self.labels.get(label), self.mails.get_mut(self.selected))
             && !mail.labels.contains(&label.id)
@@ -2983,6 +3437,14 @@ impl Nimbra {
 
     /// The toolbar button and `U`: flips the open thread between unread and read.
     fn toggle_unread(&mut self, cx: &mut Context<Self>) {
+        if self.picked.len() >= 2 {
+            let targets = self.targets();
+            let unread = !targets.iter().all(|i| self.mails[*i].unread);
+            for index in targets {
+                self.set_unread(index, unread, cx);
+            }
+            return;
+        }
         let index = self.selected;
         if let Some(unread) = self.mails.get(index).map(|m| m.unread) {
             self.set_unread(index, !unread, cx);
@@ -3867,6 +4329,7 @@ impl Nimbra {
     /// Checks for scheduled messages that are due, every 20 seconds while Nimbra runs.
     fn watch_schedule(&mut self, cx: &mut Context<Self>) {
         self.send_due(cx);
+        self.wake_due(cx);
         if self.schedule_watch {
             return;
         }
@@ -3876,7 +4339,13 @@ impl Nimbra {
                 cx.background_executor()
                     .timer(Duration::from_secs(20))
                     .await;
-                if this.update(cx, |this, cx| this.send_due(cx)).is_err() {
+                if this
+                    .update(cx, |this, cx| {
+                        this.send_due(cx);
+                        this.wake_due(cx);
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -4146,15 +4615,23 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// How many rows the palette has.
+    fn palette_len(&self) -> usize {
+        if self.is_demo() {
+            COMMANDS.len()
+        } else {
+            self.snooze_choices.len()
+        }
+    }
+
     /// Runs the highlighted palette command. Snoozing is only simulated on the sample data;
     /// on a real mailbox it must not archive anything, so it just says so.
     fn run_command(&mut self, cx: &mut Context<Self>) {
         self.palette = false;
         if self.is_demo() {
             self.mark_done(cx);
-        } else {
-            self.notice = Some("Snooze isn’t connected to Gmail yet. Nothing was changed.".into());
-            cx.notify();
+        } else if let Some(choice) = self.snooze_choices.get(self.palette_sel).cloned() {
+            self.snooze(choice, cx);
         }
     }
 
@@ -4620,9 +5097,10 @@ impl Nimbra {
 
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.palette {
-            let max = COMMANDS.len() as isize - 1;
+            let max = self.palette_len() as isize - 1;
             self.palette_sel = (self.palette_sel as isize + delta).clamp(0, max) as usize;
         } else {
+            self.picked.clear();
             let visible = self.visible();
             if let Some(pos) = visible.iter().position(|i| *i == self.selected) {
                 let next = (pos as isize + delta).clamp(0, visible.len() as isize - 1);
@@ -4880,6 +5358,17 @@ impl Nimbra {
             View::Done => gmail::Change::Unarchive,
             View::Spam => gmail::Change::NotSpam,
             View::Trash => gmail::Change::Untrash,
+            // Back to the inbox now, instead of at the snooze time.
+            View::Snoozed => {
+                let threads: Vec<String> = self
+                    .targets()
+                    .iter()
+                    .filter_map(|i| self.mails[*i].id.clone())
+                    .collect();
+                self.snoozed.retain(|s| !threads.contains(&s.thread_id));
+                self.save_snoozed(cx);
+                gmail::Change::Unarchive
+            }
             _ => return,
         };
         self.remove_selected(change, cx);
@@ -4892,6 +5381,11 @@ impl Nimbra {
 
     /// Takes the open thread out of the list and applies `change` to it in Gmail.
     fn remove_selected(&mut self, change: gmail::Change, cx: &mut Context<Self>) {
+        if self.picked.len() >= 2 {
+            self.remove_picked(change, cx);
+            return;
+        }
+        self.picked.clear();
         let visible = self.visible();
         let Some(pos) = visible.iter().position(|i| *i == self.selected) else {
             return;
@@ -4899,6 +5393,7 @@ impl Nimbra {
         let index = self.selected;
         self.done[index] = true;
         self.history.push(index);
+        self.history_groups.push(1);
         if let Some(id) = self.mails[index].id.clone() {
             self.removed_by.insert(id, change);
         }
@@ -5002,16 +5497,44 @@ impl Nimbra {
             self.unpark(serial, cx);
             return;
         }
+        // A batch (several threads at once) comes back together.
+        let group = self
+            .history_groups
+            .pop()
+            .unwrap_or(1)
+            .clamp(1, self.history.len().max(1));
+        for _ in 1..group {
+            if let Some(index) = self.history.pop() {
+                self.undo_one(index, cx);
+            }
+        }
         let Some(index) = self.history.pop() else {
             return;
         };
-        self.done[index] = false;
+        self.undo_one(index, cx);
         self.selected = index;
+        self.load_selected(cx);
+        cx.notify();
+    }
+
+    /// Puts one removed thread back.
+    fn undo_one(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.mails.len() {
+            return;
+        }
+        self.done[index] = false;
         let change = self.mails[index]
             .id
             .as_ref()
             .and_then(|id| self.removed_by.remove(id))
             .unwrap_or(gmail::Change::Archive);
+        // Undoing a snooze cancels it.
+        if let Some(thread) = self.mails[index].id.clone()
+            && self.snoozed.iter().any(|s| s.thread_id == thread)
+        {
+            self.snoozed.retain(|s| s.thread_id != thread);
+            self.save_snoozed(cx);
+        }
         if let Some(inverse) = change.inverse() {
             self.sync(index, inverse, false, cx);
         }
@@ -5027,11 +5550,26 @@ impl Nimbra {
                     .detach();
             }
         }
-        self.load_selected(cx);
-        cx.notify();
     }
 
     fn toggle_star(&mut self, cx: &mut Context<Self>) {
+        if self.picked.len() >= 2 {
+            let targets = self.targets();
+            let starred = !targets.iter().all(|i| self.mails[*i].starred);
+            for index in targets {
+                if self.mails[index].starred != starred {
+                    self.mails[index].starred = starred;
+                    let change = if starred {
+                        gmail::Change::Star
+                    } else {
+                        gmail::Change::Unstar
+                    };
+                    self.sync(index, change, false, cx);
+                }
+            }
+            cx.notify();
+            return;
+        }
         let index = self.selected;
         if !self.visible().contains(&index) {
             return;
@@ -5521,7 +6059,8 @@ impl Nimbra {
 
     fn row(&self, t: &Theme, i: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let m = &self.mails[i];
-        let selected = i == self.selected;
+        let picked = self.picked.contains(&i);
+        let selected = i == self.selected && self.picked.len() < 2;
         let hover = t.hover;
         // How many characters fit on a row at the list's current width (the text is cut
         // with an ellipsis by character count, so this follows the resize handle).
@@ -5567,18 +6106,17 @@ impl Nimbra {
             .py(px(12.))
             .rounded(px(12.))
             .cursor_pointer()
-            .when(selected, |d| d.bg(t.selected))
-            .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+            .when(selected || picked, |d| d.bg(t.selected))
+            .when(picked, |d| d.border_1().border_color(t.violet.opacity(0.5)))
+            .when(!selected && !picked, |d| d.hover(move |s| s.bg(hover)))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                     this.open_row_menu(i, event.position, window, cx)
                 }),
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.open(i);
-                this.open_selected(cx);
-                cx.notify();
+            .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                this.click_row(i, event.modifiers(), cx)
             }))
             .child(
                 div().w(px(6.)).pt(px(11.)).flex_none().child(
@@ -8151,9 +8689,36 @@ impl Nimbra {
 
     fn palette(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let m = &self.mails[self.selected];
-        let items =
+        // The sample data shows the designed palette; a real mailbox gets real snooze times.
+        let rows: Vec<(
+            &'static str,
+            SharedString,
+            SharedString,
+            &'static str,
+            Option<&'static str>,
+        )> = if self.is_demo() {
             COMMANDS
                 .iter()
+                .map(|(name, label, hint, key, header)| {
+                    (*name, (*label).into(), (*hint).into(), *key, *header)
+                })
+                .collect()
+        } else {
+            self.snooze_choices
+                .iter()
+                .map(|c| {
+                    (
+                        c.icon,
+                        c.label.clone().into(),
+                        c.hint.clone().into(),
+                        "",
+                        c.header,
+                    )
+                })
+                .collect()
+        };
+        let items =
+            rows.into_iter()
                 .enumerate()
                 .flat_map(|(i, (name, label, hint, key, header))| {
                     let active = i == self.palette_sel;
@@ -8178,7 +8743,10 @@ impl Nimbra {
                         .cursor_pointer()
                         .when(active, |d| d.bg(t.selected))
                         .when(!active, |d| d.hover(move |s| s.bg(hover)))
-                        .on_click(cx.listener(|this, _, _, cx| this.run_command(cx)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.palette_sel = i;
+                            this.run_command(cx)
+                        }))
                         .child(
                             div()
                                 .flex()
@@ -8201,7 +8769,7 @@ impl Nimbra {
                             div()
                                 .flex_none()
                                 .font_weight(FontWeight::MEDIUM)
-                                .child(*label),
+                                .child(label.clone()),
                         )
                         .child(
                             div()
@@ -8210,9 +8778,9 @@ impl Nimbra {
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_color(t.text3)
-                                .child(*hint),
+                                .child(hint.clone()),
                         )
-                        .child(kbd(t, key))
+                        .when(!key.is_empty(), |d| d.child(kbd(t, key)))
                         .into_any_element();
                     head.into_iter().chain(std::iter::once(row))
                 });
@@ -8401,7 +8969,15 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &TogglePalette, _, cx| {
                 this.palette = !this.palette && !this.visible().is_empty();
                 this.palette_sel = 0;
+                this.snooze_choices = Self::snooze_choices();
                 cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectAllThreads, _, cx| {
+                let visible = this.visible();
+                if visible.len() >= 2 {
+                    this.picked = visible.into_iter().collect();
+                    cx.notify();
+                }
             }))
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
                 if this.menu.take().is_some() {
@@ -8410,6 +8986,9 @@ impl Render for Nimbra {
                     this.close_settings(cx);
                 } else if this.new_label.is_some() {
                     this.close_new_label(cx);
+                } else if !this.picked.is_empty() && !this.palette {
+                    this.picked.clear();
+                    cx.notify();
                 } else if let Some(composer) = this.compose.as_mut()
                     && composer.suggest.take().is_some()
                 {
@@ -8475,9 +9054,13 @@ impl Render for Nimbra {
                     d.child(self.zero(&t))
                 }
                 Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t)),
-                Status::Demo | Status::Ready => d
-                    .children(self.list_slot(&t, cx))
-                    .child(self.reading(&t, cx)),
+                Status::Demo | Status::Ready => d.children(self.list_slot(&t, cx)).map(|d| {
+                    if self.picked.len() >= 2 {
+                        d.child(self.bulk_pane(&t, cx))
+                    } else {
+                        d.child(self.reading(&t, cx))
+                    }
+                }),
                 Status::Loading => d.child(self.skeleton(&t)),
                 _ => d.child(self.status_screen(&t, cx)),
             })
