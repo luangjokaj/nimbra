@@ -322,6 +322,8 @@ pub struct Nimbra {
     /// Switching back shows it at once while a refresh runs in the background.
     /// Backed by the encrypted store on disk (see `persist`).
     cache: HashMap<View, Vec<Mail>>,
+    /// A background fetch of thread contents is running.
+    prefetching: bool,
     /// The encrypted on-disk mail store, once opened (real mail only).
     store: Option<Arc<crate::store::Store>>,
     /// Where the new-mail check reads Gmail's change feed from; `None` until its first
@@ -461,6 +463,7 @@ impl Nimbra {
                 _ => View::Inbox,
             },
             cache: HashMap::new(),
+            prefetching: false,
             store: None,
             notify_from: None,
             synced_to: HashMap::new(),
@@ -816,6 +819,7 @@ impl Nimbra {
                         );
                         if updates.is_empty() {
                             this.persist(cx);
+                            this.prefetch(cx);
                             cx.notify();
                             return;
                         }
@@ -839,6 +843,88 @@ impl Nimbra {
         })
         .detach();
         true
+    }
+
+    /// Fetches, in the background, the content of the newest threads on screen that have not
+    /// been downloaded yet, and saves it, so opening them is instant now and after a restart.
+    fn prefetch(&mut self, cx: &mut Context<Self>) {
+        const AHEAD: usize = 20;
+        const WORKERS: usize = 4;
+        let Some(client) = self.gmail.clone() else {
+            return;
+        };
+        if self.prefetching || self.mailbox == View::Search || self.status != Status::Ready {
+            return;
+        }
+        let ids: Vec<String> = self
+            .visible()
+            .into_iter()
+            .filter_map(|i| self.mails.get(i))
+            .filter(|mail| !mail.loaded)
+            .filter_map(|mail| mail.id.clone())
+            .take(AHEAD)
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.prefetching = true;
+        let view = self.mailbox;
+        cx.spawn(async move |this, cx| {
+            let fetched = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut results: Vec<Option<anyhow::Result<Vec<gmail::Message>>>> =
+                        (0..ids.len()).map(|_| None).collect();
+                    let chunk = ids.len().div_ceil(WORKERS).max(1);
+                    std::thread::scope(|scope| {
+                        for (ids, out) in ids.chunks(chunk).zip(results.chunks_mut(chunk)) {
+                            let client = &client;
+                            scope.spawn(move || {
+                                for (id, slot) in ids.iter().zip(out) {
+                                    *slot = Some(client.thread(id));
+                                }
+                            });
+                        }
+                    });
+                    ids.into_iter()
+                        .zip(results.into_iter().flatten())
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.prefetching = false;
+                let mut filled = 0;
+                for (id, result) in fetched {
+                    match result {
+                        Ok(messages) => {
+                            if let Some(mail) = this
+                                .mails
+                                .iter_mut()
+                                .find(|m| m.id.as_deref() == Some(id.as_str()) && !m.loaded)
+                            {
+                                mail.fill(messages);
+                                filled += 1;
+                            }
+                        }
+                        Err(error) if error.is::<gmail::SignedOut>() => {
+                            this.fail(error, cx);
+                            return;
+                        }
+                        // One thread failing (offline, deleted) does not stop the rest.
+                        Err(_) => {}
+                    }
+                }
+                if filled > 0 && this.mailbox == view {
+                    // Count only; never log subjects or addresses.
+                    eprintln!("nimbra: prefetched {filled} threads");
+                    this.cache.insert(view, this.mails.clone());
+                    this.persist(cx);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     // ------------------------------------------------------------ local store
@@ -1223,6 +1309,7 @@ impl Nimbra {
         self.status = Status::Ready;
         self.cache.insert(self.mailbox, self.mails.clone());
         self.persist(cx);
+        self.prefetch(cx);
         // Counts only; never log addresses, subjects or message text.
         eprintln!(
             "nimbra: {:?} listed ({} threads, {} already in memory, {} sidebar counts)",
