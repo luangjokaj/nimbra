@@ -4073,7 +4073,6 @@ impl Nimbra {
         }
     }
 
-    /// Marks a thread read or unread, here and in Gmail.
     /// Moves the sidebar's unread counts (and the Dock badge) at once, before Gmail's own
     /// numbers come back with the next sync. `delta` is +1 or -1 for one unread thread.
     fn adjust_counts(&mut self, index: usize, delta: i32) {
@@ -4108,6 +4107,7 @@ impl Nimbra {
         }
     }
 
+    /// Marks a thread read or unread, here and in Gmail.
     fn set_unread(&mut self, index: usize, unread: bool, cx: &mut Context<Self>) {
         if index == self.selected {
             self.kept_unread = if unread {
