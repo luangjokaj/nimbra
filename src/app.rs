@@ -48,6 +48,20 @@ actions!(
         Reload,
         OpenSettings,
         SelectAllThreads,
+        Print,
+        // Menu-bar twins of actions whose shortcut is a bare key (E, R, S…). A menu item
+        // takes its action's shortcut as a system key equivalent, which would fire while
+        // typing; these have no shortcut of their own.
+        MenuReply,
+        MenuMarkDone,
+        MenuMarkUnread,
+        MenuStar,
+        MenuTrash,
+        MenuSnooze,
+        MenuUndo,
+        MenuToggleOriginal,
+        MenuToggleSidebar,
+        MenuSearch,
         Quit
     ]
 );
@@ -608,6 +622,14 @@ fn restrict_file(path: &std::path::Path) {
     }
 }
 
+/// Text made safe to put in HTML.
+fn esc(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// "1.2 MB", "340 KB".
 fn file_size(bytes: u64) -> String {
     match bytes {
@@ -681,6 +703,12 @@ pub struct Nimbra {
     schedule_watch: bool,
     /// The times offered by the open Send later menu.
     send_later_times: Vec<i64>,
+    /// The number shown on the Dock icon.
+    badge: Option<u32>,
+    /// A document waiting to be printed (it is loaded into the web view first).
+    print_pending: Option<String>,
+    /// Nimbra opens at login (read when Settings opens).
+    login_item: bool,
     /// Rows picked with ⌘-click, Shift-click or ⌘A, for actions on several threads.
     picked: std::collections::BTreeSet<usize>,
     /// How many rows each entry of the undo history covers (one, or a whole batch).
@@ -857,6 +885,9 @@ impl Nimbra {
             cache: HashMap::new(),
             prefetching: false,
             open_when_listed: None,
+            badge: None,
+            print_pending: None,
+            login_item: false,
             picked: Default::default(),
             history_groups: Vec::new(),
             snoozed: Vec::new(),
@@ -1471,12 +1502,27 @@ impl Nimbra {
         if self.mailbox == View::Search || self.status != Status::Ready {
             return;
         }
+        // Keep the store small: the newest 300 threads of a mailbox, and the full text of
+        // the newest 100 (older ones are downloaded again when opened).
+        const KEEP_THREADS: usize = 300;
+        const KEEP_BODIES: usize = 100;
         let mails: Vec<Mail> = self
             .mails
             .iter()
             .zip(&self.done)
             .filter(|(_, done)| !**done)
             .map(|(mail, _)| mail.clone())
+            .take(KEEP_THREADS)
+            .enumerate()
+            .map(|(index, mut mail)| {
+                if index >= KEEP_BODIES && mail.loaded {
+                    mail.loaded = false;
+                    mail.body.clear();
+                    mail.earlier.clear();
+                    mail.html = None;
+                }
+                mail
+            })
             .collect();
         let name = record(self.mailbox);
         let saved = Saved {
@@ -2392,6 +2438,16 @@ impl Nimbra {
 
     /// Creates, loads, shows or hides the web view to match the current state.
     fn sync_html_view(&mut self, window: &mut Window) {
+        // A print job borrows the web view: load the document, then open the print panel.
+        if let Some(doc) = self.print_pending.take() {
+            if self.html_view.is_none() {
+                self.html_view = HtmlView::new(window).map(std::rc::Rc::new);
+            }
+            if let Some(view) = &self.html_view {
+                view.show(&doc, self.original_images);
+                self.html_shown = None;
+            }
+        }
         let Some((key, html)) = self.original_target() else {
             if let Some(view) = &self.html_view {
                 view.set_visible(false);
@@ -2743,6 +2799,77 @@ impl Nimbra {
             Some(menu)
         };
         cx.notify();
+    }
+
+    /// ⌘P: prints the open message with its sender, recipients and date.
+    fn print_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(mail) = self
+            .mails
+            .get(self.selected)
+            .filter(|_| self.visible().contains(&self.selected))
+        else {
+            return;
+        };
+        if !mail.loaded {
+            self.notice = Some("The message is still loading. Try again in a moment.".into());
+            cx.notify();
+            return;
+        }
+        let h = &mail.header;
+        let person = |p: &gmail::Person| {
+            if p.name.is_empty() {
+                p.address.clone()
+            } else {
+                format!("{} <{}>", p.name, p.address)
+            }
+        };
+        let list =
+            |people: &[gmail::Person]| people.iter().map(person).collect::<Vec<_>>().join(", ");
+        let mut doc = format!(
+            "<div style=\"font:13px/1.5 -apple-system,sans-serif;border-bottom:1px solid #ccc;padding-bottom:10px;margin-bottom:16px\"><div style=\"font-size:18px;font-weight:600;margin-bottom:6px\">{}</div>",
+            esc(&mail.subject)
+        );
+        let from = if h.from.address.is_empty() {
+            mail.sender.to_string()
+        } else {
+            person(&h.from)
+        };
+        let mut row = |name: &str, value: String| {
+            if !value.is_empty() {
+                doc.push_str(&format!("<div><b>{name}:</b> {}</div>", esc(&value)));
+            }
+        };
+        row("From", from);
+        row("To", list(&h.to));
+        row("Cc", list(&h.cc));
+        row("Date", long_date(h.date_ms));
+        doc.push_str("</div>");
+        match &mail.html {
+            Some(html) => doc.push_str(html),
+            None => {
+                for block in &mail.body {
+                    doc.push_str(&format!(
+                        "<p>{}</p>",
+                        esc(&block.text).replace('\n', "<br>")
+                    ));
+                }
+            }
+        }
+        self.print_pending = Some(doc);
+        cx.notify();
+        // The document is loaded on the next frame; give it a moment, then print.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(700))
+                .await;
+            this.update(cx, |this, _| {
+                if let Some(view) = &this.html_view {
+                    view.print();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The rows an action applies to: the picked ones (in list order), or the open one.
@@ -4702,6 +4829,7 @@ impl Nimbra {
         }
         self.signature_lines = lines;
         self._settings_subscriptions = subscriptions;
+        self.login_item = crate::system::opens_at_login();
         self.settings_open = true;
         if let Some(view) = &self.html_view {
             view.set_visible(false);
@@ -4995,6 +5123,22 @@ impl Nimbra {
                     this.settings.load_images = !this.settings.load_images;
                     this.original_images = this.settings.load_images;
                     this.save_settings(cx);
+                    cx.notify();
+                })),
+            )
+            .child(section("Mac"))
+            .child(
+                toggle(
+                    "set-login",
+                    "Open Nimbra at login",
+                    "So new mail is checked and notified from the moment you sign in to your Mac.",
+                    self.login_item,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    match crate::system::set_open_at_login(!this.login_item) {
+                        Ok(()) => this.login_item = !this.login_item,
+                        Err(message) => this.notice = Some(message.into()),
+                    }
                     cx.notify();
                 })),
             )
@@ -8918,6 +9062,16 @@ impl Render for Nimbra {
         }
         self.sync_html_view(window);
         self.sync_editor(window, cx);
+        // The inbox's unread count on the Dock icon.
+        let unread = if self.gmail.is_some() {
+            self.counts.get("INBOX").map_or(0, |(unread, _)| *unread)
+        } else {
+            0
+        };
+        if self.badge != Some(unread) {
+            crate::system::set_badge(unread);
+            self.badge = Some(unread);
+        }
         self.frame = Some(window.bounds());
         if self.pull_hold && !self.fetching {
             self.pull_hold = false;
@@ -8971,6 +9125,26 @@ impl Render for Nimbra {
                 this.palette_sel = 0;
                 this.snooze_choices = Self::snooze_choices();
                 cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &Print, _, cx| this.print_selected(cx)))
+            .on_action(
+                cx.listener(|this, _: &MenuReply, _, cx| this.open_compose(ComposeKind::Reply, cx)),
+            )
+            .on_action(cx.listener(|this, _: &MenuMarkDone, _, cx| this.mark_done(cx)))
+            .on_action(cx.listener(|this, _: &MenuMarkUnread, _, cx| this.toggle_unread(cx)))
+            .on_action(cx.listener(|this, _: &MenuStar, _, cx| this.toggle_star(cx)))
+            .on_action(cx.listener(|this, _: &MenuTrash, _, cx| this.trash(cx)))
+            .on_action(cx.listener(|this, _: &MenuUndo, _, cx| this.undo(cx)))
+            .on_action(cx.listener(|this, _: &MenuToggleOriginal, _, cx| this.toggle_original(cx)))
+            .on_action(cx.listener(|this, _: &MenuToggleSidebar, _, cx| this.toggle_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &MenuSearch, _, cx| this.focus_search(cx)))
+            .on_action(cx.listener(|this, _: &MenuSnooze, _, cx| {
+                if this.compose.is_none() && !this.visible().is_empty() {
+                    this.palette = true;
+                    this.palette_sel = 0;
+                    this.snooze_choices = Self::snooze_choices();
+                    cx.notify();
+                }
             }))
             .on_action(cx.listener(|this, _: &SelectAllThreads, _, cx| {
                 let visible = this.visible();

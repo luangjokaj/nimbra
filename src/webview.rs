@@ -96,6 +96,11 @@ mod platform {
             let _ = self.view.set_visible(visible);
         }
 
+        /// Opens the system print panel for what the view shows.
+        pub fn print(&self) {
+            let _ = self.view.print();
+        }
+
         /// Makes the page see a light or dark colour scheme, following the app's theme
         /// rather than the system's. Emails that ship dark-mode styles then use them;
         /// emails that do not simply stay as designed.
@@ -164,6 +169,7 @@ mod platform {
         pub fn set_bounds(&self, _x: f32, _y: f32, _width: f32, _height: f32) {}
         pub fn set_visible(&self, _visible: bool) {}
         pub fn set_dark(&self, _dark: bool) {}
+        pub fn print(&self) {}
     }
 }
 

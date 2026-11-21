@@ -10,6 +10,7 @@ mod notify;
 mod rich;
 mod settings;
 mod store;
+mod system;
 mod theme;
 mod ui;
 mod webview;
@@ -22,10 +23,11 @@ use gpui::{
 };
 
 use app::{
-    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, HideWindow, MarkDone, MarkUnread, Next,
-    Nimbra, OpenSettings, Prev, Quit, Reload, Reply, SaveDraft, SelectAllThreads, SendMail,
-    ToggleFullCompose, ToggleList, ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar,
-    ToggleTheme, Trash, Undo,
+    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, HideWindow, MarkDone, MarkUnread,
+    MenuMarkDone, MenuMarkUnread, MenuReply, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal,
+    MenuToggleSidebar, MenuTrash, MenuUndo, Next, Nimbra, OpenSettings, Prev, Print, Quit, Reload,
+    Reply, SaveDraft, SelectAllThreads, SendMail, ToggleFullCompose, ToggleList, ToggleOriginal,
+    TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -184,6 +186,8 @@ fn main() {
             KeyBinding::new("ctrl-r", Reload, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("cmd-n", Compose, None),
+            KeyBinding::new("cmd-p", Print, None),
             KeyBinding::new("cmd-a", SelectAllThreads, mail),
             KeyBinding::new("ctrl-a", SelectAllThreads, mail),
             // ⌘W hides the window; Nimbra keeps running and checking mail until ⌘Q.
@@ -205,26 +209,63 @@ fn main() {
         ]);
         // The Edit menu gives ⌘X, ⌘C, ⌘V and ⌘A to whichever view has the keyboard,
         // including the message editor (a web view only gets them through the menu).
+        // The menu bar. Items only carry shortcuts that use ⌘ and never clash with the
+        // message editor; the rest (E, R, S…) are menu-only twins without a shortcut, so a
+        // letter typed in the editor never triggers them. See `MenuReply` and friends.
+        use gpui::{Menu, MenuItem, OsAction};
         cx.set_menus(vec![
-            gpui::Menu {
+            Menu {
                 name: "Nimbra".into(),
                 items: vec![
-                    gpui::MenuItem::action("Settings…", OpenSettings),
-                    gpui::MenuItem::separator(),
-                    gpui::MenuItem::action("Quit Nimbra", Quit),
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit Nimbra", Quit),
                 ],
             },
-            gpui::Menu {
+            Menu {
+                name: "File".into(),
+                items: vec![
+                    MenuItem::action("New Message", Compose),
+                    MenuItem::action("Check for Mail", Reload),
+                    MenuItem::separator(),
+                    MenuItem::action("Print…", Print),
+                    MenuItem::separator(),
+                    MenuItem::action("Close Window", HideWindow),
+                ],
+            },
+            Menu {
                 name: "Edit".into(),
                 items: vec![
-                    gpui::MenuItem::os_action("Cut", input::Cut, gpui::OsAction::Cut),
-                    gpui::MenuItem::os_action("Copy", input::Copy, gpui::OsAction::Copy),
-                    gpui::MenuItem::os_action("Paste", input::Paste, gpui::OsAction::Paste),
-                    gpui::MenuItem::os_action(
-                        "Select All",
-                        input::SelectAll,
-                        gpui::OsAction::SelectAll,
-                    ),
+                    MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
+                    MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
+                    MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
+                    MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+                    MenuItem::separator(),
+                    MenuItem::action("Find Mail", MenuSearch),
+                ],
+            },
+            Menu {
+                name: "View".into(),
+                items: vec![
+                    MenuItem::action("Show or Hide Sidebar", MenuToggleSidebar),
+                    MenuItem::action("Show or Hide List", ToggleList),
+                    MenuItem::action("Original Formatting or Reader", MenuToggleOriginal),
+                    MenuItem::separator(),
+                    MenuItem::action("Light or Dark", ToggleTheme),
+                ],
+            },
+            Menu {
+                name: "Message".into(),
+                items: vec![
+                    MenuItem::action("Reply  (R)", MenuReply),
+                    MenuItem::separator(),
+                    MenuItem::action("Mark Done  (E)", MenuMarkDone),
+                    MenuItem::action("Mark Read or Unread  (U)", MenuMarkUnread),
+                    MenuItem::action("Star  (S)", MenuStar),
+                    MenuItem::action("Snooze…  (H)", MenuSnooze),
+                    MenuItem::action("Move to Trash", MenuTrash),
+                    MenuItem::separator(),
+                    MenuItem::action("Undo  (Z)", MenuUndo),
                 ],
             },
         ]);

@@ -49,16 +49,15 @@ to do, from reading the current code. Grouped into milestones; each one ships on
 
 ## Milestone 4: App essentials
 
-- [~] **Settings window** (done: account, signature, theme, reading, notifications; start at login still to do) (⌘,): account, signature, notifications on or off, theme, start
-      at login, original view on or off, images on or off.
+- [x] **Settings window** (⌘,): account, signature, theme, reading, notifications, open at login.
 - [x] **Sign out** that removes the token, store and key.
 - [ ] **Multiple accounts** with a unified inbox.
 - [ ] **Offline**: queue archive, star, read, send while offline and retry; show an
       offline indicator.
-- [ ] **Menu bar** (File, Edit, View, Message, Window) with the shortcuts, so actions are
+- [x] **Menu bar** (File, Edit, View, Message, Window) with the shortcuts, so actions are
       discoverable; Dock badge with the unread count.
-- [ ] **Print** a message (⌘P).
-- [ ] **Store limits**: cap the local store's size and prune old threads.
+- [x] **Print** a message (⌘P).
+- [x] **Store limits**: cap the local store's size and prune old threads.
 
 ## Security notes
 
