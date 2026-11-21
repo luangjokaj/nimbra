@@ -20,6 +20,14 @@ use crate::ui::{
 };
 use crate::webview::HtmlView;
 
+#[path = "message_window.rs"]
+mod message_window;
+use message_window::MessageWindow;
+
+#[path = "settings_window.rs"]
+mod settings_window;
+use settings_window::SettingsWindow;
+
 actions!(
     nimbra,
     [
@@ -261,6 +269,8 @@ struct Hit {
     time: SharedString,
     unread: bool,
     timestamp_ms: i64,
+    /// The conversation itself, so clicking it can open it straight away.
+    mail: Box<Mail>,
 }
 
 impl Hit {
@@ -275,6 +285,7 @@ impl Hit {
             time: mail.time.clone(),
             unread: mail.unread,
             timestamp_ms: mail.timestamp_ms,
+            mail: Box::new(mail.clone()),
         }
     }
 }
@@ -940,13 +951,12 @@ pub struct Nimbra {
     /// The editor had the keyboard at the last frame.
     editor_keys: bool,
     settings: crate::settings::Settings,
-    /// The Settings sheet is open.
-    settings_open: bool,
-    /// One field per line of the signature, while Settings is open.
-    signature_lines: Vec<Entity<TextInput>>,
-    _settings_subscriptions: Vec<gpui::Subscription>,
-    /// "Sign out" was clicked once; a second click within a few seconds signs out.
-    sign_out_armed: Option<std::time::Instant>,
+    /// What was copied last from a message's details, and when (shows "Copied").
+    copied: Option<(String, std::time::Instant)>,
+    /// Conversations open in windows of their own.
+    message_windows: Vec<gpui::WindowHandle<MessageWindow>>,
+    /// The Settings window, while it is open.
+    settings_window: Option<gpui::WindowHandle<SettingsWindow>>,
     /// Composers that are closed but still saving, waiting to send, or discarded.
     parked: Vec<(Parked, Composer)>,
     composer_serial: u64,
@@ -1042,6 +1052,8 @@ pub struct Nimbra {
     move_targets: Vec<MoveTarget>,
     /// A thread to open once it appears in the list (from a clicked notification).
     open_when_listed: Option<String>,
+    /// The search result that was clicked, until the results it belongs to are listed.
+    search_opened: Option<Mail>,
     /// A background fetch of thread contents is running.
     prefetching: bool,
     /// The encrypted on-disk mail store, once opened (real mail only).
@@ -1127,6 +1139,8 @@ pub struct Nimbra {
     /// Pull to refresh: the list's scroll position, how far it has been pulled past the
     /// top, and whether the current trackpad gesture started at the top.
     list_scroll: gpui::ScrollHandle,
+    /// The search panel's results, kept scrolled to the highlighted one.
+    finder_scroll: gpui::ScrollHandle,
     pull: f32,
     pull_armed: bool,
     /// The indicator settling after release: (from height, to height). `pull_gen` restarts it.
@@ -1220,6 +1234,7 @@ impl Nimbra {
             cache: HashMap::new(),
             prefetching: false,
             open_when_listed: None,
+            search_opened: None,
             account_id: String::new(),
             account_gen: 0,
             offline: false,
@@ -1265,10 +1280,9 @@ impl Nimbra {
             editor_focus: cx.focus_handle(),
             editor_keys: false,
             settings: crate::settings::load(),
-            settings_open: false,
-            signature_lines: Vec::new(),
-            _settings_subscriptions: Vec::new(),
-            sign_out_armed: None,
+            settings_window: None,
+            message_windows: Vec::new(),
+            copied: None,
             parked: Vec::new(),
             composer_serial: 0,
             scheduled: Vec::new(),
@@ -1335,6 +1349,7 @@ impl Nimbra {
             list_toggled: None,
             list_gen: 0,
             list_scroll: gpui::ScrollHandle::new(),
+            finder_scroll: gpui::ScrollHandle::new(),
             pull: 0.,
             pull_armed: false,
             pull_anim: None,
@@ -1387,7 +1402,11 @@ impl Nimbra {
         }
         // NIMBRA_SCREEN=settings opens the Settings sheet (screenshots).
         if screen == "settings" {
-            this.open_settings(cx);
+            // After the main window is up.
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |this, cx| this.open_settings(cx)).ok();
+            })
+            .detach();
         }
         // NIMBRA_SCREEN=loading holds the loading skeleton on screen (screenshots).
         if screen == "loading" {
@@ -1500,6 +1519,7 @@ impl Nimbra {
     fn finder_changed(&mut self, cx: &mut Context<Self>) {
         let query = self.finder.read(cx).text().trim().to_string();
         self.finder_hits = self.local_hits(&query);
+        self.finder_scroll.scroll_to_item(0);
         self.finder_sel = if self.finder_hits.is_empty() { 0 } else { 1 };
         self.finder_gen += 1;
         let generation = self.finder_gen;
@@ -1600,6 +1620,28 @@ impl Nimbra {
             return;
         }
         self.finder_sel = (self.finder_sel as isize + delta).rem_euclid(rows as isize) as usize;
+        // Keep the highlighted row in view. Its place among the panel's children counts the
+        // section titles above it.
+        let child = if empty {
+            let recent = self.settings.recent_searches.len();
+            let recent_title = usize::from(recent > 0);
+            if self.finder_sel < recent {
+                recent_title + self.finder_sel
+            } else {
+                recent_title + recent + 1 + (self.finder_sel - recent)
+            }
+        } else if self.finder_sel == 0 {
+            0
+        } else {
+            1 + self.finder_sel // "All results", then the Conversations title
+        };
+        // The first row brings the section title above it into view too.
+        let child = if self.finder_sel == 0 || (!empty && self.finder_sel == 1) {
+            0
+        } else {
+            child
+        };
+        self.finder_scroll.scroll_to_item(child);
         cx.notify();
     }
 
@@ -1632,11 +1674,14 @@ impl Nimbra {
             .checked_sub(1)
             .and_then(|i| self.finder_hits.get(i))
             .cloned();
-        self.search_for(&query, hit.and_then(|h| h.id), cx);
+        self.search_for(&query, hit.map(|h| *h.mail), cx);
     }
 
-    /// Runs a search: the results list, opening `open` in it if given.
-    fn search_for(&mut self, query: &str, open: Option<String>, cx: &mut Context<Self>) {
+    /// Runs a search: the results list, opening `open` in it if given. `open` is shown at
+    /// once, and stays in the list even if Gmail's results do not include it.
+    fn search_for(&mut self, query: &str, open: Option<Mail>, cx: &mut Context<Self>) {
+        let open_mail = open;
+        let open = open_mail.as_ref().and_then(|m| m.id.clone());
         let recent = &mut self.settings.recent_searches;
         recent.retain(|q| !q.eq_ignore_ascii_case(query));
         recent.insert(0, query.to_string());
@@ -1657,7 +1702,24 @@ impl Nimbra {
             return;
         }
         self.open_when_listed = open;
+        self.search_opened = open_mail.clone();
         self.run_search(cx);
+        // Sample mail is searched on the spot (and has no ids: matched by subject).
+        if self.is_demo() {
+            self.open_when_listed = None;
+            if let Some(mail) = self.search_opened.take()
+                && let Some(index) = self.mails.iter().position(|m| m.subject == mail.subject)
+            {
+                self.open(index);
+                self.open_selected(cx);
+            }
+        }
+        // Opened straight away (run_search listed it), while the rest of the results load.
+        if open_mail.is_some() && !self.is_demo() && self.search_opened.is_some() {
+            self.open(0);
+            self.open_selected(cx);
+            cx.notify();
+        }
     }
 
     /// The search panel.
@@ -1771,7 +1833,7 @@ impl Nimbra {
             }
             for (k, hit) in self.finder_hits.iter().enumerate() {
                 let i = k + 1;
-                let (q, id) = (query.clone(), hit.id.clone());
+                let (q, mail) = (query.clone(), Some((*hit.mail).clone()));
                 rows.push(
                     row_base(i, self.finder_sel == i)
                         .child(avatar(hit.tone, &hit.initials, 28.))
@@ -1794,31 +1856,31 @@ impl Nimbra {
                                                 .child(short(&hit.sender, 30)),
                                         )
                                         .when(hit.unread, |d| {
-                                            d.child(div().size(px(6.)).rounded_full().bg(t.violet))
+                                            d.child(div().size(px(6.)).rounded_full().bg(t.mint))
                                         })
                                         .child(div().flex_1())
                                         .child(mono(hit.time.clone(), t.text3)),
                                 )
+                                // Subject and preview on a line each, cut at the edge, so
+                                // every result is the same height.
                                 .child(
                                     div()
-                                        .flex()
-                                        .gap(px(8.))
-                                        .child(
-                                            div()
-                                                .flex_none()
-                                                .text_color(t.text2)
-                                                .child(short(&hit.subject, 46)),
-                                        )
-                                        .child(
-                                            div()
-                                                .min_w(px(0.))
-                                                .text_color(t.text3)
-                                                .child(short(&hit.snippet, 50)),
-                                        ),
-                                ),
+                                        .truncate()
+                                        .text_color(t.text2)
+                                        .child(hit.subject.clone()),
+                                )
+                                .when(!hit.snippet.trim().is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(12.))
+                                            .text_color(t.text3)
+                                            .child(hit.snippet.clone()),
+                                    )
+                                }),
                         )
                         .on_click(
-                            cx.listener(move |this, _, _, cx| this.search_for(&q, id.clone(), cx)),
+                            cx.listener(move |this, _, _, cx| this.search_for(&q, mail.clone(), cx)),
                         )
                         .into_any_element(),
                 );
@@ -1915,6 +1977,7 @@ impl Nimbra {
                             .flex_col()
                             .max_h(px(420.))
                             .overflow_y_scroll()
+                            .track_scroll(&self.finder_scroll)
                             .p(px(8.))
                             .children(rows),
                     )
@@ -1965,6 +2028,12 @@ impl Nimbra {
             self.done.clear();
             self.history.clear();
             self.selected = 0;
+            // A result clicked in the search panel is listed (and opened) straight away, so
+            // only the reading pane loads instead of the whole window.
+            if let Some(mail) = self.search_opened.clone() {
+                self.mails.push(mail);
+                self.done.push(false);
+            }
             self.fetch_inbox(cx);
         }
         cx.notify();
@@ -2257,7 +2326,7 @@ impl Nimbra {
         });
         // NIMBRA_NOTIFY_TEST=1 posts one sample notification, to check the setup.
         if std::env::var_os("NIMBRA_NOTIFY_TEST").is_some() {
-            crate::notify::show("test", "Nimbra", "Notifications are working.");
+            crate::notify::show("test", "Nimbra", "Notifications are working.", true);
         }
         if self.store.is_some() {
             self.refresh(cx);
@@ -2475,7 +2544,10 @@ impl Nimbra {
                 } else if first {
                     Duration::ZERO
                 } else {
-                    EVERY
+                    this.update(cx, |this, _| {
+                        Duration::from_secs(this.settings.check_every.clamp(15, 3600) as u64)
+                    })
+                    .unwrap_or(EVERY)
                 };
                 cx.background_executor().timer(wait).await;
                 let Ok(client) = this.update(cx, |this, _| {
@@ -2549,13 +2621,14 @@ impl Nimbra {
                         return;
                     }
                     for mail in &summaries {
-                        crate::notify::show(&mail.id, &mail.sender, &mail.subject);
+                        crate::notify::show(&mail.id, &mail.sender, &mail.subject, this.settings.notify_sound);
                     }
                     if extra > 0 {
                         crate::notify::show(
                             "more",
                             "Nimbra",
                             &format!("{extra} more new messages"),
+                            this.settings.notify_sound,
                         );
                     }
                     // Count only; never log senders or subjects.
@@ -2613,7 +2686,6 @@ impl Nimbra {
         let Ok(account) = gmail::new_account_id() else {
             return;
         };
-        self.close_settings(cx);
         match gmail::SignIn::start(&config, false) {
             Ok((pending, url)) => {
                 cx.open_url(&url);
@@ -2717,6 +2789,7 @@ impl Nimbra {
         self.notify_from = None;
         self.details = None;
         self.open_when_listed = None;
+        self.search_opened = None;
         self.html_shown = None;
         self.account = "".into();
         self.me_initials = "".into();
@@ -2921,8 +2994,18 @@ impl Nimbra {
         self.cache.insert(self.mailbox, self.mails.clone());
         self.persist(cx);
         self.prefetch(cx);
-        if let Some(id) = self.open_when_listed.take() {
-            self.open_listed(&id, cx);
+        let opened = self.search_opened.take();
+        if let Some(id) = self.open_when_listed.take()
+            && !self.open_listed(&id, cx)
+            && self.mailbox == View::Search
+            && let Some(mail) = opened
+            && mail.id.as_deref() == Some(id.as_str())
+        {
+            // Not in Gmail's results (another folder, or further down): kept at the top.
+            self.mails.insert(0, mail);
+            self.done.insert(0, false);
+            self.open(0);
+            self.open_selected(cx);
         }
         // Counts only; never log addresses, subjects or message text.
         eprintln!(
@@ -2943,8 +3026,26 @@ impl Nimbra {
     /// A thread that is only shown because a mailbox was just opened stays unread until
     /// then; see `load_selected`.
     fn open_selected(&mut self, cx: &mut Context<Self>) {
-        self.set_unread(self.selected, false, cx);
         self.kept_unread = None;
+        match self.settings.mark_read {
+            crate::settings::MarkRead::Open => self.set_unread(self.selected, false, cx),
+            crate::settings::MarkRead::Never => {}
+            // Read once it has stayed open for two seconds.
+            crate::settings::MarkRead::Delay => {
+                let id = self.mails.get(self.selected).and_then(|m| m.id.clone());
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    this.update(cx, |this, cx| {
+                        let still = this.mails.get(this.selected).and_then(|m| m.id.clone());
+                        if still.is_some() && still == id && this.kept_unread.is_none() {
+                            this.set_unread(this.selected, false, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+        }
         self.load_selected(cx);
     }
 
@@ -3218,7 +3319,9 @@ impl Nimbra {
                 let quoted: Vec<String> = std::iter::once(intro)
                     .chain(body.iter().map(|line| format!("> {line}")))
                     .collect();
-                composer.quoted = Some(quoted.join("\n").trim_end().to_string());
+                if self.settings.quote_replies {
+                    composer.quoted = Some(quoted.join("\n").trim_end().to_string());
+                }
                 focus = composer.lines[0].read(cx).focus_handle(cx);
             }
         }
@@ -3468,7 +3571,6 @@ impl Nimbra {
             || self.finder_open
             || self.picked.len() >= 2
             || self.compose.is_some()
-            || self.settings_open
             || self.new_label.is_some()
             || self.confirm.is_some();
         if !self.original
@@ -4547,7 +4649,49 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// A click on a row: plain opens it, a double-click opens it full view; ⌘ adds or
+    /// A conversation in a window of its own (brought forward if it already has one).
+    fn open_message_window(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(mail) = self.mails.get(i).cloned() else {
+            return;
+        };
+        let key = message_window::key_of(&mail);
+        self.message_windows.retain(|handle| handle.read(cx).is_ok());
+        for handle in &self.message_windows {
+            if handle.read(cx).is_ok_and(|w| w.key() == key) {
+                handle.update(cx, |_, window, _| window.activate_window()).ok();
+                return;
+            }
+        }
+        let owner = cx.entity();
+        let original = self.settings.original_view;
+        let offset = self.message_windows.len() as f32 * 24.;
+        // Opened after this update: the new window reads the app as it draws.
+        cx.defer(move |cx| {
+            let size = gpui::size(px(900.), px(780.));
+            let mut bounds = gpui::Bounds::centered(None, size, cx);
+            bounds.origin.x += px(offset);
+            bounds.origin.y += px(offset);
+            let me = owner.clone();
+            let opened = cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some(mail.subject.clone()),
+                        appears_transparent: true,
+                        traffic_light_position: Some(gpui::point(px(18.), px(18.))),
+                    }),
+                    window_min_size: Some(gpui::size(px(520.), px(420.))),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|cx| MessageWindow::new(owner, mail, original, cx)),
+            );
+            if let Ok(handle) = opened {
+                me.update(cx, |n, _| n.message_windows.push(handle));
+            }
+        });
+    }
+
+    /// A click on a row: plain opens it, a double-click opens it in its own window; ⌘ adds or
     /// removes it from the picked rows; Shift picks everything from the open row to this one.
     fn click_row(
         &mut self,
@@ -4560,9 +4704,7 @@ impl Nimbra {
             self.picked.clear();
             self.open(i);
             self.open_selected(cx);
-            if self.focus_restore.is_none() {
-                self.toggle_full_view(cx);
-            }
+            self.open_message_window(i, cx);
             return;
         }
         if modifiers.platform || modifiers.control {
@@ -4785,7 +4927,7 @@ impl Nimbra {
                                     "Back from snooze"
                                 };
                                 if this.settings.notifications {
-                                    crate::notify::show(&item.thread_id, title, &item.mail.subject);
+                                    crate::notify::show(&item.thread_id, title, &item.mail.subject, this.settings.notify_sound);
                                 }
                                 this.notice = Some(
                                     format!("{title}: {}", short(&item.mail.subject, 50)).into(),
@@ -6543,8 +6685,14 @@ impl Nimbra {
         let serial = composer.serial;
         self.parked.push((Parked::Sending, composer));
         self.pending_focus = Some(self.focus.clone());
-        self.offer_undo("Sending…", cx);
-        self.finish_parked_later(serial, UNDO_DELAY, cx);
+        // Settings › Composing: how long a sent message can still be taken back.
+        let hold = Duration::from_secs(self.settings.undo_send.min(60) as u64);
+        if hold.is_zero() {
+            self.finish_parked(serial, cx);
+        } else {
+            self.offer_undo("Sending…", cx);
+            self.finish_parked_later(serial, hold, cx);
+        }
         cx.notify();
     }
 
@@ -6624,78 +6772,73 @@ impl Nimbra {
             .detach();
     }
 
-    /// ⌘, or the account row: the Settings sheet.
+    /// ⌘, or the account menu: the Settings window (brought forward if already open).
     fn open_settings(&mut self, cx: &mut Context<Self>) {
-        if self.compose.is_some() || self.settings_open {
-            return;
-        }
         self.menu = None;
         self.palette = false;
-        self.sign_out_armed = None;
-        let t = self.theme();
-        let mut lines = Vec::new();
-        let mut subscriptions = Vec::new();
-        let text: Vec<String> = self
-            .settings
-            .signature
-            .lines()
-            .map(str::to_string)
-            .collect();
-        for index in 0..6 {
-            let placeholder = if index == 0 { "Your name" } else { "" };
-            let input = cx.new(|cx| TextInput::new(cx, placeholder, t.faint, t.violet));
-            if let Some(line) = text.get(index).cloned() {
-                input.update(cx, |input, cx| input.set(line, usize::MAX, cx));
-            }
-            subscriptions.push(
-                cx.subscribe(&input, move |this, _, event: &InputEvent, cx| match event {
-                    InputEvent::Changed => this.signature_changed(cx),
-                    InputEvent::Enter | InputEvent::Down | InputEvent::Tab => {
-                        if let Some(next) = this.signature_lines.get(index + 1) {
-                            this.pending_focus = Some(next.read(cx).focus_handle(cx));
-                            cx.notify();
-                        }
-                    }
-                    InputEvent::Up | InputEvent::BackspaceAtStart if index > 0 => {
-                        let previous = this.signature_lines[index - 1].clone();
-                        this.pending_focus = Some(previous.read(cx).focus_handle(cx));
-                        cx.notify();
-                    }
-                    _ => {}
-                }),
-            );
-            lines.push(input);
-        }
-        self.signature_lines = lines;
-        self._settings_subscriptions = subscriptions;
         self.login_item = crate::system::opens_at_login();
-        self.settings_open = true;
-        if let Some(view) = &self.html_view {
-            view.set_visible(false);
+        if let Some(handle) = &self.settings_window
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            return;
         }
+        let owner = cx.entity();
+        let (signature, dark) = (self.settings.signature.clone(), self.dark);
+        // Opened once this update is over: the new window reads the app as it draws.
+        cx.defer(move |cx| {
+            let bounds = gpui::Bounds::centered(None, gpui::size(px(860.), px(620.)), cx);
+            let me = owner.clone();
+            let opened = cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some("Settings".into()),
+                        appears_transparent: true,
+                        traffic_light_position: Some(gpui::point(px(16.), px(16.))),
+                    }),
+                    window_min_size: Some(gpui::size(px(720.), px(480.))),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|cx| SettingsWindow::new(owner, signature, dark, cx)),
+            );
+            me.update(cx, |n, _| n.settings_window = opened.ok());
+        });
+    }
+
+    /// Puts `text` on the clipboard and marks `key` as just copied for a moment.
+    fn copy_text(&mut self, key: String, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.copied = Some((key.clone(), std::time::Instant::now()));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(1400)).await;
+            this.update(cx, |this, cx| {
+                if this.copied.as_ref().is_some_and(|(k, _)| *k == key) {
+                    this.copied = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Settings › Privacy: forgets the mail kept on this Mac (Gmail is untouched) and loads
+    /// the open mailbox again.
+    fn clear_local_mail(&mut self, cx: &mut Context<Self>) {
+        if let Some(store) = &self.store {
+            store.clear();
+        }
+        self.cache.clear();
+        self.synced_to.clear();
+        self.notify_from = None;
+        self.notice = Some("Cleared the mail kept on this Mac. It is downloaded again as needed.".into());
+        self.fetch_inbox(cx);
         cx.notify();
     }
 
-    fn close_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings_open = false;
-        self.signature_lines.clear();
-        self._settings_subscriptions.clear();
-        self.pending_focus = Some(self.focus.clone());
-        cx.notify();
-    }
-
-    fn signature_changed(&mut self, cx: &mut Context<Self>) {
-        let lines: Vec<String> = self
-            .signature_lines
-            .iter()
-            .map(|line| line.read(cx).text().trim_end().to_string())
-            .collect();
-        let signature = lines.join("\n").trim_end().to_string();
-        if signature != self.settings.signature {
-            self.settings.signature = signature;
-            self.save_settings(cx);
-        }
-    }
 
     /// Signs out: forgets the Google sign-in and removes the mail kept on this Mac and its
     /// key. Settings (signature, theme) stay.
@@ -6709,8 +6852,7 @@ impl Nimbra {
         self.settings.accounts.retain(|a| a.id != account);
         // Another account is signed in: show that one.
         if let Some(next) = self.settings.accounts.first().map(|a| a.id.clone()) {
-            self.close_settings(cx);
-            self.switch_account(next, cx);
+                self.switch_account(next, cx);
             self.notice =
                 Some("Signed out of that account. Its mail was removed from this Mac.".into());
             return;
@@ -6733,315 +6875,8 @@ impl Nimbra {
         self.palette = false;
         self.account = "".into();
         self.status = Status::SignedOut;
-        self.close_settings(cx);
         self.notice = Some("Signed out. The mail kept on this Mac was removed.".into());
         cx.notify();
-    }
-
-    /// The Settings sheet.
-    fn settings_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        use crate::settings::ThemeChoice;
-        let section = |title: &str| {
-            div()
-                .pt(px(18.))
-                .pb(px(8.))
-                .child(overline(title.to_uppercase(), t.text3))
-        };
-        let switch = |on: bool| {
-            div()
-                .flex_none()
-                .w(px(34.))
-                .h(px(20.))
-                .rounded_full()
-                .p(px(2.))
-                .flex()
-                .when(on, |d| d.justify_end().bg(t.violet))
-                .when(!on, |d| {
-                    d.bg(t.hover).border_1().border_color(t.border_strong)
-                })
-                .child(div().size(px(16.)).rounded_full().bg(gpui::white()))
-        };
-        let toggle = |id: &'static str, label: &'static str, detail: &'static str, on: bool| {
-            let hover = t.hover;
-            div()
-                .id(id)
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .px(px(10.))
-                .py(px(8.))
-                .rounded(px(9.))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(label))
-                        .child(meta(detail, t.text3)),
-                )
-                .child(switch(on))
-        };
-        let choice = |id: &'static str, label: &'static str, on: bool| {
-            div()
-                .id(id)
-                .flex_1()
-                .flex()
-                .justify_center()
-                .py(px(6.))
-                .rounded(px(8.))
-                .cursor_pointer()
-                .when(on, |d| {
-                    d.bg(t.raised)
-                        .border_1()
-                        .border_color(t.border_strong)
-                        .font_weight(FontWeight::SEMIBOLD)
-                })
-                .when(!on, |d| d.text_color(t.text2))
-                .child(label)
-        };
-        let theme = self.settings.theme;
-        let armed = self
-            .sign_out_armed
-            .is_some_and(|at| at.elapsed() < Duration::from_secs(4));
-        let connected = self.gmail.is_some();
-        let card = div()
-            .id("settings")
-            .w(px(560.))
-            .max_h(px(720.))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .px(px(24.))
-            .pt(px(22.))
-            .pb(px(20.))
-            .rounded(px(18.))
-            .bg(t.raised)
-            .border_1()
-            .border_color(t.border_strong)
-            .shadow(vec![
-                shadow(c(0x8b7cff, 0.18), 0., 120., 10.),
-                shadow(c(0x000000, if t.dark { 0.6 } else { 0.2 }), 30., 80., -10.),
-            ])
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(serif("Settings", 30., t.text).flex_1())
-                    .child(kbd(t, "esc")),
-            )
-            .child(section("Account"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .px(px(10.))
-                    .child(avatar(Tone::Graphite, &self.me_initials, 32.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(if connected {
-                                short(&self.account, 40)
-                            } else {
-                                "Not connected".into()
-                            }))
-                            .child(meta(
-                                if connected {
-                                    "Gmail. Mail is kept on this Mac, encrypted."
-                                } else {
-                                    "Sample mail. Connect Gmail from the main window."
-                                },
-                                t.text3,
-                            )),
-                    )
-                    .when(connected && self.config.is_some(), |d| {
-                        d.child(
-                            button(t, ButtonKind::Ghost, "Add account", None)
-                                .id("add-account")
-                                .press_soft()
-                                .on_click(cx.listener(|this, _, _, cx| this.add_account(cx))),
-                        )
-                    })
-                    .when(connected, |d| {
-                        d.child(
-                            button(
-                                t,
-                                ButtonKind::Secondary,
-                                if armed {
-                                    "Click again to sign out"
-                                } else {
-                                    "Sign out"
-                                },
-                                None,
-                            )
-                            .id("sign-out")
-                            .press_soft()
-                            .when(armed, |d| d.text_color(t.rose))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let armed = this
-                                    .sign_out_armed
-                                    .is_some_and(|at| at.elapsed() < Duration::from_secs(4));
-                                if armed {
-                                    this.sign_out(cx);
-                                } else {
-                                    this.sign_out_armed = Some(std::time::Instant::now());
-                                    cx.notify();
-                                }
-                            })),
-                        )
-                    }),
-            )
-            .child(section("Signature"))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .mx(px(10.))
-                    .px(px(12.))
-                    .py(px(8.))
-                    .rounded(px(10.))
-                    .bg(t.hover)
-                    .border_1()
-                    .border_color(t.border)
-                    .text_size(px(14.))
-                    .line_height(px(22.))
-                    // The used lines and one more, at least three.
-                    .children({
-                        let used = self
-                            .signature_lines
-                            .iter()
-                            .rposition(|line| !line.read(cx).text().is_empty())
-                            .map_or(0, |last| last + 1);
-                        self.signature_lines.iter().take((used + 1).max(3)).cloned()
-                    }),
-            )
-            .child(div().px(px(10.)).pt(px(6.)).child(meta(
-                "Added below new messages, replies and forwards.",
-                t.text3,
-            )))
-            .child(section("Appearance"))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(4.))
-                    .mx(px(10.))
-                    .p(px(3.))
-                    .rounded(px(10.))
-                    .bg(t.hover)
-                    .child(
-                        choice("theme-system", "System", theme == ThemeChoice::System).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.settings.theme = ThemeChoice::System;
-                                this.save_settings(cx);
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                    .child(
-                        choice("theme-light", "Light", theme == ThemeChoice::Light).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.settings.theme = ThemeChoice::Light;
-                                this.dark = false;
-                                this.save_settings(cx);
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                    .child(
-                        choice("theme-dark", "Dark", theme == ThemeChoice::Dark).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.settings.theme = ThemeChoice::Dark;
-                                this.dark = true;
-                                this.save_settings(cx);
-                                cx.notify();
-                            }),
-                        ),
-                    ),
-            )
-            .child(section("Reading"))
-            .child(
-                toggle(
-                    "set-original",
-                    "Open mail in its original formatting",
-                    "Off shows every message in Nimbra’s reader. V switches either way.",
-                    self.settings.original_view,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.original_view = !this.settings.original_view;
-                    this.original = this.settings.original_view;
-                    this.save_settings(cx);
-                    cx.notify();
-                })),
-            )
-            .child(
-                toggle(
-                    "set-images",
-                    "Show remote images",
-                    "Off waits until you ask: remote images can tell a sender you opened the mail.",
-                    self.settings.load_images,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.load_images = !this.settings.load_images;
-                    this.original_images = this.settings.load_images;
-                    this.save_settings(cx);
-                    cx.notify();
-                })),
-            )
-            .child(section("Mac"))
-            .child(
-                toggle(
-                    "set-login",
-                    "Open Nimbra at login",
-                    "So new mail is checked and notified from the moment you sign in to your Mac.",
-                    self.login_item,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    match crate::system::set_open_at_login(!this.login_item) {
-                        Ok(()) => this.login_item = !this.login_item,
-                        Err(message) => this.notice = Some(message.into()),
-                    }
-                    cx.notify();
-                })),
-            )
-            .child(section("Notifications"))
-            .child(
-                toggle(
-                    "set-notify",
-                    "Notify me about new mail",
-                    "New unread mail in the inbox, while Nimbra is running.",
-                    self.settings.notifications,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.settings.notifications = !this.settings.notifications;
-                    this.save_settings(cx);
-                    cx.notify();
-                })),
-            )
-            .child(
-                div().flex().justify_end().pt(px(20.)).child(
-                    button(t, ButtonKind::Primary, "Done", None)
-                        .id("settings-done")
-                        .press_soft()
-                        .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx))),
-                ),
-            );
-        div()
-            .id("settings-scrim")
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(t.scrim)
-            .occlude()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.close_settings(cx)),
-            )
-            .child(card)
     }
 
     fn fail(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
@@ -7735,6 +7570,70 @@ impl Nimbra {
 
 // ---------------------------------------------------------------- helpers
 
+/// Breaks a title into lines for `width` (in points) at `size`, the way a typesetter
+/// would: only at spaces (so "(PR #3345)" or "owner/repo" never split), and balanced, so
+/// the lines are about even and the last is never a lone word. The breaks are returned as
+/// newlines in place of those spaces, so character positions do not change.
+fn balance_title(text: &str, size: f32, width: f32, cx: &App) -> String {
+    if width <= 0. || !text.contains(' ') {
+        return text.to_string();
+    }
+    let system = cx.text_system();
+    let font_id = system.resolve_font(&gpui::font(crate::theme::SERIF));
+    let measure = |s: &str| -> f32 {
+        s.chars()
+            .map(|c| {
+                system
+                    .advance(font_id, px(size), c)
+                    .map_or(size * 0.45, |a| f32::from(a.width))
+            })
+            .sum()
+    };
+    let words: Vec<&str> = text.split(' ').collect();
+    let widths: Vec<f32> = words.iter().map(|w| measure(w)).collect();
+    let space = measure(" ");
+    // Greedy line filling at a given width: the index of the first word of each line.
+    let fill = |limit: f32| -> Vec<usize> {
+        let mut starts = vec![0];
+        let mut line = 0.;
+        for (i, w) in widths.iter().enumerate() {
+            let next = if line == 0. { *w } else { line + space + w };
+            if next > limit && line > 0. {
+                starts.push(i);
+                line = *w;
+            } else {
+                line = next;
+            }
+        }
+        starts
+    };
+    // A little slack: the italic tail and kerning make real lines slightly wider.
+    let limit = width * 0.97;
+    let lines = fill(limit).len();
+    if lines == 1 {
+        return text.to_string();
+    }
+    // The narrowest width that still needs no more lines than that: balanced lines.
+    let (mut lo, mut hi) = (limit * 0.4, limit);
+    for _ in 0..14 {
+        let mid = (lo + hi) / 2.;
+        if fill(mid).len() <= lines {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let starts = fill(hi);
+    let mut out = String::with_capacity(text.len());
+    for (i, word) in words.iter().enumerate() {
+        if i > 0 {
+            out.push(if starts.contains(&i) { '\n' } else { ' ' });
+        }
+        out.push_str(word);
+    }
+    out
+}
+
 fn serif(text: &str, size: f32, color: Hsla) -> Div {
     // The tail of the title (after the last comma, or the last word) is set in italic.
     let start = text
@@ -8079,7 +7978,7 @@ impl Nimbra {
                     .id("jump")
                     .cursor(gpui::CursorStyle::IBeam)
                     .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
-                    .when(self.mailbox == View::Search, |d| d.border_color(t.violet))
+                    .when(self.mailbox == View::Search, |d| d.border_color(t.mint))
                     .child(icon("search", 16., t.text3))
                     .child(
                         div()
@@ -8926,8 +8825,8 @@ impl Nimbra {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .text_size(px(15.))
-            .line_height(px(26.))
+            .text_size(px(self.settings.reader_text.metrics().0))
+            .line_height(px(self.settings.reader_text.metrics().1))
             .text_color(t.text2)
             .when(pending, |d| {
                 d.child(
@@ -9118,7 +9017,7 @@ impl Nimbra {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .child(icon("sparkles", 16., t.violet))
+                            .child(icon("sparkles", 16., t.mint))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("Brief"))
                             .child(
                                 meta(
@@ -9155,6 +9054,15 @@ impl Nimbra {
 
     fn reading(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let m = &self.mails[self.selected];
+        // The subject is broken into lines by hand (see `balance_title`), for the width the
+        // reader gives it.
+        let pane_w = self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left();
+        let column = if self.focus_restore.is_some() {
+            pane_w.min(980.)
+        } else {
+            pane_w
+        };
+        let subject_reader = balance_title(&m.subject, 38., (column - 128.).max(0.), cx);
         let visible = self.visible();
         let pos = visible
             .iter()
@@ -9525,7 +9433,7 @@ impl Nimbra {
                                             ))
                                         }),
                                 )
-                                .child(serif(&m.subject, 38., t.text))
+                                .child(serif(&subject_reader, 38., t.text))
                                 .child(self.thread_banners(t, m, cx))
                                 .child(
                                     div()
@@ -9894,6 +9802,7 @@ impl Nimbra {
         };
         let thread = mail.id.clone().unwrap_or_default();
         let open = self.details.as_ref() == Some(&(thread.clone(), index));
+        let card_thread = thread.clone();
         let me = self.account.to_string();
         let label = |p: &gmail::Person| {
             if p.address.eq_ignore_ascii_case(&me) {
@@ -9909,25 +9818,6 @@ impl Nimbra {
             1..=3 => format!("to {}", recipients.join(", ")),
             n => format!("to {}, {} and {} more", recipients[0], recipients[1], n - 2),
         };
-        let row = |name: &str, value: String| {
-            div()
-                .flex()
-                .gap(px(10.))
-                .child(
-                    div()
-                        .w(px(64.))
-                        .flex_none()
-                        .text_color(t.text3)
-                        .child(name.to_string()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .text_color(t.text2)
-                        .child(value),
-                )
-        };
         let person = |p: &gmail::Person| {
             if p.name.is_empty() {
                 p.address.clone()
@@ -9935,8 +9825,6 @@ impl Nimbra {
                 format!("{} <{}>", p.name, p.address)
             }
         };
-        let list =
-            |people: &[gmail::Person]| people.iter().map(person).collect::<Vec<_>>().join(", ");
         let source_index = index;
         let reply_button =
             |name: &'static str, tip_text: &'static str, kind: ComposeKind, id: usize| {
@@ -10022,34 +9910,231 @@ impl Nimbra {
                     .child(mono(time, t.text3)),
             )
             .when(open && !header.from.address.is_empty(), |d| {
-                d.child(
+                d.child(self.details_card(t, header, &card_thread, index, &person, cx))
+            })
+    }
+
+    /// A message's full header (From, To, Cc, Reply-To, Date). Each address copies on
+    /// click; "Copy all" copies the lot as text.
+    fn details_card(
+        &self,
+        t: &Theme,
+        header: &crate::data::Header,
+        thread: &str,
+        index: usize,
+        person: &dyn Fn(&gmail::Person) -> String,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let me = self.account.to_string();
+        let copied = |key: &str| {
+            self.copied
+                .as_ref()
+                .is_some_and(|(k, at)| k == key && at.elapsed().as_millis() < 1400)
+        };
+        let base = format!("{thread}/{index}");
+        let mut serial = index * 1000;
+        let mut chip = |p: &gmail::Person, cx: &mut Context<Self>| {
+            serial += 1;
+            let key = format!("{base}/{serial}");
+            let done = copied(&key);
+            let address = p.address.clone();
+            let mine = p.address.eq_ignore_ascii_case(&me);
+            let hover = t.hover;
+            div()
+                .id(("detail-person", serial))
+                .group("detail-person")
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x(px(6.))
+                .max_w_full()
+                .px(px(7.))
+                .py(px(3.))
+                .rounded(px(7.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .press(t)
+                .when(!p.name.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(t.text)
+                            .child(p.name.clone()),
+                    )
+                })
+                .child(
                     div()
-                        .ml(px(40.))
+                        .min_w(px(0.))
+                        .text_color(if p.name.is_empty() { t.text } else { t.text3 })
+                        .child(p.address.clone()),
+                )
+                .when(mine, |d| d.child(pill(t, "You", t.violet)))
+                .child(
+                    div()
                         .flex()
-                        .flex_col()
+                        .items_center()
                         .gap(px(4.))
-                        .p(px(12.))
-                        .rounded(px(10.))
-                        .bg(t.hover)
-                        .border_1()
-                        .border_color(t.border)
-                        .text_size(px(12.5))
-                        .line_height(px(18.))
-                        .child(row("From", person(&header.from)))
-                        .when(!header.to.is_empty(), |d| {
-                            d.child(row("To", list(&header.to)))
+                        .when(done, |d| {
+                            d.child(icon("done", 12., t.mint))
+                                .child(div().text_color(t.mint).child("Copied"))
                         })
-                        .when(!header.cc.is_empty(), |d| {
-                            d.child(row("Cc", list(&header.cc)))
-                        })
-                        .when_some(header.reply_to.as_ref(), |d, p| {
-                            d.child(row("Reply-To", person(p)))
-                        })
-                        .when(header.date_ms > 0, |d| {
-                            d.child(row("Date", long_date(header.date_ms)))
+                        .when(!done, |d| {
+                            d.invisible()
+                                .group_hover("detail-person", |s| s.visible())
+                                .child(icon("copy", 12., t.text3))
                         }),
                 )
-            })
+                .tooltip(tip(t.dark, "Copy address", ""))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_text(key.clone(), address.clone(), cx)
+                }))
+        };
+        let row = |name: &str, value: AnyElement| {
+            div()
+                .flex()
+                .items_start()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .w(px(72.))
+                        .flex_none()
+                        .pt(px(3.))
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(t.text3)
+                        .child(name.to_string()),
+                )
+                .child(div().flex_1().min_w(px(0.)).child(value))
+        };
+        let people = |list: &[gmail::Person], chip: &mut dyn FnMut(&gmail::Person, &mut Context<Self>) -> Stateful<Div>, cx: &mut Context<Self>| {
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(2.))
+                .ml(px(-7.))
+                .children(list.iter().map(|p| chip(p, cx)).collect::<Vec<_>>())
+                .into_any_element()
+        };
+        // The whole header as text, for "Copy all".
+        let mut all = vec![format!("From: {}", person(&header.from))];
+        let join = |list: &[gmail::Person]| list.iter().map(person).collect::<Vec<_>>().join(", ");
+        if !header.to.is_empty() {
+            all.push(format!("To: {}", join(&header.to)));
+        }
+        if !header.cc.is_empty() {
+            all.push(format!("Cc: {}", join(&header.cc)));
+        }
+        if let Some(p) = &header.reply_to {
+            all.push(format!("Reply-To: {}", person(p)));
+        }
+        let date = (header.date_ms > 0).then(|| long_date(header.date_ms));
+        if let Some(date) = &date {
+            all.push(format!("Date: {date}"));
+        }
+        let all = all.join("\n");
+        let all_key = format!("{base}/all");
+        let all_done = copied(&all_key);
+        let date_key = format!("{base}/date");
+        let date_done = copied(&date_key);
+        let hover = t.hover;
+        let from = people(std::slice::from_ref(&header.from), &mut chip, cx);
+        let to = (!header.to.is_empty()).then(|| people(&header.to, &mut chip, cx));
+        let cc = (!header.cc.is_empty()).then(|| people(&header.cc, &mut chip, cx));
+        let reply_to = header
+            .reply_to
+            .as_ref()
+            .map(|p| people(std::slice::from_ref(p), &mut chip, cx));
+        div()
+            .ml(px(40.))
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .pl(px(14.))
+            .pr(px(10.))
+            .pt(px(10.))
+            .pb(px(8.))
+            .rounded(px(12.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border)
+            .shadow(vec![shadow(c(0x000000, 0.06), 1., 3., 0.)])
+            .text_size(px(12.5))
+            .line_height(px(18.))
+            .child(row("From", from))
+            .children(to.map(|v| row("To", v)))
+            .children(cc.map(|v| row("Cc", v)))
+            .children(reply_to.map(|v| row("Reply-To", v)))
+            .children(date.map(|date| {
+                let text = date.clone();
+                row(
+                    "Date",
+                    div()
+                        .id(("detail-date", index))
+                        .group("detail-date")
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .ml(px(-7.))
+                        .px(px(7.))
+                        .py(px(3.))
+                        .rounded(px(7.))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .press(t)
+                        .child(div().text_color(t.text2).child(date))
+                        .child(if date_done {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child(icon("done", 12., t.mint))
+                                .child(div().text_color(t.mint).child("Copied"))
+                        } else {
+                            div()
+                                .invisible()
+                                .group_hover("detail-date", |s| s.visible())
+                                .child(icon("copy", 12., t.text3))
+                        })
+                        .tooltip(tip(t.dark, "Copy date", ""))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.copy_text(date_key.clone(), text.clone(), cx)
+                        }))
+                        .into_any_element(),
+                )
+            }))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .pt(px(4.))
+                    .mt(px(2.))
+                    .border_t_1()
+                    .border_color(t.border)
+                    .child(
+                        div()
+                            .id(("detail-copy-all", index))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(8.))
+                            .py(px(4.))
+                            .rounded(px(7.))
+                            .cursor_pointer()
+                            .text_color(if all_done { t.mint } else { t.text2 })
+                            .font_weight(FontWeight::MEDIUM)
+                            .hover(move |s| s.bg(hover))
+                            .press(t)
+                            .child(icon(
+                                if all_done { "done" } else { "copy" },
+                                13.,
+                                if all_done { t.mint } else { t.text2 },
+                            ))
+                            .child(if all_done { "Copied" } else { "Copy all" })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.copy_text(all_key.clone(), all.clone(), cx)
+                            })),
+                    ),
+            )
     }
 
     /// A message's attachments, each with Quick Look and Save.
@@ -10144,8 +10229,13 @@ impl Nimbra {
 
     /// The Spam warning and the Unsubscribe link for the open thread, when they apply.
     fn thread_banners(&self, t: &Theme, mail: &Mail, cx: &mut Context<Self>) -> Div {
-        let spam = mail.labels.iter().any(|l| l == "SPAM");
-        let trash = mail.labels.iter().any(|l| l == "TRASH");
+        // Labels are gathered from every message in the thread, so one deleted (or spam)
+        // message would mark the whole conversation. Like Gmail, only a conversation that is
+        // in that mailbox (or no longer in the inbox) gets the banner.
+        let has = |l: &str| mail.labels.iter().any(|x| x == l);
+        let inbox = has("INBOX");
+        let spam = self.mailbox == View::Spam || (has("SPAM") && !inbox);
+        let trash = self.mailbox == View::Trash || (has("TRASH") && !inbox);
         let unsubscribe = mail.header.unsubscribe.clone();
         let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
         let labels = self.thread_labels(mail);
@@ -10257,7 +10347,7 @@ impl Nimbra {
             .when_some(unsubscribe, |d, link| {
                 d.child(
                     div().flex().child(
-                        button(t, ButtonKind::Ghost, "Unsubscribe", None)
+                        button(t, ButtonKind::Secondary, "Unsubscribe", None)
                             .id("unsubscribe")
                             .press_soft()
                             .tooltip(tip(t.dark, "Leave this mailing list", ""))
@@ -10272,6 +10362,7 @@ impl Nimbra {
     /// The area the web view covers, with a strip above it explaining what is blocked.
     fn original_pane(&self, t: &Theme, m: &Mail, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.html_view.clone();
+        let pane_w = self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left();
         // The email is a native view: it is moved one frame ahead while a panel slides
         // (see `pane_lead`), so it keeps up with the rest of the window.
         let lead = self.pane_lead();
@@ -10292,57 +10383,16 @@ impl Nimbra {
                     .pb(px(12.))
                     .border_b_1()
                     .border_color(t.border)
-                    .child(serif(&m.subject, 26., t.text))
+                    .child(serif(
+                        &balance_title(&m.subject, 26., (pane_w - 56.).max(0.), cx),
+                        26.,
+                        t.text,
+                    ))
                     .child(self.thread_banners(t, m, cx))
                     .child(self.message_header(t, m, 0, false, cx))
                     .when(!m.header.attachments.is_empty(), |d| {
                         d.child(self.attachment_row(t, &m.header.attachments, 0, cx).pl(px(40.)))
                     }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(10.))
-                    .pl(px(28.))
-                    .pr(px(20.))
-                    .py(px(8.))
-                    .border_b_1()
-                    .border_color(t.border)
-                    .when_some(self.hint, |d, (label, key)| {
-                        // Hovering a toolbar button explains it here.
-                        d.child(div().font_weight(FontWeight::MEDIUM).child(label))
-                            .when(!key.is_empty(), |d| d.child(kbd(t, key)))
-                            .child(div().flex_1())
-                    })
-                    .when(self.hint.is_none(), |d| {
-                        d.child(icon("image", 15., t.text3))
-                    .child(
-                        meta(
-                            if self.original_images {
-                                "Original formatting. Scripts are off. Remote images are shown."
-                            } else {
-                                "Original formatting. Scripts are off and remote images are blocked."
-                            },
-                            t.text3,
-                        )
-                        .flex_1(),
-                    )
-                    })
-                    .child(
-                        button(
-                            t,
-                            ButtonKind::Secondary,
-                            if self.original_images { "Block images" } else { "Load images" },
-                            None,
-                        )
-                        .id("original-images").press_soft()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.original_images = !this.original_images;
-                            cx.notify();
-                        })),
-                    ),
             )
             // The web view is a native layer; this element only reserves its space and
             // tells it where that space is each frame.
@@ -11608,7 +11658,7 @@ impl Render for Nimbra {
             self.bar_fade = None;
         }
         // The inbox's unread count on the Dock icon.
-        let unread = if self.gmail.is_some() {
+        let unread = if self.gmail.is_some() && self.settings.dock_badge {
             self.counts.get("INBOX").map_or(0, |(unread, _)| *unread)
         } else {
             0
@@ -11704,8 +11754,6 @@ impl Render for Nimbra {
                     cx.notify();
                 } else if this.finder_open {
                     this.close_finder(cx);
-                } else if this.settings_open {
-                    this.close_settings(cx);
                 } else if this.confirm.take().is_some() {
                     cx.notify();
                 } else if this.new_label.is_some() {
@@ -11803,7 +11851,6 @@ impl Render for Nimbra {
             .when(self.compose.is_some(), |d| {
                 d.child(self.compose_view(&t, viewport, cx))
             })
-            .when(self.settings_open, |d| d.child(self.settings_view(&t, cx)))
             .when(self.new_label.is_some(), |d| {
                 d.child(self.new_label_view(&t, cx))
             })

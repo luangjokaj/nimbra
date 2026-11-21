@@ -1,0 +1,1002 @@
+//! The Settings window: its own window with a sidebar of sections. It reads and changes the
+//! app's state (the `Nimbra` entity) and saves the preferences as they change.
+
+use std::time::Instant;
+
+use super::*;
+use crate::settings::{MarkRead, TextSize, ThemeChoice};
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Tab {
+    General,
+    Accounts,
+    Appearance,
+    Reading,
+    Composing,
+    Notifications,
+    Privacy,
+    Shortcuts,
+    About,
+}
+
+impl Tab {
+    const ALL: [Tab; 9] = [
+        Tab::General,
+        Tab::Accounts,
+        Tab::Appearance,
+        Tab::Reading,
+        Tab::Composing,
+        Tab::Notifications,
+        Tab::Privacy,
+        Tab::Shortcuts,
+        Tab::About,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::General => "General",
+            Tab::Accounts => "Accounts",
+            Tab::Appearance => "Appearance",
+            Tab::Reading => "Reading",
+            Tab::Composing => "Composing",
+            Tab::Notifications => "Notifications",
+            Tab::Privacy => "Privacy & Security",
+            Tab::Shortcuts => "Shortcuts",
+            Tab::About => "About",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Tab::General => "zap",
+            Tab::Accounts => "users",
+            Tab::Appearance => "sun",
+            Tab::Reading => "mail",
+            Tab::Composing => "draft",
+            Tab::Notifications => "bell",
+            Tab::Privacy => "ban",
+            Tab::Shortcuts => "list",
+            Tab::About => "sparkles",
+        }
+    }
+
+    fn blurb(self) -> &'static str {
+        match self {
+            Tab::General => "How Nimbra starts, checks for mail and treats what you open.",
+            Tab::Accounts => "The Gmail accounts signed in on this Mac.",
+            Tab::Appearance => "Light or dark, and how mail reads.",
+            Tab::Reading => "How messages are shown.",
+            Tab::Composing => "What goes out with what you write.",
+            Tab::Notifications => "When and how Nimbra tells you about new mail.",
+            Tab::Privacy => "What Nimbra keeps on this Mac, and how.",
+            Tab::Shortcuts => "Everything you can do from the keyboard.",
+            Tab::About => "",
+        }
+    }
+}
+
+pub(super) struct SettingsWindow {
+    owner: Entity<Nimbra>,
+    tab: Tab,
+    /// One field per line of the signature.
+    signature: Vec<Entity<TextInput>>,
+    pending_focus: Option<FocusHandle>,
+    /// A first click on a destructive button arms it; a second within 4 s does it.
+    armed: Option<(&'static str, Instant)>,
+    _subscriptions: Vec<gpui::Subscription>,
+}
+
+impl SettingsWindow {
+    /// `text` and `dark` come from the app (which is busy opening this window, so it
+    /// cannot be read here).
+    pub(super) fn new(owner: Entity<Nimbra>, text: String, dark: bool, cx: &mut Context<Self>) -> Self {
+        let t = if dark { Theme::dark() } else { Theme::light() };
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let mut signature = Vec::new();
+        let mut subscriptions = vec![cx.observe(&owner, |_, _, cx| cx.notify())];
+        for index in 0..6 {
+            let placeholder = if index == 0 { "Your name" } else { "" };
+            let input = cx.new(|cx| TextInput::new(cx, placeholder, t.faint, t.violet));
+            if let Some(line) = lines.get(index).cloned() {
+                input.update(cx, |input, cx| input.set(line, usize::MAX, cx));
+            }
+            subscriptions.push(cx.subscribe(&input, move |this, _, event: &InputEvent, cx| {
+                match event {
+                    InputEvent::Changed => this.signature_changed(cx),
+                    InputEvent::Enter | InputEvent::Down | InputEvent::Tab => {
+                        if let Some(next) = this.signature.get(index + 1) {
+                            this.pending_focus = Some(next.read(cx).focus_handle(cx));
+                            cx.notify();
+                        }
+                    }
+                    InputEvent::Up | InputEvent::BackspaceAtStart if index > 0 => {
+                        let previous = this.signature[index - 1].clone();
+                        this.pending_focus = Some(previous.read(cx).focus_handle(cx));
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            }));
+            signature.push(input);
+        }
+        SettingsWindow {
+            owner,
+            tab: Tab::General,
+            signature,
+            pending_focus: None,
+            armed: None,
+            _subscriptions: subscriptions,
+        }
+    }
+
+    fn signature_changed(&mut self, cx: &mut Context<Self>) {
+        let text = self
+            .signature
+            .iter()
+            .map(|line| line.read(cx).text().trim_end().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim_end()
+            .to_string();
+        self.owner.update(cx, |n, cx| {
+            if n.settings.signature != text {
+                n.settings.signature = text;
+                n.save_settings(cx);
+            }
+        });
+    }
+
+    /// Changes a preference and saves it.
+    fn set(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut Nimbra)) {
+        self.owner.update(cx, |n, cx| {
+            change(n);
+            n.save_settings(cx);
+            cx.notify();
+        });
+    }
+
+    fn is_armed(&self, key: &str) -> bool {
+        self.armed
+            .is_some_and(|(k, at)| k == key && at.elapsed().as_secs() < 4)
+    }
+
+    fn arm(&mut self, key: &'static str, cx: &mut Context<Self>) -> bool {
+        if self.is_armed(key) {
+            self.armed = None;
+            return true;
+        }
+        self.armed = Some((key, Instant::now()));
+        cx.notify();
+        false
+    }
+}
+
+impl Render for SettingsWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(focus) = self.pending_focus.take() {
+            window.focus(&focus);
+        }
+        let dark = self.owner.read(cx).dark;
+        let t = if dark { Theme::dark() } else { Theme::light() };
+        let tab = self.tab;
+        let content = match tab {
+            Tab::General => self.general(&t, cx),
+            Tab::Accounts => self.accounts(&t, cx),
+            Tab::Appearance => self.appearance(&t, cx),
+            Tab::Reading => self.reading(&t, cx),
+            Tab::Composing => self.composing(&t, cx),
+            Tab::Notifications => self.notifications(&t, cx),
+            Tab::Privacy => self.privacy(&t, cx),
+            Tab::Shortcuts => self.shortcuts(&t),
+            Tab::About => self.about(&t, cx),
+        };
+        let hover = t.hover;
+        div()
+            .flex()
+            .size_full()
+            .bg(t.surface)
+            .font_family(crate::theme::SANS)
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(t.text)
+            // The sections.
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .w(px(210.))
+                    .h_full()
+                    .px(px(12.))
+                    .pt(px(52.))
+                    .gap(px(2.))
+                    .bg(t.sidebar)
+                    .border_r_1()
+                    .border_color(t.border)
+                    .children(Tab::ALL.iter().enumerate().map(|(i, item)| {
+                        let item = *item;
+                        let on = item == tab;
+                        div()
+                            .id(("settings-tab", i))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .px(px(10.))
+                            .h(px(32.))
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .when(on, |d| d.bg(t.selected).font_weight(FontWeight::MEDIUM))
+                            .when(!on, |d| d.hover(move |s| s.bg(hover)))
+                            .press(&t)
+                            .child(icon(item.icon(), 16., if on { t.violet } else { t.text2 }))
+                            .child(
+                                div()
+                                    .text_color(if on { t.text } else { t.text2 })
+                                    .child(item.label()),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.tab = item;
+                                this.armed = None;
+                                cx.notify();
+                            }))
+                    })),
+            )
+            // The section itself.
+            .child(
+                div()
+                    .id("settings-content")
+                    .flex_1()
+                    .min_w(px(0.))
+                    .h_full()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(18.))
+                            // A definite width, so wrapped text is measured at its real width.
+                            .w_full()
+                            .max_w(px(680.))
+                            .px(px(40.))
+                            .pt(px(44.))
+                            .pb(px(40.))
+                            .when(tab != Tab::About, |d| {
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(6.))
+                                        .child(serif(tab.label(), 34., t.text))
+                                        .child(meta(tab.blurb(), t.text3)),
+                                )
+                            })
+                            .children(content),
+                    ),
+            )
+    }
+}
+
+// ---------------------------------------------------------------- building blocks
+
+/// A group of rows on a card.
+fn group(t: &Theme, title: Option<&str>, rows: Vec<AnyElement>) -> AnyElement {
+    let count = rows.len();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .children(title.map(|title| {
+            div()
+                .pl(px(4.))
+                .child(overline(title.to_uppercase(), t.text3))
+        }))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .rounded(px(14.))
+                .bg(t.raised)
+                .border_1()
+                .border_color(t.border)
+                .children(rows.into_iter().enumerate().map(move |(i, row)| {
+                    div()
+                        .when(i + 1 < count, |d| d.border_b_1().border_color(t.border))
+                        .child(row)
+                })),
+        )
+        .into_any_element()
+}
+
+/// A row: label and explanation on the left, the control on the right.
+fn row(t: &Theme, label: &str, detail: &str, control: impl IntoElement) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .px(px(16.))
+        .py(px(12.))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().font_weight(FontWeight::MEDIUM).child(label.to_string()))
+                .when(!detail.is_empty(), |d| d.child(meta(detail.to_string(), t.text3))),
+        )
+        .child(control)
+        .into_any_element()
+}
+
+/// An on/off switch.
+fn switch(t: &Theme, on: bool) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .w(px(36.))
+        .h(px(21.))
+        .p(px(2.))
+        .rounded_full()
+        .cursor_pointer()
+        .when(on, |d| d.justify_end().bg(t.violet))
+        .when(!on, |d| d.bg(t.hover).border_1().border_color(t.border_strong))
+        .child(
+            div()
+                .size(px(17.))
+                .rounded_full()
+                .bg(gpui::white())
+                .shadow(vec![shadow(c(0x000000, 0.25), 1., 2., 0.)]),
+        )
+}
+
+impl SettingsWindow {
+    /// A switch row that flips a preference.
+    fn toggle(
+        &self,
+        t: &Theme,
+        id: &'static str,
+        label: &str,
+        detail: &str,
+        on: bool,
+        cx: &mut Context<Self>,
+        flip: impl Fn(&mut Nimbra) + 'static,
+    ) -> AnyElement {
+        row(
+            t,
+            label,
+            detail,
+            switch(t, on)
+                .id(id)
+                .on_click(cx.listener(move |this, _, _, cx| this.set(cx, |n| flip(n)))),
+        )
+    }
+
+    /// A segmented choice; `pick` receives the index chosen.
+    fn choice(
+        &self,
+        t: &Theme,
+        id: &'static str,
+        options: &[&str],
+        selected: usize,
+        cx: &mut Context<Self>,
+        pick: impl Fn(&mut Nimbra, usize) + Clone + 'static,
+    ) -> Div {
+        let hover = t.hover;
+        div()
+            .flex()
+            .flex_none()
+            .gap(px(2.))
+            .p(px(3.))
+            .rounded(px(9.))
+            .bg(t.hover)
+            .border_1()
+            .border_color(t.border)
+            .children(options.iter().enumerate().map(|(i, label)| {
+                let on = i == selected;
+                let pick = pick.clone();
+                div()
+                    .id((id, i))
+                    .px(px(10.))
+                    .py(px(4.))
+                    .rounded(px(7.))
+                    .cursor_pointer()
+                    .text_size(px(12.5))
+                    .when(on, |d| {
+                        d.bg(t.raised)
+                            .border_1()
+                            .border_color(t.border_strong)
+                            .font_weight(FontWeight::MEDIUM)
+                    })
+                    .when(!on, |d| d.text_color(t.text2).hover(move |s| s.bg(hover)))
+                    .child(label.to_string())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let pick = pick.clone();
+                        this.set(cx, move |n| pick(n, i))
+                    }))
+            }))
+    }
+
+    // ------------------------------------------------------------ sections
+
+    fn general(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let n = self.owner.read(cx);
+        let (login, mark, every) = (n.login_item, n.settings.mark_read, n.settings.check_every);
+        let login_row = row(
+            t,
+            "Open Nimbra at login",
+            "New mail is checked and notified from the moment you sign in to your Mac.",
+            switch(t, login).id("login").on_click(cx.listener(|this, _, _, cx| {
+                this.owner.update(cx, |n, cx| {
+                    match crate::system::set_open_at_login(!n.login_item) {
+                        Ok(()) => n.login_item = !n.login_item,
+                        Err(message) => n.notice = Some(message.into()),
+                    }
+                    cx.notify();
+                });
+            })),
+        );
+        let mark_row = row(
+            t,
+            "Mark as read",
+            "When an opened conversation stops being unread.",
+            self.choice(
+                t,
+                "mark",
+                &["When opened", "After 2 seconds", "Manually"],
+                match mark {
+                    MarkRead::Open => 0,
+                    MarkRead::Delay => 1,
+                    MarkRead::Never => 2,
+                },
+                cx,
+                |n, i| {
+                    n.settings.mark_read = [MarkRead::Open, MarkRead::Delay, MarkRead::Never][i]
+                },
+            ),
+        );
+        let every_row = row(
+            t,
+            "Check for new mail",
+            "Nimbra asks Gmail what changed this often while it runs.",
+            self.choice(
+                t,
+                "every",
+                &["30 s", "1 min", "5 min"],
+                match every {
+                    0..=45 => 0,
+                    46..=150 => 1,
+                    _ => 2,
+                },
+                cx,
+                |n, i| n.settings.check_every = [30, 60, 300][i],
+            ),
+        );
+        vec![group(t, None, vec![login_row, mark_row, every_row])]
+    }
+
+    fn accounts(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let n = self.owner.read(cx);
+        let accounts = n.settings.accounts.clone();
+        let active = n.account_id.clone();
+        let connected = n.gmail.is_some();
+        let can_add = n.config.is_some();
+        let active_email = n.account.to_string();
+        let mut rows: Vec<AnyElement> = accounts
+            .iter()
+            .enumerate()
+            .map(|(i, account)| {
+                let shown = account.id == active;
+                let id = account.id.clone();
+                let initials = account
+                    .email
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_default();
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .px(px(16.))
+                    .py(px(12.))
+                    .child(avatar(crate::data::tone_for(&account.email), &initials, 32.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(div().font_weight(FontWeight::MEDIUM).child(account.email.clone()))
+                            .child(meta(if shown { "Shown now" } else { "Gmail" }, if shown { t.violet } else { t.text3 })),
+                    )
+                    .when(!shown, |d| {
+                        d.child(
+                            button(t, ButtonKind::Secondary, "Switch to", None)
+                                .id(("switch-account", i))
+                                .press_soft()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let id = id.clone();
+                                    this.owner.update(cx, |n, cx| n.switch_account(id, cx));
+                                })),
+                        )
+                    })
+                    .into_any_element()
+            })
+            .collect();
+        if rows.is_empty() {
+            rows.push(row(
+                t,
+                "No account yet",
+                "Connect Gmail from the main window to start.",
+                div(),
+            ));
+        }
+        let armed = self.is_armed("sign-out");
+        let actions = div()
+            .flex()
+            .gap(px(8.))
+            .when(can_add, |d| {
+                d.child(
+                    button(t, ButtonKind::Secondary, "Add account", None)
+                        .id("add-account")
+                        .press_soft()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.owner.update(cx, |n, cx| n.add_account(cx));
+                        })),
+                )
+            })
+            .when(connected, |d| {
+                d.child(
+                    button(
+                        t,
+                        ButtonKind::Ghost,
+                        if armed { "Click again to sign out" } else { "Sign out of this account" },
+                        None,
+                    )
+                    .id("sign-out")
+                    .press_soft()
+                    .when(armed, |d| d.text_color(t.rose))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.arm("sign-out", cx) {
+                            this.owner.update(cx, |n, cx| n.sign_out(cx));
+                        }
+                    })),
+                )
+            });
+        vec![
+            group(t, None, rows),
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(actions)
+                .when(connected, |d| {
+                    d.child(meta(
+                        format!(
+                            "Signing out of {} removes its sign-in and the mail kept for it on this Mac. Other accounts stay.",
+                            if active_email.is_empty() { "an account".to_string() } else { active_email }
+                        ),
+                        t.text3,
+                    ))
+                })
+                .into_any_element(),
+        ]
+    }
+
+    fn appearance(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let n = self.owner.read(cx);
+        let (theme, size, badge) = (n.settings.theme, n.settings.reader_text, n.settings.dock_badge);
+        // Small previews of each look.
+        let tile = |id: usize, label: &'static str, choice: ThemeChoice, light: bool, dark: bool| {
+            let on = theme == choice;
+            let half = |th: Theme| {
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .bg(th.surface)
+                    .child(div().w(px(22.)).h_full().bg(th.sidebar).border_r_1().border_color(th.border))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(px(5.))
+                            .p(px(8.))
+                            .child(div().h(px(5.)).w(px(40.)).rounded_full().bg(th.text2))
+                            .child(div().h(px(4.)).w(px(56.)).rounded_full().bg(th.border_strong))
+                            .child(div().h(px(4.)).w(px(48.)).rounded_full().bg(th.border_strong)),
+                    )
+            };
+            div()
+                .id(("theme-tile", id))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .cursor_pointer()
+                .child(
+                    div()
+                        .flex()
+                        .w(px(150.))
+                        .h(px(92.))
+                        .rounded(px(10.))
+                        .overflow_hidden()
+                        .border_2()
+                        .border_color(if on { t.violet } else { t.border })
+                        .when(light, |d| d.child(half(Theme::light())))
+                        .when(dark, |d| d.child(half(Theme::dark()))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_center()
+                        .text_color(if on { t.text } else { t.text2 })
+                        .when(on, |d| d.font_weight(FontWeight::MEDIUM))
+                        .child(label),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set(cx, move |n| {
+                        n.settings.theme = choice;
+                        match choice {
+                            ThemeChoice::Light => n.dark = false,
+                            ThemeChoice::Dark => n.dark = true,
+                            ThemeChoice::System => {}
+                        }
+                    })
+                }))
+        };
+        let tiles = div()
+            .flex()
+            .gap(px(16.))
+            .p(px(16.))
+            .child(tile(0, "System", ThemeChoice::System, true, true))
+            .child(tile(1, "Light", ThemeChoice::Light, true, false))
+            .child(tile(2, "Dark", ThemeChoice::Dark, false, true))
+            .into_any_element();
+        let size_row = row(
+            t,
+            "Text size in the reader",
+            "For messages shown in Nimbra's reader.",
+            self.choice(
+                t,
+                "text-size",
+                &["Small", "Default", "Large"],
+                match size {
+                    TextSize::Small => 0,
+                    TextSize::Default => 1,
+                    TextSize::Large => 2,
+                },
+                cx,
+                |n, i| n.settings.reader_text = [TextSize::Small, TextSize::Default, TextSize::Large][i],
+            ),
+        );
+        let badge_row = self.toggle(
+            t,
+            "dock-badge",
+            "Unread count on the Dock icon",
+            "The inbox's unread conversations.",
+            badge,
+            cx,
+            |n| n.settings.dock_badge = !n.settings.dock_badge,
+        );
+        vec![
+            group(t, Some("Theme"), vec![tiles]),
+            group(t, None, vec![size_row, badge_row]),
+        ]
+    }
+
+    fn reading(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let n = self.owner.read(cx);
+        let (original, images) = (n.settings.original_view, n.settings.load_images);
+        vec![
+            group(
+                t,
+                None,
+                vec![
+                    self.toggle(
+                        t,
+                        "original",
+                        "Open mail in its original formatting",
+                        "Off shows every message in Nimbra's reader. V switches either way.",
+                        original,
+                        cx,
+                        |n| {
+                            n.settings.original_view = !n.settings.original_view;
+                            n.original = n.settings.original_view;
+                        },
+                    ),
+                    self.toggle(
+                        t,
+                        "images",
+                        "Load remote images",
+                        "Off keeps images from the web out until you ask. They can tell a sender that you opened the mail.",
+                        images,
+                        cx,
+                        |n| {
+                            n.settings.load_images = !n.settings.load_images;
+                            n.original_images = n.settings.load_images;
+                        },
+                    ),
+                ],
+            ),
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(4.))
+                .child(icon("ban", 14., t.text3))
+                .child(meta(
+                    "Original formatting always runs with scripts off, and links open in your browser.",
+                    t.text3,
+                ))
+                .into_any_element(),
+        ]
+    }
+
+    fn composing(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let n = self.owner.read(cx);
+        let (undo, quote) = (n.settings.undo_send, n.settings.quote_replies);
+        let used = self
+            .signature
+            .iter()
+            .rposition(|line| !line.read(cx).text().is_empty())
+            .map_or(0, |last| last + 1);
+        let signature = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .p(px(16.))
+            .child(div().font_weight(FontWeight::MEDIUM).child("Signature"))
+            .child(meta("Added below new messages, replies and forwards.", t.text3))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .mt(px(4.))
+                    .px(px(12.))
+                    .py(px(8.))
+                    .rounded(px(10.))
+                    .bg(t.hover)
+                    .border_1()
+                    .border_color(t.border)
+                    .text_size(px(14.))
+                    .line_height(px(22.))
+                    .children(self.signature.iter().take((used + 1).max(3)).cloned()),
+            )
+            .into_any_element();
+        let undo_row = row(
+            t,
+            "Undo send",
+            "How long a sent message can still be taken back.",
+            self.choice(
+                t,
+                "undo",
+                &["Off", "5 s", "10 s", "20 s", "30 s"],
+                match undo {
+                    0 => 0,
+                    1..=7 => 1,
+                    8..=14 => 2,
+                    15..=24 => 3,
+                    _ => 4,
+                },
+                cx,
+                |n, i| n.settings.undo_send = [0, 6, 10, 20, 30][i],
+            ),
+        );
+        let quote_row = self.toggle(
+            t,
+            "quote",
+            "Include the original in replies",
+            "Folded behind ••• below what you write.",
+            quote,
+            cx,
+            |n| n.settings.quote_replies = !n.settings.quote_replies,
+        );
+        vec![
+            group(t, None, vec![signature]),
+            group(t, None, vec![undo_row, quote_row]),
+        ]
+    }
+
+    fn notifications(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let n = self.owner.read(cx);
+        let (on, sound) = (n.settings.notifications, n.settings.notify_sound);
+        vec![
+            group(
+                t,
+                None,
+                vec![
+                    self.toggle(
+                        t,
+                        "notify",
+                        "Notify me about new mail",
+                        "New unread mail in the inbox, while Nimbra is running.",
+                        on,
+                        cx,
+                        |n| n.settings.notifications = !n.settings.notifications,
+                    ),
+                    self.toggle(
+                        t,
+                        "sound",
+                        "Play a sound",
+                        "macOS's notification sound.",
+                        sound,
+                        cx,
+                        |n| n.settings.notify_sound = !n.settings.notify_sound,
+                    ),
+                    row(
+                        t,
+                        "Try it",
+                        "Shows a sample notification.",
+                        button(t, ButtonKind::Secondary, "Send a test", None)
+                            .id("notify-test")
+                            .press_soft()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let sound = this.owner.read(cx).settings.notify_sound;
+                                crate::notify::show("test", "Nimbra", "This is how new mail looks.", sound);
+                            })),
+                    ),
+                ],
+            ),
+            meta(
+                "If nothing appears, allow Nimbra in System Settings › Notifications.",
+                t.text3,
+            )
+            .px(px(4.))
+            .into_any_element(),
+        ]
+    }
+
+    fn privacy(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let armed = self.is_armed("clear");
+        let fact = |name: &'static str, title: &'static str, text: &'static str| {
+            div()
+                .flex()
+                .gap(px(12.))
+                .px(px(16.))
+                .py(px(12.))
+                .child(icon(name, 16., t.violet))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                        .child(meta(text, t.text3)),
+                )
+                .into_any_element()
+        };
+        vec![
+            group(
+                t,
+                None,
+                vec![
+                    fact("ban", "Encrypted on disk", "Mail kept on this Mac is encrypted (ChaCha20-Poly1305) with a key that lives only in your Keychain."),
+                    fact("users", "Sign-in in the Keychain", "Google's sign-in is stored in the macOS Keychain, never in a file."),
+                    fact("mail", "Only what it needs", "Nimbra asks Google to read, organise and send mail. Deleting forever needs your one-time permission."),
+                    fact("image", "Mail is shown safely", "Scripts never run in email, remote content stays out unless allowed, and links open in your browser."),
+                ],
+            ),
+            group(
+                t,
+                None,
+                vec![row(
+                    t,
+                    "Clear mail kept on this Mac",
+                    "Removes the copies Nimbra keeps for speed. Your mail in Gmail is not touched; it is downloaded again as needed.",
+                    button(t, ButtonKind::Secondary, if armed { "Click again to clear" } else { "Clear" }, None)
+                        .id("clear-store")
+                        .press_soft()
+                        .when(armed, |d| d.text_color(t.rose))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.arm("clear", cx) {
+                                this.owner.update(cx, |n, cx| n.clear_local_mail(cx));
+                            }
+                        })),
+                )],
+            ),
+        ]
+    }
+
+    fn shortcuts(&self, t: &Theme) -> Vec<AnyElement> {
+        let keys: &[(&str, &[(&str, &str)])] = &[
+            ("Reading", &[
+                ("J / ↓", "Next conversation"),
+                ("K / ↑", "Previous conversation"),
+                ("Return", "Full view"),
+                ("V", "Original formatting or reader"),
+                ("⌘[ / ⌘]", "Back / forward"),
+            ]),
+            ("Organising", &[
+                ("E", "Mark done"),
+                ("U", "Read or unread"),
+                ("S", "Star"),
+                ("H", "Snooze"),
+                ("⌫", "Move to trash"),
+                ("Z / ⌘Z", "Undo"),
+                ("⌘A", "Select all"),
+            ]),
+            ("Writing", &[
+                ("C / ⌘N", "New message"),
+                ("R", "Reply"),
+                ("⌘↵", "Send"),
+                ("⌘S", "Save draft"),
+                ("⌘⇧F", "Full page composer"),
+                ("⌘B ⌘I ⌘U ⌘K", "Bold, italic, underline, link"),
+            ]),
+            ("App", &[
+                ("/ or ⌘F", "Search"),
+                ("⌘K", "Snooze palette"),
+                ("⌘R", "Check for mail"),
+                ("⌘B / ⌘⇧B", "Sidebar / message list"),
+                ("⌘⇧L", "Light or dark"),
+                ("⌘,", "Settings"),
+                ("⌘P", "Print"),
+                ("⌘H / ⌘M / ⌘W", "Hide / minimise / close window"),
+            ]),
+        ];
+        keys.iter()
+            .map(|(title, items)| {
+                group(
+                    t,
+                    Some(title),
+                    items
+                        .iter()
+                        .map(|(key, what)| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .px(px(16.))
+                                .py(px(9.))
+                                .child(div().flex_1().text_color(t.text2).child(*what))
+                                .child(kbd(t, key))
+                                .into_any_element()
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn about(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        vec![
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(14.))
+                .pt(px(30.))
+                .child(
+                    div()
+                        .size(px(96.))
+                        .rounded(px(24.))
+                        .bg(gradient(135., c(0x8b7cff, 1.), c(0xff7ab6, 1.)))
+                        .shadow(vec![shadow(c(0x8b7cff, 0.45), 14., 40., -6.)])
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon("mail", 44., gpui::white())),
+                )
+                .child(serif("Nimbra", 44., t.text))
+                .child(meta(format!("Version {}", env!("CARGO_PKG_VERSION")), t.text3))
+                .child(
+                    div()
+                        .max_w(px(380.))
+                        .text_center()
+                        .text_color(t.text2)
+                        .child("A calm, fast Gmail client for the Mac. Your mail stays in Gmail; this Mac keeps an encrypted copy so it opens instantly."),
+                )
+                .child(
+                    button(t, ButtonKind::Secondary, "Keyboard shortcuts", None)
+                        .id("about-shortcuts")
+                        .press_soft()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.tab = Tab::Shortcuts;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        ]
+    }
+}

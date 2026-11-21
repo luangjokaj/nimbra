@@ -177,7 +177,8 @@ pub fn request_permission() {
 /// Shows a notification. `id` identifies it, so the same thread never stacks up twice.
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
-pub fn show(id: &str, title: &str, body: &str) {
+/// Posts a notification; `sound` plays the default notification sound with it.
+pub fn show(id: &str, title: &str, body: &str, sound: bool) {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
     if !available() {
@@ -195,8 +196,10 @@ pub fn show(id: &str, title: &str, body: &str) {
         let content: *mut Object = msg_send![class!(UNMutableNotificationContent), new];
         let _: () = msg_send![content, setTitle: string(title)];
         let _: () = msg_send![content, setBody: string(body)];
-        let sound: *mut Object = msg_send![class!(UNNotificationSound), defaultSound];
-        let _: () = msg_send![content, setSound: sound];
+        if sound {
+            let sound: *mut Object = msg_send![class!(UNNotificationSound), defaultSound];
+            let _: () = msg_send![content, setSound: sound];
+        }
         let nil: *mut Object = std::ptr::null_mut();
         let request: *mut Object = msg_send![class!(UNNotificationRequest),
             requestWithIdentifier: string(id) content: content trigger: nil];
@@ -217,4 +220,4 @@ pub fn show_while_active() {}
 pub fn log_permission() {}
 
 #[cfg(not(target_os = "macos"))]
-pub fn show(_id: &str, _title: &str, _body: &str) {}
+pub fn show(_id: &str, _title: &str, _body: &str, _sound: bool) {}
