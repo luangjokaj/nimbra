@@ -104,6 +104,6 @@ Not verified here (needs a person at the keyboard): adding a second account thro
 browser and switching; the Print panel; drag and drop of files; Quick Look; open at login
 from Nimbra.app.
 
-Left out on purpose: Delete forever (needs the restricted full-mail scope). Not done yet:
+Delete permanently: added later, asking for the full-mail scope only when first used. Not done yet:
 a unified inbox across accounts, and new-mail checks, snoozes and scheduled sends for
 accounts that are not shown.
