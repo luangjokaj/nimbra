@@ -811,6 +811,9 @@ pub struct Nimbra {
     outbox: Outbox,
     /// The offline retry loop is running.
     retrying: bool,
+    /// The open thread was just marked unread by the user: it stays unread until another
+    /// thread is opened, even if its text is clicked.
+    kept_unread: Option<String>,
     /// The checking-for-mail bar was showing at the last frame.
     bar_shown: bool,
     /// When the bar started fading out (and a number per fade, for its animation).
@@ -1002,6 +1005,7 @@ impl Nimbra {
             offline: false,
             outbox: Outbox::default(),
             retrying: false,
+            kept_unread: None,
             bar_shown: false,
             bar_fade: None,
             badge: None,
@@ -2240,6 +2244,7 @@ impl Nimbra {
     /// then; see `load_selected`.
     fn open_selected(&mut self, cx: &mut Context<Self>) {
         self.set_unread(self.selected, false, cx);
+        self.kept_unread = None;
         self.load_selected(cx);
     }
 
@@ -3410,6 +3415,9 @@ impl Nimbra {
             return;
         }
         for &index in &targets {
+            if self.mails[index].unread {
+                self.adjust_counts(index, Self::count_change(change));
+            }
             self.done[index] = true;
             self.history.push(index);
             if let Some(id) = self.mails[index].id.clone() {
@@ -4066,9 +4074,51 @@ impl Nimbra {
     }
 
     /// Marks a thread read or unread, here and in Gmail.
+    /// Moves the sidebar's unread counts (and the Dock badge) at once, before Gmail's own
+    /// numbers come back with the next sync. `delta` is +1 or -1 for one unread thread.
+    fn adjust_counts(&mut self, index: usize, delta: i32) {
+        let Some(mail) = self.mails.get(index) else {
+            return;
+        };
+        let inbox = mail.labels.iter().any(|l| l == "INBOX")
+            || (mail.labels.is_empty()
+                && matches!(
+                    self.mailbox,
+                    View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social
+                ));
+        if !inbox {
+            return;
+        }
+        let mut ids: Vec<String> = mail.labels.clone();
+        if !ids.iter().any(|l| l == "INBOX") {
+            ids.push("INBOX".into());
+        }
+        for id in ids {
+            if let Some((unread, _)) = self.counts.get_mut(&id) {
+                *unread = (*unread as i32 + delta).max(0) as u32;
+            }
+        }
+    }
+
+    /// How a change moves an unread thread's inbox counts: leaving the inbox takes it off.
+    fn count_change(change: gmail::Change) -> i32 {
+        match change {
+            gmail::Change::Archive | gmail::Change::Trash | gmail::Change::Spam => -1,
+            _ => 0,
+        }
+    }
+
     fn set_unread(&mut self, index: usize, unread: bool, cx: &mut Context<Self>) {
+        if index == self.selected {
+            self.kept_unread = if unread {
+                self.mails.get(index).and_then(|m| m.id.clone())
+            } else {
+                None
+            };
+        }
         if self.visible().contains(&index) && self.mails[index].unread != unread {
             self.mails[index].unread = unread;
+            self.adjust_counts(index, if unread { 1 } else { -1 });
             let change = if unread {
                 gmail::Change::MarkUnread
             } else {
@@ -6106,6 +6156,9 @@ impl Nimbra {
             return;
         };
         let index = self.selected;
+        if self.mails[index].unread {
+            self.adjust_counts(index, Self::count_change(change));
+        }
         self.done[index] = true;
         self.history.push(index);
         self.history_groups.push(1);
@@ -6243,6 +6296,9 @@ impl Nimbra {
             .as_ref()
             .and_then(|id| self.removed_by.remove(id))
             .unwrap_or(gmail::Change::Archive);
+        if self.mails[index].unread {
+            self.adjust_counts(index, -Self::count_change(change));
+        }
         // Undoing a snooze cancels it.
         if let Some(thread) = self.mails[index].id.clone()
             && self.snoozed.iter().any(|s| s.thread_id == thread)
@@ -7740,8 +7796,14 @@ impl Nimbra {
                         .min_h(px(0.))
                         .overflow_y_scroll()
                         // Clicking the text of a thread counts as opening it: it is marked read.
+                        // (Not when it was just marked unread: that stays until you move on.)
                         .when(!is_draft, |d| {
-                            d.on_click(cx.listener(|this, _, _, cx| this.open_selected(cx)))
+                            d.on_click(cx.listener(|this, _, _, cx| {
+                                let id = this.mails.get(this.selected).and_then(|m| m.id.clone());
+                                if id.is_none() || this.kept_unread != id {
+                                    this.open_selected(cx)
+                                }
+                            }))
                         })
                         // Clicking a draft's text opens it in the editor.
                         .when(is_draft, |d| {
