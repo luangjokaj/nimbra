@@ -107,3 +107,31 @@ from Nimbra.app.
 Delete permanently: added later, asking for the full-mail scope only when first used. Not done yet:
 a unified inbox across accounts, and new-mail checks, snoozes and scheduled sends for
 accounts that are not shown.
+
+## Unified inbox (2026-11-22)
+
+Goal: "All inboxes" across every signed-in account, plus each account on its own, with
+every account checked for new mail.
+
+- [x] One Gmail connection per signed-in account (`clients`), the shown one is still `gmail`
+- [x] `Mail.account`: the account a row came from (set in All inboxes)
+- [x] Per-message actions use the row's account: open, read/unread, star, done, trash,
+      labels, attachments, delete forever, undo
+- [x] `View::AllInboxes`: first page of every inbox, merged newest first; refresh refetches;
+      not saved to any one account's store
+- [x] Sidebar: "All inboxes" (combined unread) and an Accounts section (each with unread),
+      shown with 2+ accounts; a click on an account shows only that account
+- [x] Rows in All inboxes carry an account colour dot
+- [x] Replies from All inboxes go out from the message's account (drafts saved there)
+- [x] Accounts not shown: new-mail notifications; due snoozes and scheduled sends
+- [x] Dock badge: unread across all accounts
+- [x] Verify with sample mail (two sample accounts) and build
+
+Review: built on 2026-11-22. One connection per signed-in account (`others`), rows tagged
+with their account in All inboxes, and every per-message path (`sync`, open, prefetch,
+attachments, snooze wake, scheduled send, composer save and send) asks for the row's
+connection. All inboxes is never written to any account's store. Checked with sample mail
+and two fake accounts (sidebar, badges, counts); 44 tests pass. Not checked against two real
+Gmail accounts: needs a second sign-in. Limits: All inboxes shows each inbox's first 30
+threads (no endless loading yet), labels apply per account, and another account's change
+made offline is rolled back rather than queued.

@@ -137,6 +137,8 @@ struct Composer {
     reply: Option<gmail::ReplyTo>,
     /// The Gmail draft being edited, if this message was saved or opened from Drafts.
     draft_id: Option<String>,
+    /// The account it is written from, when not the one shown (a reply in All inboxes).
+    account: Option<String>,
     /// The earlier message a draft quotes or forwards. Kept out of the editor behind a
     /// "…" toggle and added back when the message is saved or sent.
     quoted: Option<String>,
@@ -367,6 +369,9 @@ struct Scheduled {
     draft_id: String,
     at_ms: i64,
     subject: String,
+    /// The account the draft is in, when not the one whose store keeps this list.
+    #[serde(default)]
+    account: Option<String>,
 }
 
 /// How long a sent or discarded message can still be taken back.
@@ -770,6 +775,8 @@ struct Source {
     /// For sample data, which has no real headers.
     fallback_to: Option<String>,
     fallback_all: Vec<String>,
+    /// The account the message is in (All inboxes): the reply goes out from it.
+    account: Option<String>,
 }
 
 impl Source {
@@ -783,6 +790,7 @@ impl Source {
             reply_to: mail.reply.as_ref().map(|(_, reply)| reply.clone()),
             fallback_to: mail.reply.as_ref().map(|(address, _)| address.clone()),
             fallback_all: mail.reply_all.clone(),
+            account: mail.account.clone(),
         }
     }
 
@@ -804,6 +812,7 @@ impl Source {
             reply_to,
             fallback_to: None,
             fallback_all: Vec::new(),
+            account: mail.account.clone(),
         }
     }
 }
@@ -973,6 +982,10 @@ pub struct Nimbra {
     compose_host: Option<gpui::AnyWindowHandle>,
     /// The window the editor web view was made in (it is native, so it lives in one window).
     editor_window: Option<gpui::AnyWindowHandle>,
+    /// Connections to the signed-in accounts that are not the one shown (by account id).
+    others: HashMap<String, Arc<gmail::Client>>,
+    /// Unread inbox conversations per account (for All inboxes and the Accounts list).
+    account_unread: HashMap<String, u32>,
     /// Conversations open in windows of their own.
     message_windows: Vec<gpui::WindowHandle<MessageWindow>>,
     /// The Settings window, while it is open.
@@ -1308,6 +1321,8 @@ impl Nimbra {
             settings: crate::settings::load(),
             settings_window: None,
             message_windows: Vec::new(),
+            others: HashMap::new(),
+            account_unread: HashMap::new(),
             compose_host: None,
             format_hint: None,
             compose_detached: false,
@@ -1449,6 +1464,7 @@ impl Nimbra {
             this.fetching = true;
         }
         this.watch_for_mail(cx);
+        this.watch_other_accounts(cx);
         this.watch_notification_clicks(cx);
         // Already signed in on a previous run: go straight to the inbox. The keychain is
         // read off the main thread because macOS may show a permission prompt for it, and
@@ -1501,6 +1517,7 @@ impl Nimbra {
 
     fn title(&self, view: View) -> SharedString {
         match view {
+            View::AllInboxes => "All inboxes".into(),
             View::Inbox if self.is_demo() => "Important".into(),
             View::Inbox => "Inbox".into(),
             View::Primary => "Primary".into(),
@@ -2327,20 +2344,20 @@ impl Nimbra {
     fn prefetch(&mut self, cx: &mut Context<Self>) {
         const AHEAD: usize = 20;
         const WORKERS: usize = 4;
-        let Some(client) = self.gmail.clone() else {
+        if self.gmail.is_none() {
             return;
-        };
+        }
         if self.prefetching || self.mailbox == View::Search || self.status != Status::Ready {
             return;
         }
-        let ids: Vec<String> = self
+        // Each thread with its own account's connection (All inboxes mixes accounts).
+        let (ids, clients): (Vec<String>, Vec<Arc<gmail::Client>>) = self
             .visible()
             .into_iter()
-            .filter_map(|i| self.mails.get(i))
-            .filter(|mail| !mail.loaded)
-            .filter_map(|mail| mail.id.clone())
+            .filter(|i| self.mails.get(*i).is_some_and(|mail| !mail.loaded))
+            .filter_map(|i| Some((self.mails[i].id.clone()?, self.client_at(i)?)))
             .take(AHEAD)
-            .collect();
+            .unzip();
         if ids.is_empty() {
             return;
         }
@@ -2355,10 +2372,13 @@ impl Nimbra {
                         (0..ids.len()).map(|_| None).collect();
                     let chunk = ids.len().div_ceil(WORKERS).max(1);
                     std::thread::scope(|scope| {
-                        for (ids, out) in ids.chunks(chunk).zip(results.chunks_mut(chunk)) {
-                            let client = &client;
+                        for ((ids, clients), out) in ids
+                            .chunks(chunk)
+                            .zip(clients.chunks(chunk))
+                            .zip(results.chunks_mut(chunk))
+                        {
                             scope.spawn(move || {
-                                for (id, slot) in ids.iter().zip(out) {
+                                for ((id, client), slot) in ids.iter().zip(clients).zip(out) {
                                     *slot = Some(client.thread(id));
                                 }
                             });
@@ -2425,6 +2445,7 @@ impl Nimbra {
         if std::env::var_os("NIMBRA_NOTIFY_TEST").is_some() {
             crate::notify::show("test", "Nimbra", "Notifications are working.", true);
         }
+        self.connect_others(cx);
         if self.store.is_some() {
             self.refresh(cx);
             return;
@@ -2521,7 +2542,8 @@ impl Nimbra {
         let Some(store) = self.store.clone() else {
             return;
         };
-        if self.mailbox == View::Search || self.status != Status::Ready {
+        // All inboxes mixes accounts: it is never saved in any one account's store.
+        if matches!(self.mailbox, View::Search | View::AllInboxes) || self.status != Status::Ready {
             return;
         }
         // Keep the store small: the newest 300 threads of a mailbox, and the full text of
@@ -2594,6 +2616,28 @@ impl Nimbra {
         if self.compose.as_ref().is_some_and(|c| !c.full) {
             // Leave a message being written alone; just bring the app forward.
             return;
+        }
+        // Another account's notification ("acct:<account>:<thread>"): shown in All inboxes.
+        let mut id = id;
+        if let Some((account, thread)) = id
+            .strip_prefix("acct:")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(a, t)| (a.to_string(), t.to_string()))
+        {
+            if account == self.account_id {
+                id = thread;
+            } else {
+                if self.mailbox == View::AllInboxes {
+                    self.refresh(cx);
+                } else {
+                    self.select_mailbox(View::AllInboxes, cx);
+                }
+                self.unread_only = false;
+                if thread != "more" && !self.open_listed(&thread, cx) {
+                    self.open_when_listed = Some(thread);
+                }
+                return;
+            }
         }
         if self.mailbox != View::Inbox {
             self.select_mailbox(View::Inbox, cx);
@@ -2693,7 +2737,12 @@ impl Nimbra {
                         };
                         // Anything changed: bring the open mailbox up to date, cheaply.
                         if !changes.threads.is_empty() && this.compose.is_none() {
-                            this.sync_view(cx);
+                            // All inboxes cannot be patched from one feed: list it again.
+                            if this.mailbox == View::AllInboxes {
+                                this.fetch_all_inboxes(cx);
+                            } else {
+                                this.sync_view(cx);
+                            }
                         }
                         changes.new_unread_inbox
                     })
@@ -2737,6 +2786,104 @@ impl Nimbra {
                     eprintln!("nimbra: {} new unread threads", fresh.len());
                 })
                 .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// The accounts that are not shown: their change feeds are read on the same schedule
+    /// as the shown one's, for notifications, unread counts and All inboxes; and the
+    /// snoozes and scheduled sends kept in their stores are carried out when due.
+    fn watch_other_accounts(&mut self, cx: &mut Context<Self>) {
+        const EVERY: Duration = Duration::from_secs(30);
+        cx.spawn(async move |this, cx| {
+            // Where each account's feed was last read, by account id.
+            let mut feeds: HashMap<String, String> = HashMap::new();
+            loop {
+                let wait = this
+                    .update(cx, |this, _| {
+                        Duration::from_secs(this.settings.check_every.clamp(15, 3600) as u64)
+                    })
+                    .unwrap_or(EVERY);
+                cx.background_executor().timer(wait).await;
+                let Ok(others) = this.update(cx, |this, _| {
+                    this.others
+                        .iter()
+                        .map(|(id, client)| (id.clone(), client.clone()))
+                        .collect::<Vec<_>>()
+                }) else {
+                    break; // the window is gone
+                };
+                feeds.retain(|id, _| others.iter().any(|(other, _)| other == id));
+                for (id, client) in others {
+                    let from = feeds.get(&id).cloned();
+                    let account = id.clone();
+                    let checked = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let (at, fresh, changed) = match from {
+                                None => (client.profile()?.1, Vec::new(), false),
+                                Some(from) => match client.history(&from) {
+                                    Ok(changes) => (
+                                        changes.latest.clone(),
+                                        changes.new_unread_inbox.clone(),
+                                        !changes.threads.is_empty(),
+                                    ),
+                                    Err(error) if error.is::<gmail::HistoryExpired>() => {
+                                        (client.profile()?.1, Vec::new(), true)
+                                    }
+                                    Err(error) => return Err(error),
+                                },
+                            };
+                            let unread = client
+                                .counts(&["INBOX".to_string()])
+                                .get("INBOX")
+                                .map_or(0, |(unread, _)| *unread);
+                            let summaries: Vec<gmail::Summary> = fresh
+                                .iter()
+                                .take(3)
+                                .filter_map(|thread| client.summary(thread, false).ok())
+                                .collect();
+                            let extra = fresh.len().saturating_sub(summaries.len());
+                            // Snoozes and scheduled sends kept with this account.
+                            carry_out_due(&account, &client);
+                            anyhow::Ok((at, summaries, extra, changed, unread))
+                        })
+                        .await;
+                    let Ok((at, summaries, extra, changed, unread)) = checked else {
+                        continue; // offline or signed out: next time
+                    };
+                    feeds.insert(id.clone(), at);
+                    this.update(cx, |this, cx| {
+                        if !this.others.contains_key(&id) {
+                            return;
+                        }
+                        this.account_unread.insert(id.clone(), unread);
+                        if this.settings.notifications {
+                            for mail in &summaries {
+                                crate::notify::show(
+                                    &format!("acct:{id}:{}", mail.id),
+                                    &mail.sender,
+                                    &mail.subject,
+                                    this.settings.notify_sound,
+                                );
+                            }
+                            if extra > 0 {
+                                crate::notify::show(
+                                    &format!("acct:{id}:more"),
+                                    "Nimbra",
+                                    &format!("{extra} more new messages"),
+                                    this.settings.notify_sound,
+                                );
+                            }
+                        }
+                        if changed && this.mailbox == View::AllInboxes && this.compose.is_none() {
+                            this.fetch_all_inboxes(cx);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }
             }
         })
         .detach();
@@ -2851,11 +2998,86 @@ impl Nimbra {
         .detach();
     }
 
+    /// Opens a connection to every signed-in account that is not shown (their sign-ins are
+    /// in the keychain). Accounts already connected are left as they are.
+    fn connect_others(&mut self, cx: &mut Context<Self>) {
+        let Some(config) = self.config.clone() else {
+            return;
+        };
+        let missing: Vec<String> = self
+            .settings
+            .accounts
+            .iter()
+            .map(|a| a.id.clone())
+            .filter(|id| *id != self.account_id && !self.others.contains_key(id))
+            .filter(|id| gmail::is_account_id(id))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    missing
+                        .into_iter()
+                        .filter_map(|id| gmail::stored_refresh_token(&id).map(|t| (id, t)))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                for (id, token) in found {
+                    if id != this.account_id && this.settings.accounts.iter().any(|a| a.id == id) {
+                        let client = gmail::Client::new(config.clone(), token, id.clone());
+                        this.others.insert(id, Arc::new(client));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The connection for an account: the shown one, or another signed-in one.
+    fn client_for(&self, account: Option<&str>) -> Option<Arc<gmail::Client>> {
+        match account {
+            Some(id) if id != self.account_id => self.others.get(id).cloned(),
+            _ => self.gmail.clone(),
+        }
+    }
+
+    /// The thread in row `index` belongs to an account other than the one shown.
+    fn is_foreign(&self, index: usize) -> bool {
+        self.mails
+            .get(index)
+            .and_then(|m| m.account.as_deref())
+            .is_some_and(|a| a != self.account_id)
+    }
+
+    /// The connection for the thread in row `index` (its own account in All inboxes).
+    fn client_at(&self, index: usize) -> Option<Arc<gmail::Client>> {
+        let account = self.mails.get(index).and_then(|m| m.account.clone());
+        self.client_for(account.as_deref())
+    }
+
     /// Clears everything that belongs to the account shown, and makes `id` the account shown.
     fn reset_account(&mut self, id: String, cx: &mut Context<Self>) {
         self.close_menu_window(cx);
         self.close_undo(cx);
         self.account_gen += 1;
+        // The account shown so far stays connected (All inboxes, new-mail checks).
+        if let Some(client) = self.gmail.take()
+            && !self.account_id.is_empty()
+            && self
+                .settings
+                .accounts
+                .iter()
+                .any(|a| a.id == self.account_id)
+        {
+            self.others.insert(self.account_id.clone(), client);
+        }
+        self.others.remove(&id);
         self.account_id = id.clone();
         self.settings.active = id;
         self.save_settings(cx);
@@ -2936,6 +3158,10 @@ impl Nimbra {
     }
 
     fn fetch_inbox(&mut self, cx: &mut Context<Self>) {
+        if self.mailbox == View::AllInboxes {
+            self.fetch_all_inboxes(cx);
+            return;
+        }
         let Some(client) = self.gmail.clone() else {
             return;
         };
@@ -3012,6 +3238,105 @@ impl Nimbra {
                     }
                     Err(error) => this.fail(error, cx),
                 }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// All inboxes: the first page of every signed-in account's inbox, fetched side by side,
+    /// merged newest first, each row marked with its account. Also every account's unread
+    /// count. An account that fails is left out (with a note); all failing is an error.
+    fn fetch_all_inboxes(&mut self, cx: &mut Context<Self>) {
+        let Some(shown) = self.gmail.clone() else {
+            return;
+        };
+        let mut accounts: Vec<(String, Arc<gmail::Client>)> =
+            vec![(self.account_id.clone(), shown)];
+        for account in &self.settings.accounts {
+            if let Some(client) = self.others.get(&account.id) {
+                accounts.push((account.id.clone(), client.clone()));
+            }
+        }
+        if self.mails.is_empty() && !self.cache.contains_key(&View::AllInboxes) {
+            self.status = Status::Loading;
+        }
+        self.fetching = true;
+        cx.notify();
+        let generation = self.account_gen;
+        cx.spawn(async move |this, cx| {
+            let results = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut results: Vec<(String, anyhow::Result<(Vec<gmail::Summary>, u32)>)> =
+                        Vec::new();
+                    std::thread::scope(|scope| {
+                        let handles: Vec<_> = accounts
+                            .iter()
+                            .map(|(id, client)| {
+                                let (id, client) = (id.clone(), client.clone());
+                                scope.spawn(move || {
+                                    let listed = client
+                                        .threads_page(View::Inbox, None, 30, None)
+                                        .map(|(threads, _)| threads);
+                                    let unread = client
+                                        .counts(&["INBOX".to_string()])
+                                        .get("INBOX")
+                                        .map_or(0, |(unread, _)| *unread);
+                                    (id, listed.map(|threads| (threads, unread)))
+                                })
+                            })
+                            .collect();
+                        for handle in handles {
+                            if let Ok(result) = handle.join() {
+                                results.push(result);
+                            }
+                        }
+                    });
+                    results
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.account_gen != generation || this.mailbox != View::AllInboxes {
+                    return;
+                }
+                this.fetching = false;
+                let mut fresh: Vec<Mail> = Vec::new();
+                let mut first_error = None;
+                let mut failed = 0;
+                for (id, result) in results {
+                    match result {
+                        Ok((threads, unread)) => {
+                            this.account_unread.insert(id.clone(), unread);
+                            fresh.extend(threads.into_iter().map(|summary| {
+                                let mut mail = Mail::from_summary(summary);
+                                mail.account = Some(id.clone());
+                                mail
+                            }));
+                        }
+                        Err(error) => {
+                            failed += 1;
+                            first_error.get_or_insert(error);
+                        }
+                    }
+                }
+                if fresh.is_empty()
+                    && let Some(error) = first_error
+                {
+                    this.fail(error, cx);
+                    return;
+                }
+                if failed > 0 {
+                    this.notice = Some(
+                        format!("{failed} account(s) could not be checked; showing the rest.")
+                            .into(),
+                    );
+                }
+                fresh.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+                this.next_page = None;
+                this.install(fresh, cx);
+                // Count only; never addresses or subjects.
+                eprintln!("nimbra: All inboxes listed ({} threads)", this.mails.len());
             })
             .ok();
         })
@@ -3260,7 +3585,9 @@ impl Nimbra {
 
     /// Fetches the content of the thread on show, without marking it read.
     fn load_selected(&mut self, cx: &mut Context<Self>) {
-        let (Some(client), Some(mail)) = (self.gmail.clone(), self.mails.get(self.selected)) else {
+        let (Some(client), Some(mail)) =
+            (self.client_at(self.selected), self.mails.get(self.selected))
+        else {
             return;
         };
         let (false, Some(id)) = (mail.loaded, mail.id.clone()) else {
@@ -3301,11 +3628,16 @@ impl Nimbra {
     /// the thread is put back.
     fn sync(&mut self, index: usize, change: gmail::Change, removed: bool, cx: &mut Context<Self>) {
         let (Some(client), Some(id)) = (
-            self.gmail.clone(),
+            self.client_at(index),
             self.mails.get(index).and_then(|m| m.id.clone()),
         ) else {
             return;
         };
+        let foreign = self
+            .mails
+            .get(index)
+            .and_then(|m| m.account.as_deref())
+            .is_some_and(|a| a != self.account_id);
         cx.spawn(async move |this, cx| {
             let thread_id = id.clone();
             let result = cx
@@ -3316,8 +3648,9 @@ impl Nimbra {
                 return;
             };
             this.update(cx, |this, cx| {
-                // Offline: keep the change here and send it when the connection is back.
-                if error.is::<gmail::Offline>() {
+                // Offline: keep the change here and send it when the connection is back
+                // (the queue is the shown account's; another account's change is undone).
+                if error.is::<gmail::Offline>() && !foreign {
                     this.outbox.changes.push((id, change));
                     this.went_offline(cx);
                     return;
@@ -3420,6 +3753,7 @@ impl Nimbra {
             size: (720., 520.),
             grab: None,
             draft_id: None,
+            account: source.as_ref().and_then(|s| s.account.clone()),
             quoted: None,
             show_quoted: false,
             saving: false,
@@ -5138,9 +5472,9 @@ impl Nimbra {
 
     /// Brings back snoozed threads whose time has come (checked with the send-later list).
     fn wake_due(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.gmail.clone() else {
+        if self.gmail.is_none() {
             return;
-        };
+        }
         let now = chrono::Utc::now().timestamp_millis();
         let due: Vec<Snooze> = self
             .snoozed
@@ -5149,8 +5483,11 @@ impl Nimbra {
             .cloned()
             .collect();
         for item in due {
+            // Woken in its own account (a snooze set from All inboxes may be another one's).
+            let Some(client) = self.client_for(item.mail.account.as_deref()) else {
+                continue;
+            };
             self.waking.insert(item.thread_id.clone());
-            let client = client.clone();
             cx.spawn(async move |this, cx| {
                 let (id, since, no_reply) = (item.thread_id.clone(), item.since_ms, item.no_reply);
                 let result = cx
@@ -5393,6 +5730,9 @@ impl Nimbra {
 
     /// Takes a label off the open thread.
     fn remove_label(&mut self, label_id: String, cx: &mut Context<Self>) {
+        if self.is_foreign(self.selected) {
+            return;
+        }
         let Some(mail) = self.mails.get_mut(self.selected) else {
             return;
         };
@@ -5658,6 +5998,17 @@ impl Nimbra {
         ) else {
             return;
         };
+        if self.is_foreign(self.selected) {
+            if let Some(mail) = self.mails.get_mut(self.selected) {
+                mail.labels.retain(|id| *id != label.id);
+            }
+            self.notice = Some(
+                "Labels belong to each account: open this conversation's account to label it."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
         let (Some(client), Some(id)) = (self.gmail.clone(), mail.id.clone()) else {
             return;
         };
@@ -5762,7 +6113,24 @@ impl Nimbra {
     /// temporary folder) or saves it to Downloads and shows it in Finder. Nothing is opened
     /// with another app automatically.
     fn fetch_attachment(&mut self, att: gmail::Attachment, save: bool, cx: &mut Context<Self>) {
-        let Some(client) = self.gmail.clone() else {
+        // The attachment's own conversation, for its account.
+        let row = self
+            .mails
+            .iter()
+            .position(|m| {
+                m.header
+                    .attachments
+                    .iter()
+                    .any(|a| a.message_id == att.message_id)
+                    || m.earlier.iter().any(|e| {
+                        e.header
+                            .attachments
+                            .iter()
+                            .any(|a| a.message_id == att.message_id)
+                    })
+            })
+            .unwrap_or(self.selected);
+        let Some(client) = self.client_at(row) else {
             self.notice = Some("Attachments need a connected Gmail account.".into());
             cx.notify();
             return;
@@ -6183,7 +6551,12 @@ impl Nimbra {
     /// `explicit` is ⌘S or a step that needs the draft (Send later); otherwise only unsaved
     /// edits with something in them are saved.
     fn save_composer(&mut self, serial: u64, explicit: bool, cx: &mut Context<Self>) {
-        let Some(client) = self.gmail.clone() else {
+        let from = self.composer_mut(serial).and_then(|c| c.account.clone());
+        let client = self
+            .gmail
+            .as_ref()
+            .and_then(|_| self.client_for(from.as_deref()));
+        let Some(client) = client else {
             if explicit && let Some(composer) = self.composer_mut(serial) {
                 composer.error = Some("Sample mode: drafts are not saved.".into());
                 cx.notify();
@@ -6283,6 +6656,7 @@ impl Nimbra {
                             draft_id,
                             at_ms: at,
                             subject: composer.subject.read(cx).text(),
+                            account: composer.account.clone(),
                         });
                         self.save_scheduled(cx);
                         self.notice = Some(format!("Scheduled for {}.", long_date(at)).into());
@@ -6451,7 +6825,10 @@ impl Nimbra {
             }
             Parked::Discarded => {
                 let (_, composer) = self.parked.remove(pos);
-                if let (Some(id), Some(client)) = (composer.draft_id.clone(), self.gmail.clone()) {
+                if let (Some(id), Some(client)) = (
+                    composer.draft_id.clone(),
+                    self.client_for(composer.account.as_deref()),
+                ) {
                     cx.spawn(async move |this, cx| {
                         let result = cx
                             .background_executor()
@@ -6478,9 +6855,15 @@ impl Nimbra {
 
     /// Sends a message whose undo delay is over.
     fn dispatch(&mut self, mut composer: Composer, cx: &mut Context<Self>) {
-        let Some(client) = self.gmail.clone() else {
+        let Some(client) = self.client_for(composer.account.as_deref()) else {
             return;
         };
+        // The offline queue sends from the account shown, so another account's message
+        // that cannot go out now stays in its composer instead.
+        let foreign = composer
+            .account
+            .as_deref()
+            .is_some_and(|a| a != self.account_id);
         let outgoing = composer.outgoing(cx);
         let draft_id = composer.draft_id.clone();
         let queued = QueuedMail {
@@ -6514,7 +6897,7 @@ impl Nimbra {
                         this.compose = None;
                         this.fail(error, cx);
                     }
-                    Err(error) if error.is::<gmail::Offline>() => {
+                    Err(error) if error.is::<gmail::Offline>() && !foreign => {
                         this.parked.retain(|(_, c)| c.serial != serial);
                         this.outbox.mail.push(queued);
                         this.notice = Some(
@@ -6860,9 +7243,9 @@ impl Nimbra {
     }
 
     fn send_due(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.gmail.clone() else {
+        if self.gmail.is_none() {
             return;
-        };
+        }
         let now = chrono::Utc::now().timestamp_millis();
         let due: Vec<Scheduled> = self
             .scheduled
@@ -6871,8 +7254,11 @@ impl Nimbra {
             .cloned()
             .collect();
         for item in due {
+            // Sent from the draft's own account.
+            let Some(client) = self.client_for(item.account.as_deref()) else {
+                continue;
+            };
             self.sending_scheduled.insert(item.draft_id.clone());
-            let client = client.clone();
             cx.spawn(async move |this, cx| {
                 let id = item.draft_id.clone();
                 let result = cx
@@ -7269,6 +7655,8 @@ impl Nimbra {
             crate::store::wipe(&gone);
         });
         self.settings.accounts.retain(|a| a.id != account);
+        self.others.remove(&account);
+        self.account_unread.remove(&account);
         // Another account is signed in: show that one.
         if let Some(next) = self.settings.accounts.first().map(|a| a.id.clone()) {
             self.switch_account(next, cx);
@@ -7359,7 +7747,7 @@ impl Nimbra {
                             .iter()
                             .any(|field| field.to_lowercase().contains(&query))
                 }
-                (true, View::Inbox) | (false, _) => {
+                (true, View::Inbox | View::AllInboxes) | (false, _) => {
                     // The open thread stays listed under Unread even once it is read.
                     !self.done[*i]
                         && (!self.unread_only || self.mails[*i].unread || *i == self.selected)
@@ -8119,6 +8507,7 @@ fn view_key_for_section(key: &str) -> usize {
 /// A stable number per mailbox, for element ids.
 fn view_key(view: View) -> usize {
     match view {
+        View::AllInboxes => 99,
         View::Inbox => 0,
         View::Primary => 1,
         View::Updates => 2,
@@ -8337,6 +8726,77 @@ impl Nimbra {
             .filter(|n| *n > 0)
             .map(|n| n.to_string());
         let split_toggle = self.section_toggle(t, "split", "SPLIT INBOX", cx);
+        // Several accounts: All inboxes, and each account on its own.
+        let many = !demo && self.settings.accounts.len() >= 2;
+        let unread_of = |id: &str| -> u32 {
+            if id == self.account_id {
+                self.counts.get("INBOX").map_or(0, |(unread, _)| *unread)
+            } else {
+                self.account_unread.get(id).copied().unwrap_or(0)
+            }
+        };
+        let all_unread: u32 = self
+            .settings
+            .accounts
+            .iter()
+            .map(|a| unread_of(&a.id))
+            .sum();
+        let accounts_toggle = many.then(|| self.section_toggle(t, "accounts", "ACCOUNTS", cx));
+        let account_rows: Vec<AnyElement> = if many {
+            self.settings
+                .accounts
+                .iter()
+                .enumerate()
+                .filter_map(|(i, account)| {
+                    let shown = account.id == self.account_id && self.mailbox != View::AllInboxes;
+                    let id = account.id.clone();
+                    let initial = account
+                        .email
+                        .chars()
+                        .next()
+                        .map(|c| c.to_uppercase().to_string())
+                        .unwrap_or_default();
+                    let count = Some(unread_of(&account.id))
+                        .filter(|n| *n > 0)
+                        .map(|n| n.to_string());
+                    let hover = t.hover;
+                    let row = div()
+                        .id(("account-row", i))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(10.))
+                        .h(px(30.))
+                        .rounded(px(8.))
+                        .cursor_pointer()
+                        .when(shown, |d| d.bg(t.selected))
+                        .when(!shown, |d| d.hover(move |s| s.bg(hover)))
+                        .press(t)
+                        .child(avatar(crate::data::tone_for(&account.email), &initial, 18.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_color(if shown { t.text } else { t.text2 })
+                                .child(account.email.clone()),
+                        )
+                        .children(count.map(|n| meta(n, t.text3)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if id == this.account_id {
+                                this.select_mailbox(View::Inbox, cx);
+                            } else {
+                                this.switch_account(id.clone(), cx);
+                            }
+                        }))
+                        .into_any_element();
+                    self.fold_row("accounts", shown, 950 + i, row)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mailbox_toggle = self.section_toggle(t, "mailbox", "MAILBOX", cx);
         let labels_toggle = self.section_toggle(t, "labels", "LABELS", cx);
         let mailbox = |view: View, icon_name: &'static str, count: Option<String>| {
@@ -8364,11 +8824,14 @@ impl Nimbra {
         };
 
         div()
+            .id("sidebar")
             .flex()
             .flex_col()
             .flex_none()
             .w(px(236.))
             .h_full()
+            // With several accounts it can be taller than the window: it scrolls.
+            .overflow_y_scroll()
             .px(px(12.))
             .pb(px(14.))
             .bg(t.sidebar)
@@ -8418,6 +8881,25 @@ impl Nimbra {
                     )
                     .child(kbd(t, "/")),
             )
+            .when(many, |d| {
+                d.child(
+                    nav(
+                        t,
+                        "mail",
+                        "All inboxes",
+                        Some(all_unread).filter(|n| *n > 0).map(|n| n.to_string()),
+                        self.mailbox == View::AllInboxes,
+                        None,
+                    )
+                    .id("all-inboxes")
+                    .press(t)
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.select_mailbox(View::AllInboxes, cx)),
+                    ),
+                )
+                .children(accounts_toggle)
+                .children(account_rows)
+            })
             .child(split_toggle)
             .children(mailbox(
                 View::Inbox,
@@ -8774,7 +9256,30 @@ impl Nimbra {
                         .when(m.unread, |d| d.bg(t.violet)),
                 ),
             )
-            .child(avatar(m.tone, &m.initials, 28.))
+            .child({
+                // In All inboxes, a small badge in the account's colour says whose it is.
+                let badge = m
+                    .account
+                    .as_deref()
+                    .filter(|_| self.mailbox == View::AllInboxes)
+                    .and_then(|id| self.settings.accounts.iter().find(|a| a.id == id))
+                    .map(|a| crate::data::tone_for(&a.email));
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(avatar(m.tone, &m.initials, 28.))
+                    .children(badge.map(|tone| {
+                        div()
+                            .absolute()
+                            .right(px(-2.))
+                            .bottom(px(-2.))
+                            .size(px(11.))
+                            .rounded_full()
+                            .bg(tone.gradient())
+                            .border_2()
+                            .border_color(t.surface)
+                    }))
+            })
             .child(
                 div()
                     .flex()
@@ -11278,20 +11783,29 @@ impl Nimbra {
                             .px(px(20.))
                             .pt(px(16.))
                             .pb(px(8.))
-                            .child(
-                                serif(
-                                    if composer.draft_id.is_some() {
-                                        "Draft"
-                                    } else if composer.reply.is_some() {
-                                        "Reply"
-                                    } else {
-                                        "New message"
-                                    },
-                                    if full { 38. } else { 26. },
-                                    t.text,
-                                )
-                                .flex_1(),
+                            .child(serif(
+                                if composer.draft_id.is_some() {
+                                    "Draft"
+                                } else if composer.reply.is_some() {
+                                    "Reply"
+                                } else {
+                                    "New message"
+                                },
+                                if full { 38. } else { 26. },
+                                t.text,
+                            ))
+                            // Written from another account than the one shown (All inboxes).
+                            .children(
+                                composer
+                                    .account
+                                    .as_deref()
+                                    .filter(|a| *a != self.account_id)
+                                    .and_then(|id| {
+                                        self.settings.accounts.iter().find(|a| a.id == id)
+                                    })
+                                    .map(|a| meta(format!("from {}", a.email), t.text3)),
                             )
+                            .child(div().flex_1())
                             .when(self.compose_host.is_none(), |d| {
                                 d.child(
                                     icon_button(t, "detach")
@@ -12282,7 +12796,14 @@ impl Render for Nimbra {
         }
         // The inbox's unread count on the Dock icon.
         let unread = if self.gmail.is_some() && self.settings.dock_badge {
+            // Every signed-in account's inbox.
             self.counts.get("INBOX").map_or(0, |(unread, _)| *unread)
+                + self
+                    .account_unread
+                    .iter()
+                    .filter(|(id, _)| **id != self.account_id && self.others.contains_key(*id))
+                    .map(|(_, n)| *n)
+                    .sum::<u32>()
         } else {
             0
         };
@@ -12575,5 +13096,54 @@ fn me_avatar(photo: Option<&Arc<gpui::Image>>, initials: &str, size: f32) -> Any
             .child(gpui::img(photo.clone()).size_full().rounded_full())
             .into_any_element(),
         None => avatar(Tone::Graphite, initials, size).into_any_element(),
+    }
+}
+
+/// For an account that is not shown: wakes its due snoozes (back to the inbox, unread) and
+/// sends its due scheduled messages, as kept in its own store. Runs off the main thread.
+fn carry_out_due(account: &str, client: &gmail::Client) {
+    let Ok(store) = crate::store::Store::open(account) else {
+        return;
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    if let Some(mut snoozed) = store.load::<Vec<Snooze>>("snoozed") {
+        let before = snoozed.len();
+        snoozed.retain(|snooze| {
+            // Due later, or another account's thread (woken when that one is shown).
+            if snooze.until_ms > now || snooze.mail.account.as_deref().is_some_and(|a| a != account)
+            {
+                return true;
+            }
+            // A reminder comes back only if nobody wrote since; either way it is done.
+            let replied = snooze.no_reply
+                && client
+                    .summary(&snooze.thread_id, false)
+                    .is_ok_and(|s| s.timestamp_ms > snooze.since_ms);
+            if replied {
+                return false;
+            }
+            client
+                .relabel(&snooze.thread_id, &["INBOX", "UNREAD"], &[])
+                .is_err()
+        });
+        if snoozed.len() != before {
+            let _ = store.save("snoozed", &snoozed);
+        }
+    }
+    if let Some(mut scheduled) = store.load::<Vec<Scheduled>>("scheduled") {
+        let before = scheduled.len();
+        scheduled.retain(|item| {
+            if item.at_ms > now || item.account.as_deref().is_some_and(|a| a != account) {
+                return true;
+            }
+            match client.send_saved_draft(&item.draft_id) {
+                Ok(()) => false,
+                // The draft is gone (sent or deleted elsewhere).
+                Err(error) => !error.to_string().contains("404"),
+            }
+        });
+        if scheduled.len() != before {
+            let _ = store.save("scheduled", &scheduled);
+        }
     }
 }

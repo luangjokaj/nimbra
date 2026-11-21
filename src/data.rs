@@ -46,6 +46,9 @@ pub struct Mail {
     /// Gmail labels on the thread (for the Spam warning).
     #[serde(default)]
     pub labels: Vec<String>,
+    /// The account this thread belongs to, when the list mixes accounts (All inboxes).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// What a message says about itself, for the header block in the reading pane.
@@ -112,6 +115,7 @@ impl Mail {
     pub fn from_summary(summary: gmail::Summary) -> Self {
         let (time, earlier) = format_time(summary.timestamp_ms);
         Mail {
+            account: None,
             id: Some(summary.id),
             initials: initials(&summary.sender).into(),
             tone: tone_for(&summary.sender),
@@ -274,6 +278,7 @@ fn mail(
     time: &'static str,
 ) -> Mail {
     Mail {
+        account: None,
         id: None,
         sender: sender.into(),
         initials: initials.into(),

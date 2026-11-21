@@ -83,6 +83,9 @@ pub(super) struct SettingsWindow {
     pending_focus: Option<FocusHandle>,
     /// A first click on a destructive button arms it; a second within 4 s does it.
     armed: Option<(&'static str, Instant)>,
+    /// A segmented choice that just changed: the option it slides from, when, and a
+    /// count that keys the slide.
+    slides: std::collections::HashMap<&'static str, (usize, Instant, usize)>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -130,6 +133,7 @@ impl SettingsWindow {
             signature,
             pending_focus: None,
             armed: None,
+            slides: std::collections::HashMap::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -385,7 +389,8 @@ impl SettingsWindow {
         )
     }
 
-    /// A segmented choice; `pick` receives the index chosen.
+    /// A segmented choice; `pick` receives the index chosen. Like the inbox's All/Unread
+    /// switch, the highlight slides from the old option to the new one.
     fn choice(
         &self,
         t: &Theme,
@@ -395,35 +400,85 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
         pick: impl Fn(&mut Nimbra, usize) + Clone + 'static,
     ) -> Div {
+        const SIZE: f32 = 12.5;
+        const H: f32 = 26.;
+        const GAP: f32 = 2.;
+        const SLIDE: Duration = Duration::from_millis(260);
+        // Each option is as wide as its label (measured) plus padding, so the highlight
+        // can move between known places.
+        let widths: Vec<f32> = options
+            .iter()
+            .map(|label| (label_width(cx, label, SIZE) + 22.).ceil())
+            .collect();
+        let spot = |i: usize| -> (f32, f32) {
+            let x: f32 = widths[..i].iter().map(|w| w + GAP).sum();
+            (x, widths[i])
+        };
+        let (to_x, to_w) = spot(selected.min(options.len() - 1));
+        let pill = div()
+            .absolute()
+            .top(px(3.))
+            .h(px(H))
+            .rounded(px(7.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border_strong)
+            .shadow(vec![shadow(
+                c(0x000000, if t.dark { 0.25 } else { 0.08 }),
+                1.,
+                3.,
+                0.,
+            )]);
+        let pill = match self.slides.get(id) {
+            Some(&(from, at, n)) if at.elapsed() < SLIDE && from != selected => {
+                let (from_x, from_w) = spot(from.min(options.len() - 1));
+                pill.with_animation(
+                    (id, n),
+                    Animation::new(SLIDE).with_easing(ease_out_quint()),
+                    move |d, delta| {
+                        d.left(px(3. + from_x + (to_x - from_x) * delta))
+                            .w(px(from_w + (to_w - from_w) * delta))
+                    },
+                )
+                .into_any_element()
+            }
+            _ => pill.left(px(3. + to_x)).w(px(to_w)).into_any_element(),
+        };
         let hover = t.hover;
         div()
+            .relative()
             .flex()
             .flex_none()
-            .gap(px(2.))
+            .gap(px(GAP))
             .p(px(3.))
             .rounded(px(9.))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
+            .child(pill)
             .children(options.iter().enumerate().map(|(i, label)| {
                 let on = i == selected;
                 let pick = pick.clone();
                 div()
                     .id((id, i))
-                    .px(px(10.))
-                    .py(px(4.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .w(px(widths[i]))
+                    .h(px(H))
                     .rounded(px(7.))
                     .cursor_pointer()
-                    .text_size(px(12.5))
-                    .when(on, |d| {
-                        d.bg(t.raised)
-                            .border_1()
-                            .border_color(t.border_strong)
-                            .font_weight(FontWeight::MEDIUM)
-                    })
-                    .when(!on, |d| d.text_color(t.text2).hover(move |s| s.bg(hover)))
+                    .text_size(px(SIZE))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if on { t.text } else { t.text2 })
+                    .when(!on, |d| d.hover(move |s| s.bg(hover)))
                     .child(label.to_string())
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        if i != selected {
+                            let n = this.slides.get(id).map_or(0, |s| s.2) + 1;
+                            this.slides.insert(id, (selected, Instant::now(), n));
+                        }
                         let pick = pick.clone();
                         this.set(cx, move |n| pick(n, i))
                     }))
@@ -1117,4 +1172,19 @@ impl SettingsWindow {
                 .into_any_element(),
         ]
     }
+}
+
+/// How wide `text` is in the app's medium-weight sans at `size` points.
+fn label_width(cx: &App, text: &str, size: f32) -> f32 {
+    let system = cx.text_system();
+    let mut font = gpui::font(crate::theme::SANS);
+    font.weight = FontWeight::MEDIUM;
+    let font_id = system.resolve_font(&font);
+    text.chars()
+        .map(|c| {
+            system
+                .advance(font_id, px(size), c)
+                .map_or(size * 0.55, |a| f32::from(a.width))
+        })
+        .sum()
 }
