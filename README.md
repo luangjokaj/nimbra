@@ -27,7 +27,7 @@ What it does with your mailbox:
 - Links open in your browser, and only `http`, `https` and `mailto` links are clickable.
 - The sidebar switches between Inbox, Gmail's categories (Primary, Updates, Promotions, Social), Starred, Snoozed, Drafts, Sent, Done (Gmail's archive) and your own labels, 30 newest threads each.
 - Opening a thread marks it read. `S` stars, `⌘⌫` moves to Gmail's trash (kept 30 days), and `E` in Done moves a thread back to the inbox. `Z` undoes the last removal.
-- While the app is open it reads Gmail's change feed every 30 seconds: only what changed since the last look is fetched, the open mailbox is updated in place, and a macOS notification (sender and subject) is shown for each thread with a new unread inbox message. The content of the 20 newest threads in the open mailbox is fetched ahead in the background and stored, so opening them is instant. Opening the app and pressing reload work the same way; a full fetch only happens when there is no starting point yet, the point is older than Gmail keeps (about a week), or the mailbox is search-based (Done, Snoozed, search results). Notifications need the bundled `Nimbra.app` and your permission.
+- While the app is open it reads Gmail's change feed every 30 seconds: only what changed since the last look is fetched, the open mailbox is updated in place, and a macOS notification (sender and subject) is shown for each thread with a new unread inbox message. The content of the 20 newest threads in the open mailbox is fetched ahead in the background and stored, so opening them is instant. Opening the app and pressing reload work the same way; a full fetch only happens when there is no starting point yet, the point is older than Gmail keeps (about a week), or the mailbox is search-based (Done, Snoozed, search results). Clicking a notification opens that email. Notifications need the bundled `Nimbra.app` and your permission, and only arrive while Nimbra is running.
 - Mailboxes, opened threads and sidebar counts are saved in an encrypted local store (`~/Library/Application Support/Nimbra/store`), so the app opens straight into your mail and refreshes in the background. Each record is encrypted with ChaCha20-Poly1305 using a key kept only in the system keychain (`nimbra` / `store-key`); the files alone, or a backup of them, are unreadable. When the Google sign-in ends, the store and its key are deleted. Search results are never stored.
 - `E` archives the thread in Gmail (removes it from the inbox) and `Z` puts it back. Both only work in the Inbox. 
 - The sign-in is stored in the system keychain under `nimbra`. Delete that entry to sign out.
@@ -65,7 +65,7 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 | --- | --- |
 | `J` / `K` or arrows | Next / previous thread |
 | `E` | Mark done (clear them all to reach Inbox Zero) |
-| `Z` | Undo the last archive, move or trash |
+| `Z`, `⌘Z` or `Ctrl+Z` | Undo the last archive, move or trash (an Undo pill also appears for a few seconds) |
 | `/` or `⌘F` | Search (Enter runs it, `esc` clears it) |
 | `S` | Star or unstar |
 | `U` | Mark the open thread as unread, or read again (also a toolbar button) |

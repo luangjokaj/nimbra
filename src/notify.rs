@@ -5,6 +5,17 @@
 //! bare binary is run with `cargo run`. Banners show whether or not Nimbra is the front app
 //! (see `show_while_active`).
 
+/// Identifiers of notifications the user clicked, oldest first, waiting for the app.
+static CLICKED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Takes the clicked notifications' identifiers (thread ids, or "more" for the summary).
+pub fn take_clicked() -> Vec<String> {
+    CLICKED
+        .lock()
+        .map(|mut c| std::mem::take(&mut *c))
+        .unwrap_or_default()
+}
+
 /// Whether notifications can work in this process.
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)] // emitted by the objc crate's macros
@@ -75,6 +86,34 @@ pub fn show_while_active() {
         unsafe { (*handler).call((PRESENT,)) };
     }
 
+    // A notification was clicked: remember which thread it was about, for the app to open.
+    extern "C" fn did_receive(
+        _: &Object,
+        _: Sel,
+        _center: *mut Object,
+        response: *mut Object,
+        handler: *mut Object,
+    ) {
+        // SAFETY: the framework passes a live UNNotificationResponse and completion block;
+        // `identifier` is an NSString whose UTF-8 bytes are copied before returning.
+        unsafe {
+            let notification: *mut Object = msg_send![response, notification];
+            let request: *mut Object = msg_send![notification, request];
+            let identifier: *mut Object = msg_send![request, identifier];
+            let utf8: *const std::os::raw::c_char = msg_send![identifier, UTF8String];
+            if !utf8.is_null() {
+                let id = std::ffi::CStr::from_ptr(utf8)
+                    .to_string_lossy()
+                    .into_owned();
+                if let Ok(mut clicked) = CLICKED.lock() {
+                    clicked.push(id);
+                }
+            }
+            let handler = handler as *mut block::Block<(), ()>;
+            (*handler).call(());
+        }
+    }
+
     static SET: Once = Once::new();
     if !available() {
         return;
@@ -92,6 +131,10 @@ pub fn show_while_active() {
             decl.add_method(
                 sel!(userNotificationCenter:willPresentNotification:withCompletionHandler:),
                 will_present as extern "C" fn(&Object, Sel, *mut Object, *mut Object, *mut Object),
+            );
+            decl.add_method(
+                sel!(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:),
+                did_receive as extern "C" fn(&Object, Sel, *mut Object, *mut Object, *mut Object),
             );
         }
         decl.register();

@@ -203,6 +203,53 @@ struct MenuPopup {
     _activation: gpui::Subscription,
 }
 
+/// The "Undo" pill shown after a thread is removed (see `Nimbra::offer_undo`).
+struct UndoToast {
+    owner: gpui::WeakEntity<Nimbra>,
+    label: &'static str,
+    dark: bool,
+}
+
+impl Render for UndoToast {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = if self.dark {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        let owner = self.owner.clone();
+        div()
+            .size_full()
+            .p(px(MENU_MARGIN))
+            .font_family(crate::theme::SANS)
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(t.text)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .size_full()
+                    .pl(px(16.))
+                    .pr(px(6.))
+                    .rounded(px(12.))
+                    .bg(t.raised)
+                    .border_1()
+                    .border_color(t.border_strong)
+                    .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
+                    .child(div().flex_1().child(self.label))
+                    .child(
+                        button(&t, ButtonKind::Ghost, "Undo", Some("⌘Z"))
+                            .id("undo")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                owner.update(cx, |owner, cx| owner.undo(cx)).ok();
+                            })),
+                    ),
+            )
+    }
+}
+
 impl MenuPopup {
     /// Closes the menu without choosing anything, and tells the owner so a click on the
     /// menu's own button closes it and does not reopen it straight away.
@@ -322,6 +369,8 @@ pub struct Nimbra {
     /// Switching back shows it at once while a refresh runs in the background.
     /// Backed by the encrypted store on disk (see `persist`).
     cache: HashMap<View, Vec<Mail>>,
+    /// A thread to open once it appears in the list (from a clicked notification).
+    open_when_listed: Option<String>,
     /// A background fetch of thread contents is running.
     prefetching: bool,
     /// The encrypted on-disk mail store, once opened (real mail only).
@@ -349,6 +398,12 @@ pub struct Nimbra {
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
+    /// The "Undo" pill shown after a thread is removed, in a window of its own so it
+    /// floats above the email's web view; `undo_gen` restarts its timer.
+    undo_window: Option<gpui::WindowHandle<UndoToast>>,
+    undo_gen: usize,
+    /// The main window's frame, kept from the last draw, to place pop-ups without a window.
+    frame: Option<gpui::Bounds<gpui::Pixels>>,
     /// The toolbar menu's own window, while it is open.
     menu_window: Option<gpui::WindowHandle<MenuPopup>>,
     /// The open toolbar menu, if any.
@@ -464,6 +519,7 @@ impl Nimbra {
             },
             cache: HashMap::new(),
             prefetching: false,
+            open_when_listed: None,
             store: None,
             notify_from: None,
             synced_to: HashMap::new(),
@@ -474,6 +530,9 @@ impl Nimbra {
             menu_at: (0., 0.),
             row_actions: Vec::new(),
             menu_window: None,
+            undo_window: None,
+            undo_gen: 0,
+            frame: None,
             menu: None,
             menu_dismissed: None,
             original: false,
@@ -566,6 +625,7 @@ impl Nimbra {
             this.fetching = true;
         }
         this.watch_for_mail(cx);
+        this.watch_notification_clicks(cx);
         // Already signed in on a previous run: go straight to the inbox. The keychain is
         // read off the main thread because macOS may show a permission prompt for it, and
         // the window should not freeze (or fail to appear) while that is open.
@@ -1047,6 +1107,61 @@ impl Nimbra {
             .detach();
     }
 
+    /// Opens the thread behind a clicked notification. macOS brings the app forward itself.
+    fn watch_notification_clicks(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                let clicked = crate::notify::take_clicked();
+                let Some(id) = clicked.into_iter().rev().find(|id| id.as_str() != "test") else {
+                    if this.update(cx, |_, _| ()).is_err() {
+                        break; // the window is gone
+                    }
+                    continue;
+                };
+                this.update(cx, |this, cx| this.open_thread(id, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Shows a thread by its Gmail id: switches to the Inbox, and opens the thread now if
+    /// it is listed, or as soon as the list has caught up.
+    fn open_thread(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.compose.as_ref().is_some_and(|c| !c.full) {
+            // Leave a message being written alone; just bring the app forward.
+            return;
+        }
+        if self.mailbox != View::Inbox {
+            self.select_mailbox(View::Inbox, cx);
+        }
+        self.unread_only = false;
+        // "more" stands for several new threads: showing the Inbox is the answer.
+        if id == "more" {
+            return;
+        }
+        if !self.open_listed(&id, cx) {
+            self.open_when_listed = Some(id);
+            self.refresh(cx);
+        }
+    }
+
+    /// Opens the thread with this id if it is in the list. Returns whether it was.
+    fn open_listed(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.mails.iter().position(|m| m.id.as_deref() == Some(id)) else {
+            return false;
+        };
+        if self.done.get(index) == Some(&true) {
+            return false;
+        }
+        self.open(index);
+        self.open_selected(cx);
+        cx.notify();
+        true
+    }
+
     /// Reads Gmail's change feed every 30 seconds while the app is open: shows a
     /// notification for each thread with a new unread message in the inbox, and applies
     /// any change to the open mailbox.
@@ -1310,6 +1425,9 @@ impl Nimbra {
         self.cache.insert(self.mailbox, self.mails.clone());
         self.persist(cx);
         self.prefetch(cx);
+        if let Some(id) = self.open_when_listed.take() {
+            self.open_listed(&id, cx);
+        }
         // Counts only; never log addresses, subjects or message text.
         eprintln!(
             "nimbra: {:?} listed ({} threads, {} already in memory, {} sidebar counts)",
@@ -2681,11 +2799,81 @@ impl Nimbra {
         }
         self.sync(index, change, true, cx);
         self.open_selected(cx);
+        self.offer_undo(
+            match change {
+                gmail::Change::Trash => "Moved to trash",
+                gmail::Change::Unarchive => "Moved to inbox",
+                _ => "Marked done",
+            },
+            cx,
+        );
         cx.notify();
+    }
+
+    /// Shows the "Undo" pill at the bottom centre of the window for a few seconds.
+    fn offer_undo(&mut self, label: &'static str, cx: &mut Context<Self>) {
+        const SHOWN: Duration = Duration::from_secs(6);
+        const SIZE: (f32, f32) = (300., 44.);
+        self.close_undo(cx);
+        let Some(frame) = self.frame else {
+            return;
+        };
+        let origin = gpui::point(
+            frame.origin.x + (frame.size.width - px(SIZE.0)) / 2. - px(MENU_MARGIN),
+            frame.origin.y + frame.size.height - px(SIZE.1 + 24.) - px(MENU_MARGIN),
+        );
+        let owner = cx.weak_entity();
+        let dark = self.dark;
+        let opened = cx.open_window(
+            gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                    origin,
+                    gpui::size(px(SIZE.0 + 2. * MENU_MARGIN), px(SIZE.1 + 2. * MENU_MARGIN)),
+                ))),
+                titlebar: None,
+                kind: gpui::WindowKind::PopUp,
+                // Keyboard focus stays in the main window, so ⌘Z still reaches it.
+                focus: false,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |window, cx| {
+                crate::blur::no_window_shadow(window);
+                cx.new(|_| UndoToast { owner, label, dark })
+            },
+        );
+        let Ok(handle) = opened else {
+            return;
+        };
+        self.undo_window = Some(handle);
+        self.undo_gen += 1;
+        let shown_gen = self.undo_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SHOWN).await;
+            this.update(cx, |this, cx| {
+                if this.undo_gen == shown_gen {
+                    this.close_undo(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn close_undo(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.undo_window.take() {
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
+        }
     }
 
     /// `Z`: brings back the last thread that was archived, moved or trashed.
     fn undo(&mut self, cx: &mut Context<Self>) {
+        self.close_undo(cx);
         let Some(index) = self.history.pop() else {
             return;
         };
@@ -5219,6 +5407,7 @@ impl Render for Nimbra {
             composer.position = Some((((viewport.0 - composer.size.0) / 2.).max(0.), 96.));
         }
         self.sync_html_view(window);
+        self.frame = Some(window.bounds());
         if self.pull_hold && !self.fetching {
             self.pull_hold = false;
             // Close from wherever the strip is right now, so a fast refresh does not jump.

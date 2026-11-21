@@ -128,6 +128,8 @@ fn main() {
             KeyBinding::new("up", Prev, mail),
             KeyBinding::new("e", MarkDone, mail),
             KeyBinding::new("z", Undo, mail),
+            KeyBinding::new("cmd-z", Undo, Some("Mail")),
+            KeyBinding::new("ctrl-z", Undo, Some("Mail")),
             KeyBinding::new("s", ToggleStar, mail),
             KeyBinding::new("u", MarkUnread, mail),
             KeyBinding::new("v", ToggleOriginal, mail),
@@ -186,6 +188,9 @@ fn main() {
             }
         })
         .detach();
+        // Set up notifications before anything else, so a click on one that launched the
+        // app is not missed.
+        notify::show_while_active();
         cx.activate(true);
     });
 }
