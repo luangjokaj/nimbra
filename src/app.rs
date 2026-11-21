@@ -185,6 +185,8 @@ enum Menu {
     SendLater,
     /// Inbox, a label or Spam, for the open thread.
     MoveTo,
+    /// The accounts on this Mac, Add account and Settings (from the account row).
+    Accounts,
     /// The right-click menu of a row in the list (by index into the loaded threads).
     Row(usize),
 }
@@ -716,6 +718,10 @@ pub struct Nimbra {
     schedule_watch: bool,
     /// The times offered by the open Send later menu.
     send_later_times: Vec<i64>,
+    /// The account shown: "" for the first one, else its id (see `gmail::is_account_id`).
+    account_id: String,
+    /// Bumped on every account switch, so answers for the previous account are dropped.
+    account_gen: u64,
     /// Gmail could not be reached the last time we tried.
     offline: bool,
     /// What is waiting to go out once Gmail can be reached.
@@ -904,6 +910,8 @@ impl Nimbra {
             cache: HashMap::new(),
             prefetching: false,
             open_when_listed: None,
+            account_id: String::new(),
+            account_gen: 0,
             offline: false,
             outbox: Outbox::default(),
             retrying: false,
@@ -1062,16 +1070,24 @@ impl Nimbra {
         // Already signed in on a previous run: go straight to the inbox. The keychain is
         // read off the main thread because macOS may show a permission prompt for it, and
         // the window should not freeze (or fail to appear) while that is open.
+        let active = this.settings.active.clone();
+        if gmail::is_account_id(&active)
+            && (active.is_empty() || this.settings.accounts.iter().any(|a| a.id == active))
+        {
+            this.account_id = active;
+        }
         if let Some(config) = this.config.clone() {
             this.status = Status::Loading;
+            let account = this.account_id.clone();
             cx.spawn(async move |this, cx| {
+                let id = account.clone();
                 let token = cx
                     .background_executor()
-                    .spawn(async { gmail::stored_refresh_token() })
+                    .spawn(async move { gmail::stored_refresh_token(&id) })
                     .await;
                 this.update(cx, |this, cx| match token {
                     Some(token) => {
-                        this.gmail = Some(Arc::new(gmail::Client::new(config, token)));
+                        this.gmail = Some(Arc::new(gmail::Client::new(config, token, account)));
                         this.open_store(cx);
                     }
                     None => {
@@ -1275,6 +1291,7 @@ impl Nimbra {
         .into_iter()
         .chain(self.labels.iter().take(8).map(|l| l.id.clone()))
         .collect();
+        let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -1299,6 +1316,10 @@ impl Nimbra {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                // A different account was opened meanwhile: this answer is not for it.
+                if this.account_gen != generation {
+                    return;
+                }
                 if this.mailbox != view {
                     return;
                 }
@@ -1366,6 +1387,7 @@ impl Nimbra {
         }
         self.prefetching = true;
         let view = self.mailbox;
+        let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let fetched = cx
                 .background_executor()
@@ -1389,6 +1411,10 @@ impl Nimbra {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                // A different account was opened meanwhile: this answer is not for it.
+                if this.account_gen != generation {
+                    return;
+                }
                 this.prefetching = false;
                 let mut filled = 0;
                 for (id, result) in fetched {
@@ -1445,11 +1471,13 @@ impl Nimbra {
             return;
         }
         let view = self.mailbox;
+        let account = self.account_id.clone();
+        let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let opened = cx
                 .background_executor()
                 .spawn(async move {
-                    let store = crate::store::Store::open()?;
+                    let store = crate::store::Store::open(&account)?;
                     let saved: Option<Saved> = store.load("meta");
                     let mails: Option<Vec<Mail>> = store.load(&record(view));
                     let scheduled: Option<Vec<Scheduled>> = store.load("scheduled");
@@ -1464,6 +1492,9 @@ impl Nimbra {
                 return;
             };
             this.update(cx, |this, cx| {
+                if this.account_gen != generation {
+                    return;
+                }
                 this.store = Some(Arc::new(store));
                 this.scheduled = scheduled.unwrap_or_default();
                 this.snoozed = snoozed.unwrap_or_default();
@@ -1480,6 +1511,13 @@ impl Nimbra {
                     return;
                 }
                 if let Some(saved) = saved {
+                    if saved.account.contains('@') {
+                        let generation = this.account_gen;
+                        this.remember_account(&saved.account, cx);
+                        if this.account_gen != generation {
+                            return;
+                        }
+                    }
                     this.account = saved.account.into();
                     this.me_initials = saved.initials.into();
                     this.counts = saved.counts;
@@ -1649,10 +1687,12 @@ impl Nimbra {
                     EVERY
                 };
                 cx.background_executor().timer(wait).await;
-                let Ok(client) = this.update(cx, |this, _| this.gmail.clone()) else {
+                let Ok(client) = this.update(cx, |this, _| {
+                    this.gmail.clone().map(|c| (c, this.account_gen))
+                }) else {
                     break; // the window is gone
                 };
-                let Some(client) = client else {
+                let Some((client, generation)) = client else {
                     continue; // not signed in
                 };
                 let from = this
@@ -1683,6 +1723,10 @@ impl Nimbra {
                 first = false;
                 let fresh = this
                     .update(cx, |this, cx| {
+                        // Switched accounts meanwhile: this feed belongs to the other one.
+                        if this.account_gen != generation {
+                            return Vec::new();
+                        }
                         this.notify_from = Some(at);
                         let Some(changes) = changes else {
                             return Vec::new();
@@ -1737,6 +1781,7 @@ impl Nimbra {
         let Some(config) = self.config.clone() else {
             return;
         };
+        let account = self.account_id.clone();
         match gmail::SignIn::start(&config) {
             Ok((pending, url)) => {
                 cx.open_url(&url);
@@ -1745,7 +1790,7 @@ impl Nimbra {
                 cx.spawn(async move |this, cx| {
                     let result = cx
                         .background_executor()
-                        .spawn(async move { pending.finish(&config) })
+                        .spawn(async move { pending.finish(&config, &account) })
                         .await;
                     this.update(cx, |this, cx| match result {
                         Ok(client) => {
@@ -1766,6 +1811,161 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// Add account: signs in to another Gmail account in the browser, then switches to it.
+    /// The account shown stays as it is until that sign-in finishes.
+    fn add_account(&mut self, cx: &mut Context<Self>) {
+        let Some(config) = self.config.clone() else {
+            self.notice = Some("Connecting Gmail needs the Google sign-in set up first.".into());
+            cx.notify();
+            return;
+        };
+        let Ok(account) = gmail::new_account_id() else {
+            return;
+        };
+        self.close_settings(cx);
+        match gmail::SignIn::start(&config) {
+            Ok((pending, url)) => {
+                cx.open_url(&url);
+                self.notice = Some("Sign in to the other account in your browser.".into());
+                cx.spawn(async move |this, cx| {
+                    let id = account.clone();
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { pending.finish(&config, &id) })
+                        .await;
+                    this.update(cx, |this, cx| match result {
+                        Ok(client) => {
+                            this.reset_account(account, cx);
+                            this.gmail = Some(Arc::new(client));
+                            this.open_store(cx);
+                        }
+                        Err(error) => {
+                            this.notice = Some(format!("No account was added: {error}").into());
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            Err(error) => self.notice = Some(error.to_string().into()),
+        }
+        cx.notify();
+    }
+
+    /// Shows another of the accounts signed in on this Mac.
+    fn switch_account(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(config) = self.config.clone() else {
+            return;
+        };
+        if id == self.account_id || !gmail::is_account_id(&id) {
+            return;
+        }
+        self.reset_account(id.clone(), cx);
+        cx.spawn(async move |this, cx| {
+            let key = id.clone();
+            let token = cx
+                .background_executor()
+                .spawn(async move { gmail::stored_refresh_token(&key) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.account_id != id {
+                    return;
+                }
+                match token {
+                    Some(token) => {
+                        this.gmail = Some(Arc::new(gmail::Client::new(config, token, id)));
+                        this.open_store(cx);
+                    }
+                    None => this.status = Status::SignedOut,
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Clears everything that belongs to the account shown, and makes `id` the account shown.
+    fn reset_account(&mut self, id: String, cx: &mut Context<Self>) {
+        self.close_menu_window(cx);
+        self.close_undo(cx);
+        self.account_gen += 1;
+        self.account_id = id.clone();
+        self.settings.active = id;
+        self.save_settings(cx);
+        self.gmail = None;
+        self.store = None;
+        self.status = Status::Loading;
+        self.fetching = false;
+        self.mailbox = View::Inbox;
+        self.mails.clear();
+        self.done.clear();
+        self.history.clear();
+        self.history_groups.clear();
+        self.cache.clear();
+        self.counts.clear();
+        self.labels.clear();
+        self.synced_to.clear();
+        self.scheduled.clear();
+        self.sending_scheduled.clear();
+        self.snoozed.clear();
+        self.waking.clear();
+        self.outbox = Outbox::default();
+        self.offline = false;
+        self.parked.clear();
+        self.compose = None;
+        self.picked.clear();
+        self.next_page = None;
+        self.back.clear();
+        self.forward.clear();
+        self.selected = 0;
+        self.palette = false;
+        self.removed_by.clear();
+        self.moved.clear();
+        self.notify_from = None;
+        self.details = None;
+        self.open_when_listed = None;
+        self.html_shown = None;
+        self.account = "".into();
+        self.me_initials = "".into();
+        self.pending_focus = Some(self.focus.clone());
+        cx.notify();
+    }
+
+    /// Remembers the account shown in the account list (once its address is known). Signing
+    /// in to an account that is already listed keeps the existing entry.
+    fn remember_account(&mut self, email: &str, cx: &mut Context<Self>) {
+        let id = self.account_id.clone();
+        if let Some(other) = self
+            .settings
+            .accounts
+            .iter()
+            .find(|a| a.email.eq_ignore_ascii_case(email) && a.id != id)
+            .map(|a| a.id.clone())
+        {
+            // The same Google account twice: drop the new sign-in, show the existing one.
+            let duplicate = id.clone();
+            std::thread::spawn(move || {
+                gmail::forget_refresh_token(&duplicate);
+                crate::store::wipe(&duplicate);
+            });
+            self.notice = Some("That account is already in Nimbra.".into());
+            self.switch_account(other, cx);
+            return;
+        }
+        match self.settings.accounts.iter_mut().find(|a| a.id == id) {
+            Some(entry) if entry.email == email => return,
+            Some(entry) => entry.email = email.to_string(),
+            None => self.settings.accounts.push(crate::settings::AccountRef {
+                id: id.clone(),
+                email: email.to_string(),
+            }),
+        }
+        self.settings.active = id;
+        self.save_settings(cx);
+    }
+
     fn fetch_inbox(&mut self, cx: &mut Context<Self>) {
         let Some(client) = self.gmail.clone() else {
             return;
@@ -1784,6 +1984,7 @@ impl Nimbra {
         let need_labels = self.labels.is_empty();
         let known_labels: Vec<String> = self.labels.iter().map(|l| l.id.clone()).collect();
         let sent_query = self.query.clone();
+        let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -1815,6 +2016,10 @@ impl Nimbra {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                // A different account was opened meanwhile: this answer is not for it.
+                if this.account_gen != generation {
+                    return;
+                }
                 // Ignore the answer if the user has moved to another mailbox or search meanwhile.
                 if this.mailbox != view || (view == View::Search && this.query != sent_query) {
                     return;
@@ -1860,6 +2065,11 @@ impl Nimbra {
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_default()
             .into();
+        let generation = self.account_gen;
+        self.remember_account(&email, cx);
+        if self.account_gen != generation {
+            return; // it was a second sign-in to an account already here
+        }
         self.account = email.into();
 
         let fresh = threads.into_iter().map(Mail::from_summary).collect();
@@ -1952,23 +2162,31 @@ impl Nimbra {
         let (false, Some(id)) = (mail.loaded, mail.id.clone()) else {
             return;
         };
+        let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let thread_id = id.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move { client.thread(&thread_id) })
                 .await;
-            this.update(cx, |this, cx| match result {
-                Ok(messages) => {
-                    // The inbox may have been reloaded meanwhile, so look the thread up again.
-                    if let Some(mail) = this.mails.iter_mut().find(|m| m.id.as_deref() == Some(&id))
-                    {
-                        mail.fill(messages);
-                        this.persist(cx);
-                        cx.notify();
-                    }
+            this.update(cx, |this, cx| {
+                // A different account was opened meanwhile: this answer is not for it.
+                if this.account_gen != generation {
+                    return;
                 }
-                Err(error) => this.fail(error, cx),
+                match result {
+                    Ok(messages) => {
+                        // The inbox may have been reloaded meanwhile, so look the thread up again.
+                        if let Some(mail) =
+                            this.mails.iter_mut().find(|m| m.id.as_deref() == Some(&id))
+                        {
+                            mail.fill(messages);
+                            this.persist(cx);
+                            cx.notify();
+                        }
+                    }
+                    Err(error) => this.fail(error, cx),
+                }
             })
             .ok();
         })
@@ -2608,6 +2826,23 @@ impl Nimbra {
                     items
                 }
             }
+            Menu::Accounts => self
+                .settings
+                .accounts
+                .iter()
+                .map(|a| {
+                    let active = a.id == self.account_id;
+                    (
+                        if active { "done" } else { "mail" },
+                        short(&a.email, 30),
+                        if active { t.violet } else { t.text2 },
+                    )
+                })
+                .chain([
+                    ("users", "Add account…".into(), t.text2),
+                    ("sun", "Settings…".into(), t.text2),
+                ])
+                .collect(),
             Menu::SendLater => {
                 let choices = Self::send_later_choices();
                 self.send_later_times = choices.iter().map(|(_, at)| *at).collect();
@@ -2677,6 +2912,8 @@ impl Nimbra {
         let (left, top) = match menu {
             Menu::Labels => (pane_left + 150., 50.),
             Menu::MoveTo => (pane_left + 186., 50.),
+            // Above the account row at the bottom of the sidebar.
+            Menu::Accounts => (14., f32::from(viewport.height) - 64. - height),
             Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
             // Above the composer's Send later button.
             Menu::SendLater => {
@@ -2801,6 +3038,17 @@ impl Nimbra {
         match (menu, index) {
             (Menu::Labels, index) if index == self.labels.len().min(12) => self.open_new_label(cx),
             (Menu::Labels, index) => self.apply_label(index, cx),
+            (Menu::Accounts, index) => {
+                let accounts = self.settings.accounts.len();
+                if index < accounts {
+                    let id = self.settings.accounts[index].id.clone();
+                    self.switch_account(id, cx);
+                } else if index == accounts {
+                    self.add_account(cx);
+                } else {
+                    self.open_settings(cx);
+                }
+            }
             (Menu::MoveTo, index) => {
                 if let Some(target) = self.move_targets.get(index).cloned() {
                     self.move_selected(target, cx);
@@ -3402,6 +3650,7 @@ impl Nimbra {
             View::Search => Some(self.query.clone()),
             _ => None,
         };
+        let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -3410,6 +3659,10 @@ impl Nimbra {
                 )
                 .await;
             this.update(cx, |this, cx| {
+                // A different account was opened meanwhile: this answer is not for it.
+                if this.account_gen != generation {
+                    return;
+                }
                 this.loading_more = false;
                 if this.mailbox != view {
                     return;
@@ -5017,10 +5270,26 @@ impl Nimbra {
     /// Signs out: forgets the Google sign-in and removes the mail kept on this Mac and its
     /// key. Settings (signature, theme) stay.
     fn sign_out(&mut self, cx: &mut Context<Self>) {
-        gmail::forget_refresh_token();
+        let account = self.account_id.clone();
+        let gone = account.clone();
+        std::thread::spawn(move || {
+            gmail::forget_refresh_token(&gone);
+            crate::store::wipe(&gone);
+        });
+        self.settings.accounts.retain(|a| a.id != account);
+        // Another account is signed in: show that one.
+        if let Some(next) = self.settings.accounts.first().map(|a| a.id.clone()) {
+            self.close_settings(cx);
+            self.switch_account(next, cx);
+            self.notice =
+                Some("Signed out of that account. Its mail was removed from this Mac.".into());
+            return;
+        }
+        self.settings.active = String::new();
+        self.account_id = String::new();
+        self.save_settings(cx);
         self.gmail = None;
         self.store = None;
-        std::thread::spawn(crate::store::wipe);
         self.cache.clear();
         self.mails.clear();
         self.done.clear();
@@ -5158,6 +5427,13 @@ impl Nimbra {
                                 t.text3,
                             )),
                     )
+                    .when(connected && self.config.is_some(), |d| {
+                        d.child(
+                            button(t, ButtonKind::Ghost, "Add account", None)
+                                .id("add-account")
+                                .on_click(cx.listener(|this, _, _, cx| this.add_account(cx))),
+                        )
+                    })
                     .when(connected, |d| {
                         d.child(
                             button(
@@ -5351,7 +5627,8 @@ impl Nimbra {
             self.gmail = None;
             // The stored mail belongs to that sign-in: remove it, and its key.
             self.store = None;
-            std::thread::spawn(crate::store::wipe);
+            let account = self.account_id.clone();
+            std::thread::spawn(move || crate::store::wipe(&account));
             self.cache.clear();
             self.mails.clear();
             self.done.clear();
@@ -6370,8 +6647,14 @@ impl Nimbra {
                             .items_center()
                             .gap(px(10.))
                             .cursor_pointer()
-                            .tooltip(tip(t.dark, "Settings", "⌘,"))
-                            .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
+                            .tooltip(tip(t.dark, "Accounts and settings", ""))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.settings.accounts.is_empty() {
+                                    this.open_settings(cx)
+                                } else {
+                                    this.toggle_menu(Menu::Accounts, window, cx)
+                                }
+                            }))
                             .child(avatar(Tone::Graphite, &self.me_initials, 28.))
                             .child(
                                 div()
@@ -6385,7 +6668,11 @@ impl Nimbra {
                                             .child(short(&self.account, 22)),
                                     )
                                     .child(meta(
-                                        if demo { "Work · 3 accounts" } else { "Gmail" },
+                                        match (demo, self.settings.accounts.len()) {
+                                            (true, _) => "Work · 3 accounts".to_string(),
+                                            (false, 0 | 1) => "Gmail".to_string(),
+                                            (false, n) => format!("Gmail · {n} accounts"),
+                                        },
                                         t.text3,
                                     )),
                             ),
@@ -8183,8 +8470,8 @@ impl Nimbra {
                 cx.notify();
             }));
         Some(match menu {
-            // Row, Send later and Move to menus only exist as pop-up windows.
-            Menu::Row(_) | Menu::SendLater | Menu::MoveTo => return None,
+            // These menus only exist as pop-up windows.
+            Menu::Row(_) | Menu::SendLater | Menu::MoveTo | Menu::Accounts => return None,
             Menu::Labels => {
                 let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
                 panel

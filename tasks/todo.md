@@ -51,7 +51,7 @@ to do, from reading the current code. Grouped into milestones; each one ships on
 
 - [x] **Settings window** (⌘,): account, signature, theme, reading, notifications, open at login.
 - [x] **Sign out** that removes the token, store and key.
-- [ ] **Multiple accounts** with a unified inbox.
+- [~] **Multiple accounts**: add, switch and sign out per account, each with its own keychain sign-in, encrypted store and key. Still to do: a unified inbox, and notifications and scheduled sends for accounts that are not shown.
 - [x] **Offline**: queue archive, star, read, send while offline and retry; show an
       offline indicator.
 - [x] **Menu bar** (File, Edit, View, Message, Window) with the shortcuts, so actions are
