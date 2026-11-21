@@ -175,7 +175,13 @@ fn main() {
             },
         )
         .expect("window should open");
-        cx.on_window_closed(|cx| cx.quit()).detach();
+        // Quit with the main window. A menu pop-up closing must not end the app.
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.activate(true);
     });
 }

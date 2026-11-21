@@ -154,6 +154,99 @@ fn settle(from: f32, to: f32, start: std::time::Instant) -> f32 {
 
 const SETTLE_SECONDS: f32 = 0.7;
 
+const MENU_WIDTH: f32 = 220.;
+/// Transparent space around the menu inside its window, so its shadow is not cut off.
+const MENU_MARGIN: f32 = 28.;
+
+/// A toolbar menu, shown in a small window of its own (see `Nimbra::toggle_menu`).
+struct MenuPopup {
+    owner: gpui::WeakEntity<Nimbra>,
+    menu: Menu,
+    items: Vec<(&'static str, SharedString, Hsla)>,
+    /// False for a menu that only carries a message (no labels yet).
+    enabled: bool,
+    dark: bool,
+    was_active: bool,
+    _activation: gpui::Subscription,
+}
+
+impl MenuPopup {
+    /// Closes the menu without choosing anything, and tells the owner so a click on the
+    /// menu's own button closes it and does not reopen it straight away.
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let menu = self.menu;
+        self.owner
+            .update(cx, |owner, _| {
+                owner.menu_window = None;
+                owner.menu_dismissed = Some((menu, std::time::Instant::now()));
+            })
+            .ok();
+        window.remove_window();
+    }
+}
+
+impl Render for MenuPopup {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = if self.dark {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        let hover = t.hover;
+        let enabled = self.enabled;
+        div()
+            .size_full()
+            .p(px(MENU_MARGIN))
+            .font_family(crate::theme::SANS)
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(t.text)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .p(px(6.))
+                    .rounded(px(12.))
+                    .bg(t.raised)
+                    .border_1()
+                    .border_color(t.border_strong)
+                    .shadow(vec![shadow(t.shadow, 10., 24., -6.)])
+                    .children(
+                        self.items
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (name, label, tint))| {
+                                div()
+                                    .id(("menu-item", index))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .px(px(10.))
+                                    .py(px(7.))
+                                    .rounded(px(8.))
+                                    .child(icon(name, 16., *tint))
+                                    .child(div().flex_1().child(label.clone()))
+                                    .when(!enabled, |d| d.text_color(t.text3))
+                                    .when(enabled, |d| {
+                                        d.cursor_pointer().hover(move |s| s.bg(hover)).on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                let menu = this.menu;
+                                                window.remove_window();
+                                                this.owner
+                                                    .update(cx, |owner, cx| {
+                                                        owner.menu_choice(menu, index, cx)
+                                                    })
+                                                    .ok();
+                                            }),
+                                        )
+                                    })
+                            }),
+                    ),
+            )
+    }
+}
+
 /// Which composer field an event came from.
 #[derive(Clone, Copy, PartialEq)]
 enum Field {
@@ -188,6 +281,12 @@ pub struct Nimbra {
     search: Entity<TextInput>,
     query: String,
     _search_events: gpui::Subscription,
+    /// The toolbar button under the mouse (what it does, its shortcut). Shown in the strip
+    /// above an email in the original view, where a floating tooltip would be hidden
+    /// behind the native web view.
+    hint: Option<(&'static str, &'static str)>,
+    /// The toolbar menu's own window, while it is open.
+    menu_window: Option<gpui::WindowHandle<MenuPopup>>,
     /// The open toolbar menu, if any.
     menu: Option<Menu>,
     /// The menu a click outside just closed, and when. Lets a click on the menu's own
@@ -299,6 +398,8 @@ impl Nimbra {
             cache: HashMap::new(),
             labels: Vec::new(),
             fetching: false,
+            hint: None,
+            menu_window: None,
             menu: None,
             menu_dismissed: None,
             original: false,
@@ -945,8 +1046,9 @@ impl Nimbra {
     /// always sits on top of everything GPUI paints.
     fn original_target(&self) -> Option<(String, SharedString)> {
         let ready = matches!(self.status, Status::Demo | Status::Ready);
-        let covered =
-            self.palette || self.compose.is_some() || self.menu.is_some() || self.notice.is_some();
+        // (A toolbar menu does not hide it: the view moves down to make room, see
+        // `original_pane`.)
+        let covered = self.palette || self.compose.is_some() || self.notice.is_some();
         if !self.original
             || !ready
             || covered
@@ -998,7 +1100,163 @@ impl Nimbra {
         view.set_visible(true);
     }
 
-    fn toggle_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
+    fn set_hint(
+        &mut self,
+        hovered: bool,
+        label: &'static str,
+        key: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        if hovered {
+            self.hint = Some((label, key));
+        } else if self.hint.is_some_and(|(current, _)| current == label) {
+            // Only clear our own hint: moving straight to the next button sets its hint
+            // first, and that one must stay.
+            self.hint = None;
+        }
+        cx.notify();
+    }
+
+    /// Opens a toolbar menu as a small borderless window of its own, placed under the
+    /// button. A separate window floats above the email's native web view, so the menu can
+    /// overlap the email without moving or hiding it.
+    fn toggle_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
+        let just_dismissed = self.menu_dismissed.take().is_some_and(|(closed, at)| {
+            closed == menu && at.elapsed() < Duration::from_millis(400)
+        });
+        self.close_menu_window(cx);
+        if just_dismissed {
+            return;
+        }
+        let t = self.theme();
+        let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
+        let items: Vec<(&'static str, SharedString, Hsla)> = match menu {
+            Menu::Labels if self.labels.is_empty() => vec![(
+                "tag",
+                if self.is_demo() {
+                    "Labels need a connected Gmail account.".into()
+                } else {
+                    "You have no labels in Gmail yet.".into()
+                },
+                t.text3,
+            )],
+            Menu::Labels => self
+                .labels
+                .iter()
+                .enumerate()
+                .take(12)
+                .map(|(index, label)| ("tag", short(&label.name, 28), tints[index % tints.len()]))
+                .collect(),
+            Menu::More if self.is_demo() => vec![("inbox", "Mark as unread".into(), t.text2)],
+            Menu::More => vec![
+                ("inbox", "Mark as unread".into(), t.text2),
+                ("link", "Open in Gmail".into(), t.text2),
+            ],
+        };
+        let enabled = !(menu == Menu::Labels && self.labels.is_empty());
+
+        // Where the menu goes, in window coordinates: under its button.
+        let viewport = window.viewport_size();
+        let pane_left = if self.sidebar_open { 236. } else { 0. }
+            + if self.list_open { self.list_width } else { 0. };
+        let (width, height) = (MENU_WIDTH, items.len() as f32 * 32. + 14.);
+        let left = match menu {
+            Menu::Labels => pane_left + 150.,
+            Menu::More => f32::from(viewport.width) - 20. - width,
+        };
+        let origin = window.bounds().origin;
+        let bounds = gpui::Bounds::new(
+            gpui::point(
+                origin.x + px(left - MENU_MARGIN),
+                origin.y + px(50. - MENU_MARGIN),
+            ),
+            gpui::size(px(width + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
+        );
+        let owner = cx.weak_entity();
+        let dark = self.dark;
+        let opened = cx.open_window(
+            gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                titlebar: None,
+                kind: gpui::WindowKind::PopUp,
+                focus: true,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |window, cx| {
+                crate::blur::no_window_shadow(window);
+                cx.new(|cx| {
+                    // Close on any click outside the menu. Polled, because clicks on the
+                    // email's web view or on another app never reach this app's handlers.
+                    cx.spawn_in(window, async move |this, cx| {
+                        loop {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(30))
+                                .await;
+                            let open = this.update_in(cx, |this: &mut MenuPopup, window, cx| {
+                                if crate::blur::mouse_pressed_outside(window, MENU_MARGIN as f64) {
+                                    this.dismiss(window, cx);
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
+                            if !matches!(open, Ok(true)) {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                    MenuPopup {
+                        owner,
+                        menu,
+                        items,
+                        enabled,
+                        dark,
+                        was_active: false,
+                        // Losing focus (switching apps with the keyboard, say) closes it too.
+                        _activation: cx.observe_window_activation(
+                            window,
+                            |this: &mut MenuPopup, window, cx| {
+                                if window.is_window_active() {
+                                    this.was_active = true;
+                                } else if this.was_active {
+                                    this.dismiss(window, cx);
+                                }
+                            },
+                        ),
+                    }
+                })
+            },
+        );
+        match opened {
+            Ok(handle) => self.menu_window = Some(handle),
+            // No pop-up windows here: fall back to the menu drawn inside the pane.
+            Err(_) => self.show_drawn_menu(menu, cx),
+        }
+    }
+
+    fn close_menu_window(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.menu_window.take() {
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
+        }
+    }
+
+    fn menu_choice(&mut self, menu: Menu, index: usize, cx: &mut Context<Self>) {
+        self.menu_window = None;
+        match (menu, index) {
+            (Menu::Labels, index) => self.apply_label(index, cx),
+            (Menu::More, 0) => self.mark_unread(cx),
+            (Menu::More, _) => self.open_in_gmail(cx),
+        }
+    }
+
+    fn show_drawn_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
         let just_dismissed = self.menu_dismissed.take().is_some_and(|(closed, at)| {
             closed == menu && at.elapsed() < Duration::from_millis(400)
         });
@@ -2801,6 +3059,9 @@ impl Nimbra {
                         icon_button(t, "list")
                             .id("toggle-list")
                             .tooltip(tip(t.dark, "Show or hide message list", "⌘⇧B"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Show or hide message list", "⌘⇧B", cx)
+                            }))
                             .when(!self.list_open, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
                     )
@@ -2810,6 +3071,9 @@ impl Nimbra {
                             button(t, ButtonKind::Primary, "Edit draft", None)
                                 .id("edit-draft")
                                 .tooltip(tip(t.dark, "Open this draft in the editor", ""))
+                                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                    this.set_hint(*hovered, "Open this draft in the editor", "", cx)
+                                }))
                                 .on_click(
                                     cx.listener(|this, _, _, cx| {
                                         this.open_draft(this.selected, cx)
@@ -2823,6 +3087,9 @@ impl Nimbra {
                         icon_button(t, "done")
                             .id("mark-done")
                             .tooltip(tip(t.dark, "Mark done (archive)", "E"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Mark done (archive)", "E", cx)
+                            }))
                             .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
                     )
                     .child(kbd(t, "E"))
@@ -2831,6 +3098,9 @@ impl Nimbra {
                         icon_button(t, "clock")
                             .id("snooze")
                             .tooltip(tip(t.dark, "Snooze", "H"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Snooze", "H", cx)
+                            }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.palette = true;
                                 cx.notify();
@@ -2840,6 +3110,9 @@ impl Nimbra {
                         icon_button(t, "star")
                             .id("star")
                             .tooltip(tip(t.dark, "Star", "S"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Star", "S", cx)
+                            }))
                             .when(m.starred, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
                     )
@@ -2847,15 +3120,21 @@ impl Nimbra {
                         icon_button(t, "tag")
                             .id("label")
                             .tooltip(tip(t.dark, "Add a label", ""))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Add a label", "", cx)
+                            }))
                             .when(self.menu == Some(Menu::Labels), |d| d.bg(t.selected))
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Labels, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_menu(Menu::Labels, window, cx)
+                            })),
                     )
                     .child(
                         icon_button(t, "trash")
                             .id("trash")
                             .tooltip(tip(t.dark, "Move to trash", "⌘⌫"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Move to trash", "⌘⌫", cx)
+                            }))
                             .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
                     )
                     .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
@@ -2863,6 +3142,9 @@ impl Nimbra {
                         icon_button(t, "reply")
                             .id("reply")
                             .tooltip(tip(t.dark, "Reply", "R"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Reply", "R", cx)
+                            }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::Reply, cx)
                             })),
@@ -2871,6 +3153,9 @@ impl Nimbra {
                         icon_button(t, "reply-all")
                             .id("reply-all")
                             .tooltip(tip(t.dark, "Reply all", ""))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Reply all", "", cx)
+                            }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::ReplyAll, cx)
                             })),
@@ -2879,6 +3164,9 @@ impl Nimbra {
                         icon_button(t, "forward")
                             .id("forward")
                             .tooltip(tip(t.dark, "Forward", ""))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Forward", "", cx)
+                            }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::Forward, cx)
                             })),
@@ -2897,6 +3185,14 @@ impl Nimbra {
                         )
                         .id("original")
                         .tooltip(tip(t.dark, "Switch between original and reader view", "V"))
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            this.set_hint(
+                                *hovered,
+                                "Switch between original and reader view",
+                                "V",
+                                cx,
+                            )
+                        }))
                         .when(original, |d| d.bg(t.selected))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
                     )
@@ -2906,22 +3202,31 @@ impl Nimbra {
                         icon_button(t, "up")
                             .id("prev")
                             .tooltip(tip(t.dark, "Previous thread", "K"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Previous thread", "K", cx)
+                            }))
                             .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
                     )
                     .child(
                         icon_button(t, "down")
                             .id("next")
                             .tooltip(tip(t.dark, "Next thread", "J"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Next thread", "J", cx)
+                            }))
                             .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
                     )
                     .child(
                         icon_button(t, "more")
                             .id("more")
                             .tooltip(tip(t.dark, "More actions", ""))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "More actions", "", cx)
+                            }))
                             .when(self.menu == Some(Menu::More), |d| d.bg(t.selected))
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.toggle_menu(Menu::More, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_menu(Menu::More, window, cx)
+                            })),
                     ),
             )
             // Conversation (native reader)
@@ -3289,7 +3594,14 @@ impl Nimbra {
                     .py(px(8.))
                     .border_b_1()
                     .border_color(t.border)
-                    .child(icon("image", 15., t.text3))
+                    .when_some(self.hint, |d, (label, key)| {
+                        // Hovering a toolbar button explains it here.
+                        d.child(div().font_weight(FontWeight::MEDIUM).child(label))
+                            .when(!key.is_empty(), |d| d.child(kbd(t, key)))
+                            .child(div().flex_1())
+                    })
+                    .when(self.hint.is_none(), |d| {
+                        d.child(icon("image", 15., t.text3))
                     .child(
                         meta(
                             if self.original_images {
@@ -3301,6 +3613,7 @@ impl Nimbra {
                         )
                         .flex_1(),
                     )
+                    })
                     .child(
                         button(
                             t,
