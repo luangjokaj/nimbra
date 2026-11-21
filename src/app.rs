@@ -11270,11 +11270,14 @@ impl Nimbra {
                         .child(
                             gpui::canvas(
                                 move |bounds, _, _| {
+                                    // Floating, the editor (a native view) leaves the card's
+                                    // side edges free for resizing.
+                                    let inset = if full { 0. } else { 6. };
                                     if let Some(editor) = &editor {
                                         editor.set_bounds(
-                                            f32::from(bounds.origin.x),
+                                            f32::from(bounds.origin.x) + inset,
                                             f32::from(bounds.origin.y),
-                                            f32::from(bounds.size.width),
+                                            f32::from(bounds.size.width) - 2. * inset,
                                             f32::from(bounds.size.height),
                                         );
                                     }
@@ -11420,8 +11423,11 @@ impl Nimbra {
             // Every edge and corner resizes the floating card (no visible grip).
             .when(!full, |d| {
                 use gpui::CursorStyle as C;
+                // Each handle reaches a little past the card (where the mouse also comes to
+                // the app over a message window's email) and a little inside it.
                 const EDGE: f32 = 6.;
                 const CORNER: f32 = 16.;
+                const OUT: f32 = 8.;
                 let handles: [(i8, i8, C); 8] = [
                     (-1, -1, C::ResizeUpLeftDownRight),
                     (1, 1, C::ResizeUpLeftDownRight),
@@ -11437,21 +11443,21 @@ impl Nimbra {
                     let corner = hx != 0 && hy != 0;
                     let mut h = div().absolute().cursor(cursor);
                     h = match hx {
-                        -1 => h.left(px(-EDGE / 2.)),
-                        1 => h.right(px(-EDGE / 2.)),
+                        -1 => h.left(px(-OUT)),
+                        1 => h.right(px(-OUT)),
                         _ => h.left(px(CORNER)).right(px(CORNER)),
                     };
                     h = match hy {
-                        -1 => h.top(px(-EDGE / 2.)),
-                        1 => h.bottom(px(-EDGE / 2.)),
+                        -1 => h.top(px(-OUT)),
+                        1 => h.bottom(px(-OUT)),
                         _ => h.top(px(CORNER)).bottom(px(CORNER)),
                     };
                     if corner {
-                        h = h.size(px(CORNER));
+                        h = h.size(px(CORNER + OUT));
                     } else if hx == 0 {
-                        h = h.h(px(EDGE));
+                        h = h.h(px(EDGE + OUT));
                     } else {
-                        h = h.w(px(EDGE));
+                        h = h.w(px(EDGE + OUT));
                     }
                     h.on_mouse_down(
                         MouseButton::Left,

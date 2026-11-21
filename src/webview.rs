@@ -47,6 +47,10 @@ mod platform {
 
     pub struct HtmlView {
         view: WebView,
+        /// Where the view is (window points), and the hole cut in it, as last applied.
+        frame: std::cell::Cell<(f32, f32, f32, f32)>,
+        hole: std::cell::Cell<Option<(f32, f32, f32, f32)>>,
+        applied: std::cell::Cell<Option<((f32, f32, f32, f32), Option<(f32, f32, f32, f32)>)>>,
     }
 
     impl HtmlView {
@@ -77,8 +81,44 @@ mod platform {
                 })
                 .build_as_child(window)
                 .ok()?;
-            Some(Self { view })
+            Some(Self {
+                view,
+                frame: std::cell::Cell::new((0., 0., 0., 0.)),
+                hole: std::cell::Cell::new(None),
+                applied: std::cell::Cell::new(None),
+            })
         }
+
+        /// Leaves a rounded hole in the view (window points) where something of the app's
+        /// own sits on top of the email, such as a floating reply: the app shows through it
+        /// and clicks there reach the app. `None` closes it.
+        pub fn set_hole(&self, hole: Option<(f32, f32, f32, f32)>) {
+            self.hole.set(hole);
+            self.apply_hole();
+        }
+
+        #[cfg(target_os = "macos")]
+        fn apply_hole(&self) {
+            use wry::WebViewExtMacOS as _;
+            let state = (self.frame.get(), self.hole.get());
+            if self.applied.get() == Some(state) {
+                return;
+            }
+            self.applied.set(Some(state));
+            let (frame, hole) = state;
+            // In the view's own coordinates, from its top-left corner.
+            let local = hole.and_then(|(x, y, w, h)| {
+                let (x, y) = (x - frame.0, y - frame.1);
+                (w > 0. && h > 0. && x < frame.2 && y < frame.3 && x + w > 0. && y + h > 0.)
+                    .then_some((x as f64, y as f64, w as f64, h as f64))
+            });
+            let webview = self.view.webview();
+            // SAFETY: main thread, live WKWebView; see `hole::set`.
+            unsafe { hole::set(&*webview as *const _ as *mut objc::runtime::Object, local) };
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        fn apply_hole(&self) {}
 
         pub fn show(&self, body: &str, images: bool) {
             let _ = self.view.load_html(&document(body, images));
@@ -86,6 +126,10 @@ mod platform {
 
         /// Position and size in window points.
         pub fn set_bounds(&self, x: f32, y: f32, width: f32, height: f32) {
+            self.frame.set((x, y, width, height));
+            if self.hole.get().is_some() || self.applied.get().is_some_and(|(_, h)| h.is_some()) {
+                self.apply_hole();
+            }
             let _ = self.view.set_bounds(Rect {
                 position: LogicalPosition::new(x as f64, y as f64).into(),
                 size: LogicalSize::new(width.max(1.) as f64, height.max(1.) as f64).into(),
@@ -94,6 +138,11 @@ mod platform {
 
         pub fn set_visible(&self, visible: bool) {
             let _ = self.view.set_visible(visible);
+            // A hidden view keeps no hole (its click-through view would block the app).
+            if !visible && self.applied.get().is_some_and(|(_, hole)| hole.is_some()) {
+                self.hole.set(None);
+                self.apply_hole();
+            }
         }
 
         /// Opens the system print panel for what the view shows.
@@ -143,6 +192,223 @@ mod platform {
         }
     }
 
+    /// The hole: a mask on the web view's layer (even-odd, so the rounded rectangle is left
+    /// out), and an empty view laid over it. That view handles no events itself, so AppKit
+    /// passes clicks and scrolls there up to its superview, the app's own view.
+    #[cfg(target_os = "macos")]
+    #[allow(unexpected_cfgs)]
+    mod hole {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        use std::ffi::c_void;
+
+        use objc::declare::ClassDecl;
+        use objc::runtime::{Class, Object, Sel};
+        use objc::{Encode, Encoding, class, msg_send, sel, sel_impl};
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Point {
+            x: f64,
+            y: f64,
+        }
+        unsafe impl Encode for Point {
+            fn encode() -> Encoding {
+                // SAFETY: the encoding of CGPoint / NSPoint on 64-bit macOS.
+                unsafe { Encoding::from_str("{CGPoint=dd}") }
+            }
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Size {
+            width: f64,
+            height: f64,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct CgRect {
+            origin: Point,
+            size: Size,
+        }
+        unsafe impl Encode for CgRect {
+            fn encode() -> Encoding {
+                // SAFETY: the encoding of CGRect / NSRect on 64-bit macOS.
+                unsafe { Encoding::from_str("{CGRect={CGPoint=dd}{CGSize=dd}}") }
+            }
+        }
+
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGPathCreateMutable() -> *mut c_void;
+            fn CGPathAddRect(path: *mut c_void, transform: *const c_void, rect: CgRect);
+            fn CGPathAddRoundedRect(
+                path: *mut c_void,
+                transform: *const c_void,
+                rect: CgRect,
+                corner_width: f64,
+                corner_height: f64,
+            );
+            fn CGPathRelease(path: *mut c_void);
+        }
+
+        thread_local! {
+            /// The empty view over each web view's hole (retained by its superview).
+            static SHIELDS: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
+        }
+
+        /// An empty view whose hit test answers with its superview (the app's own view), so
+        /// every mouse event over it goes straight to the app, as if the web view under it
+        /// were not there.
+        fn pass_through_class() -> &'static Class {
+            if let Some(class) = Class::get("NimbraPassThroughView") {
+                return class;
+            }
+            extern "C" fn hit_test(this: &Object, _: Sel, point: Point) -> *mut Object {
+                // SAFETY: AppKit calls this on the main thread with a live view; `point` is in
+                // the superview's coordinates, like the view's frame.
+                unsafe {
+                    let hidden: bool = msg_send![this, isHidden];
+                    let frame: CgRect = msg_send![this, frame];
+                    let inside = point.x >= frame.origin.x
+                        && point.x < frame.origin.x + frame.size.width
+                        && point.y >= frame.origin.y
+                        && point.y < frame.origin.y + frame.size.height;
+                    if hidden || !inside {
+                        return std::ptr::null_mut();
+                    }
+                    msg_send![this, superview]
+                }
+            }
+            let mut decl =
+                ClassDecl::new("NimbraPassThroughView", class!(NSView)).expect("class name free");
+            // SAFETY: the signature matches -[NSView hitTest:] (NSPoint in, NSView out).
+            unsafe {
+                decl.add_method(
+                    sel!(hitTest:),
+                    hit_test as extern "C" fn(&Object, Sel, Point) -> *mut Object,
+                );
+            }
+            decl.register()
+        }
+
+        fn rect(x: f64, y: f64, width: f64, height: f64) -> CgRect {
+            CgRect {
+                origin: Point { x, y },
+                size: Size { width, height },
+            }
+        }
+
+        /// Takes the view's click-through view away (when the web view goes).
+        ///
+        /// # Safety
+        /// Main thread only.
+        pub(super) unsafe fn remove(view: *mut Object) {
+            if let Some(shield) = SHIELDS.with(|s| s.borrow_mut().remove(&(view as usize))) {
+                unsafe {
+                    let _: () = msg_send![shield as *mut Object, removeFromSuperview];
+                }
+            }
+        }
+
+        /// Opens (`Some`, top-left-origin view coordinates) or closes the hole.
+        ///
+        /// # Safety
+        /// Main thread only, with a live WKWebView inside the app's view.
+        pub(super) unsafe fn set(view: *mut Object, hole: Option<(f64, f64, f64, f64)>) {
+            unsafe {
+                let key = view as usize;
+                let _: () = msg_send![view, setWantsLayer: true];
+                let layer: *mut Object = msg_send![view, layer];
+                let superview: *mut Object = msg_send![view, superview];
+                let shield = SHIELDS
+                    .with(|s| s.borrow().get(&key).copied())
+                    .map(|p| p as *mut Object);
+                let Some((x, y, w, h)) = hole else {
+                    if !layer.is_null() {
+                        let nil: *mut Object = std::ptr::null_mut();
+                        let _: () = msg_send![layer, setMask: nil];
+                    }
+                    if let Some(shield) = shield {
+                        let _: () = msg_send![shield, setHidden: true];
+                    }
+                    return;
+                };
+                // The mask, in the layer's coordinates (from the bottom unless flipped).
+                let bounds: CgRect = msg_send![view, bounds];
+                if !layer.is_null() {
+                    let flipped: bool = msg_send![layer, isGeometryFlipped];
+                    let my = if flipped {
+                        y
+                    } else {
+                        bounds.size.height - y - h
+                    };
+                    let path = CGPathCreateMutable();
+                    CGPathAddRect(path, std::ptr::null(), bounds);
+                    CGPathAddRoundedRect(path, std::ptr::null(), rect(x, my, w, h), 18., 18.);
+                    let mask: *mut Object = msg_send![class!(CAShapeLayer), layer];
+                    let _: () = msg_send![mask, setFrame: bounds];
+                    let _: () = msg_send![mask, setPath: path];
+                    let rule: *mut Object =
+                        msg_send![class!(NSString), stringWithUTF8String: c"even-odd".as_ptr()];
+                    let _: () = msg_send![mask, setFillRule: rule];
+                    let _: () = msg_send![layer, setMask: mask];
+                    CGPathRelease(path);
+                }
+                // The empty view over the hole, in the superview's coordinates.
+                if superview.is_null() {
+                    return;
+                }
+                let frame: CgRect = msg_send![view, frame];
+                let parent_flipped: bool = msg_send![superview, isFlipped];
+                let view_flipped: bool = msg_send![view, isFlipped];
+                // Top-left of the hole within the superview.
+                let top = if view_flipped || !parent_flipped {
+                    // Convert from the view's top-left space to the superview's.
+                    if parent_flipped {
+                        frame.origin.y + y
+                    } else {
+                        frame.origin.y + frame.size.height - y - h
+                    }
+                } else {
+                    frame.origin.y + y
+                };
+                // A little wider than the hole, so whatever sits on top can be grabbed at its
+                // very edge (the email still shows there; only the mouse goes to the app).
+                const REACH: f64 = 8.;
+                let target = rect(
+                    frame.origin.x + x - REACH,
+                    top - REACH,
+                    w + 2. * REACH,
+                    h + 2. * REACH,
+                );
+                let shield = match shield {
+                    Some(shield) => shield,
+                    None => {
+                        let shield: *mut Object = msg_send![pass_through_class(), alloc];
+                        let shield: *mut Object = msg_send![shield, initWithFrame: target];
+                        // NSWindowAbove = 1: just above the web view.
+                        let _: () = msg_send![superview, addSubview: shield positioned: 1isize relativeTo: view];
+                        let _: () = msg_send![shield, release];
+                        SHIELDS.with(|s| s.borrow_mut().insert(key, shield as usize));
+                        shield
+                    }
+                };
+                let _: () = msg_send![shield, setFrame: target];
+                let _: () = msg_send![shield, setHidden: false];
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for HtmlView {
+        fn drop(&mut self) {
+            use wry::WebViewExtMacOS as _;
+            let webview = self.view.webview();
+            // SAFETY: main thread, live WKWebView; see `hole::remove`.
+            unsafe { hole::remove(&*webview as *const _ as *mut objc::runtime::Object) };
+        }
+    }
+
     /// Hands a checked link to the system, as a plain argument (never through a shell).
     fn open_in_browser(link: &str) {
         #[cfg(target_os = "macos")]
@@ -168,6 +434,7 @@ mod platform {
         pub fn show(&self, _body: &str, _images: bool) {}
         pub fn set_bounds(&self, _x: f32, _y: f32, _width: f32, _height: f32) {}
         pub fn set_visible(&self, _visible: bool) {}
+        pub fn set_hole(&self, _hole: Option<(f32, f32, f32, f32)>) {}
         pub fn set_dark(&self, _dark: bool) {}
         pub fn print(&self) {}
     }

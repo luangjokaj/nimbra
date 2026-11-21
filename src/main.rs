@@ -149,6 +149,22 @@ fn main() {
         cx.on_action(|_: &HideApp, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+        // ⌘Q from any window. ⌘W in a window other than the main one (a message, a
+        // composer, Settings) closes it; the main window handles its own ⌘W (it hides).
+        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &HideWindow, cx| {
+            let main = MAIN_WINDOW.with(|main| main.get());
+            if let Some(window) = cx.active_window()
+                && Some(window) != main
+            {
+                // After this key press is handled: the window is busy dispatching it now.
+                cx.defer(move |cx| {
+                    window
+                        .update(cx, |_, window, _| window.remove_window())
+                        .ok();
+                });
+            }
+        });
         // Single-letter shortcuts belong to the mail view only, so they never fire while
         // you are typing in the composer.
         let mail = Some("Mail && !TextInput");

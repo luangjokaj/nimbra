@@ -145,16 +145,24 @@ impl Render for MessageWindow {
         window.set_window_title(&m.subject);
         // A reply written here covers the message (and its web view, which is native).
         let compose = self.owner.update(cx, |n, cx| n.hosted_compose(window, cx));
-        if compose.is_some() {
+        // A reply floating here: the email's web view (native, so above everything the app
+        // draws) keeps showing, with a hole where the reply is. A full-page reply hides it.
+        let reply_rect = self.owner.read(cx).compose.as_ref().and_then(|c| {
+            let (x, y) = c.position?;
+            (!c.full).then_some((x, y, c.size.0, c.size.1))
+        });
+        let full_reply = compose.is_some() && reply_rect.is_none();
+        if full_reply {
             if let Some(view) = &self.html_view {
                 view.set_visible(false);
             }
         } else {
             self.sync_web_view(&m, dark, images, window);
+            if let Some(view) = &self.html_view {
+                view.set_hole(if compose.is_some() { reply_rect } else { None });
+            }
         }
-        // While a reply floats here the email shows in the reader (drawn by the app, so the
-        // reply can sit on top of it; the original's web view is native and would cover it).
-        let original = self.original && m.html.is_some() && compose.is_none();
+        let original = self.original && m.html.is_some();
         let width = f32::from(window.viewport_size().width);
 
         let tool = |name: &'static str, label: &'static str, id: usize| {
