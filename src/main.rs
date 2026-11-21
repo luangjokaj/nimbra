@@ -80,6 +80,10 @@ static ICONS: &[(&str, &[u8])] = icons![
     "numbers",
     "quote",
     "clear-format",
+    "folder",
+    "ban",
+    "archive",
+    "pulse",
 ];
 
 struct Assets;

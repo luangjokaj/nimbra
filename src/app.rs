@@ -168,8 +168,18 @@ enum Menu {
     More,
     /// Times to send the open composer's message at.
     SendLater,
+    /// Inbox, a label or Spam, for the open thread.
+    MoveTo,
     /// The right-click menu of a row in the list (by index into the loaded threads).
     Row(usize),
+}
+
+/// Where Move to sends the open thread.
+#[derive(Clone, PartialEq)]
+enum MoveTarget {
+    Inbox,
+    Label(String),
+    Spam,
 }
 
 /// What the mouse is doing to the floating composer.
@@ -644,6 +654,16 @@ pub struct Nimbra {
     schedule_watch: bool,
     /// The times offered by the open Send later menu.
     send_later_times: Vec<i64>,
+    /// The next page of the open mailbox, when Gmail has more.
+    next_page: Option<String>,
+    loading_more: bool,
+    /// Threads moved out of the inbox to a label, so Undo can take the label off again.
+    moved: HashMap<String, String>,
+    /// The New label sheet's name field, while it is open.
+    new_label: Option<Entity<TextInput>>,
+    _new_label_subscription: Option<gpui::Subscription>,
+    /// What each item of the open Move to menu does.
+    move_targets: Vec<MoveTarget>,
     /// A thread to open once it appears in the list (from a clicked notification).
     open_when_listed: Option<String>,
     /// A background fetch of thread contents is running.
@@ -783,18 +803,29 @@ impl Nimbra {
             } else {
                 Status::SignedOut
             },
-            // NIMBRA_MAILBOX=sent (or starred, snoozed, drafts, done) opens that mailbox first.
+            // NIMBRA_MAILBOX=sent (or starred, snoozed, drafts, done, all, important, spam, trash)
+            // opens that mailbox first.
             mailbox: match std::env::var("NIMBRA_MAILBOX").as_deref() {
                 Ok("starred") => View::Starred,
                 Ok("snoozed") => View::Snoozed,
                 Ok("drafts") => View::Drafts,
                 Ok("sent") => View::Sent,
                 Ok("done") => View::Done,
+                Ok("all") => View::AllMail,
+                Ok("important") => View::Important,
+                Ok("spam") => View::Spam,
+                Ok("trash") => View::Trash,
                 _ => View::Inbox,
             },
             cache: HashMap::new(),
             prefetching: false,
             open_when_listed: None,
+            next_page: None,
+            loading_more: false,
+            moved: HashMap::new(),
+            new_label: None,
+            _new_label_subscription: None,
+            move_targets: Vec::new(),
             editor: None,
             editor_failed: false,
             editor_ready: false,
@@ -983,6 +1014,10 @@ impl Nimbra {
             View::Drafts => "Drafts".into(),
             View::Sent => "Sent".into(),
             View::Done => "Done".into(),
+            View::AllMail => "All Mail".into(),
+            View::Important => "Important".into(),
+            View::Spam => "Spam".into(),
+            View::Trash => "Trash".into(),
             View::Search => "Search".into(),
             View::Label(index) => self
                 .labels
@@ -1635,7 +1670,8 @@ impl Nimbra {
                     // Read the history point first, so nothing that changes during the
                     // fetch is missed by the next sync.
                     let (email, history_id) = client.profile()?;
-                    let threads = client.threads(view, label_id.as_deref(), 30)?;
+                    let (threads, next_page) =
+                        client.threads_page(view, label_id.as_deref(), 30, None)?;
                     // Labels are a nicety; the mailbox still loads without them.
                     let labels = need_labels.then(|| client.labels().unwrap_or_default());
                     // Sidebar counts: the system mailboxes plus the labels that are listed.
@@ -1654,7 +1690,7 @@ impl Nimbra {
                         None => known_labels.into_iter().take(8).collect::<Vec<_>>(),
                     });
                     let counts = client.counts(&ids);
-                    anyhow::Ok((email, history_id, threads, labels, counts))
+                    anyhow::Ok((email, history_id, threads, labels, counts, next_page))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1664,7 +1700,8 @@ impl Nimbra {
                 }
                 this.fetching = false;
                 match result {
-                    Ok((email, history_id, threads, labels, counts)) => {
+                    Ok((email, history_id, threads, labels, counts, next_page)) => {
+                        this.next_page = next_page;
                         if view.holds(&[], None).is_some() {
                             this.synced_to.insert(record(view), history_id);
                         }
@@ -2264,8 +2301,11 @@ impl Nimbra {
     fn original_target(&self) -> Option<(String, SharedString)> {
         let ready = matches!(self.status, Status::Demo | Status::Ready);
         // (A toolbar menu does not hide it: menus open in a window of their own, above it.)
-        let covered =
-            self.palette || self.compose.is_some() || self.notice.is_some() || self.settings_open;
+        let covered = self.palette
+            || self.compose.is_some()
+            || self.notice.is_some()
+            || self.settings_open
+            || self.new_label.is_some();
         if !self.original
             || !ready
             || covered
@@ -2348,13 +2388,9 @@ impl Nimbra {
         let t = self.theme();
         let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
         let items: Vec<(&'static str, SharedString, Hsla)> = match menu {
-            Menu::Labels if self.labels.is_empty() => vec![(
+            Menu::Labels if self.is_demo() => vec![(
                 "tag",
-                if self.is_demo() {
-                    "Labels need a connected Gmail account.".into()
-                } else {
-                    "You have no labels in Gmail yet.".into()
-                },
+                "Labels need a connected Gmail account.".into(),
                 t.text3,
             )],
             Menu::Labels => self
@@ -2363,7 +2399,55 @@ impl Nimbra {
                 .enumerate()
                 .take(12)
                 .map(|(index, label)| ("tag", short(&label.name, 28), tints[index % tints.len()]))
+                .chain(std::iter::once(("tag", "New label…".into(), t.text2)))
                 .collect(),
+            Menu::MoveTo => {
+                let mut targets = Vec::new();
+                if matches!(
+                    self.mailbox,
+                    View::Done
+                        | View::Spam
+                        | View::Trash
+                        | View::Label(_)
+                        | View::Starred
+                        | View::Important
+                        | View::AllMail
+                        | View::Search
+                ) {
+                    targets.push(MoveTarget::Inbox);
+                }
+                targets.extend(
+                    self.labels
+                        .iter()
+                        .take(12)
+                        .map(|l| MoveTarget::Label(l.id.clone())),
+                );
+                if self.mailbox != View::Spam && !self.is_demo() {
+                    targets.push(MoveTarget::Spam);
+                }
+                let items = targets
+                    .iter()
+                    .map(|target| match target {
+                        MoveTarget::Inbox => ("inbox", "Inbox".into(), t.text2),
+                        MoveTarget::Spam => ("ban", "Spam".into(), t.text2),
+                        MoveTarget::Label(id) => {
+                            let index = self.labels.iter().position(|l| &l.id == id).unwrap_or(0);
+                            let name = self
+                                .labels
+                                .get(index)
+                                .map(|l| l.name.clone())
+                                .unwrap_or_default();
+                            ("folder", short(&name, 28), tints[index % tints.len()])
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                self.move_targets = targets;
+                if items.is_empty() {
+                    vec![("folder", "Nowhere to move this to yet.".into(), t.text3)]
+                } else {
+                    items
+                }
+            }
             Menu::SendLater => {
                 let choices = Self::send_later_choices();
                 self.send_later_times = choices.iter().map(|(_, at)| *at).collect();
@@ -2422,7 +2506,8 @@ impl Nimbra {
                 items
             }
         };
-        let enabled = !(menu == Menu::Labels && self.labels.is_empty());
+        let enabled = !(menu == Menu::Labels && self.is_demo())
+            && !(menu == Menu::MoveTo && self.move_targets.is_empty());
 
         // Where the menu goes, in window coordinates: under its button.
         let viewport = window.viewport_size();
@@ -2431,6 +2516,7 @@ impl Nimbra {
         let (width, height) = (MENU_WIDTH, items.len() as f32 * 32. + 14.);
         let (left, top) = match menu {
             Menu::Labels => (pane_left + 150., 50.),
+            Menu::MoveTo => (pane_left + 186., 50.),
             Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
             // Above the composer's Send later button.
             Menu::SendLater => {
@@ -2553,7 +2639,13 @@ impl Nimbra {
     fn menu_choice(&mut self, menu: Menu, index: usize, cx: &mut Context<Self>) {
         self.menu_window = None;
         match (menu, index) {
+            (Menu::Labels, index) if index == self.labels.len().min(12) => self.open_new_label(cx),
             (Menu::Labels, index) => self.apply_label(index, cx),
+            (Menu::MoveTo, index) => {
+                if let Some(target) = self.move_targets.get(index).cloned() {
+                    self.move_selected(target, cx);
+                }
+            }
             (Menu::More, 0) => self.mark_unread(cx),
             (Menu::More, 1) => self.open_in_gmail(cx),
             (Menu::More, _) => self.remove_selected(gmail::Change::Spam, cx),
@@ -2582,9 +2674,279 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// "Load more" at the end of the list: the next page of the mailbox.
+    fn load_more(&mut self, cx: &mut Context<Self>) {
+        let (Some(client), Some(page)) = (self.gmail.clone(), self.next_page.clone()) else {
+            return;
+        };
+        if self.loading_more {
+            return;
+        }
+        self.loading_more = true;
+        cx.notify();
+        let view = self.mailbox;
+        let label_id = match view {
+            View::Label(index) => self.labels.get(index).map(|label| label.id.clone()),
+            View::Search => Some(self.query.clone()),
+            _ => None,
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { client.threads_page(view, label_id.as_deref(), 30, Some(&page)) },
+                )
+                .await;
+            this.update(cx, |this, cx| {
+                this.loading_more = false;
+                if this.mailbox != view {
+                    return;
+                }
+                match result {
+                    Ok((threads, next)) => {
+                        this.next_page = next;
+                        let known: HashSet<String> =
+                            this.mails.iter().filter_map(|m| m.id.clone()).collect();
+                        let fresh: Vec<Mail> = threads
+                            .into_iter()
+                            .filter(|s| !known.contains(&s.id))
+                            .map(Mail::from_summary)
+                            .collect();
+                        this.done.extend(std::iter::repeat_n(false, fresh.len()));
+                        this.mails.extend(fresh);
+                        this.cache.insert(this.mailbox, this.mails.clone());
+                        this.persist(cx);
+                    }
+                    Err(error) => this.fail(error, cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The user labels on a thread, with their position in the label list (for a tint).
+    fn thread_labels(&self, mail: &Mail) -> Vec<(usize, gmail::Label)> {
+        self.labels
+            .iter()
+            .enumerate()
+            .filter(|(_, label)| mail.labels.iter().any(|id| *id == label.id))
+            .map(|(index, label)| {
+                (
+                    index,
+                    gmail::Label {
+                        id: label.id.clone(),
+                        name: label.name.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Takes a label off the open thread.
+    fn remove_label(&mut self, label_id: String, cx: &mut Context<Self>) {
+        let Some(mail) = self.mails.get_mut(self.selected) else {
+            return;
+        };
+        mail.labels.retain(|id| *id != label_id);
+        let (Some(client), Some(id)) = (self.gmail.clone(), mail.id.clone()) else {
+            cx.notify();
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { client.remove_label(&id, &label_id) })
+                .await;
+            if let Err(error) = result {
+                this.update(cx, |this, cx| this.fail(error, cx)).ok();
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Opens the New label sheet.
+    fn open_new_label(&mut self, cx: &mut Context<Self>) {
+        if self.gmail.is_none() {
+            self.notice = Some("Labels need a connected Gmail account.".into());
+            cx.notify();
+            return;
+        }
+        let t = self.theme();
+        let input = cx.new(|cx| TextInput::new(cx, "Label name", t.faint, t.violet));
+        let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Enter) {
+                this.create_label(cx);
+            }
+        });
+        self.pending_focus = Some(input.read(cx).focus_handle(cx));
+        self.new_label = Some(input);
+        self._new_label_subscription = Some(subscription);
+        if let Some(view) = &self.html_view {
+            view.set_visible(false);
+        }
+        cx.notify();
+    }
+
+    fn close_new_label(&mut self, cx: &mut Context<Self>) {
+        self.new_label = None;
+        self._new_label_subscription = None;
+        self.pending_focus = Some(self.focus.clone());
+        cx.notify();
+    }
+
+    /// Creates the label typed in the sheet and puts it on the open thread.
+    fn create_label(&mut self, cx: &mut Context<Self>) {
+        let (Some(input), Some(client)) = (self.new_label.clone(), self.gmail.clone()) else {
+            return;
+        };
+        let name = input.read(cx).text().trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        if let Some(existing) = self
+            .labels
+            .iter()
+            .position(|l| l.name.eq_ignore_ascii_case(&name))
+        {
+            self.close_new_label(cx);
+            self.apply_label(existing, cx);
+            return;
+        }
+        self.close_new_label(cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { client.create_label(&name) })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(label) => {
+                    let id = label.id.clone();
+                    this.labels.push(label);
+                    this.labels.sort_by_key(|l| l.name.to_lowercase());
+                    if let Some(index) = this.labels.iter().position(|l| l.id == id) {
+                        this.apply_label(index, cx);
+                    }
+                }
+                Err(error) => this.fail(error, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The New label sheet.
+    fn new_label_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let input = self.new_label.clone();
+        div()
+            .id("new-label-scrim")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(t.scrim)
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.close_new_label(cx)),
+            )
+            .child(
+                div()
+                    .id("new-label")
+                    .w(px(400.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .p(px(22.))
+                    .rounded(px(18.))
+                    .bg(t.raised)
+                    .border_1()
+                    .border_color(t.border_strong)
+                    .shadow(vec![shadow(
+                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
+                        30.,
+                        80.,
+                        -10.,
+                    )])
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(serif("New label", 28., t.text))
+                    .child(
+                        div()
+                            .px(px(12.))
+                            .py(px(8.))
+                            .rounded(px(10.))
+                            .bg(t.hover)
+                            .border_1()
+                            .border_color(t.border)
+                            .text_size(px(14.))
+                            .children(input),
+                    )
+                    .child(meta(
+                        "It is added to this conversation and to Gmail’s label list.",
+                        t.text3,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                button(t, ButtonKind::Ghost, "Cancel", None)
+                                    .id("label-cancel")
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.close_new_label(cx)),
+                                    ),
+                            )
+                            .child(
+                                button(t, ButtonKind::Primary, "Create", Some("↵"))
+                                    .id("label-create")
+                                    .on_click(cx.listener(|this, _, _, cx| this.create_label(cx))),
+                            ),
+                    ),
+            )
+    }
+
+    /// Move to: back to the inbox, into a label (out of the inbox), or to Spam.
+    fn move_selected(&mut self, target: MoveTarget, cx: &mut Context<Self>) {
+        let inbox_like = matches!(
+            self.mailbox,
+            View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social
+        );
+        match target {
+            MoveTarget::Spam => self.remove_selected(gmail::Change::Spam, cx),
+            MoveTarget::Inbox => match self.mailbox {
+                View::Spam => self.remove_selected(gmail::Change::NotSpam, cx),
+                View::Trash => self.remove_selected(gmail::Change::Untrash, cx),
+                _ => self.remove_selected(gmail::Change::Unarchive, cx),
+            },
+            MoveTarget::Label(label_id) => {
+                let Some(index) = self.labels.iter().position(|l| l.id == label_id) else {
+                    return;
+                };
+                let thread = self.mails.get(self.selected).and_then(|m| m.id.clone());
+                self.apply_label(index, cx);
+                if inbox_like {
+                    if let Some(thread) = thread {
+                        self.moved.insert(thread, label_id);
+                    }
+                    self.remove_selected(gmail::Change::Archive, cx);
+                }
+            }
+        }
+    }
+
     /// Adds one of the user's labels to the open thread.
     fn apply_label(&mut self, label: usize, cx: &mut Context<Self>) {
         self.menu = None;
+        if let (Some(label), Some(mail)) =
+            (self.labels.get(label), self.mails.get_mut(self.selected))
+            && !mail.labels.contains(&label.id)
+        {
+            mail.labels.push(label.id.clone());
+        }
         let (Some(label), Some(mail)) = (
             self.labels.get(label).cloned(),
             self.mails.get(self.selected),
@@ -4516,6 +4878,8 @@ impl Nimbra {
                 gmail::Change::Archive
             }
             View::Done => gmail::Change::Unarchive,
+            View::Spam => gmail::Change::NotSpam,
+            View::Trash => gmail::Change::Untrash,
             _ => return,
         };
         self.remove_selected(change, cx);
@@ -4551,6 +4915,7 @@ impl Nimbra {
                 gmail::Change::Trash => "Moved to trash",
                 gmail::Change::Unarchive | gmail::Change::NotSpam => "Moved to inbox",
                 gmail::Change::Spam => "Reported as spam",
+                gmail::Change::Untrash => "Restored",
                 _ => "Marked done",
             },
             cx,
@@ -4650,6 +5015,18 @@ impl Nimbra {
         if let Some(inverse) = change.inverse() {
             self.sync(index, inverse, false, cx);
         }
+        if let Some(thread) = self.mails[index].id.clone()
+            && let Some(label) = self.moved.remove(&thread)
+        {
+            self.mails[index].labels.retain(|id| *id != label);
+            if let Some(client) = self.gmail.clone() {
+                cx.background_executor()
+                    .spawn(async move {
+                        let _ = client.remove_label(&thread, &label);
+                    })
+                    .detach();
+            }
+        }
         self.load_selected(cx);
         cx.notify();
     }
@@ -4730,6 +5107,10 @@ fn view_key(view: View) -> usize {
         View::Sent => 8,
         View::Done => 9,
         View::Search => 10,
+        View::AllMail => 11,
+        View::Important => 12,
+        View::Spam => 13,
+        View::Trash => 14,
         View::Label(index) => 100 + index,
     }
 }
@@ -4995,6 +5376,7 @@ impl Nimbra {
             })
             .child(section(t, "MAILBOX"))
             .child(mailbox(View::Starred, "star", None))
+            .when(!demo, |d| d.child(mailbox(View::Important, "pulse", None)))
             .child(mailbox(View::Snoozed, "clock", fake("3")))
             .child(nav(t, "bell", "Reminders", fake("2"), false, None))
             .child(mailbox(
@@ -5008,6 +5390,11 @@ impl Nimbra {
                 "done",
                 (!self.history.is_empty()).then(|| self.history.len().to_string()),
             ))
+            .when(!demo, |d| {
+                d.child(mailbox(View::AllMail, "archive", None))
+                    .child(mailbox(View::Spam, "ban", None))
+                    .child(mailbox(View::Trash, "trash", None))
+            })
             .child(section(t, "LABELS"))
             .when(demo, |d| {
                 d.child(nav(t, "tag", "Product", None, false, Some(t.violet)))
@@ -5140,7 +5527,23 @@ impl Nimbra {
         // with an ellipsis by character count, so this follows the resize handle).
         let line = ((self.list_width - 116.) / 7.4).max(8.) as usize;
         // On a narrow list the tag gives way so the sender's name stays readable.
-        let tag = m.tag.clone().filter(|_| line >= 36);
+        let tag = m
+            .tag
+            .clone()
+            .or_else(|| {
+                let accents = [
+                    Accent::Violet,
+                    Accent::Rose,
+                    Accent::Amber,
+                    Accent::Sky,
+                    Accent::Mint,
+                ];
+                self.thread_labels(m)
+                    .into_iter()
+                    .next()
+                    .map(|(index, label)| (short(&label.name, 18), accents[index % accents.len()]))
+            })
+            .filter(|_| line >= 36);
         let tag_chars = tag
             .as_ref()
             .map_or(0, |(label, _)| label.chars().count() + 6);
@@ -5426,14 +5829,36 @@ impl Nimbra {
                     .children(today.into_iter().map(|i| self.row(t, i, cx)))
                     .when(!earlier.is_empty(), |d| d.child(group("EARLIER")))
                     .children(earlier.into_iter().map(|i| self.row(t, i, cx)))
-                    .child(div().flex().justify_center().pt(px(18.)).child(meta(
-                        match (self.is_demo(), self.mailbox) {
-                            (true, View::Inbox) => "That’s everything important. 23 more in Other.",
-                            (false, View::Inbox) => "That’s everything in your inbox.",
-                            _ => "That’s the latest here.",
-                        },
-                        t.faint,
-                    ))),
+                    .when(self.next_page.is_some(), |d| {
+                        d.child(
+                            div().flex().justify_center().pt(px(14.)).child(
+                                button(
+                                    t,
+                                    ButtonKind::Secondary,
+                                    if self.loading_more {
+                                        "Loading…"
+                                    } else {
+                                        "Load more"
+                                    },
+                                    None,
+                                )
+                                .id("load-more")
+                                .on_click(cx.listener(|this, _, _, cx| this.load_more(cx))),
+                            ),
+                        )
+                    })
+                    .when(self.next_page.is_none(), |d| {
+                        d.child(div().flex().justify_center().pt(px(18.)).child(meta(
+                            match (self.is_demo(), self.mailbox) {
+                                (true, View::Inbox) => {
+                                    "That’s everything important. 23 more in Other."
+                                }
+                                (false, View::Inbox) => "That’s everything in your inbox.",
+                                _ => "That’s everything here.",
+                            },
+                            t.faint,
+                        )))
+                    }),
             )
     }
 
@@ -5859,6 +6284,17 @@ impl Nimbra {
                             .when(self.menu == Some(Menu::Labels), |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_menu(Menu::Labels, window, cx)
+                            })),
+                    )
+                    .child(
+                        icon_button(t, "folder")
+                            .id("move-to")
+                            .tooltip(tip(t.dark, "Move to", ""))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Move to", "", cx)
+                            }))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_menu(Menu::MoveTo, window, cx)
                             })),
                     )
                     .child(
@@ -6613,11 +7049,88 @@ impl Nimbra {
     /// The Spam warning and the Unsubscribe link for the open thread, when they apply.
     fn thread_banners(&self, t: &Theme, mail: &Mail, cx: &mut Context<Self>) -> Div {
         let spam = mail.labels.iter().any(|l| l == "SPAM");
+        let trash = mail.labels.iter().any(|l| l == "TRASH");
         let unsubscribe = mail.header.unsubscribe.clone();
+        let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
+        let labels = self.thread_labels(mail);
         div()
             .flex()
             .flex_col()
             .gap(px(10.))
+            .when(!labels.is_empty(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(6.))
+                        .children(labels.into_iter().map(|(index, label)| {
+                            let hover = t.hover;
+                            let id = label.id.clone();
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .pl(px(8.))
+                                .pr(px(3.))
+                                .py(px(2.))
+                                .rounded_full()
+                                .bg(t.hover)
+                                .border_1()
+                                .border_color(t.border)
+                                .child(
+                                    div()
+                                        .size(px(6.))
+                                        .rounded_full()
+                                        .bg(tints[index % tints.len()]),
+                                )
+                                .child(meta(short(&label.name, 30), t.text2))
+                                .child(
+                                    div()
+                                        .id(("remove-label", index))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .size(px(16.))
+                                        .rounded_full()
+                                        .cursor_pointer()
+                                        .text_color(t.text3)
+                                        .hover(move |s| s.bg(hover))
+                                        .tooltip(tip(t.dark, "Remove label", ""))
+                                        .child("×")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.remove_label(id.clone(), cx)
+                                        })),
+                                )
+                        })),
+                )
+            })
+            .when(trash, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(14.))
+                        .py(px(8.))
+                        .rounded(px(10.))
+                        .bg(t.hover)
+                        .border_1()
+                        .border_color(t.border)
+                        .child(icon("trash", 15., t.text3))
+                        .child(
+                            div()
+                                .flex_1()
+                                .child("In Trash. Gmail deletes it for good after 30 days."),
+                        )
+                        .child(
+                            button(t, ButtonKind::Secondary, "Restore", None)
+                                .id("restore")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.remove_selected(gmail::Change::Untrash, cx)
+                                })),
+                        ),
+                )
+            })
             .when(spam, |d| {
                 d.child(
                     div()
@@ -6790,8 +7303,8 @@ impl Nimbra {
                 cx.notify();
             }));
         Some(match menu {
-            // Row and Send later menus only exist as pop-up windows.
-            Menu::Row(_) | Menu::SendLater => return None,
+            // Row, Send later and Move to menus only exist as pop-up windows.
+            Menu::Row(_) | Menu::SendLater | Menu::MoveTo => return None,
             Menu::Labels => {
                 let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
                 panel
@@ -7895,6 +8408,8 @@ impl Render for Nimbra {
                     cx.notify();
                 } else if this.settings_open {
                     this.close_settings(cx);
+                } else if this.new_label.is_some() {
+                    this.close_new_label(cx);
                 } else if let Some(composer) = this.compose.as_mut()
                     && composer.suggest.take().is_some()
                 {
@@ -7972,6 +8487,9 @@ impl Render for Nimbra {
                 d.child(self.compose_view(&t, viewport, cx))
             })
             .when(self.settings_open, |d| d.child(self.settings_view(&t, cx)))
+            .when(self.new_label.is_some(), |d| {
+                d.child(self.new_label_view(&t, cx))
+            })
             .when_some(self.notice.clone(), |d, notice| {
                 d.child(
                     div()
