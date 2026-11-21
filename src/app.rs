@@ -959,6 +959,8 @@ pub struct Nimbra {
     settings: crate::settings::Settings,
     /// What was copied last from a message's details, and when (shows "Copied").
     copied: Option<(String, std::time::Instant)>,
+    /// Closing a composer with something in it: asking whether to save it as a draft.
+    compose_ask: bool,
     /// The composer is in a window of its own (detached), so it always fills it.
     compose_detached: bool,
     /// The formatting button under the mouse: its name and keys, shown in the toolbar (a
@@ -1301,6 +1303,7 @@ impl Nimbra {
             compose_host: None,
             format_hint: None,
             compose_detached: false,
+            compose_ask: false,
             editor_window: None,
             copied: None,
             parked: Vec::new(),
@@ -3437,6 +3440,15 @@ impl Nimbra {
 
     /// Creates, fills, shows or hides the message editor to match the composer.
     fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // While asking whether to save, the editor (a native view) steps aside so the
+        // question shows over the composer.
+        if self.compose_ask {
+            if let Some(editor) = &self.editor {
+                editor.set_visible(false);
+                editor.blur();
+            }
+            return;
+        }
         let Some(serial) = self.compose.as_ref().filter(|c| c.rich).map(|c| c.serial) else {
             if self.editor_shown.take().is_some()
                 && let Some(editor) = &self.editor
@@ -3583,7 +3595,7 @@ impl Nimbra {
                 self.pending_focus = Some(self.editor_focus.clone());
             }
             EditorEvent::Up => self.focus_field(Field::Subject, None, cx),
-            EditorEvent::Escape => self.close_compose(cx),
+            EditorEvent::Escape => self.request_close_compose(cx),
             EditorEvent::Send => self.send_mail(cx),
             EditorEvent::Save => self.save_draft(cx),
             EditorEvent::ToggleFull => self.toggle_full_compose(cx),
@@ -4792,7 +4804,14 @@ impl Nimbra {
                     window_min_size: Some(gpui::size(px(520.), px(420.))),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| MessageWindow::new(owner, mail, original, cx)),
+                |window, cx| {
+                    let guard = owner.clone();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        let handle = window.window_handle();
+                        guard.update(cx, |n, cx| n.may_close_window(handle, cx))
+                    });
+                    cx.new(|cx| MessageWindow::new(owner, mail, original, cx))
+                },
             );
             if let Ok(handle) = opened {
                 me.update(cx, |n, _| n.message_windows.push(handle));
@@ -5839,7 +5858,7 @@ impl Nimbra {
                     {
                         cx.notify();
                     } else {
-                        this.close_compose(cx);
+                        this.request_close_compose(cx);
                     }
                 }))
                 .child(self.compose_view(&t, viewport, cx))
@@ -5867,7 +5886,12 @@ impl Nimbra {
                     window_min_size: Some(gpui::size(px(520.), px(420.))),
                     ..Default::default()
                 },
-                |_, cx| {
+                |window, cx| {
+                    let guard = owner.clone();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        let handle = window.window_handle();
+                        guard.update(cx, |n, cx| n.may_close_window(handle, cx))
+                    });
                     cx.new(|cx| ComposeWindow {
                         _observe: cx.observe(&owner, |_, _, cx| cx.notify()),
                         owner,
@@ -6194,7 +6218,51 @@ impl Nimbra {
     }
 
     /// Esc: closes the composer. Its last edits are still saved to Drafts.
+    /// Esc, ⌘W or a window's close button on the composer: asks whether to keep what was
+    /// written as a draft or throw it away. An empty composer just closes; asked again
+    /// (Esc while asking), it goes back to writing.
+    fn request_close_compose(&mut self, cx: &mut Context<Self>) {
+        let Some(composer) = &self.compose else {
+            return;
+        };
+        if self.compose_ask {
+            self.compose_ask = false;
+            self.pending_focus = Some(self.editor_focus.clone());
+        } else if composer.has_content(cx) {
+            self.compose_ask = true;
+        } else {
+            self.close_compose(cx);
+            return;
+        }
+        cx.notify();
+    }
+
+    /// A window's close button or ⌘W: a composer with something in it, shown in that
+    /// window, asks first (false keeps the window open).
+    fn may_close_window(&mut self, window: gpui::AnyWindowHandle, cx: &mut Context<Self>) -> bool {
+        let here = self.compose.is_some() && self.compose_host == Some(window);
+        if here && self.compose.as_ref().is_some_and(|c| c.has_content(cx)) {
+            if !self.compose_ask {
+                self.compose_ask = true;
+                cx.notify();
+            }
+            return false;
+        }
+        true
+    }
+
+    /// The answer to "Save this draft?".
+    fn answer_close_compose(&mut self, save: bool, cx: &mut Context<Self>) {
+        self.compose_ask = false;
+        if save {
+            self.close_compose(cx);
+        } else {
+            self.discard_compose(cx);
+        }
+    }
+
     fn close_compose(&mut self, cx: &mut Context<Self>) {
+        self.compose_ask = false;
         self.pending_focus = Some(self.focus.clone());
         let Some(mut composer) = self.compose.take() else {
             return;
@@ -6211,6 +6279,7 @@ impl Nimbra {
 
     /// The Discard button: closes the composer and deletes its draft, unless undone.
     fn discard_compose(&mut self, cx: &mut Context<Self>) {
+        self.compose_ask = false;
         self.pending_focus = Some(self.focus.clone());
         let Some(mut composer) = self.compose.take() else {
             return;
@@ -11467,6 +11536,72 @@ impl Nimbra {
                         }),
                     )
                 }))
+            })
+            // "Save this draft?" over the composer.
+            .when(self.compose_ask, |d| {
+                d.child(
+                    div()
+                        .id("compose-ask")
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(!full, |d| d.rounded(px(18.)))
+                        .bg(t.scrim)
+                        .occlude()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(14.))
+                                .w(px(340.))
+                                .p(px(22.))
+                                .rounded(px(16.))
+                                .bg(t.raised)
+                                .border_1()
+                                .border_color(t.border_strong)
+                                .shadow(vec![shadow(c(0x000000, 0.35), 18., 50., -8.)])
+                                .child(serif("Save this draft?", 24., t.text))
+                                .child(meta(
+                                    "Keep it in Drafts to finish later, or discard what you wrote.",
+                                    t.text2,
+                                ))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .pt(px(4.))
+                                        .child(
+                                            button(t, ButtonKind::Ghost, "Discard", None)
+                                                .id("ask-discard")
+                                                .press_soft()
+                                                .text_color(t.rose)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.answer_close_compose(false, cx)
+                                                })),
+                                        )
+                                        .child(div().flex_1())
+                                        .child(
+                                            button(t, ButtonKind::Secondary, "Cancel", Some("esc"))
+                                                .id("ask-cancel")
+                                                .press_soft()
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.request_close_compose(cx)
+                                                })),
+                                        )
+                                        .child(
+                                            button(t, ButtonKind::Primary, "Save draft", None)
+                                                .id("ask-save")
+                                                .press_soft()
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.answer_close_compose(true, cx)
+                                                })),
+                                        ),
+                                ),
+                        ),
+                )
             });
         div()
             .id("compose-scrim")
@@ -12121,7 +12256,7 @@ impl Render for Nimbra {
                 {
                     cx.notify();
                 } else if this.compose.is_some() {
-                    this.close_compose(cx);
+                    this.request_close_compose(cx);
                 } else if this.mailbox == View::Search || !this.search.read(cx).text().is_empty() {
                     this.clear_search(cx);
                 } else {
@@ -12249,6 +12384,15 @@ impl Render for ComposeWindow {
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
+            // ⌘W: asks about the draft (the window closes with the composer).
+            .on_action(cx.listener(|this, _: &HideWindow, window, cx| {
+                let handle = window.window_handle();
+                this.owner.update(cx, |n, cx| {
+                    if n.may_close_window(handle, cx) {
+                        n.close_compose(cx);
+                    }
+                });
+            }))
             .children(content)
     }
 }

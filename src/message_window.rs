@@ -371,6 +371,17 @@ impl Render for MessageWindow {
                 "Mail"
             })
             .track_focus(&self.focus)
+            // ⌘W: with a reply open here that has something in it, asks about the draft
+            // first; otherwise closes the window.
+            .on_action(cx.listener(|this, _: &HideWindow, window, cx| {
+                let handle = window.window_handle();
+                if this
+                    .owner
+                    .update(cx, |n, cx| n.may_close_window(handle, cx))
+                {
+                    window.defer(cx, |window, _| window.remove_window());
+                }
+            }))
             .on_action(
                 cx.listener(|this, _: &Reply, window, cx| {
                     this.reply(ComposeKind::Reply, window, cx)
