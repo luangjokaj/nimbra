@@ -20,7 +20,7 @@ to do, from reading the current code. Grouped into milestones; each one ships on
 ## Milestone 2: Writing mail properly
 
 - [x] **Cc and Bcc** fields in the composer (shown on demand), with validation like To.
-- [~] **Recipient chips and autocomplete** (autocomplete done; chips not yet) from people you have emailed (local, from the
+- [x] **Recipient chips and autocomplete** from people you have emailed (local, from the
       store; no contacts permission needed at first).
 - [x] **Rich text editor**: bold, italic, links, lists, paste with formatting, line
       wrapping. Plan: the editor in a web view (same engine as the original view), sending
@@ -78,4 +78,32 @@ to do, from reading the current code. Grouped into milestones; each one ships on
 
 ## Review
 
-(To be filled in as milestones ship.)
+Shipped on 2026-11-21, in this order (commits on `main`):
+
+1. `6781947` Reading: full headers, per-message reply, attachments (Quick Look, save),
+   inline images, unsubscribe, spam warning and Report spam, quoted replies.
+2. `a326905` Writing: Cc and Bcc, address suggestions, outgoing attachments (media upload
+   over 1 MB), autosave, undo send, discard with undo, send later.
+3. `90259de` Formatted editor (locked-down web view), signature, Settings, Edit menu.
+4. `fbcfe36` Important, All Mail, Spam, Trash, paging, labels (show, remove, create),
+   Move to, rate-limit retries.
+5. `327b500` Multi-select with bulk actions, local snooze and no-reply reminders.
+6. `a0b04c8` Menu bar, Dock badge, Print, open at login, store limits.
+7. `29ff973` Offline queue for changes and messages.
+8. `626390d` Multiple accounts (switching, per-account keychain and store).
+9. Recipient pills in To, Cc and Bcc.
+
+Verified against the real account: headers and attachments parsed; a draft with Cc, Bcc
+and a 1.5 MB attachment saved, re-saved with the attachment kept, and deleted; a formatted
+reply draft round-tripped; Spam, Important and paging listed; an outage was simulated and
+two queued changes replayed; the first account was recorded without migration.
+Verified with real keystrokes: typing, ⌘B, ⌘V, ⌘Z and ⌘↵ in the editor, and ↑ back to
+Subject.
+
+Not verified here (needs a person at the keyboard): adding a second account through the
+browser and switching; the Print panel; drag and drop of files; Quick Look; open at login
+from Nimbra.app.
+
+Left out on purpose: Delete forever (needs the restricted full-mail scope). Not done yet:
+a unified inbox across accounts, and new-mail checks, snoozes and scheduled sends for
+accounts that are not shown.

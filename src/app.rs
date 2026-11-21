@@ -87,6 +87,9 @@ struct Composer {
     bcc: Entity<TextInput>,
     /// The Cc and Bcc fields are shown (after "Cc Bcc" is clicked, or when they have text).
     show_cc: bool,
+    /// Finished addresses in To, Cc and Bcc, shown as pills; the fields hold only what is
+    /// still being typed.
+    chips: [Vec<String>; 3],
     /// Address suggestions under a recipient field.
     suggest: Option<Suggest>,
     /// Files picked or dropped in.
@@ -296,15 +299,94 @@ impl Composer {
         }
     }
 
+    /// Where a recipient field keeps its pills.
+    fn slot(field: Field) -> Option<usize> {
+        match field {
+            Field::To => Some(0),
+            Field::Cc => Some(1),
+            Field::Bcc => Some(2),
+            _ => None,
+        }
+    }
+
+    /// A recipient field's pills and typed text, as one comma-separated list.
+    fn recipients(&self, field: Field, cx: &App) -> String {
+        let (Some(slot), Some(input)) = (Self::slot(field), self.input(field)) else {
+            return String::new();
+        };
+        let typed = input.read(cx).text();
+        self.chips[slot]
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(typed.trim()).filter(|t| !t.is_empty()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Turns the finished addresses typed in a recipient field into pills. `all` also takes
+    /// the part after the last comma (on Tab, Enter, or when filled in by the app). Anything
+    /// that is not a valid address stays as text, to be corrected.
+    fn chipify(&mut self, field: Field, all: bool, cx: &mut App) {
+        let (Some(slot), Some(input)) = (Self::slot(field), self.input(field)) else {
+            return;
+        };
+        let text = input.read(cx).text();
+        let mut parts: Vec<&str> = text.split([',', ';']).collect();
+        let last = if all { "" } else { parts.pop().unwrap_or("") };
+        let mut keep: Vec<String> = Vec::new();
+        for part in parts {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            match gmail::addresses(part) {
+                Ok(found) if !found.is_empty() => {
+                    for address in found {
+                        if !self.chips[slot]
+                            .iter()
+                            .any(|c| c.eq_ignore_ascii_case(&address))
+                        {
+                            self.chips[slot].push(address);
+                        }
+                    }
+                }
+                _ => keep.push(part.to_string()),
+            }
+        }
+        let mut rest = keep.join(", ");
+        if !last.trim().is_empty() {
+            if !rest.is_empty() {
+                rest.push_str(", ");
+            }
+            rest.push_str(last.trim_start());
+        }
+        if rest != text {
+            input.update(cx, |input, cx| input.set(rest, usize::MAX, cx));
+        }
+        self.sync_placeholder(field, cx);
+    }
+
+    /// The To field's hint shows only while it has no pills.
+    fn sync_placeholder(&self, field: Field, cx: &mut App) {
+        if let (Field::To, Some(input)) = (field, self.input(field)) {
+            let hint = if self.chips[0].is_empty() {
+                "name@example.com"
+            } else {
+                ""
+            };
+            input.update(cx, |input, cx| input.set_placeholder(hint, cx));
+        }
+    }
+
     /// The message as it would be saved or sent.
     fn outgoing(&self, cx: &App) -> gmail::Outgoing {
         let html = self
             .rich
             .then(|| crate::editor::message_html(&self.html, self.quoted.as_deref()));
         gmail::Outgoing {
-            to: self.to.read(cx).text(),
-            cc: self.cc.read(cx).text(),
-            bcc: self.bcc.read(cx).text(),
+            to: self.recipients(Field::To, cx),
+            cc: self.recipients(Field::Cc, cx),
+            bcc: self.recipients(Field::Bcc, cx),
             subject: self.subject.read(cx).text(),
             body: self.body(cx),
             html,
@@ -317,6 +399,7 @@ impl Composer {
     /// Anything typed or attached.
     fn has_content(&self, cx: &App) -> bool {
         (self.rich && !self.text.trim().is_empty())
+            || self.chips.iter().any(|c| !c.is_empty())
             || !self.files.is_empty()
             || !self.kept.is_empty()
             || [&self.to, &self.cc, &self.bcc, &self.subject]
@@ -2294,6 +2377,7 @@ impl Nimbra {
             cc,
             bcc,
             show_cc: false,
+            chips: Default::default(),
             suggest: None,
             files: Vec::new(),
             kept: Vec::new(),
@@ -2411,6 +2495,7 @@ impl Nimbra {
                     composer
                         .to
                         .update(cx, |input, cx| input.set(to.join(", "), usize::MAX, cx));
+                    composer.chipify(Field::To, true, cx);
                 }
                 composer.reply = source.reply_to.clone();
                 // The message being answered is quoted below, folded behind "•••".
@@ -4067,6 +4152,9 @@ impl Nimbra {
             let (to, subj) = (composer.to.clone(), composer.subject.clone());
             let address = address.to_string();
             to.update(cx, |input, cx| input.set(address, usize::MAX, cx));
+            if let Some(composer) = &mut self.compose {
+                composer.chipify(Field::To, true, cx);
+            }
             subj.update(cx, |input, cx| input.set(subject, usize::MAX, cx));
         }
     }
@@ -4198,6 +4286,9 @@ impl Nimbra {
         composer
             .bcc
             .update(cx, |input, cx| input.set(bcc, usize::MAX, cx));
+        for field in [Field::To, Field::Cc, Field::Bcc] {
+            composer.chipify(field, true, cx);
+        }
         composer.kept = draft.attachments;
         let html = draft
             .html
@@ -4581,6 +4672,15 @@ impl Nimbra {
 
     /// A recipient field or the message changed.
     fn field_changed(&mut self, field: Field, cx: &mut Context<Self>) {
+        // A comma (or semicolon) finishes an address: it becomes a pill.
+        if let Some(composer) = &mut self.compose
+            && Composer::slot(field).is_some()
+            && composer
+                .input(field)
+                .is_some_and(|input| input.read(cx).text().contains([',', ';']))
+        {
+            composer.chipify(field, false, cx);
+        }
         let suggest = match field {
             Field::To | Field::Cc | Field::Bcc => self
                 .compose
@@ -4675,14 +4775,17 @@ impl Nimbra {
             return;
         };
         let text = input.read(cx).text();
-        let cut = text.rfind([',', ';']).map(|i| i + 1).unwrap_or(0);
-        let head = text[..cut].trim_end();
-        let value = if head.is_empty() {
-            format!("{}, ", person.address)
-        } else {
-            format!("{head} {}, ", person.address)
-        };
-        input.update(cx, |input, cx| input.set(value, usize::MAX, cx));
+        let cut = text.rfind([',', ';']).unwrap_or(0);
+        let head = text[..cut].trim().to_string();
+        input.update(cx, |input, cx| input.set(head, usize::MAX, cx));
+        if let Some(slot) = Composer::slot(suggest.field)
+            && !composer.chips[slot]
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(&person.address))
+        {
+            composer.chips[slot].push(person.address.clone());
+        }
+        composer.sync_placeholder(suggest.field, cx);
         self.pending_focus = Some(input.read(cx).focus_handle(cx));
         self.composer_changed(cx);
         cx.notify();
@@ -4999,14 +5102,33 @@ impl Nimbra {
             }
             (_, InputEvent::Down) if suggesting => self.move_suggestion(1, cx),
             (_, InputEvent::Up) if suggesting => self.move_suggestion(-1, cx),
-            (Field::To, InputEvent::Enter | InputEvent::Tab | InputEvent::Down) => {
-                self.focus_field(if show_cc { Field::Cc } else { Field::Subject }, None, cx)
+            // Backspace in an empty recipient field takes the last pill back as text.
+            (Field::To | Field::Cc | Field::Bcc, InputEvent::BackspaceAtStart) => {
+                if let Some(composer) = &mut self.compose
+                    && let (Some(slot), Some(input)) =
+                        (Composer::slot(field), composer.input(field))
+                    && input.read(cx).text().is_empty()
+                    && let Some(address) = composer.chips[slot].pop()
+                {
+                    input.update(cx, |input, cx| input.set(address, usize::MAX, cx));
+                    composer.sync_placeholder(field, cx);
+                    self.composer_changed(cx);
+                    cx.notify();
+                }
             }
-            (Field::Cc, InputEvent::Enter | InputEvent::Tab | InputEvent::Down) => {
-                self.focus_field(Field::Bcc, None, cx)
-            }
-            (Field::Bcc, InputEvent::Enter | InputEvent::Tab | InputEvent::Down) => {
-                self.focus_field(Field::Subject, None, cx)
+            (
+                Field::To | Field::Cc | Field::Bcc,
+                InputEvent::Enter | InputEvent::Tab | InputEvent::Down,
+            ) => {
+                if let Some(composer) = &mut self.compose {
+                    composer.chipify(field, true, cx);
+                }
+                let next = match field {
+                    Field::To if show_cc => Field::Cc,
+                    Field::Cc => Field::Bcc,
+                    _ => Field::Subject,
+                };
+                self.focus_field(next, None, cx)
             }
             (Field::Cc, InputEvent::Up) => self.focus_field(Field::To, None, cx),
             (Field::Bcc, InputEvent::Up) => self.focus_field(Field::Cc, None, cx),
@@ -8542,6 +8664,7 @@ impl Nimbra {
         };
         let field = |label: &str,
                      input: &Entity<TextInput>,
+                     lead: Vec<AnyElement>,
                      trailing: Option<AnyElement>,
                      below: Option<AnyElement>| {
             div()
@@ -8568,12 +8691,67 @@ impl Nimbra {
                             div()
                                 .flex_1()
                                 .min_w(px(0.))
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap(px(6.))
                                 .text_size(px(14.))
-                                .child(input.clone()),
+                                .children(lead)
+                                .child(div().flex_1().min_w(px(120.)).child(input.clone())),
                         )
                         .children(trailing)
                         .children(below),
                 )
+        };
+        // Each finished address is a pill with a button to take it off.
+        let pills = |field: Field, cx: &mut Context<Self>| -> Vec<AnyElement> {
+            let Some(slot) = Composer::slot(field) else {
+                return Vec::new();
+            };
+            composer.chips[slot]
+                .iter()
+                .enumerate()
+                .map(|(i, address)| {
+                    let hover = t.hover;
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .pl(px(9.))
+                        .pr(px(3.))
+                        .py(px(1.))
+                        .rounded_full()
+                        .bg(t.hover)
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .text_size(px(13.))
+                        .child(short(address, 34))
+                        .child(
+                            div()
+                                .id(("remove-recipient", slot * 1000 + i))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(16.))
+                                .rounded_full()
+                                .cursor_pointer()
+                                .text_color(t.text3)
+                                .hover(move |s| s.bg(hover))
+                                .child("×")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(composer) = &mut this.compose
+                                        && i < composer.chips[slot].len()
+                                    {
+                                        composer.chips[slot].remove(i);
+                                        composer.sync_placeholder(field, cx);
+                                        this.composer_changed(cx);
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .into_any_element()
+                })
+                .collect()
         };
         // "Cc Bcc" opens the two extra recipient fields.
         let cc_toggle = (!composer.show_cc).then(|| {
@@ -8795,15 +8973,27 @@ impl Nimbra {
                             .child(kbd(t, "esc")),
                     ),
             )
-            .child(field("To", &composer.to, cc_toggle, None))
+            .child(field(
+                "To",
+                &composer.to,
+                pills(Field::To, cx),
+                cc_toggle,
+                None,
+            ))
             .children(drop_for(Field::To))
             .when(composer.show_cc, |d| {
-                d.child(field("Cc", &composer.cc, None, None))
+                d.child(field("Cc", &composer.cc, pills(Field::Cc, cx), None, None))
                     .children(drop_for(Field::Cc))
-                    .child(field("Bcc", &composer.bcc, None, None))
+                    .child(field(
+                        "Bcc",
+                        &composer.bcc,
+                        pills(Field::Bcc, cx),
+                        None,
+                        None,
+                    ))
                     .children(drop_for(Field::Bcc))
             })
-            .child(field("Subject", &composer.subject, None, None))
+            .child(field("Subject", &composer.subject, Vec::new(), None, None))
             .when(!chips.is_empty(), |d| {
                 d.child(
                     div()

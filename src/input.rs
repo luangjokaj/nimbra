@@ -119,6 +119,14 @@ impl TextInput {
         self.content.to_string()
     }
 
+    /// The grey hint shown while the field is empty.
+    pub fn set_placeholder(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.placeholder.as_ref() != text {
+            self.placeholder = text.to_string().into();
+            cx.notify();
+        }
+    }
+
     pub fn cursor(&self) -> usize {
         self.cursor_offset()
     }
