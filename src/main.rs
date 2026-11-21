@@ -23,11 +23,12 @@ use gpui::{
 };
 
 use app::{
-    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, HideWindow, MarkDone, MarkUnread,
-    MenuMarkDone, MenuMarkUnread, MenuReply, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal,
-    MenuToggleSidebar, MenuTrash, MenuUndo, Next, Nimbra, OpenSettings, Prev, Print, Quit, Reload,
-    Reply, SaveDraft, SelectAllThreads, SendMail, ToggleFullCompose, ToggleList, ToggleOriginal,
-    TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
+    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, HideApp, HideOthers, HideWindow,
+    MarkDone, MarkUnread, MenuMarkDone, MenuMarkUnread, MenuReply, MenuSearch, MenuSnooze,
+    MenuStar, MenuToggleOriginal, MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra,
+    OpenSettings, Prev, Print, Quit, Reload, Reply, SaveDraft, SelectAllThreads, SendMail, ShowAll,
+    ToggleFullCompose, ToggleList, ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar,
+    ToggleTheme, Trash, Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -87,6 +88,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "ban",
     "archive",
     "pulse",
+    "eye",
 ];
 
 struct Assets;
@@ -141,6 +143,9 @@ fn main() {
             .expect("bundled fonts should load");
 
         input::bind_keys(cx);
+        cx.on_action(|_: &HideApp, cx| cx.hide());
+        cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+        cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         // Single-letter shortcuts belong to the mail view only, so they never fire while
         // you are typing in the composer.
         let mail = Some("Mail && !TextInput");
@@ -188,6 +193,9 @@ fn main() {
             KeyBinding::new("cmd-r", Reload, None),
             KeyBinding::new("ctrl-r", Reload, None),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("cmd-h", HideApp, None),
+            KeyBinding::new("alt-cmd-h", HideOthers, None),
+            KeyBinding::new("cmd-m", Minimize, None),
             KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("cmd-n", Compose, None),
             KeyBinding::new("cmd-p", Print, None),
@@ -221,6 +229,10 @@ fn main() {
                 name: "Nimbra".into(),
                 items: vec![
                     MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
+                    MenuItem::action("Hide Nimbra", HideApp),
+                    MenuItem::action("Hide Others", HideOthers),
+                    MenuItem::action("Show All", ShowAll),
                     MenuItem::separator(),
                     MenuItem::action("Quit Nimbra", Quit),
                 ],
@@ -269,6 +281,13 @@ fn main() {
                     MenuItem::action("Move to Trash", MenuTrash),
                     MenuItem::separator(),
                     MenuItem::action("Undo  (Z)", MenuUndo),
+                ],
+            },
+            Menu {
+                name: "Window".into(),
+                items: vec![
+                    MenuItem::action("Minimize", Minimize),
+                    MenuItem::action("Close Window", HideWindow),
                 ],
             },
         ]);

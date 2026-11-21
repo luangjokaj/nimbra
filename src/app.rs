@@ -49,6 +49,10 @@ actions!(
         OpenSettings,
         SelectAllThreads,
         Print,
+        HideApp,
+        HideOthers,
+        ShowAll,
+        Minimize,
         // Menu-bar twins of actions whose shortcut is a bare key (E, R, S…). A menu item
         // takes its action's shortcut as a system key equivalent, which would fire while
         // typing; these have no shortcut of their own.
@@ -473,6 +477,58 @@ struct MenuPopup {
     _activation: gpui::Subscription,
 }
 
+/// A short message at the bottom of the window (see `Nimbra::sync_notice_window`).
+struct NoticeToast {
+    owner: gpui::WeakEntity<Nimbra>,
+    text: SharedString,
+    dark: bool,
+}
+
+impl Render for NoticeToast {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = if self.dark {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        let owner = self.owner.clone();
+        div()
+            .size_full()
+            .p(px(MENU_MARGIN))
+            .font_family(crate::theme::SANS)
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(t.text)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .size_full()
+                    .pl(px(16.))
+                    .pr(px(6.))
+                    .rounded(px(12.))
+                    .bg(t.raised)
+                    .border_1()
+                    .border_color(t.border_strong)
+                    .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
+                    .child(div().flex_1().min_w(px(0.)).child(short(&self.text, 90)))
+                    .child(
+                        button(&t, ButtonKind::Ghost, "Dismiss", None)
+                            .id("dismiss-notice")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                owner
+                                    .update(cx, |owner, cx| {
+                                        owner.notice = None;
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            })),
+                    ),
+            )
+    }
+}
+
 /// The "Undo" pill shown after a thread is removed (see `Nimbra::offer_undo`).
 struct UndoToast {
     owner: gpui::WeakEntity<Nimbra>,
@@ -720,6 +776,32 @@ fn restrict_file(path: &std::path::Path) {
     }
 }
 
+/// A button on an attachment: its icon, a turning arrow while it downloads, or a green
+/// check mark once saved.
+fn attachment_button(t: &Theme, name: &str, busy: bool, done: bool) -> Div {
+    let hover = t.hover;
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(30.))
+        .rounded(px(8.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .child(if busy {
+            icon("reload", 15., t.violet)
+                .with_animation(
+                    "attachment-busy",
+                    Animation::new(Duration::from_millis(900)).repeat(),
+                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+                )
+                .into_any_element()
+        } else {
+            icon(name, 16., if done { t.mint } else { t.text2 }).into_any_element()
+        })
+}
+
 /// Text made safe to put in HTML.
 fn esc(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -814,6 +896,16 @@ pub struct Nimbra {
     /// The open thread was just marked unread by the user: it stays unread until another
     /// thread is opened, even if its text is clicked.
     kept_unread: Option<String>,
+    /// Attachments being downloaded (by attachment id; true when saving, false for a
+    /// preview), and the ones just saved. Shown on the attachment itself, not as a message
+    /// at the bottom (which would hide the email's web view while it shows).
+    attachment_busy: HashMap<String, bool>,
+    attachment_saved: HashMap<String, std::time::Instant>,
+    /// The message window at the bottom (floats above the email, which is a native view)
+    /// and the message it shows.
+    notice_window: Option<gpui::WindowHandle<NoticeToast>>,
+    notice_shown: Option<SharedString>,
+    notice_gen: usize,
     /// The checking-for-mail bar was showing at the last frame.
     bar_shown: bool,
     /// When the bar started fading out (and a number per fade, for its animation).
@@ -1006,6 +1098,11 @@ impl Nimbra {
             outbox: Outbox::default(),
             retrying: false,
             kept_unread: None,
+            attachment_busy: HashMap::new(),
+            attachment_saved: HashMap::new(),
+            notice_window: None,
+            notice_shown: None,
+            notice_gen: 0,
             bar_shown: false,
             bar_fade: None,
             badge: None,
@@ -1321,15 +1418,21 @@ impl Nimbra {
             cx.notify();
         } else {
             // Show what we already have for this mailbox, then refresh it quietly.
-            self.mails = match self.cache.get(&view) {
-                Some(mails) => mails.clone(),
+            // A mailbox seen before (this session or on disk) shows at once, even when it
+            // was empty: "Nothing in …" is known, so there is no loading screen for it.
+            let known = match self.cache.get(&view) {
+                Some(mails) => Some(mails.clone()),
                 // Not visited this session: start from what is stored on disk.
                 None => self.stored_mails(view),
             };
+            if let Some(mails) = &known {
+                self.cache.insert(view, mails.clone());
+            }
+            self.mails = known.clone().unwrap_or_default();
             self.done = vec![false; self.mails.len()];
             self.history.clear();
             self.selected = 0;
-            if !self.mails.is_empty() {
+            if known.is_some() {
                 self.status = Status::Ready;
                 self.load_selected(cx);
             }
@@ -1639,16 +1742,14 @@ impl Nimbra {
     }
 
     /// What the store holds for a mailbox, or nothing.
-    fn stored_mails(&self, view: View) -> Vec<Mail> {
-        let mut mails: Vec<Mail> = self
-            .store
-            .as_ref()
-            .and_then(|store| store.load(&record(view)))
-            .unwrap_or_default();
+    /// What the store holds for a mailbox: `None` if it was never listed, and an empty
+    /// list for a mailbox that was listed and had nothing in it.
+    fn stored_mails(&self, view: View) -> Option<Vec<Mail>> {
+        let mut mails: Vec<Mail> = self.store.as_ref()?.load(&record(view))?;
         for mail in &mut mails {
             mail.refresh_time();
         }
-        mails
+        Some(mails)
     }
 
     /// Saves the open mailbox and the sidebar state, in the background. Search results are
@@ -2063,7 +2164,9 @@ impl Nimbra {
         let Some(client) = self.gmail.clone() else {
             return;
         };
-        if self.mails.is_empty() {
+        // The loading screen is only for a mailbox never listed before; one known to be
+        // empty keeps showing as empty while it is checked again.
+        if self.mails.is_empty() && !self.cache.contains_key(&self.mailbox) {
             self.status = Status::Loading;
         }
         self.fetching = true;
@@ -2767,7 +2870,6 @@ impl Nimbra {
         let covered = self.palette
             || self.picked.len() >= 2
             || self.compose.is_some()
-            || self.notice.is_some()
             || self.settings_open
             || self.new_label.is_some();
         if !self.original
@@ -4138,7 +4240,11 @@ impl Nimbra {
             cx.notify();
             return;
         };
-        self.notice = Some(format!("Downloading {}…", short(&att.name, 40)).into());
+        if self.attachment_busy.contains_key(&att.attachment_id) {
+            return;
+        }
+        let key = att.attachment_id.clone();
+        self.attachment_busy.insert(key.clone(), save);
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -4157,6 +4263,7 @@ impl Nimbra {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                this.attachment_busy.remove(&key);
                 match result {
                     Ok(path) => {
                         let tool = if save {
@@ -4170,13 +4277,20 @@ impl Nimbra {
                             .stdout(std::process::Stdio::null())
                             .stderr(std::process::Stdio::null())
                             .spawn();
-                        this.notice = save.then(|| {
-                            format!(
-                                "Saved to Downloads: {}",
-                                path.file_name().unwrap_or_default().to_string_lossy()
-                            )
-                            .into()
-                        });
+                        if save {
+                            // A check mark on the attachment for a moment (Finder also shows it).
+                            this.attachment_saved
+                                .insert(key.clone(), std::time::Instant::now());
+                            cx.spawn(async move |this, cx| {
+                                cx.background_executor().timer(Duration::from_secs(3)).await;
+                                this.update(cx, |this, cx| {
+                                    this.attachment_saved.remove(&key);
+                                    cx.notify();
+                                })
+                                .ok();
+                            })
+                            .detach();
+                        }
                     }
                     Err(error) => {
                         this.notice = Some(format!("Could not get the attachment: {error}").into())
@@ -6239,6 +6353,74 @@ impl Nimbra {
         .detach();
     }
 
+    /// Shows the current message in a small window at the bottom centre, above the email
+    /// (a native view that would cover anything drawn in the main window). It goes away by
+    /// itself after a few seconds, longer for longer messages.
+    fn sync_notice_window(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.notice_window.take() {
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
+        }
+        let (Some(text), Some(frame)) = (self.notice.clone(), self.frame) else {
+            return;
+        };
+        let width = (text.chars().count() as f32 * 7.2 + 130.).clamp(260., 620.);
+        let height = 44.;
+        // Above the Undo pill when that is showing too.
+        let lift = if self.undo_window.is_some() { 54. } else { 0. };
+        let origin = gpui::point(
+            frame.origin.x + (frame.size.width - px(width)) / 2. - px(MENU_MARGIN),
+            frame.origin.y + frame.size.height - px(height + 24. + lift) - px(MENU_MARGIN),
+        );
+        let owner = cx.weak_entity();
+        let dark = self.dark;
+        let opened = cx.open_window(
+            gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                    origin,
+                    gpui::size(px(width + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
+                ))),
+                titlebar: None,
+                kind: gpui::WindowKind::PopUp,
+                focus: false,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |window, cx| {
+                crate::blur::no_window_shadow(window);
+                cx.new(|_| NoticeToast {
+                    owner,
+                    text: text.clone(),
+                    dark,
+                })
+            },
+        );
+        let Ok(handle) = opened else {
+            return;
+        };
+        self.notice_window = Some(handle);
+        self.notice_gen += 1;
+        let shown = self.notice_gen;
+        let seconds = (4. + text.chars().count() as f32 / 25.).min(10.);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs_f32(seconds))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.notice_gen == shown {
+                    this.notice = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn close_undo(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.undo_window.take() {
             handle
@@ -7217,35 +7399,39 @@ impl Nimbra {
                     .children(today.into_iter().map(|i| self.row(t, i, cx)))
                     .when(!earlier.is_empty(), |d| d.child(group("EARLIER")))
                     .children(earlier.into_iter().map(|i| self.row(t, i, cx)))
+                    // More is on its way: placeholder rows that breathe while the next
+                    // page loads (it starts on its own as the end of the list comes near).
                     .when(self.next_page.is_some(), |d| {
-                        d.child(
-                            div().flex().justify_center().pt(px(14.)).child(
-                                button(
-                                    t,
-                                    ButtonKind::Secondary,
-                                    if self.loading_more {
-                                        "Loading…"
-                                    } else {
-                                        "Load more"
-                                    },
-                                    None,
+                        d.children((0..2usize).map(|n| {
+                            let bar = |w: f32| div().h(px(9.)).w(px(w)).rounded_full().bg(t.hover);
+                            div()
+                                .flex()
+                                .flex_none()
+                                .gap(px(12.))
+                                .pl(px(26.))
+                                .pr(px(14.))
+                                .py(px(14.))
+                                .child(div().size(px(28.)).flex_none().rounded_full().bg(t.hover))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(8.))
+                                        .pt(px(3.))
+                                        .child(bar(if n == 0 { 120. } else { 96. }))
+                                        .child(bar(if n == 0 { 220. } else { 180. })),
                                 )
-                                .id("load-more")
-                                .on_click(cx.listener(|this, _, _, cx| this.load_more(cx))),
-                            ),
-                        )
-                    })
-                    .when(self.next_page.is_none(), |d| {
-                        d.child(div().flex().justify_center().pt(px(18.)).child(meta(
-                            match (self.is_demo(), self.mailbox) {
-                                (true, View::Inbox) => {
-                                    "That’s everything important. 23 more in Other."
-                                }
-                                (false, View::Inbox) => "That’s everything in your inbox.",
-                                _ => "That’s everything here.",
-                            },
-                            t.faint,
-                        )))
+                                .with_animation(
+                                    ("more-loading", n),
+                                    Animation::new(Duration::from_millis(1400)).repeat(),
+                                    move |row, delta| {
+                                        let wave = (std::f32::consts::TAU
+                                            * (delta - n as f32 * 0.15))
+                                            .cos();
+                                        row.opacity(0.55 + 0.35 * wave)
+                                    },
+                                )
+                        }))
                     }),
             )
     }
@@ -8421,22 +8607,33 @@ impl Nimbra {
                                 t.text3,
                             )),
                     )
-                    .child(
-                        icon_button(t, "search")
+                    .child({
+                        let busy = self.attachment_busy.get(&att.attachment_id) == Some(&false);
+                        attachment_button(t, "eye", busy, false)
                             .id(("attachment-preview", base + i))
                             .tooltip(tip(t.dark, "Quick Look", ""))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.fetch_attachment(preview.clone(), false, cx)
-                            })),
-                    )
-                    .child(
-                        icon_button(t, "down")
+                            }))
+                    })
+                    .child({
+                        let busy = self.attachment_busy.get(&att.attachment_id) == Some(&true);
+                        let saved = self.attachment_saved.contains_key(&att.attachment_id);
+                        attachment_button(t, if saved { "done" } else { "down" }, busy, saved)
                             .id(("attachment-save", base + i))
-                            .tooltip(tip(t.dark, "Save to Downloads", ""))
+                            .tooltip(tip(
+                                t.dark,
+                                if saved {
+                                    "Saved to Downloads"
+                                } else {
+                                    "Save to Downloads"
+                                },
+                                "",
+                            ))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.fetch_attachment(save.clone(), true, cx)
-                            })),
-                    )
+                            }))
+                    })
             }))
     }
 
@@ -9842,6 +10039,26 @@ impl Render for Nimbra {
         }
         self.sync_html_view(window);
         self.sync_editor(window, cx);
+        // A new message (or none): show it in its window, after this frame.
+        if self.notice != self.notice_shown {
+            self.notice_shown = self.notice.clone();
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |this, cx| this.sync_notice_window(cx)).ok();
+            })
+            .detach();
+        }
+        // Infinite list: the next page starts loading as the end of the list comes near
+        // (or straight away when the list does not fill the pane yet).
+        if self.next_page.is_some() && !self.loading_more && !self.fetching {
+            let left = f32::from(self.list_scroll.max_offset().height)
+                + f32::from(self.list_scroll.offset().y);
+            if left < 700. {
+                cx.spawn(async move |this, cx| {
+                    this.update(cx, |this, cx| this.load_more(cx)).ok();
+                })
+                .detach();
+            }
+        }
         // The checking-for-mail bar fades out when the check is done, instead of vanishing.
         let bar = self.fetching && !self.pull_hold && self.pull == 0.;
         if self.bar_shown && !bar {
@@ -9983,6 +10200,7 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &Forward, _, cx| this.go_forward(cx)))
             .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
             .on_action(|_: &HideWindow, window, _| crate::blur::set_visible(window, false))
+            .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
                 let Some((start, width)) = this.list_grab else {
@@ -10041,43 +10259,6 @@ impl Render for Nimbra {
             .when(self.settings_open, |d| d.child(self.settings_view(&t, cx)))
             .when(self.new_label.is_some(), |d| {
                 d.child(self.new_label_view(&t, cx))
-            })
-            .when_some(self.notice.clone(), |d, notice| {
-                d.child(
-                    div()
-                        .absolute()
-                        .bottom(px(24.))
-                        .left_0()
-                        .right_0()
-                        .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .id("notice")
-                                .flex()
-                                .items_center()
-                                .gap(px(12.))
-                                .max_w(px(560.))
-                                .pl(px(16.))
-                                .pr(px(8.))
-                                .py(px(8.))
-                                .rounded(px(12.))
-                                .bg(t.raised)
-                                .border_1()
-                                .border_color(t.border_strong)
-                                .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
-                                .occlude()
-                                .child(div().flex_1().child(notice))
-                                .child(
-                                    button(&t, ButtonKind::Ghost, "Dismiss", None)
-                                        .id("dismiss-notice")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.notice = None;
-                                            cx.notify();
-                                        })),
-                                ),
-                        ),
-                )
             })
     }
 }
