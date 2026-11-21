@@ -129,3 +129,18 @@ pub fn mouse_pressed_outside(window: &gpui::Window, margin: f64) -> bool {
 pub fn mouse_pressed_outside(_window: &gpui::Window, _margin: f64) -> bool {
     false
 }
+
+/// True while any mouse button is held down.
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)] // emitted by the objc crate's macros
+pub fn mouse_down() -> bool {
+    use objc::{class, msg_send, sel, sel_impl};
+    // SAFETY: a class method that only reads the current mouse state.
+    let buttons: usize = unsafe { msg_send![class!(NSEvent), pressedMouseButtons] };
+    buttons != 0
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn mouse_down() -> bool {
+    false
+}

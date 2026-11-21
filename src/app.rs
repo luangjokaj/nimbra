@@ -33,6 +33,7 @@ actions!(
         ToggleSidebar,
         ToggleList,
         ToggleStar,
+        MarkUnread,
         Trash,
         Compose,
         Reply,
@@ -96,11 +97,42 @@ enum ComposeKind {
     Forward,
 }
 
+/// What a row's right-click menu can do.
+#[derive(Clone, Copy, PartialEq)]
+enum RowAction {
+    MarkRead,
+    MarkUnread,
+    Star,
+    Unstar,
+    Done,
+    MoveToInbox,
+    Trash,
+    OpenInGmail,
+}
+
+impl RowAction {
+    /// Icon and label for the menu.
+    fn label(self) -> (&'static str, &'static str) {
+        match self {
+            RowAction::MarkRead => ("mail", "Mark as read"),
+            RowAction::MarkUnread => ("mail", "Mark as unread"),
+            RowAction::Star => ("star", "Star"),
+            RowAction::Unstar => ("star", "Remove star"),
+            RowAction::Done => ("done", "Mark done"),
+            RowAction::MoveToInbox => ("inbox", "Move to inbox"),
+            RowAction::Trash => ("trash", "Move to trash"),
+            RowAction::OpenInGmail => ("link", "Open in Gmail"),
+        }
+    }
+}
+
 /// A small menu dropped from the reading toolbar.
 #[derive(Clone, Copy, PartialEq)]
 enum Menu {
     Labels,
     More,
+    /// The right-click menu of a row in the list (by index into the loaded threads).
+    Row(usize),
 }
 
 /// What the mouse is doing to the floating composer.
@@ -167,6 +199,7 @@ struct MenuPopup {
     enabled: bool,
     dark: bool,
     was_active: bool,
+    opened: std::time::Instant,
     _activation: gpui::Subscription,
 }
 
@@ -290,6 +323,9 @@ pub struct Nimbra {
     /// above an email in the original view, where a floating tooltip would be hidden
     /// behind the native web view.
     hint: Option<(&'static str, &'static str)>,
+    /// Where a row's right-click menu opens (window coordinates), and what its items do.
+    menu_at: (f32, f32),
+    row_actions: Vec<RowAction>,
     /// The toolbar menu's own window, while it is open.
     menu_window: Option<gpui::WindowHandle<MenuPopup>>,
     /// The open toolbar menu, if any.
@@ -336,6 +372,9 @@ pub struct Nimbra {
     list_open: bool,
     list_width: f32,
     list_grab: Option<(f32, f32)>,
+    /// When the list was last shown or hidden, to animate it and restart the animation.
+    list_toggled: Option<std::time::Instant>,
+    list_gen: usize,
     /// Pull to refresh: the list's scroll position, how far it has been pulled past the
     /// top, and whether the current trackpad gesture started at the top.
     list_scroll: gpui::ScrollHandle,
@@ -406,6 +445,8 @@ impl Nimbra {
             labels: Vec::new(),
             fetching: false,
             hint: None,
+            menu_at: (0., 0.),
+            row_actions: Vec::new(),
             menu_window: None,
             menu: None,
             menu_dismissed: None,
@@ -450,6 +491,8 @@ impl Nimbra {
                 .and_then(|v| v.parse::<f32>().ok())
                 .map_or(452., |w| w.clamp(300., 720.)),
             list_grab: None,
+            list_toggled: None,
+            list_gen: 0,
             list_scroll: gpui::ScrollHandle::new(),
             pull: 0.,
             pull_armed: false,
@@ -894,13 +937,18 @@ impl Nimbra {
     }
 
     /// Fetches the messages of the open thread the first time it is shown.
+    /// The user opened this thread themselves (clicked it, moved to it with the keyboard,
+    /// or clicked its text): mark it read, here and in Gmail, and fetch its content.
+    ///
+    /// A thread that is only shown because a mailbox was just opened stays unread until
+    /// then; see `load_selected`.
+    fn open_selected(&mut self, cx: &mut Context<Self>) {
+        self.set_unread(self.selected, false, cx);
+        self.load_selected(cx);
+    }
+
+    /// Fetches the content of the thread on show, without marking it read.
     fn load_selected(&mut self, cx: &mut Context<Self>) {
-        // Opening a thread marks it read, here and in Gmail.
-        let index = self.selected;
-        if self.visible().contains(&index) && self.mails[index].unread {
-            self.mails[index].unread = false;
-            self.sync(index, gmail::Change::MarkRead, false, cx);
-        }
         let (Some(client), Some(mail)) = (self.gmail.clone(), self.mails.get(self.selected)) else {
             return;
         };
@@ -1260,6 +1308,46 @@ impl Nimbra {
                 ("inbox", "Mark as unread".into(), t.text2),
                 ("link", "Open in Gmail".into(), t.text2),
             ],
+            Menu::Row(index) => {
+                let Some(mail) = self.mails.get(index) else {
+                    return;
+                };
+                let archivable = matches!(
+                    self.mailbox,
+                    View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social
+                );
+                let mut actions = vec![
+                    if mail.unread {
+                        RowAction::MarkRead
+                    } else {
+                        RowAction::MarkUnread
+                    },
+                    if mail.starred {
+                        RowAction::Unstar
+                    } else {
+                        RowAction::Star
+                    },
+                ];
+                if archivable {
+                    actions.push(RowAction::Done);
+                }
+                if self.mailbox == View::Done {
+                    actions.push(RowAction::MoveToInbox);
+                }
+                actions.push(RowAction::Trash);
+                if !self.is_demo() {
+                    actions.push(RowAction::OpenInGmail);
+                }
+                let items = actions
+                    .iter()
+                    .map(|action| {
+                        let (name, label) = action.label();
+                        (name, label.into(), t.text2)
+                    })
+                    .collect();
+                self.row_actions = actions;
+                items
+            }
         };
         let enabled = !(menu == Menu::Labels && self.labels.is_empty());
 
@@ -1268,15 +1356,20 @@ impl Nimbra {
         let pane_left = if self.sidebar_open { 236. } else { 0. }
             + if self.list_open { self.list_width } else { 0. };
         let (width, height) = (MENU_WIDTH, items.len() as f32 * 32. + 14.);
-        let left = match menu {
-            Menu::Labels => pane_left + 150.,
-            Menu::More => f32::from(viewport.width) - 20. - width,
+        let (left, top) = match menu {
+            Menu::Labels => (pane_left + 150., 50.),
+            Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
+            // At the pointer, nudged back inside the window if it would hang over an edge.
+            Menu::Row(_) => (
+                self.menu_at.0.min(f32::from(viewport.width) - width - 8.),
+                self.menu_at.1.min(f32::from(viewport.height) - height - 8.),
+            ),
         };
         let origin = window.bounds().origin;
         let bounds = gpui::Bounds::new(
             gpui::point(
                 origin.x + px(left - MENU_MARGIN),
-                origin.y + px(50. - MENU_MARGIN),
+                origin.y + px(top - MENU_MARGIN),
             ),
             gpui::size(px(width + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
         );
@@ -1300,12 +1393,24 @@ impl Nimbra {
                     // Close on any click outside the menu. Polled, because clicks on the
                     // email's web view or on another app never reach this app's handlers.
                     cx.spawn_in(window, async move |this, cx| {
+                        // The click that opened the menu may still be held down (a
+                        // right-click opens it on the way down). Only a press that starts
+                        // after every button has been let go counts as an outside click.
+                        let mut armed = false;
                         loop {
                             cx.background_executor()
                                 .timer(Duration::from_millis(30))
                                 .await;
+                            if !crate::blur::mouse_down() {
+                                armed = true;
+                            }
                             let open = this.update_in(cx, |this: &mut MenuPopup, window, cx| {
-                                if crate::blur::mouse_pressed_outside(window, MENU_MARGIN as f64) {
+                                if armed
+                                    && crate::blur::mouse_pressed_outside(
+                                        window,
+                                        MENU_MARGIN as f64,
+                                    )
+                                {
                                     this.dismiss(window, cx);
                                     false
                                 } else {
@@ -1325,13 +1430,18 @@ impl Nimbra {
                         enabled,
                         dark,
                         was_active: false,
+                        opened: std::time::Instant::now(),
                         // Losing focus (switching apps with the keyboard, say) closes it too.
                         _activation: cx.observe_window_activation(
                             window,
                             |this: &mut MenuPopup, window, cx| {
                                 if window.is_window_active() {
                                     this.was_active = true;
-                                } else if this.was_active {
+                                } else if this.was_active
+                                    && this.opened.elapsed() > Duration::from_millis(500)
+                                {
+                                    // Focus moving away right as the menu opens is part of
+                                    // the click that opened it, not a reason to close.
                                     this.dismiss(window, cx);
                                 }
                             },
@@ -1361,6 +1471,11 @@ impl Nimbra {
             (Menu::Labels, index) => self.apply_label(index, cx),
             (Menu::More, 0) => self.mark_unread(cx),
             (Menu::More, _) => self.open_in_gmail(cx),
+            (Menu::Row(row), index) => {
+                if let Some(action) = self.row_actions.get(index).copied() {
+                    self.row_action(row, action, cx);
+                }
+            }
         }
     }
 
@@ -1407,12 +1522,82 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// `U`, or "Mark as unread" in a menu: the open thread goes back to unread.
     fn mark_unread(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
+        self.set_unread(self.selected, true, cx);
+    }
+
+    /// The toolbar button and `U`: flips the open thread between unread and read.
+    fn toggle_unread(&mut self, cx: &mut Context<Self>) {
         let index = self.selected;
-        if self.visible().contains(&index) {
-            self.mails[index].unread = true;
-            self.sync(index, gmail::Change::MarkUnread, false, cx);
+        if let Some(unread) = self.mails.get(index).map(|m| m.unread) {
+            self.set_unread(index, !unread, cx);
+        }
+    }
+
+    /// Marks a thread read or unread, here and in Gmail.
+    fn set_unread(&mut self, index: usize, unread: bool, cx: &mut Context<Self>) {
+        if self.visible().contains(&index) && self.mails[index].unread != unread {
+            self.mails[index].unread = unread;
+            let change = if unread {
+                gmail::Change::MarkUnread
+            } else {
+                gmail::Change::MarkRead
+            };
+            self.sync(index, change, false, cx);
+        }
+        cx.notify();
+    }
+
+    /// Opens the right-click menu for a row of the list.
+    fn open_row_menu(
+        &mut self,
+        index: usize,
+        at: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu_at = (f32::from(at.x), f32::from(at.y));
+        // A second right-click should always open the menu again, never just close it.
+        self.menu_dismissed = None;
+        self.toggle_menu(Menu::Row(index), window, cx);
+    }
+
+    /// Runs one action from a row's right-click menu on that row.
+    fn row_action(&mut self, row: usize, action: RowAction, cx: &mut Context<Self>) {
+        if !self.visible().contains(&row) {
+            return;
+        }
+        match action {
+            RowAction::MarkRead => self.set_unread(row, false, cx),
+            RowAction::MarkUnread => self.set_unread(row, true, cx),
+            RowAction::Star | RowAction::Unstar => {
+                let starred = action == RowAction::Star;
+                self.mails[row].starred = starred;
+                let change = if starred {
+                    gmail::Change::Star
+                } else {
+                    gmail::Change::Unstar
+                };
+                self.sync(row, change, false, cx);
+            }
+            // These take the row out of the list, which works on the open thread.
+            RowAction::Done | RowAction::MoveToInbox | RowAction::Trash => {
+                self.selected = row;
+                if action == RowAction::Trash {
+                    self.trash(cx);
+                } else {
+                    self.mark_done(cx);
+                }
+            }
+            RowAction::OpenInGmail => {
+                if let Some(id) = self.mails[row].id.as_ref()
+                    && id.chars().all(|c| c.is_ascii_alphanumeric())
+                {
+                    cx.open_url(&format!("https://mail.google.com/mail/u/0/#all/{id}"));
+                }
+            }
         }
         cx.notify();
     }
@@ -1825,7 +2010,7 @@ impl Nimbra {
             if let Some(pos) = visible.iter().position(|i| *i == self.selected) {
                 let next = (pos as isize + delta).clamp(0, visible.len() as isize - 1);
                 self.open(visible[next as usize]);
-                self.load_selected(cx);
+                self.open_selected(cx);
             }
         }
         cx.notify();
@@ -1857,7 +2042,7 @@ impl Nimbra {
                 break;
             }
         }
-        self.load_selected(cx);
+        self.open_selected(cx);
         cx.notify();
     }
 
@@ -1869,7 +2054,7 @@ impl Nimbra {
                 break;
             }
         }
-        self.load_selected(cx);
+        self.open_selected(cx);
         cx.notify();
     }
 
@@ -1985,10 +2170,40 @@ impl Nimbra {
         )
     }
 
+    /// The message list in a wrapper whose width slides open or shut after a toggle, the
+    /// same way the sidebar does. Once it has finished closing it is not drawn at all.
+    fn list_slot(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        const SLIDE: Duration = Duration::from_millis(260);
+        let moving = self.list_toggled.is_some_and(|at| at.elapsed() < SLIDE);
+        if !self.list_open && !moving {
+            return None;
+        }
+        let width = self.list_width;
+        let slot = div()
+            .flex_none()
+            .h_full()
+            .overflow_hidden()
+            .child(self.list(t, cx));
+        if !moving {
+            return Some(slot.w(px(width)).into_any_element());
+        }
+        let (from, to) = if self.list_open { (0., 1.) } else { (1., 0.) };
+        Some(
+            slot.with_animation(
+                ("list-width", self.list_gen),
+                Animation::new(SLIDE).with_easing(ease_out_quint()),
+                move |slot, delta| slot.w(px(width * (from + (to - from) * delta))),
+            )
+            .into_any_element(),
+        )
+    }
+
     /// Hides or shows the message list, leaving the reading pane the full width.
     fn toggle_list(&mut self, cx: &mut Context<Self>) {
         self.list_open = !self.list_open;
         self.list_grab = None;
+        self.list_toggled = Some(std::time::Instant::now());
+        self.list_gen += 1;
         cx.notify();
     }
 
@@ -2075,7 +2290,7 @@ impl Nimbra {
             self.selected = *next;
         }
         self.sync(index, change, true, cx);
-        self.load_selected(cx);
+        self.open_selected(cx);
         cx.notify();
     }
 
@@ -2600,9 +2815,15 @@ impl Nimbra {
             .cursor_pointer()
             .when(selected, |d| d.bg(t.selected))
             .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    this.open_row_menu(i, event.position, window, cx)
+                }),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.open(i);
-                this.load_selected(cx);
+                this.open_selected(cx);
                 cx.notify();
             }))
             .child(
@@ -3267,6 +3488,17 @@ impl Nimbra {
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
                     )
                     .child(
+                        icon_button(t, "mail")
+                            .id("toggle-unread")
+                            .tooltip(tip(t.dark, "Mark as unread or read", "U"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Mark as unread or read", "U", cx)
+                            }))
+                            // Lit while the open thread is unread.
+                            .when(m.unread, |d| d.bg(t.selected))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
+                    )
+                    .child(
                         icon_button(t, "tag")
                             .id("label")
                             .tooltip(tip(t.dark, "Add a label", ""))
@@ -3388,6 +3620,10 @@ impl Nimbra {
                         .flex_1()
                         .min_h(px(0.))
                         .overflow_y_scroll()
+                        // Clicking the text of a thread counts as opening it: it is marked read.
+                        .when(!is_draft, |d| {
+                            d.on_click(cx.listener(|this, _, _, cx| this.open_selected(cx)))
+                        })
                         // Clicking a draft's text opens it in the editor.
                         .when(is_draft, |d| {
                             d.cursor_pointer().on_click(
@@ -3858,6 +4094,8 @@ impl Nimbra {
                 cx.notify();
             }));
         Some(match menu {
+            // Row menus only exist as pop-up windows.
+            Menu::Row(_) => return None,
             Menu::Labels => {
                 let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
                 panel
@@ -4632,6 +4870,7 @@ impl Render for Nimbra {
                 cx.listener(|this, _: &ToggleFullCompose, _, cx| this.toggle_full_compose(cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleStar, _, cx| this.toggle_star(cx)))
+            .on_action(cx.listener(|this, _: &MarkUnread, _, cx| this.toggle_unread(cx)))
             .on_action(cx.listener(|this, _: &Trash, _, cx| {
                 if !this.palette {
                     this.trash(cx)
@@ -4708,7 +4947,7 @@ impl Render for Nimbra {
                 }
                 Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t)),
                 Status::Demo | Status::Ready => d
-                    .when(self.list_open, |d| d.child(self.list(&t, cx)))
+                    .children(self.list_slot(&t, cx))
                     .child(self.reading(&t, cx)),
                 Status::Loading => d.child(self.skeleton(&t)),
                 _ => d.child(self.status_screen(&t, cx)),

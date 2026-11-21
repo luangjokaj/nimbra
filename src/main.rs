@@ -19,8 +19,8 @@ use gpui::{
 };
 
 use app::{
-    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, MarkDone, Next, Nimbra, Prev, Quit,
-    Reload, Reply, SaveDraft, SendMail, ToggleFullCompose, ToggleList, ToggleOriginal,
+    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, MarkDone, MarkUnread, Next, Nimbra,
+    Prev, Quit, Reload, Reply, SaveDraft, SendMail, ToggleFullCompose, ToggleList, ToggleOriginal,
     TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
 };
 
@@ -67,6 +67,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "next",
     "reload",
     "list",
+    "mail",
     "expand",
     "shrink",
 ];
@@ -127,6 +128,7 @@ fn main() {
             KeyBinding::new("e", MarkDone, mail),
             KeyBinding::new("z", Undo, mail),
             KeyBinding::new("s", ToggleStar, mail),
+            KeyBinding::new("u", MarkUnread, mail),
             KeyBinding::new("v", ToggleOriginal, mail),
             KeyBinding::new("cmd-backspace", Trash, mail),
             KeyBinding::new("ctrl-backspace", Trash, mail),

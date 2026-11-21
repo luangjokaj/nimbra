@@ -68,6 +68,8 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 | `Z` | Undo the last archive, move or trash |
 | `/` or `⌘F` | Search (Enter runs it, `esc` clears it) |
 | `S` | Star or unstar |
+| `U` | Mark the open thread as unread, or read again (also a toolbar button) |
+| Right-click a thread | Menu: mark read or unread, star, mark done, trash, open in Gmail |
 | `V` | Switch between the reader view and the email's original formatting |
 | `C` / `R` | Compose a new message / reply to the open thread |
 | `⌘↵` | Send (in the composer) |
