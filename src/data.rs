@@ -369,6 +369,14 @@ pub fn inbox() -> Vec<Mail> {
                 "NIM-219 Snooze presets",
                 "NIM-223 Keyboard hints overlap on narrow windows",
             ]),
+            // An HTML message with no styling of its own, to check the web view's defaults.
+            html: Some(
+                "<p><b>3 issues</b> were assigned to you in <a href=\"https://example.com\">Nimbra</a>.</p>\
+                 <ol><li><b>NIM-214.</b> Command palette fuzzy matching, see <code>palette.rs</code></li>\
+                 <li><b>NIM-219.</b> Snooze presets</li><li><b>NIM-223.</b> Keyboard hints overlap on narrow windows</li></ol>\
+                 <p>Reply to this email directly or view it in Linear.</p>"
+                    .into(),
+            ),
             ..mail(
                 "Linear",
                 "L",

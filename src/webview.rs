@@ -10,18 +10,27 @@
 
 /// Puts the policy above in front of the email's own document.
 ///
-/// The email is left exactly as the sender wrote it: no wrapper element and no extra
-/// styles, because both change how table-based email layouts size their columns. The
+/// The email is left as the sender wrote it: no wrapper element, and only zero-specificity
+/// defaults (see [`DEFAULTS`]), because anything stronger changes how table-based email
+/// layouts size their columns. The
 /// policy `<meta>` comes first, so it lands in `<head>` and applies before anything in the
 /// message is parsed; the message's own `<head>` (including its `color-scheme` and its
 /// dark-mode styles) then merges into the same head.
+/// What a message looks like when it brings no styling of its own: a readable sans-serif
+/// with some margin, as mail clients show it, not the browser's bare serif page.
+///
+/// `:where()` gives these rules zero specificity, so anything the email sets wins, and they
+/// only touch inherited text properties and the page margin, never table or image sizing.
+const DEFAULTS: &str = ":where(html){font:14px/1.5 -apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif}\
+:where(body){margin:20px 28px}:where(pre,code,tt){font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.92em}";
+
 pub fn document(body: &str, images: bool) -> String {
     let img = if images { "data: https:" } else { "data:" };
     format!(
         "<!doctype html><meta charset=\"utf-8\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
          img-src {img}; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'\">\
-         {body}"
+         <style>{DEFAULTS}</style>{body}"
     )
 }
 
@@ -175,7 +184,15 @@ mod tests {
         // The policy precedes the message, and the message is not wrapped or restyled.
         let policy = blocked.find("Content-Security-Policy").unwrap();
         assert!(policy < blocked.find("<p>Hi</p>").unwrap());
-        assert!(!blocked.contains("<style>") && !blocked.contains("<body>"));
+        assert!(!blocked.contains("<body>"));
+        // Our defaults can never outrank the email's own styles or touch layout.
+        assert!(
+            DEFAULTS
+                .split('}')
+                .filter(|rule| !rule.is_empty())
+                .all(|rule| rule.starts_with(":where("))
+        );
+        assert!(!DEFAULTS.contains("max-width") && !DEFAULTS.contains("overflow-wrap"));
     }
 
     #[test]

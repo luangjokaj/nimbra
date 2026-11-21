@@ -142,7 +142,8 @@ pub struct Nimbra {
     menu_dismissed: Option<(Menu, std::time::Instant)>,
     /// "Show original": the message's own HTML in a web view instead of the native reader.
     original: bool,
-    /// Remote images allowed in the web view for the open thread.
+    /// Remote images allowed in the web view for the open thread. On by default; the
+    /// strip above the message can block them.
     original_images: bool,
     /// The web view, created the first time it is needed.
     html_view: Option<std::rc::Rc<HtmlView>>,
@@ -233,7 +234,7 @@ impl Nimbra {
             menu: None,
             menu_dismissed: None,
             original: false,
-            original_images: false,
+            original_images: true,
             html_view: None,
             html_shown: None,
             html_dark: None,
@@ -873,13 +874,13 @@ impl Nimbra {
             view.set_dark(self.dark);
             self.html_dark = Some(self.dark);
         }
-        // A different thread starts with remote images blocked again.
+        // A different thread starts with remote images on again.
         if self
             .html_shown
             .as_ref()
             .is_some_and(|(shown, _)| *shown != key)
         {
-            self.original_images = false;
+            self.original_images = true;
         }
         let wanted = (key, self.original_images);
         if self.html_shown.as_ref() != Some(&wanted) {
@@ -2921,7 +2922,7 @@ impl Nimbra {
                     .child(
                         meta(
                             if self.original_images {
-                                "Original formatting. Scripts are off; remote images are loading."
+                                "Original formatting. Scripts are off. Remote images are shown."
                             } else {
                                 "Original formatting. Scripts are off and remote images are blocked."
                             },
@@ -2929,16 +2930,19 @@ impl Nimbra {
                         )
                         .flex_1(),
                     )
-                    .when(!self.original_images, |d| {
-                        d.child(
-                            button(t, ButtonKind::Secondary, "Load images", None)
-                                .id("original-images")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.original_images = true;
-                                    cx.notify();
-                                })),
+                    .child(
+                        button(
+                            t,
+                            ButtonKind::Secondary,
+                            if self.original_images { "Block images" } else { "Load images" },
+                            None,
                         )
-                    }),
+                        .id("original-images")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.original_images = !this.original_images;
+                            cx.notify();
+                        })),
+                    ),
             )
             // The web view is a native layer; this element only reserves its space and
             // tells it where that space is each frame.

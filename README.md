@@ -22,7 +22,7 @@ What it does with your mailbox:
 
 - Asks for the `gmail.modify` scope only. That scope covers reading, archiving, labelling and sending; it does not allow permanent deletion. Nimbra sends only when you press Send.
 - Lists the 30 newest inbox threads and draws each message natively: headings, bold, links, lists, quotes and code. Scripts, styles and forms are dropped.
-- HTML mail opens in its **original formatting** by default; `V` switches to the native reader view and back. The original view displays the email's own HTML in a system web view with scripts off, navigation blocked and remote content blocked by a content security policy. Links open in your browser. macOS and Windows only for now.
+- HTML mail opens in its **original formatting** by default; `V` switches to the native reader view and back. The original view displays the email's own HTML in a system web view with scripts off, navigation blocked, and remote scripts, frames, fonts and forms blocked by a content security policy. Remote images are shown by default in this view (senders can then tell the mail was opened); **Block images** turns them off for the open thread. Links open in your browser. macOS and Windows only for now.
 - Remote images stay hidden until you click **Load images** on a message. Tracking pixels are never loaded.
 - Links open in your browser, and only `http`, `https` and `mailto` links are clickable.
 - The sidebar switches between Inbox, Gmail's categories (Primary, Updates, Promotions, Social), Starred, Snoozed, Drafts, Sent, Done (Gmail's archive) and your own labels, 30 newest threads each.
@@ -40,6 +40,23 @@ cargo run
 ```
 
 GPUI is built with the `runtime_shaders` feature, so Xcode's Metal toolchain is not required.
+
+## Build the Mac app
+
+```sh
+./scripts/bundle-macos.sh
+open target/bundle/Nimbra.app
+```
+
+This builds the release binary and wraps it in `Nimbra.app` with the app icon. The icon source is `assets/AppIcon.icon`, an Icon Composer document (SVG layers plus `icon.json`); the same file works for iOS. Open it in Icon Composer to tune it, or render a preview from the command line:
+
+```sh
+"/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool" \
+  assets/AppIcon.icon --export-image --output-file icon.png \
+  --platform macOS --rendition Default --width 512 --height 512 --scale 1
+```
+
+Needs Xcode 26 or newer. The script signs the app with your Developer ID or Apple Development certificate if one is in the keychain (override with `NIMBRA_SIGN_IDENTITY`). Signing matters for day-to-day use: macOS ties Keychain permission to the app's signature, so an unsigned build asks for the Keychain after every rebuild. For development, `./scripts/run-dev.sh` builds, signs and runs the debug binary the same way.
 
 ## Keys
 
