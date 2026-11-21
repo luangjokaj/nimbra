@@ -1741,7 +1741,6 @@ impl Nimbra {
         .detach();
     }
 
-    /// What the store holds for a mailbox, or nothing.
     /// What the store holds for a mailbox: `None` if it was never listed, and an empty
     /// list for a mailbox that was listed and had nothing in it.
     fn stored_mails(&self, view: View) -> Option<Vec<Mail>> {
