@@ -74,11 +74,16 @@ impl MessageWindow {
         }
     }
 
-    fn reply(&mut self, kind: ComposeKind, cx: &mut Context<Self>) {
+    /// Reply, reply all or forward, written right here in this window.
+    pub(super) fn reply(&mut self, kind: ComposeKind, window: &mut Window, cx: &mut Context<Self>) {
         let mail = self.mail(cx);
-        crate::show_main_window(cx);
+        let here = window.window_handle();
         self.owner.update(cx, |n, cx| {
             n.open_compose_from(kind, Some(Source::latest(&mail)), cx);
+            if n.compose.is_some() {
+                n.compose_host = Some(here);
+            }
+            cx.notify();
         });
     }
 
@@ -118,7 +123,15 @@ impl Render for MessageWindow {
         };
         let t = if dark { Theme::dark() } else { Theme::light() };
         window.set_window_title(&m.subject);
-        self.sync_web_view(&m, dark, images, window);
+        // A reply written here covers the message (and its web view, which is native).
+        let compose = self.owner.update(cx, |n, cx| n.hosted_compose(window, cx));
+        if compose.is_some() {
+            if let Some(view) = &self.html_view {
+                view.set_visible(false);
+            }
+        } else {
+            self.sync_web_view(&m, dark, images, window);
+        }
         let original = self.original && m.html.is_some();
         let width = f32::from(window.viewport_size().width);
 
@@ -141,15 +154,15 @@ impl Render for MessageWindow {
             .on_mouse_down(MouseButton::Left, |event, window, cx| drag_or_zoom(event, window, cx))
             .child(
                 tool("reply", "Reply", 0)
-                    .on_click(cx.listener(|this, _, _, cx| this.reply(ComposeKind::Reply, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.reply(ComposeKind::Reply, window, cx))),
             )
             .child(
                 tool("reply-all", "Reply all", 1)
-                    .on_click(cx.listener(|this, _, _, cx| this.reply(ComposeKind::ReplyAll, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.reply(ComposeKind::ReplyAll, window, cx))),
             )
             .child(
                 tool("forward", "Forward", 2)
-                    .on_click(cx.listener(|this, _, _, cx| this.reply(ComposeKind::Forward, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx))),
             )
             .child(div().w(px(1.)).h(px(18.)).mx(px(6.)).bg(t.border))
             .child(
@@ -206,9 +219,10 @@ impl Render for MessageWindow {
                     .border_color(t.border)
                     .child(header(n, cx, (width - 56.).max(0.)))
                     .child(n.message_header(&t, &m, 0, false, cx))
-                    .when(!m.header.attachments.is_empty(), |d| {
-                        d.child(n.attachment_row(&t, &m.header.attachments, 0, cx).pl(px(40.)))
-                    })
+            });
+            let tray = (!m.header.attachments.is_empty()).then(|| {
+                self.owner
+                    .update(cx, |n, cx| n.attachment_tray(&t, &m.header.attachments, cx))
             });
             div()
                 .flex()
@@ -233,6 +247,7 @@ impl Render for MessageWindow {
                     .flex_1()
                     .size_full(),
                 )
+                .children(tray)
                 .into_any_element()
         } else {
             let column = width.min(860.);
@@ -293,6 +308,7 @@ impl Render for MessageWindow {
         };
 
         div()
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -303,5 +319,6 @@ impl Render for MessageWindow {
             .text_color(t.text)
             .child(toolbar)
             .child(body)
+            .children(compose)
     }
 }

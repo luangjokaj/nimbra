@@ -953,6 +953,11 @@ pub struct Nimbra {
     settings: crate::settings::Settings,
     /// What was copied last from a message's details, and when (shows "Copied").
     copied: Option<(String, std::time::Instant)>,
+    /// The window showing the composer when it is not the main one (a message window it
+    /// was started from, or a window of its own).
+    compose_host: Option<gpui::AnyWindowHandle>,
+    /// The window the editor web view was made in (it is native, so it lives in one window).
+    editor_window: Option<gpui::AnyWindowHandle>,
     /// Conversations open in windows of their own.
     message_windows: Vec<gpui::WindowHandle<MessageWindow>>,
     /// The Settings window, while it is open.
@@ -1282,6 +1287,8 @@ impl Nimbra {
             settings: crate::settings::load(),
             settings_window: None,
             message_windows: Vec::new(),
+            compose_host: None,
+            editor_window: None,
             copied: None,
             parked: Vec::new(),
             composer_serial: 0,
@@ -3419,7 +3426,19 @@ impl Nimbra {
             }
             return;
         };
+        // The composer moved to another window: the editor is made again there (its content
+        // is kept in the composer and loaded once the new one is ready).
+        if self.editor.is_some() && self.editor_window != Some(window.window_handle()) {
+            if let Some(editor) = self.editor.take() {
+                editor.set_visible(false);
+            }
+            self.editor_ready = false;
+            self.editor_shown = None;
+            self.editor_theme = None;
+            self.editor_keys = false;
+        }
         if self.editor.is_none() && !self.editor_failed {
+            self.editor_window = Some(window.window_handle());
             let (events, mut incoming) = futures::channel::mpsc::unbounded();
             match crate::editor::EditorView::new(window, events) {
                 Some(view) => {
@@ -5732,7 +5751,87 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// The composer, shown in `window` when that is where it lives: full page, with the
+    /// composer's keys, the editor and the keyboard focus. None anywhere else.
+    fn hosted_compose(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.compose.is_none() || self.compose_host != Some(window.window_handle()) {
+            return None;
+        }
+        if let Some(composer) = &mut self.compose {
+            composer.full = true;
+        }
+        if let Some(focus) = self.pending_focus.take() {
+            window.focus(&focus);
+        }
+        self.sync_editor(window, cx);
+        let t = self.theme();
+        let size = window.viewport_size();
+        let viewport = (f32::from(size.width), f32::from(size.height));
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .key_context("Composer")
+                .on_action(cx.listener(|this, _: &SendMail, _, cx| this.send_mail(cx)))
+                .on_action(cx.listener(|this, _: &SaveDraft, _, cx| this.save_draft(cx)))
+                .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
+                    if let Some(composer) = this.compose.as_mut()
+                        && composer.suggest.take().is_some()
+                    {
+                        cx.notify();
+                    } else {
+                        this.close_compose(cx);
+                    }
+                }))
+                .child(self.compose_view(&t, viewport, cx))
+                .into_any_element(),
+        )
+    }
+
+    /// Moves the composer into a window of its own.
+    fn detach_compose(&mut self, cx: &mut Context<Self>) {
+        if self.compose.is_none() {
+            return;
+        }
+        let owner = cx.entity();
+        cx.defer(move |cx| {
+            let bounds = gpui::Bounds::centered(None, gpui::size(px(820.), px(700.)), cx);
+            let me = owner.clone();
+            let opened = cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some("New message".into()),
+                        appears_transparent: true,
+                        traffic_light_position: Some(gpui::point(px(18.), px(18.))),
+                    }),
+                    window_min_size: Some(gpui::size(px(520.), px(420.))),
+                    ..Default::default()
+                },
+                |_, cx| {
+                    cx.new(|cx| ComposeWindow {
+                        _observe: cx.observe(&owner, |_, _, cx| cx.notify()),
+                        owner,
+                        shown: false,
+                    })
+                },
+            );
+            if let Ok(handle) = opened {
+                me.update(cx, |n, cx| {
+                    n.compose_host = Some(handle.into());
+                    if let Some(composer) = &n.compose {
+                        n.pending_focus = Some(composer.to.read(cx).focus_handle(cx));
+                    }
+                    cx.notify();
+                });
+            }
+        });
+    }
+
     fn toggle_full_compose(&mut self, cx: &mut Context<Self>) {
+        if self.compose_host.is_some() {
+            return;
+        }
         if let Some(composer) = &mut self.compose {
             composer.full = !composer.full;
             cx.notify();
@@ -10449,10 +10548,7 @@ impl Nimbra {
                         t.text,
                     ))
                     .child(self.thread_banners(t, m, cx))
-                    .child(self.message_header(t, m, 0, false, cx))
-                    .when(!m.header.attachments.is_empty(), |d| {
-                        d.child(self.attachment_row(t, &m.header.attachments, 0, cx).pl(px(40.)))
-                    }),
+                    .child(self.message_header(t, m, 0, false, cx)),
             )
             // The web view is a native layer; this element only reserves its space and
             // tells it where that space is each frame.
@@ -10474,6 +10570,51 @@ impl Nimbra {
                 .w_full()
                 .bg(gpui::white()),
             )
+            .when(!m.header.attachments.is_empty(), |d| {
+                d.child(self.attachment_tray(t, &m.header.attachments, cx))
+            })
+    }
+
+    /// The attachments of an email shown in its original formatting, in a tray under it.
+    fn attachment_tray(
+        &self,
+        t: &Theme,
+        attachments: &[gmail::Attachment],
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let total: u64 = attachments.iter().map(|a| a.size).sum();
+        let count = attachments.len();
+        div()
+            .flex()
+            .flex_none()
+            .flex_col()
+            .gap(px(10.))
+            .px(px(28.))
+            .pt(px(12.))
+            .pb(px(14.))
+            .bg(t.surface)
+            .border_t_1()
+            .border_color(t.border)
+            .shadow(vec![shadow(c(0x000000, 0.12), -4., 12., 0.)])
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon("clip", 14., t.text3))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(t.text2)
+                            .child(if count == 1 {
+                                "1 attachment".to_string()
+                            } else {
+                                format!("{count} attachments")
+                            }),
+                    )
+                    .child(meta(format!("· {}", file_size(total)), t.text3)),
+            )
+            .child(self.attachment_row(t, attachments, 0, cx))
     }
 
     /// The Labels or More menu, dropped under its toolbar button.
@@ -10889,15 +11030,26 @@ impl Nimbra {
                                 )
                                 .flex_1(),
                             )
-                            .child(
-                                icon_button(t, if full { "shrink" } else { "expand" })
-                                    .id("compose-size")
-                                    .press(t)
-                                    .tooltip(tip(t.dark, "Full page or floating", "⌘⇧F"))
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.toggle_full_compose(cx)),
-                                    ),
-                            )
+                            .when(self.compose_host.is_none(), |d| {
+                                d.child(
+                                    icon_button(t, "detach")
+                                        .id("compose-detach")
+                                        .press(t)
+                                        .tooltip(tip(t.dark, "Open in its own window", ""))
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.detach_compose(cx)),
+                                        ),
+                                )
+                                .child(
+                                    icon_button(t, if full { "shrink" } else { "expand" })
+                                        .id("compose-size")
+                                        .press(t)
+                                        .tooltip(tip(t.dark, "Full page or floating", "⌘⇧F"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_full_compose(cx)
+                                        })),
+                                )
+                            })
                             .child(kbd(t, "esc")),
                     ),
             )
@@ -11648,7 +11800,18 @@ impl Nimbra {
 
 impl Render for Nimbra {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(focus) = self.pending_focus.take() {
+        // The composer shown in another window: closing that window closes the composer
+        // (keeping the draft), and a finished composer frees it.
+        if let Some(host) = self.compose_host
+            && (self.compose.is_none() || !cx.windows().contains(&host))
+        {
+            self.compose_host = None;
+            if self.compose.is_some() {
+                self.close_compose(cx);
+            }
+        }
+        let composing_elsewhere = self.compose.is_some() && self.compose_host.is_some();
+        if !composing_elsewhere && let Some(focus) = self.pending_focus.take() {
             window.focus(&focus);
         }
         // "System" follows the Mac's light or dark appearance.
@@ -11681,7 +11844,9 @@ impl Render for Nimbra {
         }
         self.last_frame = Some(now);
         self.sync_html_view(window);
-        self.sync_editor(window, cx);
+        if !composing_elsewhere {
+            self.sync_editor(window, cx);
+        }
         // A new message (or none): show it in its window, after this frame.
         if self.notice != self.notice_shown {
             self.notice_shown = self.notice.clone();
@@ -11742,7 +11907,7 @@ impl Render for Nimbra {
 
         div()
             .id("nimbra")
-            .key_context(if self.compose.is_some() {
+            .key_context(if self.compose.is_some() && !composing_elsewhere {
                 "Composer"
             } else {
                 "Mail"
@@ -11908,7 +12073,7 @@ impl Render for Nimbra {
             })
             .child(self.window_controls(&t, cx))
             .when(self.palette && !empty, |d| d.child(self.palette(&t, cx)))
-            .when(self.compose.is_some(), |d| {
+            .when(self.compose.is_some() && !composing_elsewhere, |d| {
                 d.child(self.compose_view(&t, viewport, cx))
             })
             .when(self.new_label.is_some(), |d| {
@@ -11918,5 +12083,40 @@ impl Render for Nimbra {
                 d.child(self.confirm_view(&t, cx))
             })
             .when(self.finder_open, |d| d.child(self.finder_view(&t, cx)))
+    }
+}
+
+/// A window holding only the composer (the composer's detach button).
+struct ComposeWindow {
+    owner: Entity<Nimbra>,
+    /// Has shown the composer (until then it may not be registered as its window yet).
+    shown: bool,
+    _observe: gpui::Subscription,
+}
+
+impl Render for ComposeWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let owner = self.owner.clone();
+        let content = owner.update(cx, |n, cx| n.hosted_compose(window, cx));
+        let t = owner.read(cx).theme();
+        if content.is_some() {
+            self.shown = true;
+        }
+        if content.is_none() && self.shown {
+            // Sent, closed or discarded: the window goes with it.
+            window.defer(cx, |window, _| window.remove_window());
+        } else if let Some(composer) = &owner.read(cx).compose {
+            let title = if composer.reply.is_some() { "Reply" } else { "New message" };
+            window.set_window_title(title);
+        }
+        div()
+            .relative()
+            .size_full()
+            .bg(t.surface)
+            .font_family(crate::theme::SANS)
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(t.text)
+            .children(content)
     }
 }
