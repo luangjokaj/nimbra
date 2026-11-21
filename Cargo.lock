@@ -3987,6 +3987,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "block",
  "chrono",
  "getrandom 0.2.17",
  "gpui",

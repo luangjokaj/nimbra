@@ -27,6 +27,7 @@ What it does with your mailbox:
 - Links open in your browser, and only `http`, `https` and `mailto` links are clickable.
 - The sidebar switches between Inbox, Gmail's categories (Primary, Updates, Promotions, Social), Starred, Snoozed, Drafts, Sent, Done (Gmail's archive) and your own labels, 30 newest threads each.
 - Opening a thread marks it read. `S` stars, `⌘⌫` moves to Gmail's trash (kept 30 days), and `E` in Done moves a thread back to the inbox. `Z` undoes the last removal.
+- While the app is open it checks for new mail once a minute and shows a macOS notification (sender and subject) for each new unread inbox thread. This needs the bundled `Nimbra.app` and your permission; macOS shows the banners when Nimbra is not the front app.
 - Mailboxes and opened threads are cached in memory for the session: going back to a mailbox shows it at once and refreshes in the background. Nothing is written to disk.
 - `E` archives the thread in Gmail (removes it from the inbox) and `Z` puts it back. Both only work in the Inbox. 
 - The sign-in is stored in the system keychain under `nimbra`. Delete that entry to sign out.

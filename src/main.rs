@@ -5,6 +5,7 @@ mod blur;
 mod data;
 mod gmail;
 mod input;
+mod notify;
 mod rich;
 mod theme;
 mod ui;

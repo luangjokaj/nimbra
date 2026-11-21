@@ -273,6 +273,9 @@ pub struct Nimbra {
     /// Switching back shows it at once while a refresh runs in the background.
     /// Memory only: nothing is written to disk.
     cache: HashMap<View, Vec<Mail>>,
+    /// Unread inbox threads already known to the new-mail check; `None` until its first
+    /// look, which only takes stock and notifies about nothing.
+    known_unread: Option<HashSet<String>>,
     /// Sidebar counts per label id: (unread threads still in the inbox, total threads for Drafts).
     counts: HashMap<String, (u32, u32)>,
     /// The user's own Gmail labels, shown in the sidebar.
@@ -398,6 +401,7 @@ impl Nimbra {
                 _ => View::Inbox,
             },
             cache: HashMap::new(),
+            known_unread: None,
             counts: HashMap::new(),
             labels: Vec::new(),
             fetching: false,
@@ -492,6 +496,7 @@ impl Nimbra {
             this.status = Status::Loading;
             this.fetching = true;
         }
+        this.watch_for_mail(cx);
         // Already signed in on a previous run: go straight to the inbox. The keychain is
         // read off the main thread because macOS may show a permission prompt for it, and
         // the window should not freeze (or fail to appear) while that is open.
@@ -655,6 +660,79 @@ impl Nimbra {
 
     // ------------------------------------------------------------ gmail
 
+    /// Checks Gmail for new mail once a minute while the app is open, shows a notification
+    /// for each new unread thread, and refreshes the inbox so it appears in the list.
+    fn watch_for_mail(&mut self, cx: &mut Context<Self>) {
+        const EVERY: Duration = Duration::from_secs(60);
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(EVERY).await;
+                let Ok(client) = this.update(cx, |this, _| this.gmail.clone()) else {
+                    break; // the window is gone
+                };
+                let Some(client) = client else {
+                    continue; // not signed in
+                };
+                let ids = {
+                    let client = client.clone();
+                    cx.background_executor()
+                        .spawn(async move { client.unread_inbox_ids() })
+                        .await
+                };
+                let Ok(ids) = ids else {
+                    continue; // offline or signed out: try again next time
+                };
+                let fresh = this
+                    .update(cx, |this, _| {
+                        let now: HashSet<String> = ids.iter().cloned().collect();
+                        let fresh: Vec<String> = match &this.known_unread {
+                            Some(known) => {
+                                ids.into_iter().filter(|id| !known.contains(id)).collect()
+                            }
+                            None => Vec::new(),
+                        };
+                        this.known_unread = Some(now);
+                        fresh
+                    })
+                    .unwrap_or_default();
+                if fresh.is_empty() {
+                    continue;
+                }
+                // Sender and subject for the first few; the rest are summed up.
+                let shown: Vec<String> = fresh.iter().take(3).cloned().collect();
+                let summaries = cx
+                    .background_executor()
+                    .spawn(async move {
+                        shown
+                            .iter()
+                            .filter_map(|id| client.summary(id, false).ok())
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+                let extra = fresh.len().saturating_sub(summaries.len());
+                this.update(cx, |this, cx| {
+                    for mail in &summaries {
+                        crate::notify::show(&mail.id, &mail.sender, &mail.subject);
+                    }
+                    if extra > 0 {
+                        crate::notify::show(
+                            "more",
+                            "Nimbra",
+                            &format!("{extra} more new messages"),
+                        );
+                    }
+                    // Count only; never log senders or subjects.
+                    eprintln!("nimbra: {} new unread threads", fresh.len());
+                    if this.mailbox == View::Inbox && this.compose.is_none() {
+                        this.fetch_inbox(cx);
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     /// Opens Google's consent page in the browser and waits for it in the background.
     fn sign_in(&mut self, cx: &mut Context<Self>) {
         let Some(config) = self.config.clone() else {
@@ -793,6 +871,13 @@ impl Nimbra {
         }
         self.back.clear();
         self.forward.clear();
+        // Ask once for permission to notify about new mail (macOS remembers the answer).
+        static ASKED: std::sync::Once = std::sync::Once::new();
+        ASKED.call_once(crate::notify::request_permission);
+        // NIMBRA_NOTIFY_TEST=1 posts one sample notification, to check the setup.
+        if std::env::var_os("NIMBRA_NOTIFY_TEST").is_some() {
+            crate::notify::show("test", "Nimbra", "Notifications are working.");
+        }
         self.notice = None;
         self.status = Status::Ready;
         self.cache.insert(self.mailbox, self.mails.clone());
@@ -3033,6 +3118,9 @@ impl Nimbra {
         // Drafts always use the reader, so a click on the text can open the editor.
         let is_draft = self.mailbox == View::Drafts && !self.is_demo();
         let original = self.original && m.html.is_some() && !is_draft;
+        // Until the message has been fetched we cannot know whether it has an original
+        // (HTML) version, so show a loader, not the reader view that would flash by first.
+        let loading = self.original && !is_draft && !m.loaded;
         let divider = || div().h(px(1.)).bg(t.border);
 
         let earlier = |tone: Tone, initials: &str, name: &str, snippet: &str, when: &str| {
@@ -3292,7 +3380,8 @@ impl Nimbra {
                     ),
             )
             // Conversation (native reader)
-            .when(!original, |d| {
+            .when(loading, |d| d.child(self.loading_pane(t)))
+            .when(!original && !loading, |d| {
                 d.child(
                     div()
                         .id("conversation")
@@ -3635,6 +3724,24 @@ impl Nimbra {
                             }),
                     ),
             )
+    }
+
+    /// Shown while an email's content is on its way.
+    fn loading_pane(&self, t: &Theme) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.))
+            .items_center()
+            .justify_center()
+            .gap(px(12.))
+            .child(icon("reload", 22., t.violet).with_animation(
+                "message-loading",
+                Animation::new(Duration::from_millis(900)).repeat(),
+                |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+            ))
+            .child(meta("Loading message…", t.text3))
     }
 
     /// The area the web view covers, with a strip above it explaining what is blocked.
