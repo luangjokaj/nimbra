@@ -226,7 +226,7 @@ pub fn merge(cached: &[Mail], fresh: Vec<Mail>) -> Vec<Mail> {
 }
 
 /// Up to two initials: "Mira Kovač" gives "MK", "stripe" gives "S".
-fn initials(name: &str) -> String {
+pub fn initials(name: &str) -> String {
     name.split_whitespace()
         .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
         .take(2)
@@ -235,7 +235,7 @@ fn initials(name: &str) -> String {
 }
 
 /// A stable avatar colour per sender.
-fn tone_for(name: &str) -> Tone {
+pub fn tone_for(name: &str) -> Tone {
     const TONES: [Tone; 6] = [
         Tone::Violet,
         Tone::Rose,

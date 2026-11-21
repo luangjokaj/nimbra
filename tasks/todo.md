@@ -19,19 +19,19 @@ to do, from reading the current code. Grouped into milestones; each one ships on
 
 ## Milestone 2: Writing mail properly
 
-- [ ] **Cc and Bcc** fields in the composer (shown on demand), with validation like To.
-- [ ] **Recipient chips and autocomplete** from people you have emailed (local, from the
+- [x] **Cc and Bcc** fields in the composer (shown on demand), with validation like To.
+- [~] **Recipient chips and autocomplete** (autocomplete done; chips not yet) from people you have emailed (local, from the
       store; no contacts permission needed at first).
 - [ ] **Rich text editor**: bold, italic, links, lists, paste with formatting, line
       wrapping. Plan: the editor in a web view (same engine as the original view), sending
       multipart text and HTML.
 - [x] **Quoted reply**: include the original message, folded behind "•••", like drafts.
-- [ ] **Attachments in outgoing mail**: attach files (picker and drag and drop), with a
+- [x] **Attachments in outgoing mail**: attach files (picker and drag and drop), with a
       size check (Gmail limit 25 MB).
 - [ ] **Signature**: one editable signature, added to new messages and replies.
-- [ ] **Undo send**: hold a sent message for a few seconds with an Undo pill.
-- [ ] **Send later**: the button exists but does nothing; schedule with a date picker.
-- [ ] **Autosave drafts** while typing (today only on ⌘S).
+- [x] **Undo send**: hold a sent message for a few seconds with an Undo pill.
+- [x] **Send later**: the button exists but does nothing; schedule with a date picker.
+- [x] **Autosave drafts** while typing (today only on ⌘S).
 
 ## Milestone 3: Organising
 

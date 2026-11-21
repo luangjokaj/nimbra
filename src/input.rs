@@ -47,6 +47,8 @@ pub enum InputEvent {
     Up,
     Down,
     Tab,
+    /// The text was edited by typing, pasting or deleting (not by `set`).
+    Changed,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -417,6 +419,7 @@ impl EntityInputHandler for TextInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
         cx.notify();
+        cx.emit(InputEvent::Changed);
     }
 
     fn replace_and_mark_text_in_range(
@@ -448,6 +451,7 @@ impl EntityInputHandler for TextInput {
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
 
         cx.notify();
+        cx.emit(InputEvent::Changed);
     }
 
     fn bounds_for_range(

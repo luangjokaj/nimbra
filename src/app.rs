@@ -64,7 +64,27 @@ enum Status {
 
 /// The open composer: two single-line fields and a body made of one field per line.
 struct Composer {
+    /// Tells composers apart while one is still finishing in the background.
+    serial: u64,
     to: Entity<TextInput>,
+    cc: Entity<TextInput>,
+    bcc: Entity<TextInput>,
+    /// The Cc and Bcc fields are shown (after "Cc Bcc" is clicked, or when they have text).
+    show_cc: bool,
+    /// Address suggestions under a recipient field.
+    suggest: Option<Suggest>,
+    /// Files picked or dropped in.
+    files: Vec<gmail::OutgoingFile>,
+    /// Files already attached to the draft being edited.
+    kept: Vec<gmail::Attachment>,
+    /// Counts edits; the draft is saved a moment after the last one.
+    edits: u64,
+    /// The edit count the saved draft has.
+    saved_edits: u64,
+    /// A save was asked for while one was running.
+    resave: bool,
+    /// What to do once the draft is saved.
+    after_save: Option<After>,
     subject: Entity<TextInput>,
     lines: Vec<Entity<TextInput>>,
     reply: Option<gmail::ReplyTo>,
@@ -134,6 +154,8 @@ impl RowAction {
 enum Menu {
     Labels,
     More,
+    /// Times to send the open composer's message at.
+    SendLater,
     /// The right-click menu of a row in the list (by index into the loaded threads).
     Row(usize),
 }
@@ -147,7 +169,84 @@ enum Grab {
 
 const COMPOSER_MIN: (f32, f32) = (460., 320.);
 
+/// Address suggestions for one recipient field.
+struct Suggest {
+    field: Field,
+    people: Vec<gmail::Person>,
+    selected: usize,
+}
+
+/// Something to do once a composer's draft is saved.
+#[derive(Clone, Copy, PartialEq)]
+enum After {
+    /// Send it at this time (milliseconds since the epoch).
+    Schedule(i64),
+}
+
+/// A composer that is off screen but still has work to finish.
+#[derive(Clone, Copy, PartialEq)]
+enum Parked {
+    /// Closed; kept until its last edits are saved.
+    Closing,
+    /// Sent, waiting out the undo delay.
+    Sending,
+    /// Being sent now; brought back if sending fails.
+    InFlight,
+    /// Discarded, waiting out the undo delay before its draft is deleted.
+    Discarded,
+}
+
+/// A message to send later: its saved draft and when.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Scheduled {
+    draft_id: String,
+    at_ms: i64,
+    subject: String,
+}
+
+/// How long a sent or discarded message can still be taken back.
+const UNDO_DELAY: Duration = Duration::from_secs(6);
+
 impl Composer {
+    fn input(&self, field: Field) -> Option<Entity<TextInput>> {
+        match field {
+            Field::To => Some(self.to.clone()),
+            Field::Cc => Some(self.cc.clone()),
+            Field::Bcc => Some(self.bcc.clone()),
+            Field::Subject => Some(self.subject.clone()),
+            Field::Line(index) => self.lines.get(index).cloned(),
+        }
+    }
+
+    /// The message as it would be saved or sent.
+    fn outgoing(&self, cx: &App) -> gmail::Outgoing {
+        gmail::Outgoing {
+            to: self.to.read(cx).text(),
+            cc: self.cc.read(cx).text(),
+            bcc: self.bcc.read(cx).text(),
+            subject: self.subject.read(cx).text(),
+            body: self.body(cx),
+            html: None,
+            files: self.files.clone(),
+            kept: self.kept.clone(),
+            reply: self.reply.clone(),
+        }
+    }
+
+    /// Anything typed or attached.
+    fn has_content(&self, cx: &App) -> bool {
+        !self.files.is_empty()
+            || !self.kept.is_empty()
+            || [&self.to, &self.cc, &self.bcc, &self.subject]
+                .iter()
+                .chain(self.lines.iter().collect::<Vec<_>>().iter())
+                .any(|input| !input.read(cx).text().trim().is_empty())
+    }
+
+    fn dirty(&self) -> bool {
+        self.edits != self.saved_edits
+    }
+
     /// The whole message text: the edited lines, then the quoted earlier message.
     fn body(&self, cx: &App) -> String {
         let mut body = self
@@ -467,6 +566,8 @@ fn file_size(bytes: u64) -> String {
 #[derive(Clone, Copy, PartialEq)]
 enum Field {
     To,
+    Cc,
+    Bcc,
     Subject,
     Line(usize),
 }
@@ -492,6 +593,16 @@ pub struct Nimbra {
     /// The message whose full header (all recipients, date) is expanded: thread id and
     /// message index (0 is the latest).
     details: Option<(String, usize)>,
+    /// Composers that are closed but still saving, waiting to send, or discarded.
+    parked: Vec<(Parked, Composer)>,
+    composer_serial: u64,
+    /// Messages to send later, from this Mac.
+    scheduled: Vec<Scheduled>,
+    /// Scheduled drafts being sent right now.
+    sending_scheduled: HashSet<String>,
+    schedule_watch: bool,
+    /// The times offered by the open Send later menu.
+    send_later_times: Vec<i64>,
     /// A thread to open once it appears in the list (from a clicked notification).
     open_when_listed: Option<String>,
     /// A background fetch of thread contents is running.
@@ -643,6 +754,12 @@ impl Nimbra {
             cache: HashMap::new(),
             prefetching: false,
             open_when_listed: None,
+            parked: Vec::new(),
+            composer_serial: 0,
+            scheduled: Vec::new(),
+            sending_scheduled: HashSet::new(),
+            schedule_watch: false,
+            send_later_times: Vec::new(),
             details: None,
             store: None,
             notify_from: None,
@@ -732,6 +849,9 @@ impl Nimbra {
                 gmail::Draft {
                     id: "sample".into(),
                     to: "mira@example.com".into(),
+                    cc: String::new(),
+                    bcc: String::new(),
+                    attachments: Vec::new(),
                     subject: "Fwd: Billing problem".into(),
                     body: "Hi Mira,\n\nCan you take a look at this one?\n\nLuan Gjokaj\nUX Engineer & Designer".into(),
                     quoted: Some("---------- Forwarded message ---------\nFrom: Stripe\nSubject: Billing problem\n\nYour last payment could not be processed.".into()),
@@ -1139,16 +1259,21 @@ impl Nimbra {
                     let store = crate::store::Store::open()?;
                     let saved: Option<Saved> = store.load("meta");
                     let mails: Option<Vec<Mail>> = store.load(&record(view));
-                    anyhow::Ok((store, saved, mails))
+                    let scheduled: Option<Vec<Scheduled>> = store.load("scheduled");
+                    anyhow::Ok((store, saved, mails, scheduled))
                 })
                 .await;
-            let Ok((store, saved, mails)) = opened else {
+            let Ok((store, saved, mails, scheduled)) = opened else {
                 eprintln!("nimbra: mail store unavailable; continuing without it");
                 this.update(cx, |this, cx| this.fetch_inbox(cx)).ok();
                 return;
             };
             this.update(cx, |this, cx| {
                 this.store = Some(Arc::new(store));
+                this.scheduled = scheduled.unwrap_or_default();
+                if !this.scheduled.is_empty() {
+                    this.watch_schedule(cx);
+                }
                 // Something is already on screen (a sign-in in this session): just refresh.
                 if !this.mails.is_empty() || this.mailbox != view {
                     this.refresh(cx);
@@ -1661,7 +1786,10 @@ impl Nimbra {
                 other => Some(other),
             };
             if let Some(field) = field {
-                this.field_event(field, event, cx);
+                match event {
+                    InputEvent::Changed => this.field_changed(field, cx),
+                    event => this.field_event(field, event, cx),
+                }
             }
         });
         (input, subscription)
@@ -1691,14 +1819,28 @@ impl Nimbra {
         let (to, s1) = self.new_field(Field::To, "name@example.com", cx);
         let (subject, s2) = self.new_field(Field::Subject, "Subject", cx);
         let (line, s3) = self.new_field(Field::Line(0), "Write your message…", cx);
+        let (cc, s4) = self.new_field(Field::Cc, "", cx);
+        let (bcc, s5) = self.new_field(Field::Bcc, "", cx);
+        self.composer_serial += 1;
         let mut composer = Composer {
+            serial: self.composer_serial,
             to,
+            cc,
+            bcc,
+            show_cc: false,
+            suggest: None,
+            files: Vec::new(),
+            kept: Vec::new(),
+            edits: 0,
+            saved_edits: 0,
+            resave: false,
+            after_save: None,
             subject,
             lines: vec![line],
             reply: None,
             full: false,
             position: None,
-            size: (720., 440.),
+            size: (720., 520.),
             grab: None,
             draft_id: None,
             quoted: None,
@@ -1707,7 +1849,7 @@ impl Nimbra {
             saved: false,
             sending: false,
             error: None,
-            _subscriptions: vec![s1, s2, s3],
+            _subscriptions: vec![s1, s2, s3, s4, s5],
         };
         let mut focus = composer.to.read(cx).focus_handle(cx);
         if kind != ComposeKind::New
@@ -1990,6 +2132,14 @@ impl Nimbra {
                 .take(12)
                 .map(|(index, label)| ("tag", short(&label.name, 28), tints[index % tints.len()]))
                 .collect(),
+            Menu::SendLater => {
+                let choices = Self::send_later_choices();
+                self.send_later_times = choices.iter().map(|(_, at)| *at).collect();
+                choices
+                    .into_iter()
+                    .map(|(label, _)| ("clock", label.into(), t.text2))
+                    .collect()
+            }
             Menu::More if self.is_demo() => vec![("inbox", "Mark as unread".into(), t.text2)],
             Menu::More => vec![
                 ("inbox", "Mark as unread".into(), t.text2),
@@ -2050,6 +2200,18 @@ impl Nimbra {
         let (left, top) = match menu {
             Menu::Labels => (pane_left + 150., 50.),
             Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
+            // Above the composer's Send later button.
+            Menu::SendLater => {
+                let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
+                match &self.compose {
+                    Some(c) if !c.full => {
+                        let (w, h) = c.size;
+                        let (l, t) = c.position.unwrap_or((((vw - w) / 2.).max(0.), 96.));
+                        (l + w - width - 90., t + h - height - 56.)
+                    }
+                    _ => (vw - width - 110., vh - height - 64.),
+                }
+            }
             // At the pointer, nudged back inside the window if it would hang over an edge.
             Menu::Row(_) => (
                 self.menu_at.0.min(f32::from(viewport.width) - width - 8.),
@@ -2163,6 +2325,11 @@ impl Nimbra {
             (Menu::More, 0) => self.mark_unread(cx),
             (Menu::More, 1) => self.open_in_gmail(cx),
             (Menu::More, _) => self.remove_selected(gmail::Change::Spam, cx),
+            (Menu::SendLater, index) => {
+                if let Some(at) = self.send_later_times.get(index).copied() {
+                    self.schedule_send(at, cx);
+                }
+            }
             (Menu::Row(row), index) => {
                 if let Some(action) = self.row_actions.get(index).copied() {
                     self.row_action(row, action, cx);
@@ -2444,6 +2611,15 @@ impl Nimbra {
                 composer._subscriptions.push(subscription);
             }
         }
+        composer.show_cc = !draft.cc.trim().is_empty() || !draft.bcc.trim().is_empty();
+        let (cc, bcc) = (draft.cc, draft.bcc);
+        composer
+            .cc
+            .update(cx, |input, cx| input.set(cc, usize::MAX, cx));
+        composer
+            .bcc
+            .update(cx, |input, cx| input.set(bcc, usize::MAX, cx));
+        composer.kept = draft.attachments;
         composer.draft_id = Some(draft.id);
         composer.quoted = draft.quoted;
         composer.reply = draft.reply;
@@ -2454,27 +2630,91 @@ impl Nimbra {
     }
 
     /// Saves the composer's contents to Gmail's Drafts without sending anything.
+    /// ⌘S: saves the draft now.
     fn save_draft(&mut self, cx: &mut Context<Self>) {
+        if let Some(serial) = self.compose.as_ref().map(|c| c.serial) {
+            self.save_composer(serial, true, cx);
+        }
+    }
+
+    /// The composer with this serial, on screen or parked.
+    fn composer_mut(&mut self, serial: u64) -> Option<&mut Composer> {
+        if self.compose.as_ref().is_some_and(|c| c.serial == serial) {
+            return self.compose.as_mut();
+        }
+        self.parked
+            .iter_mut()
+            .find(|(_, c)| c.serial == serial)
+            .map(|(_, c)| c)
+    }
+
+    /// Something in the composer changed: save the draft once typing pauses.
+    fn composer_changed(&mut self, cx: &mut Context<Self>) {
         let Some(composer) = &mut self.compose else {
             return;
         };
-        if composer.saving || composer.sending {
+        composer.edits += 1;
+        composer.saved = false;
+        let (serial, edits) = (composer.serial, composer.edits);
+        // Attachments make every save an upload, so those wait longer.
+        let pause = if composer.files.is_empty() && composer.kept.is_empty() {
+            2500
+        } else {
+            10_000
+        };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(pause))
+                .await;
+            this.update(cx, |this, cx| {
+                if this
+                    .compose
+                    .as_ref()
+                    .is_some_and(|c| c.serial == serial && c.edits == edits)
+                {
+                    this.save_composer(serial, false, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Saves a composer's message as a Gmail draft (new, or over the one it has).
+    /// `explicit` is ⌘S or a step that needs the draft (Send later); otherwise only unsaved
+    /// edits with something in them are saved.
+    fn save_composer(&mut self, serial: u64, explicit: bool, cx: &mut Context<Self>) {
+        let Some(client) = self.gmail.clone() else {
+            if explicit && let Some(composer) = self.composer_mut(serial) {
+                composer.error = Some("Sample mode: drafts are not saved.".into());
+                cx.notify();
+            }
+            return;
+        };
+        let Some(composer) = self.composer_mut(serial) else {
+            return;
+        };
+        if composer.sending {
             return;
         }
-        let Some(client) = self.gmail.clone() else {
-            composer.error = Some("Sample mode: drafts are not saved.".into());
-            cx.notify();
+        if composer.saving {
+            composer.resave = true;
             return;
-        };
-        let outgoing = gmail::Outgoing {
-            to: composer.to.read(cx).text(),
-            subject: composer.subject.read(cx).text(),
-            body: composer.body(cx),
-            reply: composer.reply.clone(),
-        };
+        }
+        if !explicit
+            && composer.after_save.is_none()
+            && (!composer.dirty() || !composer.has_content(cx))
+        {
+            return;
+        }
+        let outgoing = composer.outgoing(cx);
         let draft_id = composer.draft_id.clone();
+        let edits = composer.edits;
         composer.saving = true;
-        composer.error = None;
+        composer.resave = false;
+        if explicit {
+            composer.error = None;
+        }
         cx.notify();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -2482,26 +2722,242 @@ impl Nimbra {
                 .spawn(async move { client.save_draft(draft_id.as_deref(), &outgoing) })
                 .await;
             this.update(cx, |this, cx| {
+                this.composer_saved(serial, edits, explicit, result, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn composer_saved(
+        &mut self,
+        serial: u64,
+        edits: u64,
+        explicit: bool,
+        result: anyhow::Result<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let result = match result {
+            Err(error) if error.is::<gmail::SignedOut>() => {
+                self.compose = None;
+                self.parked.clear();
+                self.fail(error, cx);
+                return;
+            }
+            other => other,
+        };
+        let kind = self
+            .parked
+            .iter()
+            .find(|(_, c)| c.serial == serial)
+            .map(|(k, _)| *k);
+        let Some(composer) = self.composer_mut(serial) else {
+            return;
+        };
+        composer.saving = false;
+        let ok = match result {
+            Ok(id) => {
+                composer.draft_id = Some(id);
+                composer.saved_edits = composer.saved_edits.max(edits);
+                composer.saved = !composer.dirty();
+                true
+            }
+            Err(error) => {
+                composer.error = Some(format!("The draft was not saved: {error}").into());
+                composer.after_save = None;
+                false
+            }
+        };
+        let again = ok && (composer.dirty() || std::mem::take(&mut composer.resave));
+        let after = if ok && !again {
+            composer.after_save.take()
+        } else {
+            None
+        };
+        let mut refresh = explicit && ok;
+        match (kind, after) {
+            (Some(_), Some(After::Schedule(at))) => {
+                if let Some(pos) = self.parked.iter().position(|(_, c)| c.serial == serial) {
+                    let (_, composer) = self.parked.remove(pos);
+                    if let Some(draft_id) = composer.draft_id.clone() {
+                        self.scheduled.push(Scheduled {
+                            draft_id,
+                            at_ms: at,
+                            subject: composer.subject.read(cx).text(),
+                        });
+                        self.save_scheduled(cx);
+                        self.notice = Some(format!("Scheduled for {}.", long_date(at)).into());
+                        self.watch_schedule(cx);
+                    }
+                    refresh = true;
+                }
+            }
+            (Some(Parked::Closing), _) if !ok => self.unpark(serial, cx),
+            (Some(Parked::Closing), _) if again => self.save_composer(serial, false, cx),
+            (Some(Parked::Closing), _) => {
+                self.parked.retain(|(_, c)| c.serial != serial);
+                refresh = true;
+            }
+            (None, _) if again => self.save_composer(serial, false, cx),
+            _ => {}
+        }
+        if refresh && self.mailbox == View::Drafts {
+            self.refresh(cx);
+        }
+        cx.notify();
+    }
+
+    /// Brings a parked composer back on screen (when nothing else is open there).
+    fn unpark(&mut self, serial: u64, cx: &mut Context<Self>) {
+        let Some(pos) = self.parked.iter().position(|(_, c)| c.serial == serial) else {
+            return;
+        };
+        if self.compose.is_some() {
+            let (_, composer) = self.parked.remove(pos);
+            let subject = composer.subject.read(cx).text();
+            self.notice = Some(
+                format!(
+                    "“{}” needs attention: {}",
+                    short(&subject, 40),
+                    composer.error.clone().unwrap_or_default()
+                )
+                .into(),
+            );
+            return;
+        }
+        let (_, mut composer) = self.parked.remove(pos);
+        composer.sending = false;
+        if let Some(first) = composer.lines.first() {
+            self.pending_focus = Some(first.read(cx).focus_handle(cx));
+        }
+        self.compose = Some(composer);
+        cx.notify();
+    }
+
+    /// Esc: closes the composer. Its last edits are still saved to Drafts.
+    fn close_compose(&mut self, cx: &mut Context<Self>) {
+        self.pending_focus = Some(self.focus.clone());
+        let Some(mut composer) = self.compose.take() else {
+            return;
+        };
+        composer.suggest = None;
+        let unsaved = composer.saving || (composer.dirty() && composer.has_content(cx));
+        if self.gmail.is_some() && unsaved {
+            let serial = composer.serial;
+            self.parked.push((Parked::Closing, composer));
+            self.save_composer(serial, false, cx);
+        }
+        cx.notify();
+    }
+
+    /// The Discard button: closes the composer and deletes its draft, unless undone.
+    fn discard_compose(&mut self, cx: &mut Context<Self>) {
+        self.pending_focus = Some(self.focus.clone());
+        let Some(mut composer) = self.compose.take() else {
+            return;
+        };
+        composer.suggest = None;
+        if !composer.has_content(cx) && composer.draft_id.is_none() && !composer.saving {
+            cx.notify();
+            return;
+        }
+        let serial = composer.serial;
+        self.parked.push((Parked::Discarded, composer));
+        self.offer_undo("Draft discarded", cx);
+        self.finish_parked_later(serial, UNDO_DELAY, cx);
+        cx.notify();
+    }
+
+    fn finish_parked_later(&mut self, serial: u64, delay: Duration, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            this.update(cx, |this, cx| this.finish_parked(serial, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// The undo delay of a sent or discarded message is over: send it, or delete its draft.
+    fn finish_parked(&mut self, serial: u64, cx: &mut Context<Self>) {
+        let Some(pos) = self.parked.iter().position(|(_, c)| c.serial == serial) else {
+            return; // undone
+        };
+        if self.parked[pos].1.saving {
+            // Wait for the draft save that is running, so nothing is left behind.
+            self.finish_parked_later(serial, Duration::from_millis(400), cx);
+            return;
+        }
+        match self.parked[pos].0 {
+            Parked::Sending => {
+                let (_, composer) = self.parked.remove(pos);
+                self.dispatch(composer, cx);
+            }
+            Parked::Discarded => {
+                let (_, composer) = self.parked.remove(pos);
+                if let (Some(id), Some(client)) = (composer.draft_id.clone(), self.gmail.clone()) {
+                    cx.spawn(async move |this, cx| {
+                        let result = cx
+                            .background_executor()
+                            .spawn(async move { client.delete_draft(&id) })
+                            .await;
+                        this.update(cx, |this, cx| {
+                            if let Err(error) = result {
+                                this.notice =
+                                    Some(format!("The draft was not deleted: {error}").into());
+                            }
+                            if this.mailbox == View::Drafts {
+                                this.refresh(cx);
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    })
+                    .detach();
+                }
+            }
+            Parked::Closing | Parked::InFlight => {}
+        }
+    }
+
+    /// Sends a message whose undo delay is over.
+    fn dispatch(&mut self, mut composer: Composer, cx: &mut Context<Self>) {
+        let Some(client) = self.gmail.clone() else {
+            return;
+        };
+        let outgoing = composer.outgoing(cx);
+        let draft_id = composer.draft_id.clone();
+        let serial = composer.serial;
+        composer.sending = true;
+        self.parked.push((Parked::InFlight, composer));
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match draft_id {
+                        Some(id) => client.send_draft(&id, &outgoing),
+                        None => client.send_message(&outgoing),
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
                 match result {
-                    Ok(id) => {
-                        if let Some(composer) = &mut this.compose {
-                            composer.saving = false;
-                            composer.draft_id = Some(id);
-                            composer.saved = true;
-                        }
-                        if this.mailbox == View::Drafts {
-                            this.fetch_inbox(cx);
+                    Ok(()) => {
+                        this.parked.retain(|(_, c)| c.serial != serial);
+                        this.notice = Some("Message sent.".into());
+                        if matches!(this.mailbox, View::Sent | View::Drafts) {
+                            this.refresh(cx);
                         }
                     }
                     Err(error) if error.is::<gmail::SignedOut>() => {
+                        this.parked.clear();
                         this.compose = None;
                         this.fail(error, cx);
                     }
                     Err(error) => {
-                        if let Some(composer) = &mut this.compose {
-                            composer.saving = false;
-                            composer.error = Some(error.to_string().into());
+                        if let Some(composer) = this.composer_mut(serial) {
+                            composer.error = Some(format!("Not sent: {error}").into());
                         }
+                        this.unpark(serial, cx);
                     }
                 }
                 cx.notify();
@@ -2511,24 +2967,380 @@ impl Nimbra {
         .detach();
     }
 
-    fn close_compose(&mut self, cx: &mut Context<Self>) {
-        self.compose = None;
+    /// A recipient field or the message changed.
+    fn field_changed(&mut self, field: Field, cx: &mut Context<Self>) {
+        let suggest = match field {
+            Field::To | Field::Cc | Field::Bcc => self
+                .compose
+                .as_ref()
+                .and_then(|c| c.input(field))
+                .and_then(|input| {
+                    let text = input.read(cx).text();
+                    let token = text
+                        .rsplit([',', ';'])
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_lowercase();
+                    if token.is_empty() {
+                        return None;
+                    }
+                    let present: Vec<String> = text
+                        .split([',', ';'])
+                        .map(|p| p.trim().to_lowercase())
+                        .collect();
+                    let people = self.match_contacts(&token, &present);
+                    (!people.is_empty()).then_some(Suggest {
+                        field,
+                        people,
+                        selected: 0,
+                    })
+                }),
+            _ => None,
+        };
+        if let Some(composer) = &mut self.compose {
+            composer.suggest = suggest;
+        }
+        self.composer_changed(cx);
+        cx.notify();
+    }
+
+    /// People from the mail on this Mac whose name or address starts with `token`, most
+    /// often seen first.
+    fn match_contacts(&self, token: &str, present: &[String]) -> Vec<gmail::Person> {
+        let me = self.account.to_lowercase();
+        let mut seen: HashMap<String, (gmail::Person, u32)> = HashMap::new();
+        let mut add = |p: &gmail::Person| {
+            let key = p.address.to_lowercase();
+            if key.is_empty() || key == me {
+                return;
+            }
+            let entry = seen.entry(key).or_insert_with(|| (p.clone(), 0));
+            entry.1 += 1;
+            if entry.0.name.is_empty() && !p.name.is_empty() {
+                entry.0.name = p.name.clone();
+            }
+        };
+        for mail in self.mails.iter().chain(self.cache.values().flatten()) {
+            for header in
+                std::iter::once(&mail.header).chain(mail.earlier.iter().map(|e| &e.header))
+            {
+                add(&header.from);
+                header.to.iter().for_each(&mut add);
+                header.cc.iter().for_each(&mut add);
+            }
+        }
+        let mut found: Vec<(gmail::Person, u32)> = seen
+            .into_values()
+            .filter(|(p, _)| {
+                let address = p.address.to_lowercase();
+                let name = p.name.to_lowercase();
+                !present.contains(&address)
+                    && (address.starts_with(token)
+                        || name.starts_with(token)
+                        || name.split_whitespace().any(|w| w.starts_with(token)))
+            })
+            .collect();
+        found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.address.cmp(&b.0.address)));
+        found.into_iter().take(5).map(|(p, _)| p).collect()
+    }
+
+    /// Puts the chosen suggestion in place of what was being typed.
+    fn accept_suggestion(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        let Some(suggest) = composer.suggest.take() else {
+            return;
+        };
+        let (Some(person), Some(input)) = (
+            suggest
+                .people
+                .get(index.unwrap_or(suggest.selected))
+                .cloned(),
+            composer.input(suggest.field),
+        ) else {
+            return;
+        };
+        let text = input.read(cx).text();
+        let cut = text.rfind([',', ';']).map(|i| i + 1).unwrap_or(0);
+        let head = text[..cut].trim_end();
+        let value = if head.is_empty() {
+            format!("{}, ", person.address)
+        } else {
+            format!("{head} {}, ", person.address)
+        };
+        input.update(cx, |input, cx| input.set(value, usize::MAX, cx));
+        self.pending_focus = Some(input.read(cx).focus_handle(cx));
+        self.composer_changed(cx);
+        cx.notify();
+    }
+
+    fn move_suggestion(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(suggest) = self.compose.as_mut().and_then(|c| c.suggest.as_mut()) {
+            let len = suggest.people.len() as isize;
+            suggest.selected = (suggest.selected as isize + delta).rem_euclid(len) as usize;
+            cx.notify();
+        }
+    }
+
+    /// Opens the file picker to attach files.
+    fn pick_files(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await {
+                this.update(cx, |this, cx| this.attach_files(paths, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Reads picked or dropped files into the composer, within Gmail's 25 MB limit.
+    fn attach_files(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        let Some(composer) = &self.compose else {
+            return;
+        };
+        let serial = composer.serial;
+        let used = composer
+            .files
+            .iter()
+            .map(|f| f.bytes.len() as u64)
+            .sum::<u64>()
+            + composer.kept.iter().map(|a| a.size).sum::<u64>();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut files = Vec::new();
+                    let mut total = used;
+                    for path in paths.into_iter().take(20) {
+                        let meta = std::fs::metadata(&path)?;
+                        if !meta.is_file() {
+                            anyhow::bail!("Folders can’t be attached. Zip them first.");
+                        }
+                        total += meta.len();
+                        if total > gmail::ATTACHMENT_LIMIT {
+                            anyhow::bail!("Attachments can be 25 MB in total.");
+                        }
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let bytes = std::fs::read(&path)?;
+                        files.push(gmail::OutgoingFile {
+                            mime: gmail::mime_for(&name).into(),
+                            name: gmail::safe_file_name(&name),
+                            bytes,
+                        });
+                    }
+                    anyhow::Ok(files)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let Some(composer) = this.composer_mut(serial) else {
+                    return;
+                };
+                match result {
+                    Ok(files) => {
+                        composer.files.extend(files);
+                        composer.error = None;
+                    }
+                    Err(error) => composer.error = Some(error.to_string().into()),
+                }
+                if this.compose.as_ref().is_some_and(|c| c.serial == serial) {
+                    this.composer_changed(cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The times offered by Send later, with their labels.
+    fn send_later_choices() -> Vec<(String, i64)> {
+        use chrono::{Datelike, Duration as Days, Local, TimeZone, Timelike, Weekday};
+        let now = Local::now();
+        let at = |date: chrono::NaiveDate, hour: u32| {
+            Local
+                .from_local_datetime(&date.and_hms_opt(hour, 0, 0).unwrap_or_default())
+                .single()
+                .map(|t| t.timestamp_millis())
+        };
+        let mut choices = Vec::new();
+        let hour = (now + Days::hours(1)).with_second(0).unwrap_or(now);
+        choices.push((
+            format!("In an hour · {}", hour.format("%H:%M")),
+            hour.timestamp_millis(),
+        ));
+        if now.hour() < 17
+            && let Some(ms) = at(now.date_naive(), 18)
+        {
+            choices.push(("This evening · 18:00".into(), ms));
+        }
+        let tomorrow = now.date_naive() + Days::days(1);
+        if let Some(ms) = at(tomorrow, 8) {
+            choices.push((
+                format!("Tomorrow morning · {} 8:00", tomorrow.format("%a")),
+                ms,
+            ));
+        }
+        let mut monday = now.date_naive() + Days::days(1);
+        while monday.weekday() != Weekday::Mon {
+            monday += Days::days(1);
+        }
+        if monday != tomorrow
+            && let Some(ms) = at(monday, 8)
+        {
+            choices.push((
+                format!("Monday morning · {} 8:00", monday.format("%b %-d")),
+                ms,
+            ));
+        }
+        choices
+    }
+
+    /// Send later: saves the draft, then sends it from this Mac at `at`.
+    fn schedule_send(&mut self, at: i64, cx: &mut Context<Self>) {
+        let demo = self.gmail.is_none();
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        if demo {
+            composer.error = Some("Sample mode: nothing is scheduled.".into());
+            cx.notify();
+            return;
+        }
+        let outgoing = composer.outgoing(cx);
+        if let Err(error) = outgoing.recipients() {
+            composer.error = Some(error.to_string().into());
+            cx.notify();
+            return;
+        }
+        let Some(mut composer) = self.compose.take() else {
+            return;
+        };
+        composer.suggest = None;
+        composer.after_save = Some(After::Schedule(at));
+        let (serial, saving) = (composer.serial, composer.saving);
+        self.parked.push((Parked::Closing, composer));
+        if !saving {
+            self.save_composer(serial, true, cx);
+        }
         self.pending_focus = Some(self.focus.clone());
         cx.notify();
+    }
+
+    fn save_scheduled(&self, cx: &mut Context<Self>) {
+        let (Some(store), scheduled) = (self.store.clone(), self.scheduled.clone()) else {
+            return;
+        };
+        cx.background_executor()
+            .spawn(async move {
+                if store.save("scheduled", &scheduled).is_err() {
+                    eprintln!("nimbra: could not save the send-later list");
+                }
+            })
+            .detach();
+    }
+
+    /// Checks for scheduled messages that are due, every 20 seconds while Nimbra runs.
+    fn watch_schedule(&mut self, cx: &mut Context<Self>) {
+        self.send_due(cx);
+        if self.schedule_watch {
+            return;
+        }
+        self.schedule_watch = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(20))
+                    .await;
+                if this.update(cx, |this, cx| this.send_due(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn send_due(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.gmail.clone() else {
+            return;
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let due: Vec<Scheduled> = self
+            .scheduled
+            .iter()
+            .filter(|s| s.at_ms <= now && !self.sending_scheduled.contains(&s.draft_id))
+            .cloned()
+            .collect();
+        for item in due {
+            self.sending_scheduled.insert(item.draft_id.clone());
+            let client = client.clone();
+            cx.spawn(async move |this, cx| {
+                let id = item.draft_id.clone();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { client.send_saved_draft(&id) })
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.sending_scheduled.remove(&item.draft_id);
+                    let done = match &result {
+                        Ok(()) => {
+                            this.notice = Some(
+                                format!("Scheduled message sent: {}", short(&item.subject, 40))
+                                    .into(),
+                            );
+                            true
+                        }
+                        // The draft was sent or deleted elsewhere.
+                        Err(error) if error.to_string().contains("404") => {
+                            this.notice = Some(
+                                format!(
+                                    "“{}” was not sent: its draft is gone.",
+                                    short(&item.subject, 40)
+                                )
+                                .into(),
+                            );
+                            true
+                        }
+                        // Offline and the like: try again on the next check.
+                        Err(_) => false,
+                    };
+                    if done {
+                        this.scheduled.retain(|s| s.draft_id != item.draft_id);
+                        this.save_scheduled(cx);
+                        if matches!(this.mailbox, View::Sent | View::Drafts) {
+                            this.refresh(cx);
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
     }
 
     fn focus_field(&mut self, field: Field, cursor: Option<usize>, cx: &mut Context<Self>) {
         let Some(composer) = &self.compose else {
             return;
         };
-        let input = match field {
-            Field::To => composer.to.clone(),
-            Field::Subject => composer.subject.clone(),
-            Field::Line(index) => match composer.lines.get(index) {
-                Some(line) => line.clone(),
-                None => return,
-            },
+        let Some(input) = composer.input(field) else {
+            return;
         };
+        if let Some(composer) = &mut self.compose
+            && composer.suggest.as_ref().is_some_and(|s| s.field != field)
+        {
+            composer.suggest = None;
+        }
         if let Some(cursor) = cursor {
             input.update(cx, |input, cx| {
                 let text = input.text();
@@ -2545,14 +3357,35 @@ impl Nimbra {
         let Some(line_count) = self.compose.as_ref().map(|c| c.lines.len()) else {
             return;
         };
+        let show_cc = self.compose.as_ref().is_some_and(|c| c.show_cc);
+        let suggesting = self
+            .compose
+            .as_ref()
+            .and_then(|c| c.suggest.as_ref())
+            .is_some_and(|s| s.field == field);
         match (field, event) {
+            (_, InputEvent::Enter | InputEvent::Tab) if suggesting => {
+                self.accept_suggestion(None, cx)
+            }
+            (_, InputEvent::Down) if suggesting => self.move_suggestion(1, cx),
+            (_, InputEvent::Up) if suggesting => self.move_suggestion(-1, cx),
             (Field::To, InputEvent::Enter | InputEvent::Tab | InputEvent::Down) => {
+                self.focus_field(if show_cc { Field::Cc } else { Field::Subject }, None, cx)
+            }
+            (Field::Cc, InputEvent::Enter | InputEvent::Tab | InputEvent::Down) => {
+                self.focus_field(Field::Bcc, None, cx)
+            }
+            (Field::Bcc, InputEvent::Enter | InputEvent::Tab | InputEvent::Down) => {
                 self.focus_field(Field::Subject, None, cx)
             }
+            (Field::Cc, InputEvent::Up) => self.focus_field(Field::To, None, cx),
+            (Field::Bcc, InputEvent::Up) => self.focus_field(Field::Cc, None, cx),
             (Field::Subject, InputEvent::Enter | InputEvent::Tab | InputEvent::Down) => {
                 self.focus_field(Field::Line(0), None, cx)
             }
-            (Field::Subject, InputEvent::Up) => self.focus_field(Field::To, None, cx),
+            (Field::Subject, InputEvent::Up) => {
+                self.focus_field(if show_cc { Field::Bcc } else { Field::To }, None, cx)
+            }
             (Field::Line(0), InputEvent::Up) => self.focus_field(Field::Subject, None, cx),
             (Field::Line(index), InputEvent::Up) => {
                 let cursor = self
@@ -2605,73 +3438,54 @@ impl Nimbra {
         }
     }
 
-    /// Sends what was written. Only ever runs from the Send button or its shortcut.
+    /// Sends what was written, after a few seconds in which it can be undone. Only ever
+    /// runs from the Send button or its shortcut.
     fn send_mail(&mut self, cx: &mut Context<Self>) {
+        let demo = self.gmail.is_none();
         let Some(composer) = &mut self.compose else {
             return;
         };
         if composer.sending {
             return;
         }
-        let outgoing = gmail::Outgoing {
-            to: composer.to.read(cx).text(),
-            subject: composer.subject.read(cx).text(),
-            body: composer.body(cx),
-            reply: composer.reply.clone(),
-        };
-        let draft_id = composer.draft_id.clone();
+        let outgoing = composer.outgoing(cx);
         if let Err(error) = outgoing.recipients() {
             composer.error = Some(error.to_string().into());
             cx.notify();
             return;
         }
-        if outgoing.subject.trim().is_empty() && outgoing.body.trim().is_empty() {
+        if outgoing.subject.trim().is_empty()
+            && outgoing.body.trim().is_empty()
+            && outgoing.files.is_empty()
+        {
             composer.error = Some("Write a subject or a message first.".into());
             cx.notify();
             return;
         }
-        let Some(client) = self.gmail.clone() else {
+        if outgoing.attachment_size() > gmail::ATTACHMENT_LIMIT {
+            composer.error = Some("Attachments can be 25 MB in total.".into());
+            cx.notify();
+            return;
+        }
+        if demo {
             // Sample data: nothing leaves this computer.
-            self.close_compose(cx);
+            self.compose = None;
+            self.pending_focus = Some(self.focus.clone());
             self.notice = Some("Sample mode: the message was not sent anywhere.".into());
+            cx.notify();
+            return;
+        }
+        let Some(mut composer) = self.compose.take() else {
             return;
         };
-        composer.sending = true;
+        composer.suggest = None;
         composer.error = None;
+        let serial = composer.serial;
+        self.parked.push((Parked::Sending, composer));
+        self.pending_focus = Some(self.focus.clone());
+        self.offer_undo("Sending…", cx);
+        self.finish_parked_later(serial, UNDO_DELAY, cx);
         cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    match draft_id {
-                        Some(id) => client.send_draft(&id, &outgoing),
-                        None => client.send_message(&outgoing),
-                    }
-                })
-                .await;
-            this.update(cx, |this, cx| match result {
-                Ok(()) => {
-                    this.close_compose(cx);
-                    this.notice = Some("Message sent.".into());
-                    if matches!(this.mailbox, View::Sent | View::Drafts) {
-                        this.refresh(cx);
-                    }
-                }
-                Err(error) if error.is::<gmail::SignedOut>() => {
-                    this.compose = None;
-                    this.fail(error, cx);
-                }
-                Err(error) => {
-                    if let Some(composer) = &mut this.compose {
-                        composer.sending = false;
-                        composer.error = Some(error.to_string().into());
-                    }
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
     }
 
     /// Fetches the remote images of a message after the user asked for them.
@@ -3145,6 +3959,21 @@ impl Nimbra {
     /// `Z`: brings back the last thread that was archived, moved or trashed.
     fn undo(&mut self, cx: &mut Context<Self>) {
         self.close_undo(cx);
+        // A message being sent or a discarded draft comes back first.
+        if self.compose.is_none()
+            && let Some(serial) = self
+                .parked
+                .iter()
+                .rev()
+                .find(|(kind, _)| matches!(kind, Parked::Sending | Parked::Discarded))
+                .map(|(_, c)| c.serial)
+        {
+            if let Some(composer) = self.composer_mut(serial) {
+                composer.error = None;
+            }
+            self.unpark(serial, cx);
+            return;
+        }
         let Some(index) = self.history.pop() else {
             return;
         };
@@ -5288,8 +6117,8 @@ impl Nimbra {
                 cx.notify();
             }));
         Some(match menu {
-            // Row menus only exist as pop-up windows.
-            Menu::Row(_) => return None,
+            // Row and Send later menus only exist as pop-up windows.
+            Menu::Row(_) | Menu::SendLater => return None,
             Menu::Labels => {
                 let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
                 panel
@@ -5358,7 +6187,10 @@ impl Nimbra {
                 d.w_full()
             }
         };
-        let field = |label: &str, input: &Entity<TextInput>| {
+        let field = |label: &str,
+                     input: &Entity<TextInput>,
+                     trailing: Option<AnyElement>,
+                     below: Option<AnyElement>| {
             div()
                 .flex()
                 .justify_center()
@@ -5366,6 +6198,7 @@ impl Nimbra {
                 .border_color(t.border)
                 .child(
                     column(div())
+                        .relative()
                         .flex()
                         .items_center()
                         .gap(px(12.))
@@ -5384,13 +6217,164 @@ impl Nimbra {
                                 .min_w(px(0.))
                                 .text_size(px(14.))
                                 .child(input.clone()),
-                        ),
+                        )
+                        .children(trailing)
+                        .children(below),
                 )
         };
+        // "Cc Bcc" opens the two extra recipient fields.
+        let cc_toggle = (!composer.show_cc).then(|| {
+            let (dim, bright) = (t.text3, t.text);
+            div()
+                .id("show-cc")
+                .flex_none()
+                .text_color(dim)
+                .cursor_pointer()
+                .hover(move |s| s.text_color(bright))
+                .child("Cc Bcc")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(composer) = &mut this.compose {
+                        composer.show_cc = true;
+                        let cc = composer.cc.clone();
+                        this.pending_focus = Some(cc.read(cx).focus_handle(cx));
+                        cx.notify();
+                    }
+                }))
+                .into_any_element()
+        });
+        // Address suggestions, drawn over whatever is below the field.
+        let mut dropdown: Option<(Field, AnyElement)> = composer.suggest.as_ref().map(|s| {
+            let list = div()
+                .absolute()
+                .top(px(40.))
+                .left(px(88.))
+                .w(px(380.))
+                .occlude()
+                .flex()
+                .flex_col()
+                .p(px(4.))
+                .rounded(px(10.))
+                .bg(t.raised)
+                .border_1()
+                .border_color(t.border_strong)
+                .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
+                .children(s.people.iter().enumerate().map(|(i, p)| {
+                    let hover = t.hover;
+                    div()
+                        .id(("suggest", i))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(8.))
+                        .py(px(6.))
+                        .rounded(px(7.))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .when(i == s.selected, |d| d.bg(t.hover))
+                        .child(avatar(
+                            crate::data::tone_for(p.label()),
+                            &crate::data::initials(p.label()),
+                            24.,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(short(p.label(), 44))
+                                .when(!p.name.is_empty(), |d| {
+                                    d.child(meta(short(&p.address, 50), t.text3))
+                                }),
+                        )
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.accept_suggestion(Some(i), cx)),
+                        )
+                }));
+            (
+                s.field,
+                gpui::deferred(list).with_priority(2).into_any_element(),
+            )
+        });
+        let mut drop_for = |f: Field| -> Option<AnyElement> {
+            if dropdown.as_ref().is_some_and(|(field, _)| *field == f) {
+                dropdown.take().map(|(_, el)| el)
+            } else {
+                None
+            }
+        };
+        // Attached files, each with a button to take it off.
+        let chip = |id: usize, name: &str, size: u64| {
+            let hover = t.hover;
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .pl(px(10.))
+                .pr(px(4.))
+                .py(px(4.))
+                .rounded(px(8.))
+                .bg(t.hover)
+                .border_1()
+                .border_color(t.border)
+                .child(icon("clip", 13., t.text3))
+                .child(short(name, 32))
+                .child(meta(file_size(size), t.text3))
+                .child(
+                    div()
+                        .id(("remove-file", id))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(18.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .text_color(t.text3)
+                        .hover(move |s| s.bg(hover))
+                        .child("×"),
+                )
+        };
+        let chips: Vec<AnyElement> = composer
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                chip(i, &f.name, f.bytes.len() as u64)
+                    .id(("file-chip", i))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(composer) = &mut this.compose
+                            && i < composer.files.len()
+                        {
+                            composer.files.remove(i);
+                            this.composer_changed(cx);
+                            cx.notify();
+                        }
+                    }))
+                    .into_any_element()
+            })
+            .chain(composer.kept.iter().enumerate().map(|(i, att)| {
+                chip(1000 + i, &att.name, att.size)
+                    .id(("kept-chip", i))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(composer) = &mut this.compose
+                            && i < composer.kept.len()
+                        {
+                            composer.kept.remove(i);
+                            this.composer_changed(cx);
+                            cx.notify();
+                        }
+                    }))
+                    .into_any_element()
+            }))
+            .collect();
+        let accent = t.violet;
         let card = div()
+            .id("compose-card")
             .flex()
             .flex_col()
             .bg(t.raised)
+            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
+                this.attach_files(paths.paths().to_vec(), cx)
+            }))
+            .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.border_color(accent))
             .when(full, |d| d.size_full().bg(t.surface))
             .when(!full, |d| {
                 d.absolute()
@@ -5456,8 +6440,30 @@ impl Nimbra {
                             .child(kbd(t, "esc")),
                     ),
             )
-            .child(field("To", &composer.to))
-            .child(field("Subject", &composer.subject))
+            .child(field("To", &composer.to, cc_toggle, drop_for(Field::To)))
+            .when(composer.show_cc, |d| {
+                d.child(field("Cc", &composer.cc, None, drop_for(Field::Cc)))
+                    .child(field("Bcc", &composer.bcc, None, drop_for(Field::Bcc)))
+            })
+            .child(field("Subject", &composer.subject, None, None))
+            .when(!chips.is_empty(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .justify_center()
+                        .border_b_1()
+                        .border_color(t.border)
+                        .child(
+                            column(div())
+                                .flex()
+                                .flex_wrap()
+                                .gap(px(8.))
+                                .px(px(20.))
+                                .py(px(10.))
+                                .children(chips),
+                        ),
+                )
+            })
             .child(
                 div()
                     .id("compose-body")
@@ -5526,43 +6532,51 @@ impl Nimbra {
                             .px(px(14.))
                             .py(px(12.))
                             .child(
+                                icon_button(t, "clip")
+                                    .id("attach")
+                                    .tooltip(tip(t.dark, "Attach files", ""))
+                                    .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
+                            )
+                            .child(
                                 div()
                                     .flex_1()
-                                    .pl(px(6.))
+                                    .min_w(px(0.))
+                                    .pl(px(4.))
                                     .text_color(if composer.error.is_some() {
                                         t.rose
                                     } else {
                                         t.text3
                                     })
                                     .child(match &composer.error {
-                                        Some(error) => error.clone(),
+                                        Some(error) => short(error, 90),
                                         None if composer.sending => "Sending…".into(),
-                                        None if composer.saving => "Saving draft…".into(),
-                                        None if composer.saved => "Draft saved to Gmail.".into(),
-                                        None => {
-                                            "Sent as plain text from your Gmail address.".into()
+                                        None if composer.saving => "Saving…".into(),
+                                        None if composer.saved => "Saved to Drafts".into(),
+                                        None if self.gmail.is_none() => {
+                                            "Sample mode: nothing is sent.".into()
                                         }
+                                        None => "Drop files here to attach them.".into(),
                                     }),
                             )
                             .child(
-                                button(
-                                    t,
-                                    ButtonKind::Ghost,
-                                    if composer.draft_id.is_some() {
-                                        "Close"
-                                    } else {
-                                        "Discard"
-                                    },
-                                    None,
-                                )
-                                .id("discard")
-                                .on_click(cx.listener(|this, _, _, cx| this.close_compose(cx))),
+                                icon_button(t, "trash")
+                                    .id("discard")
+                                    .tooltip(tip(t.dark, "Discard draft", ""))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.discard_compose(cx)),
+                                    ),
                             )
                             .child(
-                                button(t, ButtonKind::Secondary, "Save draft", Some("⌘S"))
-                                    .id("save-draft")
-                                    .when(composer.saving, |d| d.opacity(0.5))
-                                    .on_click(cx.listener(|this, _, _, cx| this.save_draft(cx))),
+                                button(t, ButtonKind::Secondary, "Send later", None)
+                                    .id("send-later")
+                                    .tooltip(tip(
+                                        t.dark,
+                                        "Sent from this Mac while Nimbra is running",
+                                        "",
+                                    ))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_menu(Menu::SendLater, window, cx)
+                                    })),
                             )
                             .child(
                                 button(t, ButtonKind::Primary, "Send", Some("⌘↵"))
@@ -6078,6 +7092,10 @@ impl Render for Nimbra {
             }))
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
                 if this.menu.take().is_some() {
+                    cx.notify();
+                } else if let Some(composer) = this.compose.as_mut()
+                    && composer.suggest.take().is_some()
+                {
                     cx.notify();
                 } else if this.compose.is_some() {
                     this.close_compose(cx);
