@@ -211,7 +211,10 @@ pub fn merge(cached: &[Mail], fresh: Vec<Mail>) -> Vec<Mail> {
     fresh
         .into_iter()
         .map(|mut mail| {
-            if let Some(old) = cached.iter().find(|old| old.loaded && old.id == mail.id)
+            if let Some(old) = cached
+                .iter()
+                // Thread ids are each account's own (All inboxes mixes accounts).
+                .find(|old| old.loaded && old.id == mail.id && old.account == mail.account)
                 && old.snippet == mail.snippet
                 && old.thread == mail.thread
             {

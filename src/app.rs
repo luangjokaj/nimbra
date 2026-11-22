@@ -765,6 +765,16 @@ fn record(view: View) -> String {
     format!("view-{}", view_key(view))
 }
 
+/// A thread, wherever it is in a list: its key and its account.
+type ThreadKey = (String, String);
+
+/// What a menu or panel that acts on threads was opened for: the mailbox and the threads.
+#[derive(Clone)]
+struct MeantFor {
+    mailbox: View,
+    threads: Vec<ThreadKey>,
+}
+
 /// The message a reply or forward is about.
 struct Source {
     subject: String,
@@ -1123,6 +1133,14 @@ pub struct Nimbra {
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
+    /// What the open menu, the snooze panel and the label sheet were opened for. A refresh
+    /// can move or remove rows under each, so they check before acting (see `still_meant`).
+    menu_for: Option<MeantFor>,
+    palette_for: Option<MeantFor>,
+    label_for: Option<MeantFor>,
+    /// The labels and account ids the open menu lists, as it lists them.
+    menu_labels: Vec<gmail::Label>,
+    menu_accounts: Vec<String>,
     /// The "Undo" pill shown after a thread is removed, in a window of its own so it
     /// floats above the email's web view; `undo_gen` restarts its timer.
     undo_window: Option<gpui::WindowHandle<UndoToast>>,
@@ -1358,6 +1376,11 @@ impl Nimbra {
             hint: None,
             menu_at: (0., 0.),
             row_actions: Vec::new(),
+            menu_for: None,
+            palette_for: None,
+            label_for: None,
+            menu_labels: Vec::new(),
+            menu_accounts: Vec::new(),
             menu_window: None,
             undo_window: None,
             undo_gen: 0,
@@ -2137,6 +2160,7 @@ impl Nimbra {
             return;
         }
         self.remember_mailbox();
+        self.picked.clear();
         // Results are never cached: every search is fetched fresh.
         self.cache.remove(&View::Search);
         self.query = query;
@@ -2152,6 +2176,7 @@ impl Nimbra {
             self.mails.clear();
             self.done.clear();
             self.history.clear();
+            self.history_groups.clear();
             self.selected = 0;
             // A result clicked in the search panel is listed (and opened) straight away, so
             // only the reading pane loads instead of the whole window.
@@ -2177,17 +2202,31 @@ impl Nimbra {
     }
 
     /// Saves the current listing (minus threads cleared from it) for a later return.
-    fn remember_mailbox(&mut self) {
-        if self.is_demo() || self.status != Status::Ready {
-            return;
+    /// The thread left the undo history by itself (back with a newer message, or Gmail
+    /// refused the change).
+    fn forget_cleared(&mut self, position: usize, cx: &mut Context<Self>) {
+        // The Undo pill is for the last one: it must not undo the one before instead.
+        if position + 1 == self.history.len() {
+            self.close_undo(cx);
         }
-        let kept = self
-            .mails
+        crate::listing::forget(&mut self.history, &mut self.history_groups, position);
+    }
+
+    /// The list as it is kept for the mailbox: without the threads cleared from it.
+    fn listed(&self) -> Vec<Mail> {
+        self.mails
             .iter()
             .zip(&self.done)
             .filter(|(_, done)| !**done)
             .map(|(mail, _)| mail.clone())
-            .collect();
+            .collect()
+    }
+
+    fn remember_mailbox(&mut self) {
+        if self.is_demo() || self.status != Status::Ready {
+            return;
+        }
+        let kept = self.listed();
         if self.mailbox != View::Search {
             self.cache.insert(self.mailbox, kept);
         }
@@ -2199,6 +2238,7 @@ impl Nimbra {
             return;
         }
         self.remember_mailbox();
+        self.picked.clear();
         self.mailbox = view;
         self.back.clear();
         self.forward.clear();
@@ -2222,6 +2262,7 @@ impl Nimbra {
             self.mails = known.clone().unwrap_or_default();
             self.done = vec![false; self.mails.len()];
             self.history.clear();
+            self.history_groups.clear();
             self.selected = 0;
             if known.is_some() {
                 self.status = Status::Ready;
@@ -2362,13 +2403,21 @@ impl Nimbra {
             return;
         }
         // Each thread with its own account's connection (All inboxes mixes accounts).
-        let (ids, clients): (Vec<String>, Vec<Arc<gmail::Client>>) = self
-            .visible()
-            .into_iter()
-            .filter(|i| self.mails.get(*i).is_some_and(|mail| !mail.loaded))
-            .filter_map(|i| Some((self.mails[i].id.clone()?, self.client_at(i)?)))
-            .take(AHEAD)
-            .unzip();
+        let mut ids = Vec::new();
+        let mut accounts = Vec::new();
+        let mut clients = Vec::new();
+        for i in self.visible() {
+            if ids.len() == AHEAD {
+                break;
+            }
+            if let Some(mail) = self.mails.get(i).filter(|mail| !mail.loaded)
+                && let (Some(id), Some(client)) = (mail.id.clone(), self.client_at(i))
+            {
+                ids.push(id);
+                accounts.push(self.account_of(mail).to_string());
+                clients.push(client);
+            }
+        }
         if ids.is_empty() {
             return;
         }
@@ -2396,6 +2445,7 @@ impl Nimbra {
                         }
                     });
                     ids.into_iter()
+                        .zip(accounts)
                         .zip(results.into_iter().flatten())
                         .collect::<Vec<_>>()
                 })
@@ -2407,15 +2457,13 @@ impl Nimbra {
                 }
                 this.prefetching = false;
                 let mut filled = 0;
-                for (id, result) in fetched {
+                for ((id, account), result) in fetched {
                     match result {
                         Ok(messages) => {
-                            if let Some(mail) = this
-                                .mails
-                                .iter_mut()
-                                .find(|m| m.id.as_deref() == Some(id.as_str()) && !m.loaded)
+                            if let Some(row) = this.row_of(&id, &account)
+                                && !this.mails[row].loaded
                             {
-                                mail.fill(messages);
+                                this.mails[row].fill(messages);
                                 filled += 1;
                             }
                         }
@@ -2430,7 +2478,7 @@ impl Nimbra {
                 if filled > 0 && this.mailbox == view {
                     // Count only; never log subjects or addresses.
                     eprintln!("nimbra: prefetched {filled} threads");
-                    this.cache.insert(view, this.mails.clone());
+                    this.cache.insert(view, this.listed());
                     this.persist(cx);
                     cx.notify();
                 }
@@ -3114,6 +3162,9 @@ impl Nimbra {
         self.parked.clear();
         self.compose = None;
         self.picked.clear();
+        // Asked about the other account's threads and labels, whose ids mean others here.
+        self.confirm = None;
+        self.new_label = None;
         self.next_page = None;
         self.back.clear();
         self.forward.clear();
@@ -3515,22 +3566,32 @@ impl Nimbra {
                 fresh.push(mail);
             }
         }
-        let open_id = self.mails.get(self.selected).and_then(|m| m.id.clone());
-        // Threads cleared while this request was in flight must stay cleared.
-        let cleared: Vec<Option<String>> = self
-            .history
-            .iter()
-            .filter_map(|i| self.mails.get(*i).map(|m| m.id.clone()))
-            .collect();
-        self.mails = crate::data::merge(&self.mails, fresh);
-        let position = |id: &Option<String>| self.mails.iter().position(|m| &m.id == id);
-        self.history = cleared.iter().filter_map(position).collect();
-        self.selected = position(&open_id)
-            .filter(|_| open_id.is_some())
-            .unwrap_or(0);
+        // Everything kept by position follows its thread into the new list.
+        let relisted = crate::listing::relist(
+            &self.mails,
+            fresh,
+            &self.history,
+            |m| self.thread_key(m),
+            |m| m.timestamp_ms,
+        );
+        self.mails = crate::data::merge(&self.mails, relisted.list);
+        let now = |row: usize| relisted.moved.get(row).copied().flatten();
+        for &position in relisted.back.iter().rev() {
+            self.forget_cleared(position, cx);
+        }
+        // All found: a cleared thread is never dropped from the list.
+        self.history = self.history.iter().filter_map(|&row| now(row)).collect();
         self.done = vec![false; self.mails.len()];
         for i in &self.history {
             self.done[*i] = true;
+        }
+        self.picked = self.picked.iter().filter_map(|&row| now(row)).collect();
+        self.selected = now(self.selected).unwrap_or(0);
+        // One picked row left is simply the open one (as when ⌘-click leaves one).
+        if self.picked.len() < 2
+            && let Some(only) = self.picked.pop_first()
+        {
+            self.selected = only;
         }
         if self.done.get(self.selected) == Some(&true) {
             self.selected = self.visible().first().copied().unwrap_or(0);
@@ -3539,7 +3600,7 @@ impl Nimbra {
         self.forward.clear();
         self.notice = None;
         self.status = Status::Ready;
-        self.cache.insert(self.mailbox, self.mails.clone());
+        self.cache.insert(self.mailbox, self.listed());
         self.persist(cx);
         self.prefetch(cx);
         let opened = self.search_opened.take();
@@ -3552,6 +3613,9 @@ impl Nimbra {
             // Not in Gmail's results (another folder, or further down): kept at the top.
             self.mails.insert(0, mail);
             self.done.insert(0, false);
+            self.history.iter_mut().for_each(|row| *row += 1);
+            self.picked = self.picked.iter().map(|row| row + 1).collect();
+            self.selected += 1;
             self.open(0);
             self.open_selected(cx);
         }
@@ -3608,6 +3672,7 @@ impl Nimbra {
             return;
         };
         let generation = self.account_gen;
+        let account = self.account_of(mail).to_string();
         cx.spawn(async move |this, cx| {
             let thread_id = id.clone();
             let result = cx
@@ -3622,9 +3687,8 @@ impl Nimbra {
                 match result {
                     Ok(messages) => {
                         // The inbox may have been reloaded meanwhile, so look the thread up again.
-                        if let Some(mail) =
-                            this.mails.iter_mut().find(|m| m.id.as_deref() == Some(&id))
-                        {
+                        if let Some(row) = this.row_of(&id, &account) {
+                            let mail = &mut this.mails[row];
                             mail.fill(messages);
                             this.persist(cx);
                             cx.notify();
@@ -3652,6 +3716,7 @@ impl Nimbra {
             .get(index)
             .and_then(|m| m.account.as_deref())
             .is_some_and(|a| a != self.account_id);
+        let account = self.account_of(&self.mails[index]).to_string();
         cx.spawn(async move |this, cx| {
             let thread_id = id.clone();
             let result = cx
@@ -3669,10 +3734,12 @@ impl Nimbra {
                     this.went_offline(cx);
                     return;
                 }
-                // Only roll back if this row is still the same thread.
-                if removed && this.mails.get(index).and_then(|m| m.id.as_deref()) == Some(&id) {
-                    this.done[index] = false;
-                    this.history.retain(|i| *i != index);
+                // Put back wherever the thread is by now.
+                if removed && let Some(row) = this.row_of(&id, &account) {
+                    this.done[row] = false;
+                    if let Some(position) = this.history.iter().rposition(|i| *i == row) {
+                        this.forget_cleared(position, cx);
+                    }
                 }
                 this.fail(error, cx);
             })
@@ -4167,7 +4234,9 @@ impl Nimbra {
             return None;
         }
         let mail = self.mails.get(self.selected)?;
-        let key = format!("{}:{}", self.selected, mail.id.clone().unwrap_or_default());
+        // Not the row: new mail would load the email again, undoing Block images.
+        let (thread, account) = self.thread_key(mail);
+        let key = format!("{account}:{thread}");
         Some((key, mail.html.clone()?))
     }
 
@@ -4267,6 +4336,22 @@ impl Nimbra {
         if just_dismissed {
             return;
         }
+        self.menu_for = match menu {
+            Menu::Row(index) => Some(self.meant_for(&[index])),
+            Menu::Labels | Menu::MoveTo | Menu::More => Some(self.meant_for(&self.targets())),
+            _ => None,
+        };
+        self.menu_labels = match menu {
+            Menu::Labels => self.labels.iter().take(12).cloned().collect(),
+            Menu::Label(index) => self.labels.get(index).cloned().into_iter().collect(),
+            _ => Vec::new(),
+        };
+        self.menu_accounts = self
+            .settings
+            .accounts
+            .iter()
+            .map(|a| a.id.clone())
+            .collect();
         let t = self.theme();
         let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
         let items: Vec<(&'static str, SharedString, Hsla)> = match menu {
@@ -4547,21 +4632,45 @@ impl Nimbra {
 
     fn menu_choice(&mut self, menu: Menu, index: usize, cx: &mut Context<Self>) {
         self.menu_window = None;
+        self.menu = None;
+        // Whatever a menu shows may have moved or gone while it was open (new mail, a label
+        // made elsewhere): nothing here trusts a position from when it opened.
+        let meant = self.menu_for.clone();
+        if matches!(menu, Menu::Labels | Menu::MoveTo | Menu::More) && !self.still_meant(&meant, cx)
+        {
+            return;
+        }
         match (menu, index) {
-            (Menu::Labels, index) if index == self.labels.len().min(12) => self.open_new_label(cx),
-            (Menu::Labels, index) => self.apply_label(index, cx),
-            (Menu::Label(label), 0) => self.open_rename_label(label, cx),
-            (Menu::Label(label), _) => {
-                if let Some(l) = self.labels.get(label) {
-                    self.confirm = Some(Ask::DeleteLabel(l.id.clone(), l.name.clone()));
+            (Menu::Labels, index) if index == self.menu_labels.len() => self.open_new_label(cx),
+            (Menu::Labels, index) => {
+                let id = self.menu_labels.get(index).map(|l| l.id.clone());
+                match self.labels.iter().position(|l| Some(&l.id) == id.as_ref()) {
+                    Some(now) => self.apply_label(now, cx),
+                    None => self.list_changed(cx),
+                }
+            }
+            (Menu::Label(_), choice) => {
+                let Some(label) = self.menu_labels.first().cloned() else {
+                    return;
+                };
+                let Some(now) = self.labels.iter().position(|l| l.id == label.id) else {
+                    self.list_changed(cx);
+                    return;
+                };
+                if choice == 0 {
+                    self.open_rename_label(now, cx);
+                } else {
+                    self.confirm = Some(Ask::DeleteLabel(label.id, label.name));
                     cx.notify();
                 }
             }
             (Menu::Accounts, index) => {
-                let accounts = self.settings.accounts.len();
+                let accounts = self.menu_accounts.len();
                 if index < accounts {
-                    let id = self.settings.accounts[index].id.clone();
-                    self.switch_account(id, cx);
+                    let id = self.menu_accounts[index].clone();
+                    if self.settings.accounts.iter().any(|a| a.id == id) {
+                        self.switch_account(id, cx);
+                    }
                 } else if index == accounts {
                     self.add_account(cx);
                 } else {
@@ -4581,8 +4690,19 @@ impl Nimbra {
                     self.schedule_send(at, cx);
                 }
             }
-            (Menu::Row(row), index) => {
-                if let Some(action) = self.row_actions.get(index).copied() {
+            (Menu::Row(_), index) => {
+                let Some(action) = self.row_actions.get(index).copied() else {
+                    return;
+                };
+                let Some(meant) = meant else { return };
+                // Its actions are those of the mailbox it was opened in.
+                if meant.mailbox != self.mailbox {
+                    self.list_changed(cx);
+                    return;
+                }
+                if let Some((key, account)) = meant.threads.first()
+                    && let Some(row) = self.row_to_act_on(key, account, cx)
+                {
                     self.row_action(row, action, cx);
                 }
             }
@@ -5667,7 +5787,7 @@ impl Nimbra {
                             action("bulk-snooze", "clock", "Snooze").on_click(cx.listener(
                                 |this, _, _, cx| {
                                     this.snooze_choices = Self::snooze_choices();
-                                    this.palette = true;
+                                    this.open_palette();
                                     this.palette_sel = 0;
                                     cx.notify();
                                 },
@@ -5740,7 +5860,7 @@ impl Nimbra {
                             .collect();
                         this.done.extend(std::iter::repeat_n(false, fresh.len()));
                         this.mails.extend(fresh);
-                        this.cache.insert(this.mailbox, this.mails.clone());
+                        this.cache.insert(this.mailbox, this.listed());
                         this.persist(cx);
                     }
                     Err(error) => this.fail(error, cx),
@@ -5780,6 +5900,50 @@ impl Nimbra {
         self.mails
             .iter()
             .position(|m| message_window::key_of(m) == key && self.account_of(m) == account)
+    }
+
+    fn thread_key(&self, mail: &Mail) -> ThreadKey {
+        (
+            message_window::key_of(mail),
+            self.account_of(mail).to_string(),
+        )
+    }
+
+    /// These rows' threads, to find or compare later, when rows may have moved.
+    fn meant_for(&self, rows: &[usize]) -> MeantFor {
+        let mut threads: Vec<ThreadKey> = rows
+            .iter()
+            .filter_map(|&i| Some(self.thread_key(self.mails.get(i)?)))
+            .collect();
+        threads.sort();
+        MeantFor {
+            mailbox: self.mailbox,
+            threads,
+        }
+    }
+
+    /// Whether an action on the open or picked threads would still reach the ones `meant`.
+    /// If not, a notice says so, and nothing is to be done.
+    fn still_meant(&mut self, meant: &Option<MeantFor>, cx: &mut Context<Self>) -> bool {
+        let now = self.meant_for(&self.targets());
+        let same = meant
+            .as_ref()
+            .is_some_and(|m| m.mailbox == now.mailbox && m.threads == now.threads);
+        if !same {
+            self.list_changed(cx);
+        }
+        same
+    }
+
+    fn list_changed(&mut self, cx: &mut Context<Self>) {
+        self.notice = Some("The list changed meanwhile, so nothing was done.".into());
+        cx.notify();
+    }
+
+    /// The snooze panel, for the threads open or picked now.
+    fn open_palette(&mut self) {
+        self.palette = true;
+        self.palette_for = Some(self.meant_for(&self.targets()));
     }
 
     /// The same, for acting on it: it has to still be listed, or a notice says why not.
@@ -5833,6 +5997,7 @@ impl Nimbra {
 
     /// Opens the New label sheet (from the Labels menu: also labels the open thread).
     fn open_new_label(&mut self, cx: &mut Context<Self>) {
+        self.label_for = Some(self.meant_for(&self.targets()));
         self.open_label_sheet(LabelSheet::New { apply: true }, cx);
     }
 
@@ -5889,24 +6054,30 @@ impl Nimbra {
             .position(|l| l.name.eq_ignore_ascii_case(&name))
         {
             self.close_new_label(cx);
-            if apply {
+            let meant = self.label_for.clone();
+            if apply && self.still_meant(&meant, cx) {
                 self.apply_label(existing, cx);
             }
             return;
         }
         self.close_new_label(cx);
+        let (meant, generation) = (self.label_for.clone(), self.account_gen);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { client.create_label(&name) })
                 .await;
             this.update(cx, |this, cx| match result {
+                // The label is in the account it was made in.
+                Ok(_) if this.account_gen != generation => {}
                 Ok(label) => {
                     let id = label.id.clone();
                     let name = label.name.clone();
                     this.change_labels(|labels| labels.push(label));
                     if apply && let Some(index) = this.labels.iter().position(|l| l.id == id) {
-                        this.apply_label(index, cx);
+                        if this.still_meant(&meant, cx) {
+                            this.apply_label(index, cx);
+                        }
                     } else {
                         this.notice = Some(format!("Created “{}”.", short(&name, 30)).into());
                     }
@@ -6326,9 +6497,6 @@ impl Nimbra {
 
     /// Runs one action from a row's right-click menu on that row.
     fn row_action(&mut self, row: usize, action: RowAction, cx: &mut Context<Self>) {
-        if !self.visible().contains(&row) {
-            return;
-        }
         match action {
             RowAction::MarkRead => self.set_unread(row, false, cx),
             RowAction::MarkUnread => self.set_unread(row, true, cx),
@@ -6342,18 +6510,25 @@ impl Nimbra {
                 };
                 self.sync(row, change, false, cx);
             }
-            // These take the row out of the list, which works on the open thread.
             RowAction::Done
             | RowAction::MoveToInbox
             | RowAction::Trash
             | RowAction::DeleteForever
             | RowAction::ReportSpam => {
-                self.selected = row;
-                self.picked.clear();
+                // That row alone. Only if it is the open one does the next open, as with E;
+                // any other leaves what is open as it is, and nothing else is marked read.
+                let open = row == self.selected && self.picked.len() < 2;
                 match action {
-                    RowAction::Trash | RowAction::DeleteForever => self.trash(cx),
-                    RowAction::ReportSpam => self.remove_selected(gmail::Change::Spam, cx),
-                    _ => self.mark_done(cx),
+                    RowAction::Trash | RowAction::DeleteForever => {
+                        self.trash_thread(row, cx);
+                    }
+                    RowAction::ReportSpam => self.remove_thread(row, gmail::Change::Spam, cx),
+                    _ => {
+                        self.done_thread(row, cx);
+                    }
+                }
+                if open && self.done[row] {
+                    self.open_selected(cx);
                 }
             }
             RowAction::OpenInGmail => {
@@ -7664,6 +7839,10 @@ impl Nimbra {
     /// on a real mailbox it must not archive anything, so it just says so.
     fn run_command(&mut self, cx: &mut Context<Self>) {
         self.palette = false;
+        let meant = self.palette_for.clone();
+        if meant.is_some() && !self.still_meant(&meant, cx) {
+            return;
+        }
         if self.is_demo() {
             self.mark_done(cx);
         } else if let Some(choice) = self.snooze_choices.get(self.palette_sel).cloned() {
@@ -7792,6 +7971,8 @@ impl Nimbra {
         self.mails.clear();
         self.done.clear();
         self.history.clear();
+        self.picked.clear();
+        self.history_groups.clear();
         self.back.clear();
         self.forward.clear();
         self.scheduled.clear();
@@ -7852,6 +8033,8 @@ impl Nimbra {
             self.mails.clear();
             self.done.clear();
             self.history.clear();
+            self.picked.clear();
+            self.history_groups.clear();
             self.back.clear();
             self.forward.clear();
             self.selected = 0;
@@ -8258,6 +8441,8 @@ impl Nimbra {
         }
         self.done.fill(false);
         self.history.clear();
+        self.picked.clear();
+        self.history_groups.clear();
         self.back.clear();
         self.forward.clear();
         self.selected = 0;
@@ -9633,8 +9818,9 @@ impl Nimbra {
             SharedString::default()
         };
 
+        let (key, account) = self.thread_key(m);
         div()
-            .id(("row", i))
+            .id(SharedString::from(format!("row:{account}:{key}")))
             .press(t)
             .relative()
             .flex()
@@ -9802,7 +9988,7 @@ impl Nimbra {
                                                     this.picked.clear();
                                                     this.snooze_choices = Self::snooze_choices();
                                                     this.palette_sel = 0;
-                                                    this.palette = true;
+                                                    this.open_palette();
                                                     cx.notify();
                                                 })),
                                         )
@@ -9818,7 +10004,7 @@ impl Nimbra {
                                                     this.selected = i;
                                                     this.picked.clear();
                                                     if this.is_demo() {
-                                                        this.palette = true;
+                                                        this.open_palette();
                                                         this.palette_sel = 0;
                                                         cx.notify();
                                                         return;
@@ -10561,7 +10747,7 @@ impl Nimbra {
                                 this.set_hint(*hovered, "Snooze", "H", cx)
                             }))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.palette = true;
+                                this.open_palette();
                                 cx.notify();
                             })),
                     )
@@ -11940,24 +12126,24 @@ impl Nimbra {
                                     short(&label.name, 28),
                                     tints[index % tints.len()],
                                 )
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.apply_label(index, cx)),
-                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| this.menu_choice(Menu::Labels, index, cx),
+                                ))
                             }),
                     )
             }
-            Menu::More => panel
-                .right(px(20.))
-                .child(
-                    item(0, "inbox", "Mark as unread".into(), t.text2)
-                        .on_click(cx.listener(|this, _, _, cx| this.mark_unread(cx))),
-                )
-                .when(!self.is_demo(), |d| {
-                    d.child(
-                        item(1, "link", "Open in Gmail".into(), t.text2)
-                            .on_click(cx.listener(|this, _, _, cx| this.open_in_gmail(cx))),
-                    )
-                }),
+            Menu::More => {
+                panel
+                    .right(px(20.))
+                    .child(item(0, "inbox", "Mark as unread".into(), t.text2).on_click(
+                        cx.listener(|this, _, _, cx| this.menu_choice(Menu::More, 0, cx)),
+                    ))
+                    .when(!self.is_demo(), |d| {
+                        d.child(item(1, "link", "Open in Gmail".into(), t.text2).on_click(
+                            cx.listener(|this, _, _, cx| this.menu_choice(Menu::More, 1, cx)),
+                        ))
+                    })
+            }
         })
     }
 
@@ -13410,7 +13596,11 @@ impl Render for Nimbra {
                 }
             }))
             .on_action(cx.listener(|this, _: &TogglePalette, _, cx| {
-                this.palette = !this.palette && !this.visible().is_empty();
+                if this.palette {
+                    this.palette = false;
+                } else if !this.visible().is_empty() {
+                    this.open_palette();
+                }
                 this.palette_sel = 0;
                 this.snooze_choices = Self::snooze_choices();
                 cx.notify();
@@ -13443,7 +13633,7 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &MenuSearch, _, cx| this.focus_search(cx)))
             .on_action(cx.listener(|this, _: &MenuSnooze, _, cx| {
                 if this.compose.is_none() && !this.visible().is_empty() {
-                    this.palette = true;
+                    this.open_palette();
                     this.palette_sel = 0;
                     this.snooze_choices = Self::snooze_choices();
                     cx.notify();

@@ -8,6 +8,7 @@ mod editor;
 mod erase;
 mod gmail;
 mod input;
+mod listing;
 mod notify;
 mod rich;
 mod settings;

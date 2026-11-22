@@ -224,3 +224,5 @@ inboxes; Windows has no check that a link was clicked (and no build of it exists
 ## Positions, All inboxes, Windows links (2026-11-22)
 
 - [x] Another account's expired sign-in no longer signs out, and wipes, the shown one
+- [x] Nothing acts by a remembered position: menus, picked rows, Undo, snooze panel, label
+      sheet, and late answers from Gmail all follow the thread (id and account)

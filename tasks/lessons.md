@@ -54,5 +54,7 @@
 
 ## Positions and accounts
 
+- A row number is good for one frame. Anything kept longer (a menu, a pick, the history, a
+  closure, a request) keeps the thread's key and account, and is checked when used.
 - An error from a connection says whose it is. Never sign out, wipe or switch on an error
   without checking that it is the shown account's.
