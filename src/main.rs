@@ -14,6 +14,7 @@ mod inspiration;
 mod leaving;
 mod listing;
 mod notify;
+mod quitting;
 mod rich;
 mod scheduled;
 mod sending;
@@ -139,6 +140,7 @@ fn show_main_window(cx: &mut App) {
 fn main() {
     // Before any window builds its pipelines.
     erase::install();
+    quitting::install();
     let app = Application::new().with_assets(Assets);
     // Clicking the Dock icon while the window is hidden brings it back.
     app.on_reopen(show_main_window);

@@ -118,6 +118,10 @@
 - Test copies are never on the user's screen: the scratch GPUI puts them under the wallpaper,
   transparent unless capturing, with no Dock icon. `focus: false` was not enough: the user
   took a test copy's "Scheduled message sent" toast for their own mail.
+- A test copy that only looks hidden can still take the keyboard: the app's own
+  `show_main_window` activated it 20 times while the user worked. Every way forward is
+  patched out in every rig (`blur::set_visible`, `App::activate`); after a run, check
+  launchservicesd's SETFRONT log. Rebuild every old test binary when the rig changes.
 - GPUI's quads add alpha up. Anything see-through laid over see-through material needs the
   compositing underline pipeline (`erase::fade`). Measure a bare column, do not eyeball it.
 
@@ -128,3 +132,5 @@
 - The first account's id is "". Never test an id with `is_empty` for "no account".
 - Test a screen that is shared by the accounts (All inboxes) across an account switch, and
   sample what is drawn while it loads: the state after it settles hid a skeleton.
+- Reread a fix for what it does when repeated: a listing sized by the rows in memory
+  counted hidden ones and grew with every refresh.

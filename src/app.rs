@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use crate::arrival::{Arrival, drop_for};
-use crate::checking::{Asked, Checks, TooSlow, within};
+use crate::checking::{Asked, Checks, within};
 use crate::data::{COMMANDS, Mail, inbox};
 use crate::gmail::{self, View};
 use crate::input::{InputEvent, TextInput};
@@ -416,6 +416,9 @@ const UNDO_DELAY: Duration = Duration::from_secs(6);
 /// The longest quitting waits for what is on its way to Gmail. That is on disk as well.
 const QUIT_WAIT: Duration = Duration::from_secs(30);
 const KEYCHAIN_REFUSED: &str = "Nimbra could not read your sign-in from the Keychain. Nothing was deleted and you are still signed in. Try again, and allow access if macOS asks.";
+const KEYCHAIN_WAIT: Duration = Duration::from_secs(8);
+const KEYCHAIN_WAITING: &str = "macOS may be asking for your password or for permission, perhaps behind another window. Nimbra carries on as soon as it has an answer.";
+const QUIT_WOULD_LOSE: &str = "Nimbra can’t keep your unsent mail: it can’t read its Keychain key. Quit again to quit and lose it.";
 const STORE_UNAVAILABLE: &str = "Nimbra could not open what it keeps on this Mac. Nothing was deleted. Allow Keychain access and reopen Nimbra.";
 
 impl Composer {
@@ -1020,6 +1023,24 @@ pub struct Nimbra {
     /// All inboxes is being listed for the first time, and every account's Inbox was empty
     /// when last saved: what to draw until it is listed.
     all_inboxes_saved_empty: bool,
+    /// Every account was reached by the last All inboxes listing.
+    all_inboxes_reached: bool,
+    /// Each account's next page in All inboxes.
+    all_next: HashMap<String, String>,
+    /// The mailboxes that threads were cleared from since they were last listed whole from
+    /// the top: their page tokens may be off.
+    shifted: HashSet<View>,
+    /// The connected accounts' stores that are not the shown one's: what All inboxes does
+    /// to their mail is kept in them.
+    other_stores: HashMap<String, Arc<crate::store::Store>>,
+    /// The accounts not shown that have changes waiting for a connection.
+    away_waiting: HashSet<String>,
+    /// Whether each account's saved Inbox is empty, as last saved here.
+    inboxes_saved_empty: HashMap<String, bool>,
+    /// Reads of the keychain on their way for the account shown.
+    keychain: Underway,
+    /// One of them is taking long enough to say so.
+    keychain_slow: bool,
     /// Inbox Zero coming up, on a launch that opens on it.
     arrival: Option<Arrival>,
     /// The message whose full header (all recipients, date) is expanded: thread id and
@@ -1095,6 +1116,10 @@ pub struct Nimbra {
     queue: Vec<Arc<Job>>,
     /// Messages between Send and Gmail having them, of every account.
     sends: Vec<Arc<Job>>,
+    /// Not sent, and neither Drafts nor this Mac has them: quitting would lose them.
+    stranded: Vec<Arc<Job>>,
+    /// The offline changes of accounts switched away from that had no store to keep them.
+    homeless: HashMap<String, Vec<(String, gmail::Change)>>,
     /// Changes to threads, until they are settled.
     steps: Steps,
     /// The last notice about mail that was or was not kept or sent: a list arriving does
@@ -1369,6 +1394,14 @@ impl Nimbra {
             inbox_saved_empty: false,
             all_inboxes_whole: false,
             all_inboxes_saved_empty: false,
+            all_inboxes_reached: false,
+            all_next: HashMap::new(),
+            shifted: HashSet::new(),
+            other_stores: HashMap::new(),
+            away_waiting: HashSet::new(),
+            inboxes_saved_empty: HashMap::new(),
+            keychain: Underway::default(),
+            keychain_slow: false,
             arrival: None,
             finder_open: false,
             finder,
@@ -1413,6 +1446,8 @@ impl Nimbra {
             catching_up: HashSet::new(),
             queue: Vec::new(),
             sends: Vec::new(),
+            stranded: Vec::new(),
+            homeless: HashMap::new(),
             steps: Steps::default(),
             must_show: None,
             saves: Underway::default(),
@@ -1660,11 +1695,22 @@ impl Nimbra {
     /// Whether nothing on screen means Inbox Zero, rather than nothing in this mailbox.
     fn is_zero(&self) -> bool {
         match self.mailbox {
-            View::Inbox => true,
-            // Not while mail is filtered away (Unread), unchecked or past an account's first page.
-            View::AllInboxes => self.all_inboxes_whole && self.done.iter().all(|done| *done),
+            View::Inbox if self.is_demo() => true,
+            View::Inbox => self.all_cleared() && !self.next_pages.contains_key(&View::Inbox),
+            // Not while mail is filtered away (Unread), unchecked or past an account's last page.
+            View::AllInboxes => self.all_inboxes_whole && self.all_cleared(),
             _ => false,
         }
+    }
+
+    /// Every thread that is listed was cleared, rather than some being filtered away.
+    fn all_cleared(&self) -> bool {
+        self.done.iter().all(|done| *done)
+    }
+
+    /// Everything listed was cleared and more is on its way: that is loading, not empty.
+    fn next_page_coming(&self) -> bool {
+        !self.is_demo() && self.all_cleared() && self.more().is_some()
     }
 
     /// Still loading what was empty when it was last saved.
@@ -1693,12 +1739,73 @@ impl Nimbra {
     /// Saves the Inbox as soon as it empties or stops being empty. Waiting for the next
     /// check for mail would lose that when Nimbra quits first.
     fn save_if_zero_changed(&mut self, cx: &mut Context<Self>) {
+        self.save_inboxes_from_all(cx);
         if self.mailbox == View::Inbox
             && self.status == Status::Ready
             // Not `visible`: with Unread on, read mail is still in the Inbox.
             && self.done.iter().all(|done| *done) != self.inbox_saved_empty
         {
             self.persist(cx);
+        }
+    }
+
+    /// The same from All inboxes, for each account's Inbox. Only when it lists all of them
+    /// whole: else what is not listed would be saved as gone.
+    fn save_inboxes_from_all(&mut self, cx: &mut Context<Self>) {
+        if self.mailbox != View::AllInboxes
+            || self.status != Status::Ready
+            || !self.all_inboxes_whole
+        {
+            return;
+        }
+        let accounts: Vec<String> = self
+            .settings
+            .accounts
+            .iter()
+            .map(|a| a.id.clone())
+            .collect();
+        for account in accounts {
+            let left = |(mail, done): &(&Mail, &bool)| !**done && self.account_of(mail) == account;
+            let empty = !self.mails.iter().zip(&self.done).any(|row| left(&row));
+            let saved = self
+                .inboxes_saved_empty
+                .get(&account)
+                .copied()
+                .unwrap_or_else(|| {
+                    crate::store::Store::saved_empty(&account, &record(View::Inbox))
+                });
+            let Some(store) = self.store_of(&account).filter(|_| saved != empty) else {
+                self.inboxes_saved_empty.insert(account, saved);
+                continue;
+            };
+            let rows: Vec<Mail> = self
+                .mails
+                .iter()
+                .zip(&self.done)
+                .filter(left)
+                .map(|(mail, _)| Mail {
+                    account: None, // as a store keeps its own account's
+                    ..mail.clone()
+                })
+                .collect();
+            if account == self.account_id {
+                self.inbox_saved_empty = empty;
+                self.cache.insert(View::Inbox, rows.clone());
+                // It was listed whole: a page kept from before is none any more.
+                self.next_pages.remove(&View::Inbox);
+            }
+            self.inboxes_saved_empty.insert(account, empty);
+            let taken = store.snapshot();
+            cx.background_executor()
+                .spawn(async move {
+                    if store
+                        .save_newest(&record(View::Inbox), &rows, taken)
+                        .is_err()
+                    {
+                        eprintln!("nimbra: could not save an inbox emptied from All inboxes");
+                    }
+                })
+                .detach();
         }
     }
 
@@ -2498,6 +2605,9 @@ impl Nimbra {
         self.counted = None;
         self.paged.clear();
         self.all_inboxes_whole = false;
+        self.all_inboxes_reached = false;
+        self.all_next.clear();
+        self.shifted.clear();
     }
 
     /// The open mailbox is being checked, and says so.
@@ -2525,7 +2635,7 @@ impl Nimbra {
             View::Label(index) => self.labels.get(index).map(|label| label.id.clone()),
             _ => None,
         };
-        if view.holds(&[], label_id.as_deref()).is_none() || self.mails.is_empty() {
+        if !view.syncs(label_id.as_deref()) || self.mails.is_empty() {
             return false;
         }
         let Some(start) = self.synced_to.get(&self.record_for(view)).cloned() else {
@@ -2621,7 +2731,7 @@ impl Nimbra {
                         for (id, summary) in updates {
                             list.retain(|mail| mail.id.as_deref() != Some(id.as_str()));
                             if let Some(summary) = summary
-                                && view.holds(&summary.labels, label_id.as_deref()) == Some(true)
+                                && view.takes(&summary, label_id.as_deref())
                             {
                                 list.push(Mail::from_summary(summary));
                             }
@@ -2764,13 +2874,19 @@ impl Nimbra {
         let account = self.account_id.clone();
         let generation = self.account_gen;
         let client = self.gmail.clone();
+        let reading = self.read_keychain(cx);
         cx.spawn(async move |this, cx| {
             let opened = cx
                 .background_executor()
                 .spawn(async move {
-                    let store = Arc::new(crate::store::Store::open(&account)?);
+                    let opened = crate::store::Store::open(&account);
+                    drop(reading);
+                    let store = Arc::new(opened?);
                     let saved: Option<Saved> = store.load("meta");
                     let mails: Option<Vec<Mail>> = store.load(&view_record);
+                    if let Some(client) = &client {
+                        client.keep_rows_in(&store);
+                    }
                     let unsent = client.map_or_else(Vec::new, |client| {
                         if let Some(mut older) = store.load::<Outbox>("outbox")
                             && !older.mail.is_empty()
@@ -2796,6 +2912,9 @@ impl Nimbra {
                     }
                     this.inbox_saved_empty = false;
                     this.tell(STORE_UNAVAILABLE);
+                    if !this.outbox.changes.is_empty() {
+                        this.went_offline(cx);
+                    }
                     this.fetch_inbox(cx)
                 })
                 .ok();
@@ -2916,6 +3035,8 @@ impl Nimbra {
             .collect();
         if self.mailbox == View::Inbox {
             self.inbox_saved_empty = mails.is_empty();
+            self.inboxes_saved_empty
+                .insert(self.account_id.clone(), mails.is_empty());
         }
         let name = self.record_for(self.mailbox);
         let taken = store.snapshot();
@@ -2946,6 +3067,19 @@ impl Nimbra {
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
                     .await;
+                this.update(cx, |this, cx| {
+                    crate::quitting::set_would_lose(this.would_lose(cx))
+                })
+                .ok();
+                if crate::quitting::take_put_off() {
+                    // It may be hidden, and whoever quit has to see why it did not.
+                    cx.update(crate::show_main_window).ok();
+                    this.update(cx, |this, cx| {
+                        this.tell(QUIT_WOULD_LOSE);
+                        cx.notify();
+                    })
+                    .ok();
+                }
                 let clicked = crate::notify::take_clicked();
                 let Some(id) = clicked.into_iter().rev().find(|id| id.as_str() != "test") else {
                     if this.update(cx, |_, _| ()).is_err() {
@@ -3169,7 +3303,10 @@ impl Nimbra {
             loop {
                 let wait = this
                     .update(cx, |this, _| {
-                        Duration::from_secs(this.settings.check_every.clamp(15, 3600) as u64)
+                        let every = this.settings.check_every.clamp(15, 3600) as u64;
+                        // Sooner while changes wait there for a connection.
+                        let waiting = !this.away_waiting.is_empty();
+                        Duration::from_secs(if waiting { 15 } else { every })
                     })
                     .unwrap_or(EVERY);
                 cx.background_executor().timer(wait).await;
@@ -3190,10 +3327,18 @@ impl Nimbra {
                 };
                 feeds.retain(|id, _| others.iter().any(|(other, _)| other == id));
                 for (id, client) in others {
+                    // First, so that reading the account does not bring back what was cleared.
+                    Self::catch_up_away(&this, cx, &id, &client).await;
                     let from = feeds.get(&id).cloned();
                     let account = id.clone();
                     let connected = connected.clone();
                     let writes = writes.clone();
+                    // Opened when it was connected. Opening it here could wait on a question
+                    // from the keychain, and hold up every account's checks with it.
+                    let store = this
+                        .update(cx, |this, _| this.other_stores.get(&account).cloned())
+                        .ok()
+                        .flatten();
                     let checked = cx
                         .background_executor()
                         .spawn(async move {
@@ -3222,7 +3367,9 @@ impl Nimbra {
                                 .collect();
                             let extra = fresh.len().saturating_sub(summaries.len());
                             // Snoozes and scheduled sends kept with this account.
-                            carry_out_due(&account, &connected, &writes);
+                            if let Some(store) = &store {
+                                carry_out_due(&account, store, &connected, &writes);
+                            }
                             anyhow::Ok((at, summaries, extra, changed, unread))
                         })
                         .await;
@@ -3366,11 +3513,15 @@ impl Nimbra {
         };
         let id = self.account_id.clone();
         let generation = self.account_gen;
+        let reading = self.read_keychain(cx);
         cx.spawn(async move |this, cx| {
             let key = id.clone();
             let token = cx
                 .background_executor()
-                .spawn(async move { gmail::stored_refresh_token(&key) })
+                .spawn(async move {
+                    let _reading = reading;
+                    gmail::stored_refresh_token(&key)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 if this.account_gen != generation || this.account_id != id || this.gmail.is_some() {
@@ -3395,6 +3546,32 @@ impl Nimbra {
             .ok();
         })
         .detach();
+    }
+
+    /// Counts a read of the keychain. One with no answer is never given up on, as macOS
+    /// can be asking for the password, but after a while the screen says what is waited for.
+    fn read_keychain(&mut self, cx: &mut Context<Self>) -> leaving::Working {
+        self.keychain_slow = false;
+        let generation = self.account_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(KEYCHAIN_WAIT).await;
+            this.update(cx, |this, cx| {
+                if this.account_gen == generation && this.keychain.any() {
+                    this.keychain_slow = true;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        self.keychain.begin()
+    }
+
+    fn waiting_for_keychain(&self) -> bool {
+        self.status == Status::Loading
+            && self.store.is_none()
+            && self.keychain_slow
+            && self.keychain.any()
     }
 
     /// The status screen's Try again.
@@ -3443,10 +3620,46 @@ impl Nimbra {
                 for (id, token) in found {
                     if id != this.account_id && this.settings.accounts.iter().any(|a| a.id == id) {
                         let client = gmail::Client::new(config.clone(), token, id.clone());
-                        this.others.insert(id, Arc::new(client));
+                        this.others.insert(id.clone(), Arc::new(client));
+                        this.open_other_store(id, cx);
                     }
                 }
                 cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Opens the store of a connected account that is not shown.
+    fn open_other_store(&self, account: String, cx: &mut Context<Self>) {
+        let Some(client) = self.others.get(&account).cloned() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let key = account.clone();
+            let opened = cx
+                .background_executor()
+                .spawn(async move {
+                    let store = Arc::new(crate::store::Store::open_quietly(&key)?);
+                    client.keep_rows_in(&store);
+                    let waiting = store
+                        .load::<Outbox>("outbox")
+                        .is_some_and(|outbox| !outbox.changes.is_empty());
+                    anyhow::Ok((store, waiting))
+                })
+                .await;
+            let Ok((store, waiting)) = opened else {
+                return;
+            };
+            this.update(cx, |this, _| {
+                // Not if it was opened or signed out meanwhile.
+                if account != this.account_id && this.others.contains_key(&account) {
+                    if waiting {
+                        this.away_waiting.insert(account.clone());
+                    }
+                    this.other_stores.insert(account, store);
+                }
             })
             .ok();
         })
@@ -3524,8 +3737,18 @@ impl Nimbra {
                 .any(|a| a.id == self.account_id)
         {
             self.others.insert(self.account_id.clone(), client);
+            if let Some(store) = self.store.take() {
+                if !self.outbox.changes.is_empty() {
+                    self.away_waiting.insert(self.account_id.clone());
+                }
+                self.other_stores.insert(self.account_id.clone(), store);
+            }
         }
         self.others.remove(&id);
+        self.other_stores.remove(&id);
+        self.away_waiting.remove(&id);
+        self.inboxes_saved_empty.clear();
+        let left = self.account_id.clone();
         self.inbox_saved_empty = crate::store::Store::saved_empty(&id, &record(View::Inbox));
         self.account_id = id.clone();
         self.settings.active = id;
@@ -3534,6 +3757,9 @@ impl Nimbra {
         self.store = None;
         self.status = Status::Loading;
         self.checks.forget();
+        // A question that is still up for the account left is not this one's.
+        self.keychain = Underway::default();
+        self.keychain_slow = false;
         // What was on its way is for the other account, and its answer is dropped.
         self.prefetching = false;
         self.loading_more = false;
@@ -3551,7 +3777,14 @@ impl Nimbra {
         self.sending_scheduled.clear();
         self.snoozed.clear();
         self.waking.clear();
-        self.outbox = Outbox::default();
+        let unkept = std::mem::take(&mut self.outbox.changes);
+        if !self.other_stores.contains_key(&left) && !unkept.is_empty() {
+            self.homeless.insert(left.clone(), unkept);
+        }
+        self.outbox = Outbox {
+            changes: self.homeless.remove(&self.account_id).unwrap_or_default(),
+            ..Outbox::default()
+        };
         self.offline = false;
         self.stop_retrying();
         self.picked.clear();
@@ -3581,6 +3814,10 @@ impl Nimbra {
         if let Some((mails, whole)) = all_inboxes {
             self.cache.insert(View::AllInboxes, mails);
             self.all_inboxes_whole = whole;
+        }
+        // Left before its store had opened.
+        if !self.other_stores.contains_key(&left) {
+            self.open_other_store(left, cx);
         }
         self.pending_focus = Some(self.focus.clone());
         cx.notify();
@@ -3648,7 +3885,7 @@ impl Nimbra {
                 .counted
                 .is_none_or(|at| !at.stands(self.changes_seen()));
         // A label is only known to hold by its id.
-        let syncs = view.holds(&[], label_id.as_deref()).is_some();
+        let syncs = view.syncs(label_id.as_deref());
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let result = within(cx.background_executor(), async move {
@@ -3696,6 +3933,10 @@ impl Nimbra {
                     Ok((email, history_id, threads, labels, counts, next_page)) => {
                         this.checked.insert(this.record_for(view), asked);
                         this.paged.insert(view);
+                        // Unless something was cleared while it was on its way.
+                        if !this.writes.any() {
+                            this.shifted.remove(&view);
+                        }
                         match next_page {
                             Some(page) => this.next_pages.insert(view, page),
                             None => this.next_pages.remove(&view),
@@ -3734,6 +3975,20 @@ impl Nimbra {
                 accounts.push((account.id.clone(), client.clone()));
             }
         }
+        // As far as it was scrolled: listing again must not drop the pages below the first.
+        // Cleared rows do not count, or each listing after a Done would reach further.
+        let accounts: Vec<(String, Arc<gmail::Client>, usize)> = accounts
+            .into_iter()
+            .map(|(id, client)| {
+                let listed = self
+                    .mails
+                    .iter()
+                    .zip(&self.done)
+                    .filter(|(mail, done)| !**done && self.account_of(mail) == id)
+                    .count();
+                (id, client, listed.next_multiple_of(30).clamp(30, 480))
+            })
+            .collect();
         if self.mails.is_empty() && !self.cache.contains_key(&View::AllInboxes) {
             self.status = Status::Loading;
             // As when Nimbra opens: what was saved picks what to draw until Gmail answers.
@@ -3749,18 +4004,20 @@ impl Nimbra {
         cx.spawn(async move |this, cx| {
             let executor = cx.background_executor();
             // A deadline each, so that one account cannot hold up the others.
-            let results = futures::future::join_all(accounts.into_iter().map(|(id, client)| {
-                let listing = within(executor, async move {
-                    let (threads, next) = client.threads_page(View::Inbox, None, 30, None)?;
-                    let unread = client
-                        .counts(&["INBOX".to_string()])
-                        .get("INBOX")
-                        .map_or(0, |(unread, _)| *unread);
-                    Ok((threads, next.is_some(), unread))
-                });
-                async move { (id, listing.await) }
-            }))
-            .await;
+            let results =
+                futures::future::join_all(accounts.into_iter().map(|(id, client, count)| {
+                    let listing = within(executor, async move {
+                        let (threads, next) =
+                            client.threads_page(View::Inbox, None, count, None)?;
+                        let unread = client
+                            .counts(&["INBOX".to_string()])
+                            .get("INBOX")
+                            .map_or(0, |(unread, _)| *unread);
+                        Ok((threads, next, unread))
+                    });
+                    async move { (id, listing.await) }
+                }))
+                .await;
             this.update(cx, |this, cx| {
                 if this.account_gen != generation || !this.finish_check(check, cx) {
                     return;
@@ -3768,12 +4025,14 @@ impl Nimbra {
                 let mut fresh: Vec<Mail> = Vec::new();
                 let mut first_error = None;
                 let mut failed = 0;
-                let mut more = false;
+                let mut pages = HashMap::new();
                 let asked = results.len();
                 for (id, result) in results {
                     match result {
-                        Ok((threads, has_more, unread)) => {
-                            more |= has_more;
+                        Ok((threads, next, unread)) => {
+                            if let Some(next) = next {
+                                pages.insert(id.clone(), next);
+                            }
                             this.account_unread.insert(id.clone(), unread);
                             fresh.extend(threads.into_iter().map(|summary| {
                                 let mut mail = Mail::from_summary(summary);
@@ -3787,8 +4046,11 @@ impl Nimbra {
                         }
                     }
                 }
-                this.all_inboxes_whole =
-                    failed == 0 && !more && asked >= this.settings.accounts.len();
+                this.all_inboxes_reached = failed == 0 && asked >= this.settings.accounts.len();
+                this.set_all_pages(pages);
+                if !this.writes.any() {
+                    this.shifted.remove(&View::AllInboxes);
+                }
                 if failed == asked
                     && let Some(error) = first_error
                 {
@@ -3828,6 +4090,9 @@ impl Nimbra {
             self.counts.clear();
             self.labels.clear();
             self.forget_checked();
+            if let Some(client) = &self.gmail {
+                client.forget_rows();
+            }
         }
         self.me_initials = email
             .chars()
@@ -4146,12 +4411,25 @@ impl Nimbra {
         };
         let account = self.account_of(&self.mails[index]).to_string();
         // It follows what waits for the connection, so it waits too.
-        if account == self.account_id && self.outbox.changes.iter().any(|(queued, _)| *queued == id)
-        {
-            self.outbox.changes.push((id, change));
-            self.save_outbox();
-            self.went_offline(cx);
-            return;
+        if account == self.account_id {
+            if self.outbox.changes.iter().any(|(queued, _)| *queued == id) {
+                self.outbox.changes.push((id, change));
+                self.save_outbox();
+                self.went_offline(cx);
+                return;
+            }
+        } else if self.away_waiting.contains(&account) {
+            let waiting = self
+                .other_stores
+                .get(&account)
+                .and_then(|store| store.load::<Outbox>("outbox"))
+                .is_some_and(|outbox| outbox.changes.iter().any(|(queued, _)| *queued == id));
+            if waiting && self.queue_away(&account, vec![(id.clone(), change)]) {
+                return;
+            }
+        }
+        if removed {
+            self.shifted.insert(self.mailbox);
         }
         let step = self.steps.start(account.clone(), id.clone(), change);
         let working = self.writes.begin();
@@ -4165,24 +4443,35 @@ impl Nimbra {
                 .await;
             this.update(cx, |this, cx| {
                 let settled = this.steps.settle(&account, &id);
-                // Offline: keep the change here and send it when the connection is back
-                // (the queue is the shown account's; another account's change is undone).
-                // Asked now, not when it was made: the account shown may have changed.
+                // Offline: keep the change in its account's queue and send it when the
+                // connection is back. Asked now, not when it was made: the account shown may
+                // have changed.
                 let shown = account == this.account_id;
                 let waiting: Vec<_> = settled
                     .into_iter()
-                    .filter(|(_, end)| shown && *end == End::Offline)
+                    .filter(|(_, end)| *end == End::Offline)
                     .map(|(step, _)| (step.id.clone(), step.change))
                     .collect();
+                // An account with no store has nowhere to keep it: undone, and said.
+                let mut kept = shown || this.other_stores.contains_key(&account);
                 if !waiting.is_empty() {
-                    this.outbox.changes.extend(waiting);
-                    this.save_outbox();
-                    this.went_offline(cx);
+                    if shown {
+                        this.outbox.changes.extend(waiting);
+                        this.save_outbox();
+                        this.went_offline(cx);
+                    } else if this.queue_away(&account, waiting) {
+                        this.notice = Some(
+                            "That account is offline. The change is made when it is back.".into(),
+                        );
+                        cx.notify();
+                    } else {
+                        kept = false;
+                    }
                 }
                 let Err(error) = result else {
                     return;
                 };
-                if shown && error.is::<gmail::Offline>() {
+                if kept && error.is::<gmail::Offline>() {
                     return;
                 }
                 // Put back wherever the thread is by now.
@@ -5143,6 +5432,64 @@ impl Nimbra {
         self.queue
             .iter()
             .filter(|job| job.account == self.account_id)
+    }
+
+    /// Adds to the queue of an account that is not shown, in its store. At once, as
+    /// `drop_caught_up` takes from it the same way. Whether that worked.
+    fn queue_away(&mut self, account: &str, changes: Vec<(String, gmail::Change)>) -> bool {
+        let kept = self.other_stores.get(account).is_some_and(|store| {
+            store
+                .update("outbox", |outbox: &mut Outbox| {
+                    outbox.changes.extend(changes)
+                })
+                .is_ok()
+        });
+        if kept {
+            self.away_waiting.insert(account.to_string());
+        }
+        kept
+    }
+
+    /// Makes the changes that wait for an account that is not shown.
+    async fn catch_up_away(
+        this: &gpui::WeakEntity<Self>,
+        cx: &mut gpui::AsyncApp,
+        account: &str,
+        client: &Arc<gmail::Client>,
+    ) {
+        let claimed = this.update(cx, |this, _| {
+            if !this.away_waiting.contains(account) {
+                return None;
+            }
+            let store = this.other_stores.get(account).cloned()?;
+            // One at a time per account, with the shown account's loop too.
+            this.catching_up
+                .insert(account.to_string())
+                .then_some(store)
+        });
+        let Ok(Some(store)) = claimed else {
+            return;
+        };
+        let (client, kept_in) = (client.clone(), store.clone());
+        let made = cx
+            .background_executor()
+            .spawn(async move {
+                let changes = kept_in.load::<Outbox>("outbox").unwrap_or_default().changes;
+                catch_up(&client, &changes, &[]).map_or(0, |done| done.changes)
+            })
+            .await;
+        this.update(cx, |this, cx| {
+            this.catching_up.remove(account);
+            this.drop_caught_up(account, Some(&store), made);
+            let left = store
+                .load::<Outbox>("outbox")
+                .is_some_and(|outbox| !outbox.changes.is_empty());
+            if !left {
+                this.away_waiting.remove(account);
+            }
+            cx.notify();
+        })
+        .ok();
     }
 
     /// Takes the changes a catch-up got through out of its account's queue, whichever is
@@ -6305,6 +6652,123 @@ impl Nimbra {
     }
 
     /// "Load more" at the end of the list: the next page of the mailbox.
+    /// Where each account's next page in All inboxes starts.
+    fn set_all_pages(&mut self, pages: HashMap<String, String>) {
+        self.all_next = pages;
+        self.all_inboxes_whole = self.all_inboxes_reached && self.all_next.is_empty();
+        if self.all_next.is_empty() {
+            self.next_pages.remove(&View::AllInboxes);
+        } else {
+            // That there is a next page. The accounts' tokens are in `all_next`.
+            self.next_pages.insert(View::AllInboxes, String::new());
+        }
+    }
+
+    /// The next page of every account that has one, merged into All inboxes.
+    fn load_more_of_all(&mut self, from_top: bool, cx: &mut Context<Self>) {
+        if self.loading_more || self.fetching() {
+            return;
+        }
+        let asked: Vec<_> = self
+            .all_next
+            .iter()
+            .filter_map(|(id, page)| Some((id.clone(), self.client_for(Some(id))?, page.clone())))
+            .collect();
+        if asked.is_empty() {
+            // Theirs are accounts that are not connected.
+            self.more_failed.insert(View::AllInboxes);
+            return;
+        }
+        self.loading_more = true;
+        cx.notify();
+        let generation = self.account_gen;
+        let count = if from_top { self.mails.len() + 30 } else { 30 };
+        cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor();
+            let results = futures::future::join_all(asked.into_iter().map(|(id, client, page)| {
+                let from = (!from_top).then(|| page.clone());
+                let listing = within(executor, async move {
+                    client.threads_page(View::Inbox, None, count, from.as_deref())
+                });
+                async move { (id, page, listing.await) }
+            }))
+            .await;
+            this.update(cx, |this, cx| {
+                if this.account_gen != generation {
+                    return;
+                }
+                this.loading_more = false;
+                if this.mailbox != View::AllInboxes {
+                    cx.notify();
+                    return;
+                }
+                let mut pages = this.all_next.clone();
+                let mut list = this.listed();
+                let before = list.len();
+                let known: HashSet<ThreadKey> = this
+                    .mails
+                    .iter()
+                    .map(|mail| this.thread_key(mail))
+                    .collect();
+                let mut first_error = None;
+                for (id, page, result) in results {
+                    // A listing made meanwhile has other pages: this one is not from them.
+                    if pages.get(&id) != Some(&page) {
+                        continue;
+                    }
+                    match result {
+                        Ok((threads, next)) => {
+                            match next {
+                                Some(next) => pages.insert(id.clone(), next),
+                                None => pages.remove(&id),
+                            };
+                            list.extend(threads.into_iter().filter_map(|summary| {
+                                let mut mail = Mail::from_summary(summary);
+                                mail.account = Some(id.clone());
+                                (!known.contains(&this.thread_key(&mail))).then_some(mail)
+                            }));
+                        }
+                        Err(error) => {
+                            first_error.get_or_insert(error);
+                        }
+                    }
+                }
+                if from_top && list.len() == before && !pages.is_empty() {
+                    this.more_failed.insert(View::AllInboxes); // or it would ask without end
+                }
+                this.set_all_pages(pages);
+                list.sort_by_key(|mail| std::cmp::Reverse(mail.timestamp_ms));
+                this.install(list, cx);
+                if let Some(error) = first_error {
+                    this.more_failed.insert(View::AllInboxes);
+                    this.fail(error, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Waits a moment with the next page: changes are still on their way.
+    fn ask_again_soon(&mut self, cx: &mut Context<Self>) {
+        self.loading_more = true;
+        let generation = self.account_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(300))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.account_gen == generation {
+                    this.loading_more = false;
+                    cx.notify(); // drawing it asks again
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn near_list_end(&self) -> bool {
         let left = f32::from(self.list_scroll.max_offset().height)
             + f32::from(self.list_scroll.offset().y);
@@ -6312,6 +6776,22 @@ impl Nimbra {
     }
 
     fn load_more(&mut self, cx: &mut Context<Self>) {
+        if self.loading_more || self.more().is_none() {
+            return;
+        }
+        // With threads cleared from the list, what follows moved up, and a page token from
+        // before could start past it: ask from the top, once the clearing is through, for
+        // as many as are listed and a page. Rows already read cost nothing.
+        let from_top = self.shifted.contains(&self.mailbox) && self.mails.len() + 30 <= 500;
+        if from_top && self.writes.any() {
+            self.ask_again_soon(cx);
+            return;
+        }
+        if self.mailbox == View::AllInboxes {
+            self.load_more_of_all(from_top, cx);
+            return;
+        }
+        let count = if from_top { self.mails.len() + 30 } else { 30 };
         let (Some(client), Some(page)) = (self.gmail.clone(), self.more().cloned()) else {
             return;
         };
@@ -6330,7 +6810,8 @@ impl Nimbra {
         let query = self.query.clone();
         cx.spawn(async move |this, cx| {
             let result = within(cx.background_executor(), async move {
-                client.threads_page(view, label_id.as_deref(), 30, Some(&page))
+                let page = (!from_top).then_some(page.as_str());
+                client.threads_page(view, label_id.as_deref(), count, page)
             })
             .await;
             this.update(cx, |this, cx| {
@@ -6356,10 +6837,21 @@ impl Nimbra {
                             .filter(|s| !known.contains(&s.id))
                             .map(Mail::from_summary)
                             .collect();
-                        this.done.extend(std::iter::repeat_n(false, fresh.len()));
-                        this.mails.extend(fresh);
-                        this.cache.insert(this.mailbox, this.listed());
-                        this.persist(cx);
+                        if from_top && fresh.is_empty() && this.next_pages.contains_key(&view) {
+                            this.more_failed.insert(view); // or it would ask without end
+                        }
+                        if from_top {
+                            // Mail that came meanwhile is in it too, and belongs on top.
+                            let mut list = this.listed();
+                            list.extend(fresh);
+                            list.sort_by_key(|mail| std::cmp::Reverse(mail.timestamp_ms));
+                            this.install(list, cx);
+                        } else {
+                            this.done.extend(std::iter::repeat_n(false, fresh.len()));
+                            this.mails.extend(fresh);
+                            this.cache.insert(this.mailbox, this.listed());
+                            this.persist(cx);
+                        }
                     }
                     Err(error) => {
                         this.more_failed.insert(view);
@@ -7752,11 +8244,17 @@ impl Nimbra {
             if let Some(at) = parked {
                 self.parked.remove(at);
             }
+            let kept = job.kept();
             self.queue.push(job);
             if shown {
-                self.notice = Some(
-                    "You’re offline. The message will be sent when the connection is back.".into(),
-                );
+                if kept {
+                    self.notice = Some(
+                        "You’re offline. The message will be sent when the connection is back."
+                            .into(),
+                    );
+                } else {
+                    self.tell("You’re offline, and the message can’t be kept on this Mac. Don’t quit until it has been sent.");
+                }
                 self.went_offline(cx);
             } else {
                 self.notice = Some(
@@ -7799,6 +8297,8 @@ impl Nimbra {
     /// Forgets an account's unsent mail: whoever signs in next must not send it.
     fn abandon_sends(&mut self, account: &str) {
         self.queue.retain(|job| job.account != account);
+        self.stranded.retain(|job| job.account != account);
+        self.homeless.remove(account);
         self.steps.forget(account);
         self.sends.retain(|job| {
             let keep = job.account != account;
@@ -7819,16 +8319,21 @@ impl Nimbra {
     /// A message that is not to be sent by itself goes to Drafts, and `why` says so.
     fn send_to_drafts(&self, job: Arc<Job>, why: String, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            let saving = job.clone();
             let saved = cx
                 .background_executor()
-                .spawn(async move { job.to_drafts() })
+                .spawn(async move { saving.to_drafts() })
                 .await;
             this.update(cx, |this, cx| {
-                this.tell(if saved {
+                let said = if saved {
                     format!("{why} It is in Drafts.")
-                } else {
+                } else if job.kept() {
                     format!("{why} It is kept on this Mac.")
-                });
+                } else {
+                    this.stranded.push(job);
+                    format!("{why} It could not be saved anywhere, so quitting loses it.")
+                };
+                this.tell(said);
                 cx.notify();
             })
             .ok();
@@ -7863,6 +8368,11 @@ impl Nimbra {
                 };
                 self.send_to_drafts(job, why, cx);
             }
+            Stage::Discarded => {
+                cx.background_executor()
+                    .spawn(async move { job.discard() })
+                    .detach();
+            }
             Stage::Over => job.forget(),
         }
     }
@@ -7886,8 +8396,39 @@ impl Nimbra {
             || (self.gmail.is_some() && account == self.account_id)
     }
 
+    /// Whether quitting would lose mail or changes that could not be written down.
+    fn would_lose(&self, cx: &App) -> bool {
+        let unkeepable = |account: &str| {
+            self.store_of(account).is_none() && crate::store::Store::unreadable(account)
+        };
+        let sending = !self.stranded.is_empty()
+            || self
+                .sends
+                .iter()
+                .any(|job| !job.kept() && unkeepable(&job.account));
+        let writing = self
+            .compose
+            .iter()
+            .chain(
+                self.parked
+                    .iter()
+                    .filter(|(kind, _)| *kind == Parked::Closing)
+                    .map(|(_, composer)| composer),
+            )
+            .any(|composer| {
+                let account = composer.account.as_deref().unwrap_or(&self.account_id);
+                composer.dirty() && unkeepable(account) && composer.has_content(cx)
+            });
+        let changing = !self.outbox.changes.is_empty() && unkeepable(&self.account_id);
+        sending || writing || changing || !self.homeless.is_empty()
+    }
+
     fn store_of(&self, account: &str) -> Option<Arc<crate::store::Store>> {
-        self.store.clone().filter(|_| account == self.account_id)
+        if account == self.account_id {
+            self.store.clone()
+        } else {
+            self.other_stores.get(account).cloned()
+        }
     }
 
     /// Everything that quitting has to finish or write down.
@@ -7956,6 +8497,39 @@ impl Nimbra {
                     later,
                 }),
                 Err(error) => eprintln!("nimbra: could not keep what was being written: {error}"),
+            }
+        }
+
+        // Discarded, with the time to undo that not over yet: quitting ends it.
+        for (kind, composer) in &self.parked {
+            if *kind != Parked::Discarded || (composer.draft_id.is_none() && !composer.saving) {
+                continue;
+            }
+            let account = composer.account.clone().unwrap_or(self.account_id.clone());
+            let client = self.client_for(composer.account.as_deref());
+            let Some(client) = client.filter(|_| self.keeps(&account)) else {
+                continue;
+            };
+            let mail = QueuedMail {
+                draft_id: composer.draft_id.clone(),
+                outgoing: composer.outgoing(cx),
+            };
+            let store = self.store_of(&account);
+            match Job::unfinished(
+                account,
+                composer.serial,
+                client,
+                store,
+                mail,
+                Stage::Discarded,
+            ) {
+                Ok(job) => unfinished.push(leaving::Unfinished {
+                    job,
+                    edits: composer.edits,
+                    saved: composer.saved_as.clone(),
+                    later: None,
+                }),
+                Err(error) => eprintln!("nimbra: could not note the discarded draft: {error}"),
             }
         }
 
@@ -8627,7 +9201,7 @@ impl Nimbra {
         };
         self.sends.push(job.clone());
         cx.background_executor()
-            .spawn(async move { job.keep() })
+            .spawn(async move { job.keep_asking() })
             .detach();
         composer.suggest = None;
         composer.error = None;
@@ -8821,6 +9395,8 @@ impl Nimbra {
         });
         self.settings.accounts.retain(|a| a.id != account);
         self.others.remove(&account);
+        self.other_stores.remove(&account);
+        self.away_waiting.remove(&account);
         self.account_unread.remove(&account);
         // Another account is signed in: show that one.
         if let Some(next) = self.settings.accounts.first().map(|a| a.id.clone()) {
@@ -8925,10 +9501,8 @@ impl Nimbra {
             self.palette = false;
             self.status = Status::SignedOut;
             self.notice = Some("Your Google sign-in expired. Connect again to continue.".into());
-        } else if self.mails.is_empty()
-            // Slow is no reason to hide a mailbox known to be empty.
-            && !(error.is::<TooSlow>() && self.status == Status::Ready)
-        {
+        // An error is no reason to hide a mailbox known to be empty.
+        } else if self.mails.is_empty() && self.status != Status::Ready {
             self.status = Status::Failed(error.to_string().into());
         } else {
             self.notice = Some(error.to_string().into());
@@ -12096,6 +12670,9 @@ impl Nimbra {
                 None,
             ),
             Status::Failed(reason) => ("Something went wrong", reason.clone(), Some("Try again")),
+            _ if self.waiting_for_keychain() => {
+                ("Waiting for the Keychain", KEYCHAIN_WAITING.into(), None)
+            }
             _ => (
                 "Fetching your inbox",
                 "This takes a few seconds.".into(),
@@ -13866,7 +14443,35 @@ impl Nimbra {
     }
 
     /// An empty mailbox other than the inbox (which gets the Inbox Zero screen).
-    fn empty_mailbox(&self, t: &Theme) -> impl IntoElement {
+    fn empty_mailbox(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let search = self.mailbox == View::Search;
+        // Not empty at all: filtered, or the rest could not be had.
+        let filtered = self.unread_only && !self.all_cleared();
+        let unlisted = match self.mailbox {
+            View::AllInboxes => !self.all_inboxes_whole,
+            view => self.next_pages.contains_key(&view),
+        };
+        let (title, line) = if filtered {
+            (
+                format!("Nothing unread in {}", self.inbox_name()),
+                "What you have read is still here.".to_string(),
+            )
+        } else if search {
+            (
+                "No results".to_string(),
+                format!("Nothing matches “{}”.", short(&self.query, 60)),
+            )
+        } else if unlisted {
+            (
+                "Not all here yet".to_string(),
+                "The rest could not be checked. Reload to try again.".to_string(),
+            )
+        } else {
+            (
+                format!("Nothing in {}", self.inbox_name()),
+                "Threads will show up here.".to_string(),
+            )
+        };
         div()
             .flex_1()
             .min_w(px(0.))
@@ -13877,26 +14482,23 @@ impl Nimbra {
             .justify_center()
             .gap(px(14.))
             .bg(t.surface)
-            .child(serif(
-                &if self.mailbox == View::Search {
-                    "No results".to_string()
-                } else {
-                    format!("Nothing in {}", self.inbox_name())
-                },
-                56.,
-                t.text,
-            ))
+            .child(serif(&title, 56., t.text))
             .child(
                 div()
                     .text_size(px(15.))
                     .line_height(px(24.))
                     .text_color(t.text2)
-                    .child(if self.mailbox == View::Search {
-                        format!("Nothing matches “{}”.", short(&self.query, 60))
-                    } else {
-                        "Threads will show up here.".to_string()
-                    }),
+                    .child(line),
             )
+            // The filter's own switch is in the list's header, which is not drawn here.
+            .when(filtered, |d| {
+                d.child(
+                    button(t, ButtonKind::Secondary, "Show all", None)
+                        .id("show-all")
+                        .press_soft()
+                        .on_click(cx.listener(|this, _, _, cx| this.set_unread_only(false, cx))),
+                )
+            })
     }
 
     fn zero(&self, t: &Theme) -> impl IntoElement {
@@ -14395,13 +14997,17 @@ impl Render for Nimbra {
         }
         // Infinite list: the next page starts loading as the end of the list comes near
         // (or straight away when the list does not fill the pane yet).
-        if self.more().is_some() && !self.loading_more && !self.fetching() && self.near_list_end() {
+        if self.more().is_some()
+            && !self.loading_more
+            && !self.fetching()
+            && (self.near_list_end() || self.next_page_coming())
+        {
             // Asked again once this frame is laid out: until then a list that has just
             // arrived has no height, and each first listing fetched its second page too.
             let this = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
                 this.update(cx, |this, cx| {
-                    if !this.fetching() && this.near_list_end() {
+                    if !this.fetching() && (this.near_list_end() || this.next_page_coming()) {
                         this.load_more(cx);
                     }
                 })
@@ -14472,7 +15078,7 @@ impl Render for Nimbra {
         let empty = self.visible().is_empty();
         let zero_shown = match self.status {
             Status::Demo | Status::Ready => empty && self.is_zero(),
-            _ => self.opening_to_zero(),
+            _ => self.opening_to_zero() && !self.waiting_for_keychain(),
         };
         self.arrival = self
             .arrival
@@ -14650,7 +15256,8 @@ impl Render for Nimbra {
             )
             .map(|d| match self.status {
                 _ if zero_shown => d.child(self.zero(&t)),
-                Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t)),
+                Status::Ready if empty && self.next_page_coming() => d.child(self.skeleton(&t)),
+                Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t, cx)),
                 Status::Demo | Status::Ready => d.children(self.list_slot(&t, cx)).map(|d| {
                     if self.picked.len() >= 2 {
                         d.child(self.bulk_pane(&t, cx))
@@ -14658,6 +15265,9 @@ impl Render for Nimbra {
                         d.child(self.reading(&t, cx))
                     }
                 }),
+                Status::Loading if self.waiting_for_keychain() => {
+                    d.child(self.status_screen(&t, cx))
+                }
                 Status::Loading => d.child(self.skeleton(&t)),
                 _ => d.child(self.status_screen(&t, cx)),
             })
@@ -14837,12 +15447,10 @@ fn me_avatar(photo: Option<&Arc<gpui::Image>>, initials: &str, size: f32) -> Any
 /// be another account's: it goes through that account's connection. Runs off the main thread.
 fn carry_out_due(
     account: &str,
+    store: &crate::store::Store,
     connected: &HashMap<String, Arc<gmail::Client>>,
     writes: &Underway,
 ) {
-    let Ok(store) = crate::store::Store::open_quietly(account) else {
-        return;
-    };
     let now = chrono::Utc::now().timestamp_millis();
     let client_of = |whose: Option<&str>| connected.get(whose.unwrap_or(account));
     for snooze in store.load::<Vec<Snooze>>("snoozed").unwrap_or_default() {
@@ -14875,13 +15483,13 @@ fn carry_out_due(
             eprintln!("nimbra: could not save the snoozed list");
         }
     }
-    for item in scheduled::list(&store) {
+    for item in scheduled::list(store) {
         if item.at_ms > now {
             continue;
         }
         if let Some(client) = client_of(item.account.as_deref()) {
             let _working = writes.begin();
-            scheduled::send(&store, client, &item.draft_id);
+            scheduled::send(store, client, &item.draft_id);
         }
     }
 }

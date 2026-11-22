@@ -134,7 +134,8 @@ connection. All inboxes is never written to any account's store. Checked with sa
 and two fake accounts (sidebar, badges, counts); 44 tests pass. Not checked against two real
 Gmail accounts: needs a second sign-in. Limits: All inboxes shows each inbox's first 30
 threads (no endless loading yet), labels apply per account, and another account's change
-made offline is rolled back rather than queued.
+made offline is rolled back rather than queued (the first and last fixed since, see "The
+open items").
 
 ## Dark emails in Original formatting (2026-11-22)
 
@@ -255,7 +256,7 @@ quitting 40 to 80ms after Done, Trash, a batch or Undo. The settled screen is by
 byte main's in four layouts. Not checked: real Gmail, switching accounts, Reduce Motion
 switched on in macOS (forced in the test copy), Windows.
 
-Left open: a Gmail error other than
+Left open then, fixed since ("The open items", below): a Gmail error other than
 offline replaces Inbox Zero with the error screen; emptying the inbox from All inboxes is
 not saved at once.
 
@@ -297,7 +298,7 @@ Found, left open (read in the code, not run):
       mail kept on this Mac is wiped. A 401 should refresh the token and try once more.
 - [x] `went_offline`'s loop can end with `retrying` still set (no connection during an
       account switch): offline is then never retried.
-- [ ] A keychain read that never answers leaves the skeleton up (no timeout on purpose:
+- [x] A keychain read that never answers leaves the skeleton up (no timeout on purpose:
       it can be waiting for the password prompt).
 
 ## Expired tokens, lost sends, stuck reconnect (2026-11-22)
@@ -345,9 +346,9 @@ Not checked: the real Keychain's dialogs, real Gmail, logging out of macOS, Wind
 typing in the formatted editor just before quit (the test sets the fields).
 
 Found, left open:
-- [ ] A change in another account that fails offline is undone, not queued (except at quit)
-- [ ] Discard then quit inside the undo delay leaves the draft in Drafts
-- [ ] With the store unavailable, mail that waits for a connection is lost at quit
+- [x] A change in another account that fails offline is undone, not queued (except at quit)
+- [x] Discard then quit inside the undo delay leaves the draft in Drafts
+- [x] With the store unavailable, mail that waits for a connection is lost at quit
 
 ## Settings at the bottom of the sidebar (2026-11-22)
 
@@ -382,8 +383,8 @@ session): a seen tab 0, a first visit at most about 1,570, a cold launch 1,700. 
 that try to make a tab show stale mail pass. Not checked: real Gmail's counts and limits.
 
 Found, left open:
-- [ ] Done left open does not update by itself (it would drop the pages scrolled to)
-- [ ] The rows kept to save units are memory only: Done is read again after a relaunch
+- [x] Done left open does not update by itself (it would drop the pages scrolled to)
+- [x] The rows kept to save units are memory only: Done is read again after a relaunch
 
 ## The sidebar's open row (2026-11-22)
 
@@ -408,3 +409,23 @@ desktops, both themes, floating. Not seen on a real blurred desktop.
 - [x] Its list outlives a switch (it loaded again, behind the skeleton, after each one)
 - [x] The first visit draws Inbox Zero when every account's Inbox was saved empty
 - [x] Switching away from the first account (id "") kept dropping its connection
+
+## The open items (2026-11-22)
+
+- [x] A Keychain that is slow to answer says so, and is still waited for
+- [x] Another account's change made offline is queued in its store and made when back
+- [x] Discard, then quit: the draft is deleted (at the next launch when offline)
+- [x] What cannot be kept (no key) puts quitting off once, and says what would be lost
+- [x] Done and All Mail follow the change feed; list rows are kept, encrypted, over launches
+- [x] A Gmail error leaves a mailbox known to be empty on screen
+- [x] An inbox emptied from All inboxes is saved at once
+- [x] All inboxes loads past 30 an account
+- [x] No Inbox Zero over a filter or an unlisted page
+- [x] Found on the way: the next page skipped mail after clearing (page tokens drift in the
+      fake, which counts by position; asking from the top is right either way)
+- [x] Found on the way: one hung Keychain question held up every account's checks
+
+Review: 12 reproductions (all failed before) and 33 cases that try to break the fixes, on
+the real client, a fake Gmail and a fake keychain; the new screens captured. Not checked:
+real Gmail's page tokens, real Keychain dialogs, logging out (quitting is put off for that
+too), Windows (nothing puts quitting off there), two real accounts.

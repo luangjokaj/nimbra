@@ -156,7 +156,7 @@ impl Steps {
 /// What a draft save left in Gmail: the draft's id and the edit count it has.
 pub type SavedAs = Arc<Mutex<Option<(String, u64)>>>;
 
-/// Something still being written, or being scheduled.
+/// Something still being written, being scheduled, or just discarded.
 pub struct Unfinished {
     pub job: Arc<Job>,
     pub edits: u64,
@@ -250,6 +250,11 @@ impl Leaving {
 impl Unfinished {
     fn finish(self) {
         let saved = locked(&self.saved).clone();
+        if self.job.stage() == sending::Stage::Discarded {
+            self.job.set_draft(saved.map(|(id, _)| id));
+            self.job.discard();
+            return;
+        }
         let id = match saved {
             Some((id, edits)) if edits == self.edits => {
                 self.job.forget();
