@@ -10164,238 +10164,225 @@ impl Nimbra {
             self.fold_row(section, self.mailbox == view, view_key(view), row)
         };
 
-        div()
-            .id("sidebar")
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(SIDEBAR_W))
-            .h_full()
-            // With several accounts it can be taller than the window: it scrolls.
-            .overflow_y_scroll()
-            .px(px(12.))
-            .pb(px(14.))
-            // Floating, the panel around it has the colour and the outline. The border keeps
-            // its 1pt, so that docking moves nothing inside.
-            .border_r_1()
-            .border_color(if floating {
-                gpui::transparent_black()
-            } else {
-                t.border
-            })
-            .when(!floating, |d| d.bg(t.sidebar))
-            // Space for the native traffic lights; dragging here moves the window.
-            .child(
-                div()
-                    .h(px(52.))
-                    .flex_none()
-                    .on_mouse_down(MouseButton::Left, drag_or_zoom),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .pl(px(10.))
-                    .pr(px(6.))
-                    .py(px(6.))
-                    .rounded(px(9.))
-                    .bg(t.hover)
-                    .border_1()
-                    .border_color(t.border)
-                    .cursor_pointer()
-                    .id("jump")
-                    .cursor(gpui::CursorStyle::IBeam)
-                    .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
-                    .when(self.mailbox == View::Search, |d| d.border_color(t.mint))
-                    .child(icon("search", 16., t.text3))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_color(if self.query.is_empty() {
-                                t.text3
-                            } else {
-                                t.text
-                            })
-                            .child(if self.query.is_empty() {
-                                SharedString::from("Search mail")
-                            } else {
-                                short(&self.query, 24)
-                            }),
-                    )
-                    .child(kbd(t, "/")),
-            )
-            .when(many, |d| {
-                d.child(
-                    nav(
-                        t,
-                        "mail",
-                        "All inboxes",
-                        Some(all_unread).filter(|n| *n > 0).map(|n| n.to_string()),
-                        self.mailbox == View::AllInboxes,
-                        None,
-                    )
-                    .id("all-inboxes")
-                    .press(t)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.select_mailbox(View::AllInboxes, cx)),
-                    ),
+        let scrolled =
+            div()
+                .id("sidebar")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.))
+                // With several accounts it can be taller than the window: it scrolls.
+                .overflow_y_scroll()
+                .px(px(12.))
+                .pb(px(10.))
+                // Space for the native traffic lights; dragging here moves the window.
+                .child(
+                    div()
+                        .h(px(52.))
+                        .flex_none()
+                        .on_mouse_down(MouseButton::Left, drag_or_zoom),
                 )
-                .children(accounts_toggle)
-                .children(account_rows)
-            })
-            .child(split_toggle)
-            .children(mailbox(
-                View::Inbox,
-                "inbox",
-                if demo {
-                    (unread > 0 && self.mailbox == View::Inbox).then(|| unread.to_string())
-                } else {
-                    unread_in("INBOX")
-                },
-            ))
-            .when(demo, |d| {
-                d.children(self.fold_row(
-                    "split",
-                    false,
-                    910,
-                    nav(t, "users", "Team", fake("4"), false, None).into_any_element(),
-                ))
-                .children(self.fold_row(
-                    "split",
-                    false,
-                    911,
-                    nav(t, "calendar", "Calendar", fake("2"), false, None).into_any_element(),
-                ))
-                .children(self.fold_row(
-                    "split",
-                    false,
-                    912,
-                    nav(t, "news", "Newsletters", fake("31"), false, None).into_any_element(),
-                ))
-                .children(self.fold_row(
-                    "split",
-                    false,
-                    913,
-                    nav(t, "zap", "Other", fake("23"), false, None).into_any_element(),
-                ))
-            })
-            // With real mail the split inbox is Gmail's own categories.
-            .when(!demo, |d| {
-                d.children(mailbox(
-                    View::Primary,
-                    "users",
-                    unread_in("CATEGORY_PERSONAL"),
-                ))
-                .children(mailbox(
-                    View::Updates,
-                    "bell",
-                    unread_in("CATEGORY_UPDATES"),
-                ))
-                .children(mailbox(
-                    View::Promotions,
-                    "tag",
-                    unread_in("CATEGORY_PROMOTIONS"),
-                ))
-                .children(mailbox(
-                    View::Social,
-                    "news",
-                    unread_in("CATEGORY_SOCIAL"),
-                ))
-            })
-            .child(mailbox_toggle)
-            .children(mailbox(View::Starred, "star", None))
-            .when(!demo, |d| {
-                d.children(mailbox(View::Important, "pulse", None))
-            })
-            .children(mailbox(View::Snoozed, "clock", fake("3")))
-            .children(self.fold_row(
-                "mailbox",
-                false,
-                900,
-                nav(t, "bell", "Reminders", fake("2"), false, None).into_any_element(),
-            ))
-            .children(mailbox(
-                View::Drafts,
-                "draft",
-                if demo { fake("1") } else { drafts },
-            ))
-            .children(mailbox(View::Sent, "send", None))
-            .children(mailbox(
-                View::Done,
-                "done",
-                (!self.history.is_empty()).then(|| self.history.len().to_string()),
-            ))
-            .when(!demo, |d| {
-                d.children(mailbox(View::AllMail, "archive", None))
-                    .children(mailbox(View::Spam, "ban", None))
-                    .children(mailbox(View::Trash, "trash", None))
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(labels_toggle.flex_1())
-                    .when(!demo && self.gmail.is_some(), |d| {
-                        let hover = t.hover;
-                        d.child(
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .pl(px(10.))
+                        .pr(px(6.))
+                        .py(px(6.))
+                        .rounded(px(9.))
+                        .bg(t.hover)
+                        .border_1()
+                        .border_color(t.border)
+                        .cursor_pointer()
+                        .id("jump")
+                        .cursor(gpui::CursorStyle::IBeam)
+                        .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
+                        .when(self.mailbox == View::Search, |d| d.border_color(t.mint))
+                        .child(icon("search", 16., t.text3))
+                        .child(
                             div()
-                                .id("new-label-sidebar")
-                                .mt(px(10.))
-                                .mr(px(4.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .size(px(22.))
-                                .rounded(px(6.))
-                                .cursor_pointer()
-                                .text_color(t.text3)
-                                .hover(move |s| s.bg(hover))
-                                .tooltip(tip(t.dark, "New label", ""))
-                                .child("+")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_label_sheet(LabelSheet::New { apply: false }, cx)
-                                })),
+                                .flex_1()
+                                .min_w(px(0.))
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_color(if self.query.is_empty() {
+                                    t.text3
+                                } else {
+                                    t.text
+                                })
+                                .child(if self.query.is_empty() {
+                                    SharedString::from("Search mail")
+                                } else {
+                                    short(&self.query, 24)
+                                }),
                         )
-                    }),
-            )
-            .when(demo, |d| {
-                d.children(self.fold_row(
-                    "labels",
-                    false,
-                    920,
-                    nav(t, "tag", "Product", None, false, Some(t.violet)).into_any_element(),
+                        .child(kbd(t, "/")),
+                )
+                .when(many, |d| {
+                    d.child(
+                        nav(
+                            t,
+                            "mail",
+                            "All inboxes",
+                            Some(all_unread).filter(|n| *n > 0).map(|n| n.to_string()),
+                            self.mailbox == View::AllInboxes,
+                            None,
+                        )
+                        .id("all-inboxes")
+                        .press(t)
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.select_mailbox(View::AllInboxes, cx)),
+                        ),
+                    )
+                    .children(accounts_toggle)
+                    .children(account_rows)
+                })
+                .child(split_toggle)
+                .children(mailbox(
+                    View::Inbox,
+                    "inbox",
+                    if demo {
+                        (unread > 0 && self.mailbox == View::Inbox).then(|| unread.to_string())
+                    } else {
+                        unread_in("INBOX")
+                    },
                 ))
+                .when(demo, |d| {
+                    d.children(self.fold_row(
+                        "split",
+                        false,
+                        910,
+                        nav(t, "users", "Team", fake("4"), false, None).into_any_element(),
+                    ))
+                    .children(self.fold_row(
+                        "split",
+                        false,
+                        911,
+                        nav(t, "calendar", "Calendar", fake("2"), false, None).into_any_element(),
+                    ))
+                    .children(self.fold_row(
+                        "split",
+                        false,
+                        912,
+                        nav(t, "news", "Newsletters", fake("31"), false, None).into_any_element(),
+                    ))
+                    .children(self.fold_row(
+                        "split",
+                        false,
+                        913,
+                        nav(t, "zap", "Other", fake("23"), false, None).into_any_element(),
+                    ))
+                })
+                // With real mail the split inbox is Gmail's own categories.
+                .when(!demo, |d| {
+                    d.children(mailbox(
+                        View::Primary,
+                        "users",
+                        unread_in("CATEGORY_PERSONAL"),
+                    ))
+                    .children(mailbox(
+                        View::Updates,
+                        "bell",
+                        unread_in("CATEGORY_UPDATES"),
+                    ))
+                    .children(mailbox(
+                        View::Promotions,
+                        "tag",
+                        unread_in("CATEGORY_PROMOTIONS"),
+                    ))
+                    .children(mailbox(
+                        View::Social,
+                        "news",
+                        unread_in("CATEGORY_SOCIAL"),
+                    ))
+                })
+                .child(mailbox_toggle)
+                .children(mailbox(View::Starred, "star", None))
+                .when(!demo, |d| {
+                    d.children(mailbox(View::Important, "pulse", None))
+                })
+                .children(mailbox(View::Snoozed, "clock", fake("3")))
                 .children(self.fold_row(
-                    "labels",
+                    "mailbox",
                     false,
-                    921,
-                    nav(t, "tag", "Design", None, false, Some(t.rose)).into_any_element(),
+                    900,
+                    nav(t, "bell", "Reminders", fake("2"), false, None).into_any_element(),
                 ))
-                .children(self.fold_row(
-                    "labels",
-                    false,
-                    922,
-                    nav(t, "tag", "Finance", None, false, Some(t.amber)).into_any_element(),
+                .children(mailbox(
+                    View::Drafts,
+                    "draft",
+                    if demo { fake("1") } else { drafts },
                 ))
-                .children(self.fold_row(
-                    "labels",
-                    false,
-                    923,
-                    nav(t, "tag", "Travel", None, false, Some(t.sky)).into_any_element(),
+                .children(mailbox(View::Sent, "send", None))
+                .children(mailbox(
+                    View::Done,
+                    "done",
+                    (!self.history.is_empty()).then(|| self.history.len().to_string()),
                 ))
-            })
-            .when(!demo, |d| {
-                let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
-                d.children(
-                    self.labels
-                        .iter()
-                        .enumerate()
-                        .take(40)
-                        .filter_map(|(index, label)| {
+                .when(!demo, |d| {
+                    d.children(mailbox(View::AllMail, "archive", None))
+                        .children(mailbox(View::Spam, "ban", None))
+                        .children(mailbox(View::Trash, "trash", None))
+                })
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(labels_toggle.flex_1())
+                        .when(!demo && self.gmail.is_some(), |d| {
+                            let hover = t.hover;
+                            d.child(
+                                div()
+                                    .id("new-label-sidebar")
+                                    .mt(px(10.))
+                                    .mr(px(4.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(22.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .text_color(t.text3)
+                                    .hover(move |s| s.bg(hover))
+                                    .tooltip(tip(t.dark, "New label", ""))
+                                    .child("+")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_label_sheet(LabelSheet::New { apply: false }, cx)
+                                    })),
+                            )
+                        }),
+                )
+                .when(demo, |d| {
+                    d.children(self.fold_row(
+                        "labels",
+                        false,
+                        920,
+                        nav(t, "tag", "Product", None, false, Some(t.violet)).into_any_element(),
+                    ))
+                    .children(self.fold_row(
+                        "labels",
+                        false,
+                        921,
+                        nav(t, "tag", "Design", None, false, Some(t.rose)).into_any_element(),
+                    ))
+                    .children(self.fold_row(
+                        "labels",
+                        false,
+                        922,
+                        nav(t, "tag", "Finance", None, false, Some(t.amber)).into_any_element(),
+                    ))
+                    .children(self.fold_row(
+                        "labels",
+                        false,
+                        923,
+                        nav(t, "tag", "Travel", None, false, Some(t.sky)).into_any_element(),
+                    ))
+                })
+                .when(!demo, |d| {
+                    let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
+                    d.children(self.labels.iter().enumerate().take(40).filter_map(
+                        |(index, label)| {
                             let view = View::Label(index);
                             let row = nav(
                                 t,
@@ -10426,62 +10413,64 @@ impl Nimbra {
                             .press(t)
                             .into_any_element();
                             self.fold_row("labels", self.mailbox == view, view_key(view), row)
-                        }),
-                )
-            })
-            .child(div().flex_1())
-            // The streak card is sample content, so it only shows with the demo data.
-            .when(demo, |d| {
-                d.child(
-                    card(t)
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.))
-                        .p(px(12.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(icon("zap", 16., t.amber))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child("Inbox zero streak"),
-                                )
-                                .child(mono("7d", t.text3)),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_end()
-                                .gap(px(5.))
-                                .h(px(22.))
-                                .children(bars.map(|h: f32| {
+                        },
+                    ))
+                })
+                .child(div().flex_1())
+                // The streak card is sample content, so it only shows with the demo data.
+                .when(demo, |d| {
+                    d.child(
+                        card(t)
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.))
+                            .p(px(12.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(icon("zap", 16., t.amber))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child("Inbox zero streak"),
+                                    )
+                                    .child(mono("7d", t.text3)),
+                            )
+                            .child(div().flex().items_end().gap(px(5.)).h(px(22.)).children(
+                                bars.map(|h: f32| {
                                     div().flex_1().h(px(h)).rounded(px(2.)).bg(gradient(
                                         180.,
                                         c(0xff7ab6, 1.),
                                         c(0x8b7cff, 1.),
                                     ))
-                                })),
-                        )
-                        .child(meta(
-                            if left == 0 {
-                                "Done at 10:52 · 28 min faster".to_string()
-                            } else {
-                                format!("{left} left · usually done by 11:20")
-                            },
-                            t.text3,
-                        )),
-                )
-            })
+                                }),
+                            ))
+                            .child(meta(
+                                if left == 0 {
+                                    "Done at 10:52 · 28 min faster".to_string()
+                                } else {
+                                    format!("{left} left · usually done by 11:20")
+                                },
+                                t.text3,
+                            )),
+                    )
+                });
+
+        // Settings stays at the bottom, whatever is scrolled above it.
+        let footer = div()
+            .flex_none()
+            .px(px(12.))
+            .py(px(8.))
+            .border_t_1()
+            .border_color(t.border_strong)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .mt(px(10.))
                     .p(px(6.))
                     .rounded(px(10.))
                     .child(
@@ -10511,11 +10500,15 @@ impl Nimbra {
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .whitespace_nowrap()
                                             .overflow_hidden()
-                                            .child(short(&self.account, 22)),
+                                            .child("Settings"),
                                     )
                                     .child(meta(
                                         match (demo, self.settings.accounts.len()) {
                                             (true, _) => "Work · 3 accounts".to_string(),
+                                            // The one account's address: nothing else here shows it.
+                                            (false, 0 | 1) if !self.account.is_empty() => {
+                                                short(&self.account, 22).to_string()
+                                            }
                                             (false, 0 | 1) => "Gmail".to_string(),
                                             (false, n) => format!("Gmail · {n} accounts"),
                                         },
@@ -10530,7 +10523,25 @@ impl Nimbra {
                             .tooltip(tip(t.dark, "Light or dark theme", "⌘⇧L"))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
                     ),
-            )
+            );
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(SIDEBAR_W))
+            .h_full()
+            // Floating, the panel around it has the colour and the outline. The border keeps
+            // its 1pt, so that docking moves nothing inside.
+            .border_r_1()
+            .border_color(if floating {
+                gpui::transparent_black()
+            } else {
+                t.border
+            })
+            .when(!floating, |d| d.bg(t.sidebar))
+            .child(scrolled)
+            .child(footer)
     }
 
     fn row(&self, t: &Theme, i: usize, cx: &mut Context<Self>) -> Stateful<Div> {

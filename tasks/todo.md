@@ -349,6 +349,14 @@ Found, left open:
 - [ ] Discard then quit inside the undo delay leaves the draft in Drafts
 - [ ] With the store unavailable, mail that waits for a connection is lost at quit
 
+## Settings at the bottom of the sidebar (2026-11-22)
+
+- [x] Pinned below the scrolling part, with a top border, titled Settings
+- [x] One account: its address is the line under it
+
+Review: screenshots in both themes, floating, one and two accounts, at the minimum window.
+Found, left open (older): scrolled rows show under the window controls.
+
 ## Reloading on every tab click (asked 2026-11-22, not started: waiting for a yes)
 
 Measured on 89cb71b (fake Gmail, Google's quota table; 6,000 units a minute per user):
