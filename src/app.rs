@@ -5768,7 +5768,6 @@ impl Nimbra {
             .collect()
     }
 
-    /// Takes a label off the open thread.
     /// The account a thread is from (`None` on a mail means the one shown).
     fn account_of<'a>(&'a self, mail: &'a Mail) -> &'a str {
         mail.account.as_deref().unwrap_or(&self.account_id)
@@ -5793,6 +5792,7 @@ impl Nimbra {
         row
     }
 
+    /// Takes a label off the thread in that row.
     fn remove_label(&mut self, index: usize, label_id: String, cx: &mut Context<Self>) {
         if self.is_foreign(index) {
             return;
