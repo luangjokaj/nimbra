@@ -92,3 +92,23 @@
   finishes it: the main thread's continuation does not run while quitting.
 - Test the network layer against a local HTTP fake. Stubbed `Client` methods hide its bugs.
 - Every retry loop has a pause on every failing path: count the requests in the test.
+- A notice about the user's mail goes through `tell`: a list arriving clears the others.
+  Test the notice after the list has arrived, and read the longest one in the real toast
+  (asserting on the string missed that it was cut at 90 characters).
+
+## Keychain
+
+- "Could not read" is never "there is none": make a key, sign out or wipe only on NoEntry.
+- Work nobody waits on uses `Store::open_quietly`, or macOS asks again every 30 seconds.
+
+## Records
+
+- A list in the store is changed with `Store::update`, by the thread that did the work.
+  Never save a copy held from before a request or an account switch.
+- Never replace `target/bundle` under a running Nimbra: move the old bundle aside first
+  (deleted, its signature stops verifying and the keychain may refuse it).
+
+## Gmail's quota
+
+- Count units per click before shipping anything that fetches (6,000 a minute per user;
+  a thread in full is 120, its headers 40, the change feed 2).

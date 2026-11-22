@@ -14,7 +14,9 @@ use crate::checking::{Checks, TooSlow, within};
 use crate::data::{COMMANDS, Mail, inbox};
 use crate::gmail::{self, View};
 use crate::input::{InputEvent, TextInput};
+use crate::leaving::{self, End, Leaving, SavedAs, Steps, Underway};
 use crate::rich::{self, Block, Kind};
+use crate::scheduled::{self, Outcome, Scheduled};
 use crate::sending::{Job, QueuedMail, Stage};
 use crate::theme::{Accent, SERIF, Theme, Tone, c, fade, gradient};
 use crate::ui::{
@@ -150,6 +152,8 @@ struct Composer {
     quoted: Option<String>,
     show_quoted: bool,
     saving: bool,
+    /// What the last save left in Gmail, set by the thread that saved it (for quitting).
+    saved_as: SavedAs,
     /// The last save succeeded (shown in the footer).
     saved: bool,
     /// Fills the window instead of floating over the mail.
@@ -358,23 +362,12 @@ enum Parked {
 
 /// Changes and messages made while offline, sent once Gmail can be reached again.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
-struct Outbox {
-    changes: Vec<(String, gmail::Change)>,
+pub(crate) struct Outbox {
+    pub(crate) changes: Vec<(String, gmail::Change)>,
     /// Only as earlier versions saved it: waiting mail has records of its own now (see
     /// `sending`), and these become such records when the store opens.
     #[serde(default)]
     mail: Vec<QueuedMail>,
-}
-
-/// A message to send later: its saved draft and when.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct Scheduled {
-    draft_id: String,
-    at_ms: i64,
-    subject: String,
-    /// The account the draft is in, when not the one whose store keeps this list.
-    #[serde(default)]
-    account: Option<String>,
 }
 
 /// What a catch-up got done.
@@ -421,8 +414,10 @@ fn catch_up(
 
 /// How long a sent or discarded message can still be taken back.
 const UNDO_DELAY: Duration = Duration::from_secs(6);
-/// The longest quitting waits for messages on their way out. They are on disk as well.
+/// The longest quitting waits for what is on its way to Gmail. That is on disk as well.
 const QUIT_WAIT: Duration = Duration::from_secs(30);
+const KEYCHAIN_REFUSED: &str = "Nimbra could not read your sign-in from the Keychain. Nothing was deleted and you are still signed in. Try again, and allow access if macOS asks.";
+const STORE_UNAVAILABLE: &str = "Nimbra could not open what it keeps on this Mac. Nothing was deleted. Allow Keychain access and reopen Nimbra.";
 
 impl Composer {
     fn input(&self, field: Field) -> Option<Entity<TextInput>> {
@@ -652,7 +647,8 @@ impl Render for NoticeToast {
                     .border_1()
                     .border_color(t.border_strong)
                     .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
-                    .child(div().flex_1().min_w(px(0.)).child(short(&self.text, 90)))
+                    // Two lines of it fit.
+                    .child(div().flex_1().min_w(px(0.)).child(short(&self.text, 140)))
                     .child(
                         button(&t, ButtonKind::Ghost, "Dismiss", None)
                             .id("dismiss-notice")
@@ -1083,6 +1079,15 @@ pub struct Nimbra {
     queue: Vec<Arc<Job>>,
     /// Messages between Send and Gmail having them, of every account.
     sends: Vec<Arc<Job>>,
+    /// Changes to threads, until they are settled.
+    steps: Steps,
+    /// The last notice about mail that was or was not kept or sent: a list arriving does
+    /// not take it away, as it does a stale error.
+    must_show: Option<SharedString>,
+    /// Draft saves on their way: quitting needs their ids before it sends or saves.
+    saves: Underway,
+    /// Whatever else is changing something in Gmail, for quitting to wait for.
+    writes: Underway,
     /// The open thread was just marked unread by the user: it stays unread until another
     /// thread is opened, even if its text is clicked.
     kept_unread: Option<String>,
@@ -1382,6 +1387,10 @@ impl Nimbra {
             catching_up: HashSet::new(),
             queue: Vec::new(),
             sends: Vec::new(),
+            steps: Steps::default(),
+            must_show: None,
+            saves: Underway::default(),
+            writes: Underway::default(),
             kept_unread: None,
             attachment_busy: HashMap::new(),
             attachment_saved: HashMap::new(),
@@ -1594,7 +1603,7 @@ impl Nimbra {
         {
             this.account_id = active;
         }
-        if let Some(config) = this.config.clone() {
+        if this.config.is_some() {
             this.status = Status::Loading;
             this.inbox_saved_empty =
                 crate::store::Store::saved_empty(&this.account_id, &record(View::Inbox));
@@ -1603,26 +1612,7 @@ impl Nimbra {
             }
             // On every change, whichever action made it: the next launch goes by this.
             cx.observe_self(Self::save_if_zero_changed).detach();
-            let account = this.account_id.clone();
-            cx.spawn(async move |this, cx| {
-                let id = account.clone();
-                let token = cx
-                    .background_executor()
-                    .spawn(async move { gmail::stored_refresh_token(&id) })
-                    .await;
-                this.update(cx, |this, cx| match token {
-                    Some(token) => {
-                        this.gmail = Some(Arc::new(gmail::Client::new(config, token, account)));
-                        this.open_store(cx);
-                    }
-                    None => {
-                        this.status = Status::SignedOut;
-                        cx.notify();
-                    }
-                })
-                .ok();
-            })
-            .detach();
+            this.connect(false, cx);
         }
         // NIMBRA_SEARCH=<query> starts with that search already run.
         if let Ok(query) = std::env::var("NIMBRA_SEARCH") {
@@ -2658,8 +2648,6 @@ impl Nimbra {
                     let store = Arc::new(crate::store::Store::open(&account)?);
                     let saved: Option<Saved> = store.load("meta");
                     let mails: Option<Vec<Mail>> = store.load(&view_record);
-                    let scheduled: Option<Vec<Scheduled>> = store.load("scheduled");
-                    let snoozed: Option<Vec<Snooze>> = store.load("snoozed");
                     let unsent = client.map_or_else(Vec::new, |client| {
                         if let Some(mut older) = store.load::<Outbox>("outbox")
                             && !older.mail.is_empty()
@@ -2674,15 +2662,17 @@ impl Nimbra {
                         }
                         Job::left_behind(&account, &client, &store)
                     });
-                    anyhow::Ok((store, saved, mails, scheduled, snoozed, unsent))
+                    anyhow::Ok((store, saved, mails, unsent))
                 })
                 .await;
-            let Ok((store, saved, mails, scheduled, snoozed, unsent)) = opened else {
+            let Ok((store, saved, mails, unsent)) = opened else {
                 eprintln!("nimbra: mail store unavailable; continuing without it");
                 this.update(cx, |this, cx| {
-                    if this.account_gen == generation {
-                        this.inbox_saved_empty = false;
+                    if this.account_gen != generation {
+                        return;
                     }
+                    this.inbox_saved_empty = false;
+                    this.tell(STORE_UNAVAILABLE);
                     this.fetch_inbox(cx)
                 })
                 .ok();
@@ -2695,6 +2685,8 @@ impl Nimbra {
                 // Read here, not above: a catch-up from before a switch may just have
                 // taken what it sent out of it.
                 let mut outbox: Outbox = store.load("outbox").unwrap_or_default();
+                this.scheduled = scheduled::list(&store);
+                this.snoozed = store.load("snoozed").unwrap_or_default();
                 let queued_meanwhile = !this.outbox.changes.is_empty();
                 outbox.changes.append(&mut this.outbox.changes);
                 this.outbox = outbox;
@@ -2705,8 +2697,6 @@ impl Nimbra {
                 if view == View::Inbox {
                     this.inbox_saved_empty = mails.as_ref().is_some_and(Vec::is_empty);
                 }
-                this.scheduled = scheduled.unwrap_or_default();
-                this.snoozed = snoozed.unwrap_or_default();
                 for job in unsent {
                     this.pick_up_send(job, cx);
                 }
@@ -3050,7 +3040,7 @@ impl Nimbra {
                     })
                     .unwrap_or(EVERY);
                 cx.background_executor().timer(wait).await;
-                let Ok((others, connected)) = this.update(cx, |this, _| {
+                let Ok((others, connected, writes)) = this.update(cx, |this, _| {
                     let others = this
                         .others
                         .iter()
@@ -3061,7 +3051,7 @@ impl Nimbra {
                     if let Some(client) = &this.gmail {
                         connected.insert(this.account_id.clone(), client.clone());
                     }
-                    (others, connected)
+                    (others, connected, this.writes.clone())
                 }) else {
                     break; // the window is gone
                 };
@@ -3070,6 +3060,7 @@ impl Nimbra {
                     let from = feeds.get(&id).cloned();
                     let account = id.clone();
                     let connected = connected.clone();
+                    let writes = writes.clone();
                     let checked = cx
                         .background_executor()
                         .spawn(async move {
@@ -3098,7 +3089,7 @@ impl Nimbra {
                                 .collect();
                             let extra = fresh.len().saturating_sub(summaries.len());
                             // Snoozes and scheduled sends kept with this account.
-                            carry_out_due(&account, &connected);
+                            carry_out_due(&account, &connected, &writes);
                             anyhow::Ok((at, summaries, extra, changed, unread))
                         })
                         .await;
@@ -3223,13 +3214,21 @@ impl Nimbra {
 
     /// Shows another of the accounts signed in on this Mac.
     fn switch_account(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.config.is_none() || id == self.account_id || !gmail::is_account_id(&id) {
+            return;
+        }
+        self.reset_account(id, cx);
+        self.connect(false, cx);
+    }
+
+    /// Connects the account shown with its saved sign-in. `sign_in` is for when there is
+    /// none: whether to go on to Google, as the button that asked for it says.
+    fn connect(&mut self, sign_in: bool, cx: &mut Context<Self>) {
         let Some(config) = self.config.clone() else {
             return;
         };
-        if id == self.account_id || !gmail::is_account_id(&id) {
-            return;
-        }
-        self.reset_account(id.clone(), cx);
+        let id = self.account_id.clone();
+        let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let key = id.clone();
             let token = cx
@@ -3237,21 +3236,42 @@ impl Nimbra {
                 .spawn(async move { gmail::stored_refresh_token(&key) })
                 .await;
             this.update(cx, |this, cx| {
-                if this.account_id != id {
+                if this.account_gen != generation || this.account_id != id || this.gmail.is_some() {
                     return;
                 }
                 match token {
-                    Some(token) => {
+                    Ok(Some(token)) => {
                         this.gmail = Some(Arc::new(gmail::Client::new(config, token, id)));
                         this.open_store(cx);
                     }
-                    None => this.status = Status::SignedOut,
+                    Ok(None) if sign_in => this.sign_in(cx),
+                    Ok(None) => this.status = Status::SignedOut,
+                    // Not signed out: signing in over it could wipe this account, or send
+                    // its mail from another.
+                    Err(error) => {
+                        eprintln!("nimbra: {error:#}");
+                        this.status = Status::Failed(KEYCHAIN_REFUSED.into());
+                    }
                 }
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// The status screen's Try again.
+    fn try_again(&mut self, cx: &mut Context<Self>) {
+        if self.gmail.is_none() {
+            self.status = Status::Loading;
+            self.connect(true, cx);
+        } else if self.store.is_none() {
+            // Asks the keychain again.
+            self.open_store(cx);
+        } else {
+            self.fetch_inbox(cx);
+        }
+        cx.notify();
     }
 
     /// Opens a connection to every signed-in account that is not shown (their sign-ins are
@@ -3277,7 +3297,8 @@ impl Nimbra {
                 .spawn(async move {
                     missing
                         .into_iter()
-                        .filter_map(|id| gmail::stored_refresh_token(&id).map(|t| (id, t)))
+                        .filter_map(|id| Some((gmail::stored_refresh_token(&id).ok()??, id)))
+                        .map(|(token, id)| (id, token))
                         .collect::<Vec<_>>()
                 })
                 .await;
@@ -3792,7 +3813,9 @@ impl Nimbra {
         }
         self.back.clear();
         self.forward.clear();
-        self.notice = None;
+        if self.notice != self.must_show {
+            self.notice = None;
+        }
         self.status = Status::Ready;
         self.cache.insert(self.mailbox, self.listed());
         self.persist(cx);
@@ -3928,23 +3951,44 @@ impl Nimbra {
             return;
         };
         let account = self.account_of(&self.mails[index]).to_string();
+        // It follows what waits for the connection, so it waits too.
+        if account == self.account_id && self.outbox.changes.iter().any(|(queued, _)| *queued == id)
+        {
+            self.outbox.changes.push((id, change));
+            self.save_outbox();
+            self.went_offline(cx);
+            return;
+        }
+        let step = self.steps.start(account.clone(), id.clone(), change);
+        let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
-            let thread_id = id.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { client.change(&thread_id, change) })
+                .spawn(async move {
+                    let _working = working;
+                    step.run(&client)
+                })
                 .await;
-            let Err(error) = result else {
-                return;
-            };
             this.update(cx, |this, cx| {
+                let settled = this.steps.settle(&account, &id);
                 // Offline: keep the change here and send it when the connection is back
                 // (the queue is the shown account's; another account's change is undone).
                 // Asked now, not when it was made: the account shown may have changed.
-                if error.is::<gmail::Offline>() && account == this.account_id {
-                    this.outbox.changes.push((id, change));
+                let shown = account == this.account_id;
+                let waiting: Vec<_> = settled
+                    .into_iter()
+                    .filter(|(_, end)| shown && *end == End::Offline)
+                    .map(|(step, _)| (step.id.clone(), step.change))
+                    .collect();
+                if !waiting.is_empty() {
+                    this.outbox.changes.extend(waiting);
                     this.save_outbox();
                     this.went_offline(cx);
+                }
+                let Err(error) = result else {
+                    return;
+                };
+                if shown && error.is::<gmail::Offline>() {
                     return;
                 }
                 // Put back wherever the thread is by now.
@@ -4051,6 +4095,7 @@ impl Nimbra {
             quoted: None,
             show_quoted: false,
             saving: false,
+            saved_as: SavedAs::default(),
             saved: false,
             sending: false,
             error: None,
@@ -5034,15 +5079,15 @@ impl Nimbra {
                                 this.offline = false;
                                 this.stop_retrying();
                                 eprintln!("nimbra: back online ({changes} changes, {sent} messages caught up)");
-                                this.notice = Some(if let Some((subject, unsure, saved)) = kept.first() {
+                                this.tell(if let Some((subject, unsure, saved)) = kept.first() {
                                     let subject = short(subject, 40);
                                     let what = if *unsure { "may already be sent: check Sent" } else { "could not be sent" };
                                     let where_now = if *saved { "It is in Drafts." } else { "It is kept on this Mac." };
-                                    format!("Back online. “{subject}” {what}. {where_now}").into()
+                                    format!("Back online. “{subject}” {what}. {where_now}")
                                 } else if sent > 0 {
-                                    format!("Back online. {sent} waiting message{} sent.", if sent == 1 { " was" } else { "s were" }).into()
+                                    format!("Back online. {sent} waiting message{} sent.", if sent == 1 { " was" } else { "s were" })
                                 } else {
-                                    "Back online.".into()
+                                    "Back online.".to_string()
                                 });
                                 this.refresh(cx);
                                 cx.notify();
@@ -5202,11 +5247,15 @@ impl Nimbra {
         let Some(client) = self.gmail.clone() else {
             return;
         };
+        let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
             let (label, new_name) = (id.clone(), name.clone());
             let result = cx
                 .background_executor()
-                .spawn(async move { client.rename_label(&label, &new_name) })
+                .spawn(async move {
+                    let _working = working;
+                    client.rename_label(&label, &new_name)
+                })
                 .await;
             this.update(cx, |this, cx| match result {
                 Ok(()) => {
@@ -5231,11 +5280,15 @@ impl Nimbra {
         let Some(client) = self.gmail.clone() else {
             return;
         };
+        let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
             let label = id.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { client.delete_label(&label) })
+                .spawn(async move {
+                    let _working = working;
+                    client.delete_label(&label)
+                })
                 .await;
             this.update(cx, |this, cx| match result {
                 Ok(()) => {
@@ -5281,11 +5334,13 @@ impl Nimbra {
         }
         self.load_selected(cx);
         cx.notify();
+        let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
             let list = ids.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
+                    let _working = working;
                     let mut deleted = 0;
                     for id in &list {
                         client.delete_thread(id)?;
@@ -5845,14 +5900,19 @@ impl Nimbra {
     /// Snoozes the open (or picked) threads: out of the inbox now, back at the chosen time,
     /// unread and with a notification. A reminder only comes back if nobody has replied.
     fn snooze(&mut self, choice: SnoozeChoice, cx: &mut Context<Self>) {
-        let targets = self.targets();
-        for &index in &targets {
+        if self.gmail.is_some() && self.store.is_none() {
+            // It would leave the Inbox with nothing to bring it back.
+            self.notice = Some(STORE_UNAVAILABLE.into());
+            cx.notify();
+            return;
+        }
+        let mut new = Vec::new();
+        for index in self.targets() {
             let mail = &self.mails[index];
             let Some(thread_id) = mail.id.clone() else {
                 continue;
             };
-            self.snoozed.retain(|s| s.thread_id != thread_id);
-            self.snoozed.push(Snooze {
+            new.push(Snooze {
                 thread_id,
                 until_ms: choice.until_ms,
                 no_reply: choice.no_reply,
@@ -5860,7 +5920,10 @@ impl Nimbra {
                 mail: mail.clone(),
             });
         }
-        self.save_snoozed(cx);
+        self.change_snoozed(|list| {
+            list.retain(|kept| !new.iter().any(|s| s.thread_id == kept.thread_id));
+            list.extend(new.iter().cloned());
+        });
         self.watch_schedule(cx);
         if inbox_like(self.mailbox) {
             self.remove_selected(gmail::Change::Archive, cx);
@@ -5876,17 +5939,15 @@ impl Nimbra {
         cx.notify();
     }
 
-    fn save_snoozed(&self, cx: &mut Context<Self>) {
-        let (Some(store), snoozed) = (self.store.clone(), self.snoozed.clone()) else {
-            return;
-        };
-        cx.background_executor()
-            .spawn(async move {
-                if store.save("snoozed", &snoozed).is_err() {
-                    eprintln!("nimbra: could not save the snoozed list");
-                }
-            })
-            .detach();
+    /// Changes the snoozed list here and in the store, each as it is: saving this copy
+    /// could undo what a background check just took out.
+    fn change_snoozed(&mut self, change: impl Fn(&mut Vec<Snooze>)) {
+        change(&mut self.snoozed);
+        if let Some(store) = &self.store
+            && store.update("snoozed", |kept| change(kept)).is_err()
+        {
+            eprintln!("nimbra: could not save the snoozed list");
+        }
     }
 
     /// Brings back snoozed threads whose time has come (checked with the send-later list).
@@ -5907,16 +5968,35 @@ impl Nimbra {
                 continue;
             };
             self.waking.insert(item.thread_id.clone());
+            let (owner, store) = (self.account_id.clone(), self.store.clone());
+            let working = self.writes.begin();
             cx.spawn(async move |this, cx| {
                 let (id, since, no_reply) = (item.thread_id.clone(), item.since_ms, item.no_reply);
+                let until = item.until_ms;
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        if no_reply && client.summary(&id, false)?.timestamp_ms > since {
-                            return anyhow::Ok(false); // someone wrote: no reminder needed
+                        let _working = working;
+                        let wake = || {
+                            if no_reply && client.summary(&id, false)?.timestamp_ms > since {
+                                return anyhow::Ok(false); // someone wrote: no reminder needed
+                            }
+                            client.relabel(&id, &["INBOX", "UNREAD"], &[])?;
+                            anyhow::Ok(true)
+                        };
+                        let woken = wake();
+                        // Out of its account's list here, whichever account is shown by now.
+                        if woken.as_ref().map_or_else(gmail::is_gone, |_| true)
+                            && let Some(store) = &store
+                            && store
+                                .update("snoozed", |list: &mut Vec<Snooze>| {
+                                    list.retain(|s| s.thread_id != id || s.until_ms != until);
+                                })
+                                .is_err()
+                        {
+                            eprintln!("nimbra: could not save the snoozed list");
                         }
-                        client.relabel(&id, &["INBOX", "UNREAD"], &[])?;
-                        anyhow::Ok(true)
+                        woken
                     })
                     .await;
                 this.update(cx, |this, cx| {
@@ -5946,11 +6026,12 @@ impl Nimbra {
                             }
                             true
                         }
-                        Err(error) => error.to_string().contains("404"),
+                        Err(error) => gmail::is_gone(error),
                     };
-                    if done {
-                        this.snoozed.retain(|s| s.thread_id != item.thread_id);
-                        this.save_snoozed(cx);
+                    if done && this.account_id == owner {
+                        this.snoozed.retain(|s| {
+                            s.thread_id != item.thread_id || s.until_ms != item.until_ms
+                        });
                     }
                     cx.notify();
                 })
@@ -6228,10 +6309,14 @@ impl Nimbra {
             cx.notify();
             return;
         };
+        let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { client.remove_label(&id, &label_id) })
+                .spawn(async move {
+                    let _working = working;
+                    client.remove_label(&id, &label_id)
+                })
                 .await;
             if let Err(error) = result {
                 this.update(cx, |this, cx| this.fail(error, cx)).ok();
@@ -6319,10 +6404,14 @@ impl Nimbra {
         }
         self.close_new_label(cx);
         let (meant, generation) = (self.label_for.clone(), self.account_gen);
+        let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { client.create_label(&name) })
+                .spawn(async move {
+                    let _working = working;
+                    client.create_label(&name)
+                })
                 .await;
             this.update(cx, |this, cx| match result {
                 // The label is in the account it was made in.
@@ -6517,10 +6606,14 @@ impl Nimbra {
             return;
         };
         let name = label.name.clone();
+        let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { client.add_label(&id, &label.id) })
+                .spawn(async move {
+                    let _working = working;
+                    client.add_label(&id, &label.id)
+                })
                 .await;
             this.update(cx, |this, cx| match result {
                 Ok(()) => {
@@ -7146,11 +7239,20 @@ impl Nimbra {
         if explicit {
             composer.error = None;
         }
+        let saved_as = composer.saved_as.clone();
         cx.notify();
+        let working = self.saves.begin();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { client.save_draft(draft_id.as_deref(), &outgoing) })
+                .spawn(async move {
+                    let _working = working;
+                    let saved = client.save_draft(draft_id.as_deref(), &outgoing);
+                    if let Ok(id) = &saved {
+                        *saved_as.lock().unwrap() = Some((id.clone(), edits));
+                    }
+                    saved
+                })
                 .await;
             this.update(cx, |this, cx| {
                 this.composer_saved(serial, edits, explicit, result, cx)
@@ -7210,15 +7312,14 @@ impl Nimbra {
                 if let Some(pos) = self.parked.iter().position(|(_, c)| c.serial == serial) {
                     let (_, composer) = self.parked.remove(pos);
                     if let Some(draft_id) = composer.draft_id.clone() {
-                        self.scheduled.push(Scheduled {
+                        let subject = composer.subject.read(cx).text();
+                        let item = Scheduled {
                             draft_id,
                             at_ms: at,
-                            subject: composer.subject.read(cx).text(),
+                            subject,
                             account: composer.account.clone(),
-                        });
-                        self.save_scheduled(cx);
-                        self.notice = Some(format!("Scheduled for {}.", long_date(at)).into());
-                        self.watch_schedule(cx);
+                        };
+                        self.add_scheduled(item, cx);
                     }
                     refresh = true;
                 }
@@ -7387,10 +7488,14 @@ impl Nimbra {
                     composer.draft_id.clone(),
                     self.client_for(composer.account.as_deref()),
                 ) {
+                    let working = self.writes.begin();
                     cx.spawn(async move |this, cx| {
                         let result = cx
                             .background_executor()
-                            .spawn(async move { client.delete_draft(&id) })
+                            .spawn(async move {
+                                let _working = working;
+                                client.delete_draft(&id)
+                            })
                             .await;
                         this.update(cx, |this, cx| {
                             if let Err(error) = result {
@@ -7531,6 +7636,7 @@ impl Nimbra {
     /// Forgets an account's unsent mail: whoever signs in next must not send it.
     fn abandon_sends(&mut self, account: &str) {
         self.queue.retain(|job| job.account != account);
+        self.steps.forget(account);
         self.sends.retain(|job| {
             let keep = job.account != account;
             if !keep {
@@ -7538,6 +7644,13 @@ impl Nimbra {
             }
             keep
         });
+    }
+
+    /// A notice that stays for its time: what it says happened to the user's mail.
+    fn tell(&mut self, text: impl Into<SharedString>) {
+        let text = text.into();
+        self.must_show = Some(text.clone());
+        self.notice = Some(text);
     }
 
     /// A message that is not to be sent by itself goes to Drafts, and `why` says so.
@@ -7548,10 +7661,10 @@ impl Nimbra {
                 .spawn(async move { job.to_drafts() })
                 .await;
             this.update(cx, |this, cx| {
-                this.notice = Some(if saved {
-                    format!("{why} It is in Drafts.").into()
+                this.tell(if saved {
+                    format!("{why} It is in Drafts.")
                 } else {
-                    format!("{why} It is kept on this Mac, to put in Drafts next time.").into()
+                    format!("{why} It is kept on this Mac.")
                 });
                 cx.notify();
             })
@@ -7574,28 +7687,153 @@ impl Nimbra {
                 cx,
             ),
             Stage::Refused => self.send_to_drafts(job, format!("“{subject}” was not sent."), cx),
+            Stage::Writing | Stage::Unscheduled => {
+                let what = if subject.trim().is_empty() {
+                    "A message".to_string()
+                } else {
+                    format!("“{subject}”")
+                };
+                let why = if job.stage() == Stage::Writing {
+                    format!("{what} was being written when Nimbra quit.")
+                } else {
+                    format!("{what} was not scheduled before Nimbra quit.")
+                };
+                self.send_to_drafts(job, why, cx);
+            }
             Stage::Over => job.forget(),
         }
     }
 
-    /// Quitting: what was sent goes now, undo delay or not, and what is out is waited for.
+    /// Quitting: what was sent goes now, undo delay or not; what is being written goes to
+    /// Drafts; and what is on its way is waited for.
     fn finish_before_quit(&mut self, cx: &mut Context<Self>) {
-        if self.sends.is_empty() {
+        let leaving = self.leaving(cx);
+        if leaving.is_empty() {
             return;
         }
         // Nothing on screen can answer while this waits.
         cx.hide();
-        for job in &self.sends {
-            if let Some((_, composer)) = self
-                .parked
-                .iter()
-                .find(|(_, c)| Some(c.serial) == job.composer)
-            {
-                job.set_draft(composer.draft_id.clone());
+        leaving.finish(std::time::Instant::now() + QUIT_WAIT);
+    }
+
+    /// Whether an account is still signed in here: nothing is written down for one that is
+    /// not, as its store was deleted.
+    fn keeps(&self, account: &str) -> bool {
+        self.settings.accounts.iter().any(|a| a.id == account)
+            || (self.gmail.is_some() && account == self.account_id)
+    }
+
+    fn store_of(&self, account: &str) -> Option<Arc<crate::store::Store>> {
+        self.store.clone().filter(|_| account == self.account_id)
+    }
+
+    /// Everything that quitting has to finish or write down.
+    fn leaving(&self, cx: &App) -> Leaving {
+        let sends = self
+            .sends
+            .iter()
+            .map(|job| {
+                let composer = self
+                    .parked
+                    .iter()
+                    .find(|(_, c)| Some(c.serial) == job.composer)
+                    .map(|(_, c)| c);
+                if let Some(composer) = composer {
+                    job.set_draft(composer.draft_id.clone());
+                }
+                let saved = composer.map(|c| c.saved_as.clone()).unwrap_or_default();
+                (job.clone(), saved)
+            })
+            .collect();
+
+        let closing = self
+            .parked
+            .iter()
+            .filter(|(kind, _)| *kind == Parked::Closing)
+            .map(|(_, composer)| composer);
+        let mut unfinished = Vec::new();
+        for composer in self.compose.iter().chain(closing) {
+            let at = match composer.after_save {
+                Some(After::Schedule(at)) => Some(at),
+                _ => None,
+            };
+            let unsaved = composer.saving || (composer.dirty() && composer.has_content(cx));
+            if at.is_none() && !unsaved {
+                continue;
+            }
+            let account = composer.account.clone().unwrap_or(self.account_id.clone());
+            let client = self.client_for(composer.account.as_deref());
+            let Some(client) = client.filter(|_| self.keeps(&account)) else {
+                continue;
+            };
+            let outgoing = composer.outgoing(cx);
+            let later = at.map(|at_ms| {
+                let item = Scheduled {
+                    draft_id: String::new(), // known once it is saved
+                    at_ms,
+                    subject: outgoing.subject.clone(),
+                    account: composer.account.clone(),
+                };
+                (self.account_id.clone(), self.store.clone(), item)
+            });
+            let stage = match at {
+                Some(_) => Stage::Unscheduled,
+                None => Stage::Writing,
+            };
+            let mail = QueuedMail {
+                draft_id: composer.draft_id.clone(),
+                outgoing,
+            };
+            let store = self.store_of(&account);
+            match Job::unfinished(account, composer.serial, client, store, mail, stage) {
+                Ok(job) => unfinished.push(leaving::Unfinished {
+                    job,
+                    edits: composer.edits,
+                    saved: composer.saved_as.clone(),
+                    later,
+                }),
+                Err(error) => eprintln!("nimbra: could not keep what was being written: {error}"),
             }
         }
-        let deadline = std::time::Instant::now() + QUIT_WAIT;
-        crate::sending::finish(&self.sends, deadline);
+
+        let mut changes: Vec<leaving::Changes> = Vec::new();
+        let mut of = |account: &str| {
+            if let Some(at) = changes.iter().position(|c| c.account == account) {
+                return at;
+            }
+            changes.push(leaving::Changes {
+                account: account.to_string(),
+                store: self.store_of(account),
+                unsaved: Vec::new(),
+                steps: Vec::new(),
+            });
+            changes.len() - 1
+        };
+        let steps: Vec<_> = self
+            .steps
+            .all()
+            .into_iter()
+            .filter(|step| self.keeps(&step.account))
+            .map(|step| (of(&step.account), step))
+            .collect();
+        let queued = (self.store.is_none()
+            && !self.outbox.changes.is_empty()
+            && self.keeps(&self.account_id))
+        .then(|| of(&self.account_id));
+        for (at, step) in steps {
+            changes[at].steps.push(step);
+        }
+        if let Some(at) = queued {
+            changes[at].unsaved = self.outbox.changes.clone();
+        }
+
+        Leaving {
+            sends,
+            unfinished,
+            changes,
+            saves: self.saves.clone(),
+            writes: self.writes.clone(),
+        }
     }
 
     /// A recipient field or the message changed.
@@ -7852,11 +8090,17 @@ impl Nimbra {
     /// Send later: saves the draft, then sends it from this Mac at `at`.
     fn schedule_send(&mut self, at: i64, cx: &mut Context<Self>) {
         let demo = self.gmail.is_none();
+        let nowhere_to_keep = self.store.is_none();
         let Some(composer) = &mut self.compose else {
             return;
         };
         if demo {
             composer.error = Some("Sample mode: nothing is scheduled.".into());
+            cx.notify();
+            return;
+        }
+        if nowhere_to_keep {
+            composer.error = Some(STORE_UNAVAILABLE.into());
             cx.notify();
             return;
         }
@@ -7880,17 +8124,59 @@ impl Nimbra {
         cx.notify();
     }
 
-    fn save_scheduled(&self, cx: &mut Context<Self>) {
-        let (Some(store), scheduled) = (self.store.clone(), self.scheduled.clone()) else {
+    /// Puts a message in the send-later list of the account shown.
+    fn add_scheduled(&mut self, item: Scheduled, cx: &mut Context<Self>) {
+        let (owner, store) = (self.account_id.clone(), self.store.clone());
+        let (at, subject) = (item.at_ms, short(&item.subject, 40));
+        if let Some(store) = store {
+            let added = scheduled::add(&store, item).is_ok();
+            self.scheduled_added(&owner, at, &subject, added, cx);
             return;
-        };
-        cx.background_executor()
-            .spawn(async move {
-                if store.save("scheduled", &scheduled).is_err() {
-                    eprintln!("nimbra: could not save the send-later list");
-                }
+        }
+        // Just switched to, and its store is still opening.
+        cx.spawn(async move |this, cx| {
+            let key = owner.clone();
+            let added = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::store::Store::open_quietly(&key)
+                        .and_then(|store| scheduled::add(&store, item))
+                        .is_ok()
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.scheduled_added(&owner, at, &subject, added, cx)
             })
-            .detach();
+            .ok();
+        })
+        .detach();
+    }
+
+    fn scheduled_added(
+        &mut self,
+        owner: &str,
+        at: i64,
+        subject: &str,
+        added: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if added {
+            self.notice = Some(format!("Scheduled for {}.", long_date(at)).into());
+        } else {
+            self.tell(format!("“{subject}” was not scheduled. It is in Drafts."));
+        }
+        if added && self.account_id == owner {
+            self.read_scheduled();
+            self.watch_schedule(cx);
+        }
+        cx.notify();
+    }
+
+    /// Takes the send-later list as it now is in the store.
+    fn read_scheduled(&mut self) {
+        if let Some(store) = &self.store {
+            self.scheduled = scheduled::list(store);
+        }
     }
 
     /// Checks for scheduled messages that are due, every 20 seconds while Nimbra runs.
@@ -7921,9 +8207,9 @@ impl Nimbra {
     }
 
     fn send_due(&mut self, cx: &mut Context<Self>) {
-        if self.gmail.is_none() {
+        let (Some(store), Some(_)) = (self.store.clone(), &self.gmail) else {
             return;
-        }
+        };
         let now = chrono::Utc::now().timestamp_millis();
         let due: Vec<Scheduled> = self
             .scheduled
@@ -7937,42 +8223,36 @@ impl Nimbra {
                 continue;
             };
             self.sending_scheduled.insert(item.draft_id.clone());
+            let (owner, store) = (self.account_id.clone(), store.clone());
+            let working = self.writes.begin();
             cx.spawn(async move |this, cx| {
                 let id = item.draft_id.clone();
-                let result = cx
+                let outcome = cx
                     .background_executor()
-                    .spawn(async move { client.send_saved_draft(&id) })
+                    .spawn(async move {
+                        let _working = working;
+                        scheduled::send(&store, &client, &id)
+                    })
                     .await;
                 this.update(cx, |this, cx| {
                     this.sending_scheduled.remove(&item.draft_id);
-                    let done = match &result {
-                        Ok(()) => {
-                            this.notice = Some(
-                                format!("Scheduled message sent: {}", short(&item.subject, 40))
-                                    .into(),
-                            );
-                            true
+                    // Whose list it was may no longer be the one shown.
+                    if this.account_id == owner {
+                        this.read_scheduled();
+                    }
+                    let subject = short(&item.subject, 40);
+                    match &outcome {
+                        Some(Outcome::Sent) => {
+                            this.notice = Some(format!("Scheduled message sent: {subject}").into());
                         }
-                        // The draft was sent or deleted elsewhere.
-                        Err(error) if error.to_string().contains("404") => {
-                            this.notice = Some(
-                                format!(
-                                    "“{}” was not sent: its draft is gone.",
-                                    short(&item.subject, 40)
-                                )
-                                .into(),
-                            );
-                            true
-                        }
-                        // Offline and the like: try again on the next check.
-                        Err(_) => false,
-                    };
-                    if done {
-                        this.scheduled.retain(|s| s.draft_id != item.draft_id);
-                        this.save_scheduled(cx);
-                        if matches!(this.mailbox, View::Sent | View::Drafts) {
-                            this.refresh(cx);
-                        }
+                        Some(Outcome::Gone) => this.tell(format!(
+                            "“{subject}” is no longer in Drafts: check Sent to see if it went out."
+                        )),
+                        // Offline and the like: tried again on the next check.
+                        None => {}
+                    }
+                    if outcome.is_some() && matches!(this.mailbox, View::Sent | View::Drafts) {
+                        this.refresh(cx);
                     }
                     cx.notify();
                 })
@@ -8902,7 +9182,7 @@ impl Nimbra {
             return;
         };
         if self.mailbox == View::Snoozed {
-            self.forget_snoozes(&self.targets(), cx);
+            self.forget_snoozes(&self.targets());
         }
         self.remove_selected(change, cx);
     }
@@ -8915,7 +9195,7 @@ impl Nimbra {
             return false;
         };
         if self.mailbox == View::Snoozed {
-            self.forget_snoozes(&[index], cx);
+            self.forget_snoozes(&[index]);
         }
         self.remove_thread(index, change, cx);
         true
@@ -8934,13 +9214,14 @@ impl Nimbra {
         })
     }
 
-    fn forget_snoozes(&mut self, rows: &[usize], cx: &mut Context<Self>) {
+    fn forget_snoozes(&mut self, rows: &[usize]) {
         let threads: Vec<String> = rows
             .iter()
             .filter_map(|i| self.mails[*i].id.clone())
             .collect();
-        self.snoozed.retain(|s| !threads.contains(&s.thread_id));
-        self.save_snoozed(cx);
+        if self.snoozed.iter().any(|s| threads.contains(&s.thread_id)) {
+            self.change_snoozed(|list| list.retain(|s| !threads.contains(&s.thread_id)));
+        }
     }
 
     /// Trash from a message window (in Trash: asks before deleting forever). Whether it
@@ -9240,8 +9521,7 @@ impl Nimbra {
         if let Some(thread) = self.mails[index].id.clone()
             && self.snoozed.iter().any(|s| s.thread_id == thread)
         {
-            self.snoozed.retain(|s| s.thread_id != thread);
-            self.save_snoozed(cx);
+            self.change_snoozed(|list| list.retain(|s| s.thread_id != thread));
         }
         if let Some(inverse) = change.inverse() {
             self.sync(index, inverse, false, cx);
@@ -9251,8 +9531,10 @@ impl Nimbra {
         {
             self.mails[index].labels.retain(|id| *id != label);
             if let Some(client) = self.gmail.clone() {
+                let working = self.writes.begin();
                 cx.background_executor()
                     .spawn(async move {
+                        let _working = working;
                         let _ = client.remove_label(&thread, &label);
                     })
                     .detach();
@@ -11633,8 +11915,8 @@ impl Nimbra {
                         .id("status-action")
                         .press_soft()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            if this.gmail.is_some() {
-                                this.fetch_inbox(cx);
+                            if matches!(this.status, Status::Failed(_)) {
+                                this.try_again(cx);
                             } else {
                                 this.sign_in(cx);
                             }
@@ -14329,54 +14611,53 @@ fn me_avatar(photo: Option<&Arc<gpui::Image>>, initials: &str, size: f32) -> Any
 /// For an account that is not shown: wakes its due snoozes (back to the inbox, unread) and
 /// sends its due scheduled messages, as kept in its own store. One set from All inboxes can
 /// be another account's: it goes through that account's connection. Runs off the main thread.
-fn carry_out_due(account: &str, connected: &HashMap<String, Arc<gmail::Client>>) {
-    let Ok(store) = crate::store::Store::open(account) else {
+fn carry_out_due(
+    account: &str,
+    connected: &HashMap<String, Arc<gmail::Client>>,
+    writes: &Underway,
+) {
+    let Ok(store) = crate::store::Store::open_quietly(account) else {
         return;
     };
     let now = chrono::Utc::now().timestamp_millis();
-    if let Some(mut snoozed) = store.load::<Vec<Snooze>>("snoozed") {
-        let before = snoozed.len();
-        snoozed.retain(|snooze| {
-            if snooze.until_ms > now {
-                return true;
-            }
-            let Some(client) = connected.get(snooze.mail.account.as_deref().unwrap_or(account))
-            else {
-                return true; // that account is not connected: later
-            };
-            // A reminder comes back only if nobody wrote since; either way it is done.
-            let replied = snooze.no_reply
-                && client
-                    .summary(&snooze.thread_id, false)
-                    .is_ok_and(|s| s.timestamp_ms > snooze.since_ms);
-            if replied {
-                return false;
-            }
-            client
+    let client_of = |whose: Option<&str>| connected.get(whose.unwrap_or(account));
+    for snooze in store.load::<Vec<Snooze>>("snoozed").unwrap_or_default() {
+        if snooze.until_ms > now {
+            continue;
+        }
+        let Some(client) = client_of(snooze.mail.account.as_deref()) else {
+            continue; // that account is not connected: later
+        };
+        let _working = writes.begin();
+        // A reminder comes back only if nobody wrote since; either way it is done.
+        let replied = snooze.no_reply
+            && client
+                .summary(&snooze.thread_id, false)
+                .is_ok_and(|s| s.timestamp_ms > snooze.since_ms);
+        let done = replied
+            || client
                 .relabel(&snooze.thread_id, &["INBOX", "UNREAD"], &[])
+                .is_ok();
+        // The list as it is by now: the account may have been opened and changed meanwhile.
+        if done
+            && store
+                .update("snoozed", |list: &mut Vec<Snooze>| {
+                    list.retain(|s| {
+                        s.thread_id != snooze.thread_id || s.until_ms != snooze.until_ms
+                    });
+                })
                 .is_err()
-        });
-        if snoozed.len() != before {
-            let _ = store.save("snoozed", &snoozed);
+        {
+            eprintln!("nimbra: could not save the snoozed list");
         }
     }
-    if let Some(mut scheduled) = store.load::<Vec<Scheduled>>("scheduled") {
-        let before = scheduled.len();
-        scheduled.retain(|item| {
-            if item.at_ms > now {
-                return true;
-            }
-            let Some(client) = connected.get(item.account.as_deref().unwrap_or(account)) else {
-                return true;
-            };
-            match client.send_saved_draft(&item.draft_id) {
-                Ok(()) => false,
-                // The draft is gone (sent or deleted elsewhere).
-                Err(error) => !error.to_string().contains("404"),
-            }
-        });
-        if scheduled.len() != before {
-            let _ = store.save("scheduled", &scheduled);
+    for item in scheduled::list(&store) {
+        if item.at_ms > now {
+            continue;
+        }
+        if let Some(client) = client_of(item.account.as_deref()) {
+            let _working = writes.begin();
+            scheduled::send(&store, client, &item.draft_id);
         }
     }
 }

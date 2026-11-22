@@ -317,10 +317,44 @@ loading cases again, 25 random switching runs. Not checked: real Gmail, a real s
 out of macOS, Windows, two real accounts.
 
 Found, left open (read in the code, not run):
-- [ ] A keychain read that fails (denied, locked) makes a new store key and deletes that
+- [x] A keychain read that fails (denied, locked) makes a new store key and deletes that
       account's store (`load_or_create_key`), unsent mail included. It should only make a
       key when there is none.
-- [ ] Quitting does not wait for a draft save or a Done/Trash that is on its way, and does
+- [x] Quitting does not wait for a draft save or a Done/Trash that is on its way, and does
       not ask about a message still being written.
-- [ ] A scheduled send that finishes after a switch updates the other account's list.
-- [ ] A 5xx answer to a send reads as "Not sent", though Gmail may have sent it.
+- [x] A scheduled send that finishes after a switch updates the other account's list.
+- [x] A 5xx answer to a send reads as "Not sent", though Gmail may have sent it.
+
+## Keychain, quitting, scheduled sends, 5xx (2026-11-22)
+
+- [x] Reproduce all four on 89cb71b (real client, fake Gmail, fake keychain)
+- [x] Keychain: a key is made only when there is none; a failed read deletes nothing and
+      is never taken for signed out (signing in over it could wipe or cross accounts)
+- [x] Quit: wait for writes on their way; a change that did not get through is queued for
+      the next launch; what is being written is on disk first, then saved to Drafts
+- [x] Scheduled: each account's list is changed in that account's store, one change at a
+      time, by the thread that sent it; one sender per message
+- [x] A 5xx (or unreadable answer) to a send is "may have been sent", never "Not sent"
+- [x] The same cases, the 61 of the last fix and the loading cases on the change
+- [x] Found on the way: notices about mail were cleared by the next list and cut at 90
+
+Review: 8 reproductions (all failed on 89cb71b), 47 adversarial cases and the 61 of the
+last fix pass against the real client, a fake Gmail and a fake keychain (the real error
+codes checked against the keyring crate); the loading cases and 25 random runs again.
+Not checked: the real Keychain's dialogs, real Gmail, logging out of macOS, Windows,
+typing in the formatted editor just before quit (the test sets the fields).
+
+Found, left open:
+- [ ] A change in another account that fails offline is undone, not queued (except at quit)
+- [ ] Discard then quit inside the undo delay leaves the draft in Drafts
+- [ ] With the store unavailable, mail that waits for a connection is lost at quit
+
+## Reloading on every tab click (asked 2026-11-22, not started: waiting for a yes)
+
+Measured on 89cb71b (fake Gmail, Google's quota table; 6,000 units a minute per user):
+a known category 2 units, a label or Done about 1,340 on every click, a first visit 3,860.
+
+- [ ] A click shows what is saved; it asks Gmail only after a change or a minute
+- [ ] A label's sync point is never saved (`holds(&[], None)` in `fetch_inbox`)
+- [ ] Search-based tabs re-read only threads whose history id moved
+- [ ] Fetch fewer emails ahead than 20 (2,400 units)
