@@ -4,6 +4,7 @@ mod app;
 mod arrival;
 mod autohide;
 mod blur;
+mod checking;
 mod data;
 mod editor;
 mod erase;

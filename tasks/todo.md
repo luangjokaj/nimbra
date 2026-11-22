@@ -273,3 +273,29 @@ Found, left open (older than this):
 - [ ] A message is lost from sending if Nimbra quits within the undo delay (reproduced:
       never sent, nothing said). Switching account clears it too (read in `reset_account`,
       not run).
+
+## Loading that never ends (2026-11-22)
+
+Cause: an answer for a mailbox already left returned before clearing `fetching`, and that
+flag also refuses every later check.
+
+- [x] Reproduced on main with Gmail stubbed
+- [x] A check belongs to the mailbox it was started for; the bar cannot outlive it
+- [x] 60 seconds at most for whatever shows as loading, then it says so
+- [x] A message that fails to load offers Try again
+- [x] Next pages belong to their mailbox; a failed one is not asked for in a loop
+- [x] The same cases rerun on the change
+
+Review: reproduced and rerun in sandboxed copies (switching, a hung request, a hung account,
+a refused message and page, sign-out, offline, expired history). Random switching: stuck
+8 of 25 on main, 0 of 25 now. The real 60 seconds run once. Not checked: real Gmail, Windows,
+clicking Try again (its load was run).
+
+Found, left open (read in the code, not run):
+- [ ] The access token's expiry is an `Instant`, which stands still while the Mac sleeps:
+      after a long sleep an expired token is used, the 401 counts as signed out, and the
+      mail kept on this Mac is wiped. A 401 should refresh the token and try once more.
+- [ ] `went_offline`'s loop can end with `retrying` still set (no connection during an
+      account switch): offline is then never retried.
+- [ ] A keychain read that never answers leaves the skeleton up (no timeout on purpose:
+      it can be waiting for the password prompt).

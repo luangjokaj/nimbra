@@ -116,6 +116,7 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/input.rs`: the text field (adapted from GPUI's example) used by the composer
 - `src/webview.rs`: the locked-down web view behind Show original
 - `src/store.rs`: the encrypted on-disk mail store
+- `src/checking.rs`: which check for mail is running, and how long loading may wait (60 seconds)
 - `src/arrival.rs`: the timing of Inbox Zero coming up at launch
 - `src/inspiration.rs`: the lines Inbox Zero shows when there is nothing to undo
 - `src/rich.rs`: turns HTML or plain-text mail into styled blocks; fetches images on request

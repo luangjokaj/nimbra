@@ -73,3 +73,11 @@
 - A key hint shows only while that key would do something, decided by the same check the
   action uses. When animating or restyling a screen, ask of everything on it whether it is
   true in that state: do not carry a wrong hint along and list it as "left open".
+
+## Waiting
+
+- Never pair a "busy" flag with early returns. What is busy follows from a request that
+  says what it is for (`checking::Checks`); what shows as loading has a deadline
+  (`checking::within`) and a failed state. Never put that deadline on a send.
+- A request made from `render` (the next page) stops after a failure, or it loops.
+- Test an async change by switching away while it runs, and back.

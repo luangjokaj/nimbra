@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use crate::arrival::{Arrival, drop_for};
+use crate::checking::{Checks, TooSlow, within};
 use crate::data::{COMMANDS, Mail, inbox};
 use crate::gmail::{self, View};
 use crate::input::{InputEvent, TextInput};
@@ -1097,8 +1098,12 @@ pub struct Nimbra {
     waking: HashSet<String>,
     /// The choices in the open snooze palette.
     snooze_choices: Vec<SnoozeChoice>,
-    /// The next page of the open mailbox, when Gmail has more.
-    next_page: Option<String>,
+    /// Where each mailbox's next page starts, when Gmail has more.
+    next_pages: HashMap<View, String>,
+    /// Mailboxes whose next page could not be loaded: not asked again until a refresh.
+    more_failed: HashSet<View>,
+    /// Threads whose content could not be loaded.
+    body_failed: HashSet<ThreadKey>,
     loading_more: bool,
     /// Threads moved out of the inbox to a label, so Undo can take the label off again.
     moved: HashMap<String, String>,
@@ -1129,8 +1134,8 @@ pub struct Nimbra {
     counts: HashMap<String, (u32, u32)>,
     /// The user's own Gmail labels, shown in the sidebar.
     labels: Vec<gmail::Label>,
-    /// A mailbox request is in flight.
-    fetching: bool,
+    /// The check for mail that is running, and what it is for (see `fetching`).
+    checks: Checks,
     /// The search field in the sidebar, and the query the results are for.
     search: Entity<TextInput>,
     query: String,
@@ -1350,7 +1355,9 @@ impl Nimbra {
             snoozed: Vec::new(),
             waking: HashSet::new(),
             snooze_choices: Vec::new(),
-            next_page: None,
+            next_pages: HashMap::new(),
+            more_failed: HashSet::new(),
+            body_failed: HashSet::new(),
             loading_more: false,
             moved: HashMap::new(),
             confirm: None,
@@ -1390,7 +1397,7 @@ impl Nimbra {
             synced_to: HashMap::new(),
             counts: HashMap::new(),
             labels: Vec::new(),
-            fetching: false,
+            checks: Checks::default(),
             hint: None,
             menu_at: (0., 0.),
             row_actions: Vec::new(),
@@ -1513,7 +1520,7 @@ impl Nimbra {
         // NIMBRA_SCREEN=loading holds the loading skeleton on screen (screenshots).
         if screen == "loading" {
             this.status = Status::Loading;
-            this.fetching = true;
+            this.checks.start(View::Inbox, "");
         }
         this.watch_for_mail(cx);
         this.watch_other_accounts(cx);
@@ -1671,10 +1678,10 @@ impl Nimbra {
                 return;
             }
             let q = query.clone();
-            let found = cx
-                .background_executor()
-                .spawn(async move { client.threads_page(View::Search, Some(&q), 10, None) })
-                .await;
+            let found = within(cx.background_executor(), async move {
+                client.threads_page(View::Search, Some(&q), 10, None)
+            })
+            .await;
             this.update(cx, |this, cx| {
                 if this.finder_gen != generation {
                     return;
@@ -2208,6 +2215,8 @@ impl Nimbra {
         self.picked.clear();
         // Results are never cached: every search is fetched fresh.
         self.cache.remove(&View::Search);
+        self.next_pages.remove(&View::Search);
+        self.more_failed.remove(&View::Search);
         self.query = query;
         self.mailbox = View::Search;
         self.back.clear();
@@ -2321,9 +2330,35 @@ impl Nimbra {
 
     // ------------------------------------------------------------ syncing
 
+    /// The mailbox on screen is being checked for mail.
+    fn fetching(&self) -> bool {
+        self.checks.running_for(self.mailbox, &self.query)
+    }
+
+    /// A check has its answer, or ran out of time. False when that is no longer wanted.
+    fn finish_check(&mut self, check: u64, cx: &mut Context<Self>) -> bool {
+        if !self.checks.finish(check, self.mailbox, &self.query) {
+            return false;
+        }
+        // Whatever the answer, rows that are already here are not hidden behind the skeleton.
+        if self.status == Status::Loading && !self.mails.is_empty() {
+            self.status = Status::Ready;
+        }
+        cx.notify();
+        true
+    }
+
+    /// Where the open mailbox's next page starts, if it is to be loaded.
+    fn more(&self) -> Option<&String> {
+        self.next_pages
+            .get(&self.mailbox)
+            .filter(|_| !self.more_failed.contains(&self.mailbox))
+    }
+
     /// Brings the open mailbox up to date: only what changed since it was last synced when
     /// that is known, otherwise a full fetch of its newest threads.
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.more_failed.remove(&self.mailbox);
         if !self.sync_view(cx) {
             self.fetch_inbox(cx);
         }
@@ -2346,10 +2381,10 @@ impl Nimbra {
         let Some(start) = self.synced_to.get(&self.record_for(view)).cloned() else {
             return false;
         };
-        if self.fetching {
+        if self.fetching() {
             return true;
         }
-        self.fetching = true;
+        let check = self.checks.start(view, &self.query);
         cx.notify();
         let recipient = matches!(view, View::Sent | View::Drafts);
         let count_ids: Vec<String> = [
@@ -2366,37 +2401,34 @@ impl Nimbra {
         .collect();
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let changes = client.history(&start)?;
-                    if changes.threads.len() > 40 {
-                        return Err(gmail::HistoryExpired.into());
-                    }
-                    // Fresh details for each changed thread; `None` when it is gone.
-                    let mut updates = Vec::new();
-                    for id in &changes.threads {
-                        match client.summary(id, recipient) {
-                            Ok(summary) => updates.push((id.clone(), Some(summary))),
-                            Err(error) if error.to_string().starts_with("Gmail error 404") => {
-                                updates.push((id.clone(), None))
-                            }
-                            Err(error) => return Err(error),
+            let result = within(cx.background_executor(), async move {
+                let changes = client.history(&start)?;
+                if changes.threads.len() > 40 {
+                    return Err(gmail::HistoryExpired.into());
+                }
+                // Fresh details for each changed thread; `None` when it is gone.
+                let mut updates = Vec::new();
+                for id in &changes.threads {
+                    match client.summary(id, recipient) {
+                        Ok(summary) => updates.push((id.clone(), Some(summary))),
+                        Err(error) if error.to_string().starts_with("Gmail error 404") => {
+                            updates.push((id.clone(), None))
                         }
+                        Err(error) => return Err(error),
                     }
-                    let counts = (!updates.is_empty()).then(|| client.counts(&count_ids));
-                    anyhow::Ok((changes.latest, updates, counts))
-                })
-                .await;
+                }
+                let counts = (!updates.is_empty()).then(|| client.counts(&count_ids));
+                anyhow::Ok((changes.latest, updates, counts))
+            })
+            .await;
             this.update(cx, |this, cx| {
                 // A different account was opened meanwhile: this answer is not for it.
                 if this.account_gen != generation {
                     return;
                 }
-                if this.mailbox != view {
+                if !this.finish_check(check, cx) {
                     return;
                 }
-                this.fetching = false;
                 match result {
                     Ok((latest, updates, counts)) => {
                         this.synced_to.insert(this.record_for(view), latest);
@@ -2470,31 +2502,31 @@ impl Nimbra {
         let view = self.mailbox;
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
-            let fetched = cx
-                .background_executor()
-                .spawn(async move {
-                    let mut results: Vec<Option<anyhow::Result<Vec<gmail::Message>>>> =
-                        (0..ids.len()).map(|_| None).collect();
-                    let chunk = ids.len().div_ceil(WORKERS).max(1);
-                    std::thread::scope(|scope| {
-                        for ((ids, clients), out) in ids
-                            .chunks(chunk)
-                            .zip(clients.chunks(chunk))
-                            .zip(results.chunks_mut(chunk))
-                        {
-                            scope.spawn(move || {
-                                for ((id, client), slot) in ids.iter().zip(clients).zip(out) {
-                                    *slot = Some(client.thread(id));
-                                }
-                            });
-                        }
-                    });
-                    ids.into_iter()
-                        .zip(accounts)
-                        .zip(results.into_iter().flatten())
-                        .collect::<Vec<_>>()
-                })
-                .await;
+            let fetched = within(cx.background_executor(), async move {
+                let mut results: Vec<Option<anyhow::Result<Vec<gmail::Message>>>> =
+                    (0..ids.len()).map(|_| None).collect();
+                let chunk = ids.len().div_ceil(WORKERS).max(1);
+                std::thread::scope(|scope| {
+                    for ((ids, clients), out) in ids
+                        .chunks(chunk)
+                        .zip(clients.chunks(chunk))
+                        .zip(results.chunks_mut(chunk))
+                    {
+                        scope.spawn(move || {
+                            for ((id, client), slot) in ids.iter().zip(clients).zip(out) {
+                                *slot = Some(client.thread(id));
+                            }
+                        });
+                    }
+                });
+                Ok(ids
+                    .into_iter()
+                    .zip(accounts)
+                    .zip(results.into_iter().flatten())
+                    .collect::<Vec<_>>())
+            })
+            .await
+            .unwrap_or_default();
             this.update(cx, |this, cx| {
                 // A different account was opened meanwhile: this answer is not for it.
                 if this.account_gen != generation {
@@ -2858,7 +2890,10 @@ impl Nimbra {
                         if !changes.threads.is_empty() && this.compose.is_none() {
                             // All inboxes cannot be patched from one feed: list it again.
                             if this.mailbox == View::AllInboxes {
-                                this.fetch_all_inboxes(cx);
+                                // Started again each time, a slow one would never finish.
+                                if !this.fetching() {
+                                    this.fetch_all_inboxes(cx);
+                                }
                             } else {
                                 this.sync_view(cx);
                             }
@@ -3212,7 +3247,11 @@ impl Nimbra {
         self.gmail = None;
         self.store = None;
         self.status = Status::Loading;
-        self.fetching = false;
+        self.checks.forget();
+        // What was on its way is for the other account, and its answer is dropped.
+        self.prefetching = false;
+        self.loading_more = false;
+        self.body_failed.clear();
         self.mailbox = View::Inbox;
         self.mails.clear();
         self.done.clear();
@@ -3234,7 +3273,8 @@ impl Nimbra {
         // Asked about the other account's threads and labels, whose ids mean others here.
         self.confirm = None;
         self.new_label = None;
-        self.next_page = None;
+        self.next_pages.clear();
+        self.more_failed.clear();
         self.back.clear();
         self.forward.clear();
         self.selected = 0;
@@ -3302,9 +3342,9 @@ impl Nimbra {
         if self.mails.is_empty() && !self.cache.contains_key(&self.mailbox) {
             self.status = Status::Loading;
         }
-        self.fetching = true;
-        cx.notify();
         let view = self.mailbox;
+        let check = self.checks.start(view, &self.query);
+        cx.notify();
         let label_id = match view {
             View::Label(index) => self.labels.get(index).map(|label| label.id.clone()),
             View::Search => Some(self.query.clone()),
@@ -3312,51 +3352,51 @@ impl Nimbra {
         };
         let need_labels = self.labels.is_empty();
         let known_labels: Vec<String> = self.labels.iter().map(|l| l.id.clone()).collect();
-        let sent_query = self.query.clone();
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    // Read the history point first, so nothing that changes during the
-                    // fetch is missed by the next sync.
-                    let (email, history_id) = client.profile()?;
-                    let (threads, next_page) =
-                        client.threads_page(view, label_id.as_deref(), 30, None)?;
-                    // Labels are a nicety; the mailbox still loads without them.
-                    let labels = need_labels.then(|| client.labels().unwrap_or_default());
-                    // Sidebar counts: the system mailboxes plus the labels that are listed.
-                    let mut ids: Vec<String> = [
-                        "INBOX",
-                        "DRAFT",
-                        "CATEGORY_PERSONAL",
-                        "CATEGORY_UPDATES",
-                        "CATEGORY_PROMOTIONS",
-                        "CATEGORY_SOCIAL",
-                    ]
-                    .map(String::from)
-                    .to_vec();
-                    ids.extend(match &labels {
-                        Some(labels) => labels.iter().take(8).map(|l| l.id.clone()).collect(),
-                        None => known_labels.into_iter().take(8).collect::<Vec<_>>(),
-                    });
-                    let counts = client.counts(&ids);
-                    anyhow::Ok((email, history_id, threads, labels, counts, next_page))
-                })
-                .await;
+            let result = within(cx.background_executor(), async move {
+                // Read the history point first, so nothing that changes during the
+                // fetch is missed by the next sync.
+                let (email, history_id) = client.profile()?;
+                let (threads, next_page) =
+                    client.threads_page(view, label_id.as_deref(), 30, None)?;
+                // Labels are a nicety; the mailbox still loads without them.
+                let labels = need_labels.then(|| client.labels().unwrap_or_default());
+                // Sidebar counts: the system mailboxes plus the labels that are listed.
+                let mut ids: Vec<String> = [
+                    "INBOX",
+                    "DRAFT",
+                    "CATEGORY_PERSONAL",
+                    "CATEGORY_UPDATES",
+                    "CATEGORY_PROMOTIONS",
+                    "CATEGORY_SOCIAL",
+                ]
+                .map(String::from)
+                .to_vec();
+                ids.extend(match &labels {
+                    Some(labels) => labels.iter().take(8).map(|l| l.id.clone()).collect(),
+                    None => known_labels.into_iter().take(8).collect::<Vec<_>>(),
+                });
+                let counts = client.counts(&ids);
+                anyhow::Ok((email, history_id, threads, labels, counts, next_page))
+            })
+            .await;
             this.update(cx, |this, cx| {
                 // A different account was opened meanwhile: this answer is not for it.
                 if this.account_gen != generation {
                     return;
                 }
-                // Ignore the answer if the user has moved to another mailbox or search meanwhile.
-                if this.mailbox != view || (view == View::Search && this.query != sent_query) {
+                // Ignore the answer if the user has moved to another mailbox or search
+                // meanwhile, or a newer check is out.
+                if !this.finish_check(check, cx) {
                     return;
                 }
-                this.fetching = false;
                 match result {
                     Ok((email, history_id, threads, labels, counts, next_page)) => {
-                        this.next_page = next_page;
+                        match next_page {
+                            Some(page) => this.next_pages.insert(view, page),
+                            None => this.next_pages.remove(&view),
+                        };
                         if view.holds(&[], None).is_some() {
                             this.synced_to.insert(this.record_for(view), history_id);
                         }
@@ -3393,46 +3433,28 @@ impl Nimbra {
         if self.mails.is_empty() && !self.cache.contains_key(&View::AllInboxes) {
             self.status = Status::Loading;
         }
-        self.fetching = true;
+        let check = self.checks.start(View::AllInboxes, "");
         cx.notify();
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
-            let results = cx
-                .background_executor()
-                .spawn(async move {
-                    let mut results: Vec<(String, anyhow::Result<(Vec<gmail::Summary>, u32)>)> =
-                        Vec::new();
-                    std::thread::scope(|scope| {
-                        let handles: Vec<_> = accounts
-                            .iter()
-                            .map(|(id, client)| {
-                                let (id, client) = (id.clone(), client.clone());
-                                scope.spawn(move || {
-                                    let listed = client
-                                        .threads_page(View::Inbox, None, 30, None)
-                                        .map(|(threads, _)| threads);
-                                    let unread = client
-                                        .counts(&["INBOX".to_string()])
-                                        .get("INBOX")
-                                        .map_or(0, |(unread, _)| *unread);
-                                    (id, listed.map(|threads| (threads, unread)))
-                                })
-                            })
-                            .collect();
-                        for handle in handles {
-                            if let Ok(result) = handle.join() {
-                                results.push(result);
-                            }
-                        }
-                    });
-                    results
-                })
-                .await;
+            let executor = cx.background_executor();
+            // A deadline each, so that one account cannot hold up the others.
+            let results = futures::future::join_all(accounts.into_iter().map(|(id, client)| {
+                let listing = within(executor, async move {
+                    let (threads, _) = client.threads_page(View::Inbox, None, 30, None)?;
+                    let unread = client
+                        .counts(&["INBOX".to_string()])
+                        .get("INBOX")
+                        .map_or(0, |(unread, _)| *unread);
+                    Ok((threads, unread))
+                });
+                async move { (id, listing.await) }
+            }))
+            .await;
             this.update(cx, |this, cx| {
-                if this.account_gen != generation || this.mailbox != View::AllInboxes {
+                if this.account_gen != generation || !this.finish_check(check, cx) {
                     return;
                 }
-                this.fetching = false;
                 let mut fresh: Vec<Mail> = Vec::new();
                 let mut first_error = None;
                 let mut failed = 0;
@@ -3460,7 +3482,6 @@ impl Nimbra {
                     return;
                 }
                 fresh.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
-                this.next_page = None;
                 this.install(fresh, cx);
                 // After the listing, which clears the notice.
                 if failed > 0 {
@@ -3732,22 +3753,36 @@ impl Nimbra {
 
     /// Fetches the content of the thread on show, without marking it read.
     fn load_selected(&mut self, cx: &mut Context<Self>) {
-        let (Some(client), Some(mail)) =
-            (self.client_at(self.selected), self.mails.get(self.selected))
-        else {
+        let Some(mail) = self.mails.get(self.selected) else {
             return;
         };
         let (false, Some(id)) = (mail.loaded, mail.id.clone()) else {
             return;
         };
-        let generation = self.account_gen;
         let account = self.account_of(mail).to_string();
+        self.load_body(id, account, cx);
+    }
+
+    /// Fetches a thread's content.
+    fn load_body(&mut self, id: String, account: String, cx: &mut Context<Self>) {
+        let key: ThreadKey = (id.clone(), account.clone());
+        let Some(client) = self.client_for(Some(&account)) else {
+            // Another account's, which is not connected: nothing is on its way.
+            if self.gmail.is_some() {
+                self.body_failed.insert(key);
+                cx.notify();
+            }
+            return;
+        };
+        let generation = self.account_gen;
+        self.body_failed.remove(&key);
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let thread_id = id.clone();
-            let result = cx
-                .background_executor()
-                .spawn(async move { client.thread(&thread_id) })
-                .await;
+            let result = within(cx.background_executor(), async move {
+                client.thread(&thread_id)
+            })
+            .await;
             this.update(cx, |this, cx| {
                 // A different account was opened meanwhile: this answer is not for it.
                 if this.account_gen != generation {
@@ -3757,13 +3792,21 @@ impl Nimbra {
                     Ok(messages) => {
                         // The inbox may have been reloaded meanwhile, so look the thread up again.
                         if let Some(row) = this.row_of(&id, &account) {
-                            let mail = &mut this.mails[row];
-                            mail.fill(messages);
+                            this.mails[row].fill(messages);
                             this.persist(cx);
-                            cx.notify();
+                        } else if let Some(mail) = this.cache.values_mut().flatten().find(|m| {
+                            m.id.as_deref() == Some(id.as_str())
+                                && m.account.as_deref().unwrap_or(&this.account_id) == account
+                        }) {
+                            // Its mailbox was left; its own window may still be waiting for it.
+                            mail.fill(messages);
                         }
+                        cx.notify();
                     }
-                    Err(error) => this.fail(error, cx),
+                    Err(error) => {
+                        this.body_failed.insert(key);
+                        this.fail(error, cx);
+                    }
                 }
             })
             .ok();
@@ -4989,7 +5032,12 @@ impl Nimbra {
     }
 
     /// Changes the label list, keeping the open label mailbox pointing at the same label.
-    fn change_labels(&mut self, change: impl FnOnce(&mut Vec<gmail::Label>)) {
+    fn change_labels(
+        &mut self,
+        change: impl FnOnce(&mut Vec<gmail::Label>),
+        cx: &mut Context<Self>,
+    ) {
+        let checking = self.fetching();
         let open = match self.mailbox {
             View::Label(index) => self.labels.get(index).map(|l| l.id.clone()),
             _ => None,
@@ -5003,6 +5051,13 @@ impl Nimbra {
                 Some(index) => self.mailbox = View::Label(index),
                 None => self.mailbox = View::Inbox,
             }
+        }
+        self.next_pages
+            .retain(|view, _| !matches!(view, View::Label(_)));
+        // So is a check, by the label's old position: ask again.
+        self.checks.forget();
+        if checking {
+            self.refresh(cx);
         }
     }
 
@@ -5018,11 +5073,14 @@ impl Nimbra {
                 .await;
             this.update(cx, |this, cx| match result {
                 Ok(()) => {
-                    this.change_labels(|labels| {
-                        if let Some(label) = labels.iter_mut().find(|l| l.id == id) {
-                            label.name = name;
-                        }
-                    });
+                    this.change_labels(
+                        |labels| {
+                            if let Some(label) = labels.iter_mut().find(|l| l.id == id) {
+                                label.name = name;
+                            }
+                        },
+                        cx,
+                    );
                     cx.notify();
                 }
                 Err(error) => this.fail(error, cx),
@@ -5045,7 +5103,7 @@ impl Nimbra {
             this.update(cx, |this, cx| match result {
                 Ok(()) => {
                     let was_open = matches!(this.mailbox, View::Label(i) if this.labels.get(i).is_some_and(|l| l.id == id));
-                    this.change_labels(|labels| labels.retain(|l| l.id != id));
+                    this.change_labels(|labels| labels.retain(|l| l.id != id), cx);
                     for mail in &mut this.mails {
                         mail.labels.retain(|l| *l != id);
                     }
@@ -5873,7 +5931,7 @@ impl Nimbra {
 
     /// "Load more" at the end of the list: the next page of the mailbox.
     fn load_more(&mut self, cx: &mut Context<Self>) {
-        let (Some(client), Some(page)) = (self.gmail.clone(), self.next_page.clone()) else {
+        let (Some(client), Some(page)) = (self.gmail.clone(), self.more().cloned()) else {
             return;
         };
         if self.loading_more {
@@ -5888,25 +5946,28 @@ impl Nimbra {
             _ => None,
         };
         let generation = self.account_gen;
+        let query = self.query.clone();
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(
-                    async move { client.threads_page(view, label_id.as_deref(), 30, Some(&page)) },
-                )
-                .await;
+            let result = within(cx.background_executor(), async move {
+                client.threads_page(view, label_id.as_deref(), 30, Some(&page))
+            })
+            .await;
             this.update(cx, |this, cx| {
                 // A different account was opened meanwhile: this answer is not for it.
                 if this.account_gen != generation {
                     return;
                 }
                 this.loading_more = false;
-                if this.mailbox != view {
+                if this.mailbox != view || (view == View::Search && this.query != query) {
+                    cx.notify();
                     return;
                 }
                 match result {
                     Ok((threads, next)) => {
-                        this.next_page = next;
+                        match next {
+                            Some(page) => this.next_pages.insert(view, page),
+                            None => this.next_pages.remove(&view),
+                        };
                         let known: HashSet<String> =
                             this.mails.iter().filter_map(|m| m.id.clone()).collect();
                         let fresh: Vec<Mail> = threads
@@ -5919,7 +5980,10 @@ impl Nimbra {
                         this.cache.insert(this.mailbox, this.listed());
                         this.persist(cx);
                     }
-                    Err(error) => this.fail(error, cx),
+                    Err(error) => {
+                        this.more_failed.insert(view);
+                        this.fail(error, cx);
+                    }
                 }
                 cx.notify();
             })
@@ -6129,7 +6193,7 @@ impl Nimbra {
                 Ok(label) => {
                     let id = label.id.clone();
                     let name = label.name.clone();
-                    this.change_labels(|labels| labels.push(label));
+                    this.change_labels(|labels| labels.push(label), cx);
                     if apply && let Some(index) = this.labels.iter().position(|l| l.id == id) {
                         if this.still_meant(&meant, cx) {
                             this.apply_label(index, cx);
@@ -6438,21 +6502,19 @@ impl Nimbra {
         self.attachment_busy.insert(key.clone(), save);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let bytes = client.download(&att.message_id, &att.attachment_id)?;
-                    let name = gmail::safe_file_name(&att.name);
-                    let path = if save {
-                        unique_download_path(&name)?
-                    } else {
-                        preview_path(&name)?
-                    };
-                    std::fs::write(&path, &bytes)?;
-                    restrict_file(&path);
-                    anyhow::Ok(path)
-                })
-                .await;
+            let result = within(cx.background_executor(), async move {
+                let bytes = client.download(&att.message_id, &att.attachment_id)?;
+                let name = gmail::safe_file_name(&att.name);
+                let path = if save {
+                    unique_download_path(&name)?
+                } else {
+                    preview_path(&name)?
+                };
+                std::fs::write(&path, &bytes)?;
+                restrict_file(&path);
+                anyhow::Ok(path)
+            })
+            .await;
             this.update(cx, |this, cx| {
                 this.attachment_busy.remove(&key);
                 match result {
@@ -8035,6 +8097,9 @@ impl Nimbra {
         self.save_settings(cx);
         self.gmail = None;
         self.store = None;
+        // An answer still on its way must not bring the removed mail back.
+        self.checks.forget();
+        self.next_pages.clear();
         self.cache.clear();
         self.mails.clear();
         self.done.clear();
@@ -8065,7 +8130,6 @@ impl Nimbra {
     fn fail(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
         // Offline is a state, not an error: keep showing what is here, and catch up later.
         if error.is::<gmail::Offline>() {
-            self.fetching = false;
             if self.mails.is_empty() && !matches!(self.status, Status::Ready) {
                 self.status = Status::Failed(error.to_string().into());
             }
@@ -8078,7 +8142,6 @@ impl Nimbra {
             && !self.shown_signed_out(&error)
         {
             // Another account's: the mail, snoozes and sign-in of the one shown are not its.
-            self.fetching = false;
             let whose = self
                 .settings
                 .accounts
@@ -8095,6 +8158,8 @@ impl Nimbra {
             self.gmail = None;
             // The stored mail belongs to that sign-in: remove it, and its key.
             self.store = None;
+            self.checks.forget();
+            self.next_pages.clear();
             let account = self.account_id.clone();
             std::thread::spawn(move || crate::store::wipe(&account));
             self.cache.clear();
@@ -8109,7 +8174,10 @@ impl Nimbra {
             self.palette = false;
             self.status = Status::SignedOut;
             self.notice = Some("Your Google sign-in expired. Connect again to continue.".into());
-        } else if self.mails.is_empty() {
+        } else if self.mails.is_empty()
+            // Slow is no reason to hide a mailbox known to be empty.
+            && !(error.is::<TooSlow>() && self.status == Status::Ready)
+        {
             self.status = Status::Failed(error.to_string().into());
         } else {
             self.notice = Some(error.to_string().into());
@@ -8230,7 +8298,7 @@ impl Nimbra {
                 self.pull = 0.;
                 self.pull_gen += 1;
                 self.pull_done = false;
-                if shown >= PULL_TRIGGER && !self.fetching {
+                if shown >= PULL_TRIGGER && !self.fetching() {
                     // Settle at the resting height and stay there while mail is fetched.
                     self.pull_anim = Some((shown, PULL_REST, std::time::Instant::now()));
                     self.pull_hold = true;
@@ -9303,7 +9371,7 @@ impl Nimbra {
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
-                    .child(if self.fetching {
+                    .child(if self.fetching() {
                         // Keeps turning for as long as a mailbox request is in flight.
                         icon("reload", 17., t.violet)
                             .with_animation(
@@ -10403,7 +10471,7 @@ impl Nimbra {
                     .children(earlier.into_iter().map(|i| self.row(t, i, cx)))
                     // More is on its way: placeholder rows that breathe while the next
                     // page loads (it starts on its own as the end of the list comes near).
-                    .when(self.next_page.is_some(), |d| {
+                    .when(self.more().is_some(), |d| {
                         d.children((0..2usize).map(|n| {
                             let bar = |w: f32| div().h(px(9.)).w(px(w)).rounded_full().bg(t.hover);
                             div()
@@ -10998,7 +11066,7 @@ impl Nimbra {
                     ),
             )
             // Conversation (native reader)
-            .when(loading, |d| d.child(self.loading_pane(t)))
+            .when(loading, |d| d.child(self.loading_pane(t, m, cx.entity())))
             .when(!original && !loading, |d| {
                 d.child(
                     div()
@@ -11166,12 +11234,13 @@ impl Nimbra {
                                 })
                                 .child(divider())
                                 .child(self.message_header(t, m, 0, true, cx))
-                                .child(self.message_body(t, &m.body, 0, cx).pl(px(40.)).when(
-                                    !m.loaded,
-                                    |d| {
-                                        d.child(div().text_color(t.text3).child("Loading message…"))
-                                    },
-                                ))
+                                .child(
+                                    self.message_body(t, &m.body, 0, cx)
+                                        .pl(px(40.))
+                                        .when(!m.loaded, |d| {
+                                            d.child(self.loading_line(t, m, cx.entity()))
+                                        }),
+                                )
                                 .when(!m.header.attachments.is_empty(), |d| {
                                     d.child(
                                         self.attachment_row(
@@ -11269,22 +11338,43 @@ impl Nimbra {
             }))
     }
 
-    /// Shown while an email's content is on its way.
-    fn loading_pane(&self, t: &Theme) -> impl IntoElement {
-        div()
+    /// Shown while an email's content is on its way, or could not be fetched.
+    fn loading_pane(&self, t: &Theme, mail: &Mail, owner: gpui::Entity<Self>) -> impl IntoElement {
+        let pane = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h(px(0.))
             .items_center()
             .justify_center()
-            .gap(px(12.))
-            .child(icon("reload", 22., t.violet).with_animation(
-                "message-loading",
-                Animation::new(Duration::from_millis(900)).repeat(),
-                |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
-            ))
-            .child(meta("Loading message…", t.text3))
+            .gap(px(12.));
+        if self.body_failed.contains(&self.thread_key(mail)) {
+            return pane.child(self.loading_line(t, mail, owner));
+        }
+        pane.child(icon("reload", 22., t.violet).with_animation(
+            "message-loading",
+            Animation::new(Duration::from_millis(900)).repeat(),
+            |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+        ))
+        .child(meta("Loading message…", t.text3))
+    }
+
+    /// The same in words, with a way to try again when it failed.
+    fn loading_line(&self, t: &Theme, mail: &Mail, owner: gpui::Entity<Self>) -> Div {
+        let line = div().flex().items_center().gap(px(12.)).text_color(t.text3);
+        let key = self.thread_key(mail);
+        if !self.body_failed.contains(&key) {
+            return line.child("Loading message…");
+        }
+        line.child("This message could not be loaded.").child(
+            button(t, ButtonKind::Secondary, "Try again", None)
+                .id("message-retry")
+                .press_soft()
+                .on_click(move |_, _, cx| {
+                    let (id, account) = key.clone();
+                    owner.update(cx, |n, cx| n.load_body(id, account, cx));
+                }),
+        )
     }
 
     /// One message's header: sender, a one-line recipient summary that expands into every
@@ -13497,7 +13587,7 @@ impl Render for Nimbra {
         }
         // Infinite list: the next page starts loading as the end of the list comes near
         // (or straight away when the list does not fill the pane yet).
-        if self.next_page.is_some() && !self.loading_more && !self.fetching {
+        if self.more().is_some() && !self.loading_more && !self.fetching() {
             let left = f32::from(self.list_scroll.max_offset().height)
                 + f32::from(self.list_scroll.offset().y);
             if left < 700. {
@@ -13508,7 +13598,7 @@ impl Render for Nimbra {
             }
         }
         // The checking-for-mail bar fades out when the check is done, instead of vanishing.
-        let bar = self.fetching && !self.pull_hold && self.pull == 0.;
+        let bar = self.fetching() && !self.pull_hold && self.pull == 0.;
         if self.bar_shown && !bar {
             let n = self.bar_fade.map_or(0, |(_, n)| n + 1);
             self.bar_fade = Some((std::time::Instant::now(), n));
@@ -13540,7 +13630,7 @@ impl Render for Nimbra {
             self.badge = Some(unread);
         }
         self.frame = Some(window.bounds());
-        if self.pull_hold && !self.fetching {
+        if self.pull_hold && !self.fetching() {
             self.pull_hold = false;
             self.pull_done = true;
             // Close from wherever the strip is right now, so a fast refresh does not jump.

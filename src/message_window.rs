@@ -259,7 +259,10 @@ impl Render for MessageWindow {
         };
 
         let body: AnyElement = if !m.loaded && m.body.is_empty() {
-            self.owner.read(cx).loading_pane(&t).into_any_element()
+            self.owner
+                .read(cx)
+                .loading_pane(&t, &m, self.owner.clone())
+                .into_any_element()
         } else if original {
             let view = self.html_view.clone();
             let top = self.owner.update(cx, |n, cx| {
