@@ -134,3 +134,8 @@
   sample what is drawn while it loads: the state after it settles hid a skeleton.
 - Reread a fix for what it does when repeated: a listing sized by the rows in memory
   counted hidden ones and grew with every refresh.
+
+## Accounts and Google
+
+- A sign-in into an existing account is checked (`profile`) before its token is saved: the
+  browser lets any account be picked, and `login_hint` is only a hint.

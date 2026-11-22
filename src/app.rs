@@ -369,6 +369,15 @@ pub(crate) struct Outbox {
     mail: Vec<QueuedMail>,
 }
 
+/// What Google answered about an account's photo.
+#[derive(Clone, Copy, PartialEq)]
+enum PhotoAnswer {
+    Theirs,
+    Unchecked,
+    None,
+    NotAllowed,
+}
+
 /// What a catch-up got done.
 #[derive(Default)]
 struct CaughtUp {
@@ -419,6 +428,8 @@ const KEYCHAIN_REFUSED: &str = "Nimbra could not read your sign-in from the Keyc
 const KEYCHAIN_WAIT: Duration = Duration::from_secs(8);
 const KEYCHAIN_WAITING: &str = "macOS may be asking for your password or for permission, perhaps behind another window. Nimbra carries on as soon as it has an answer.";
 const QUIT_WOULD_LOSE: &str = "Nimbra can’t keep your unsent mail: it can’t read its Keychain key. Quit again to quit and lose it.";
+/// The store record of an account's profile photo.
+const PHOTO: &str = "profile-photo";
 const STORE_UNAVAILABLE: &str = "Nimbra could not open what it keeps on this Mac. Nothing was deleted. Allow Keychain access and reopen Nimbra.";
 
 impl Composer {
@@ -1288,11 +1299,11 @@ pub struct Nimbra {
     account: SharedString,
     me_initials: SharedString,
     /// The account's Google profile photo, shown in place of the initial.
-    me_photo: Option<Arc<gpui::Image>>,
-    /// The sign-in does not include the profile (asked for in Settings › Accounts).
-    photo_not_allowed: bool,
-    /// The account generation the photo was last looked up for.
-    photo_gen: Option<u64>,
+    photos: HashMap<String, Arc<gpui::Image>>,
+    /// What Google answered about each account's photo, once it has.
+    photo_answers: HashMap<String, PhotoAnswer>,
+    /// The accounts whose photo was asked for this session.
+    photos_asked: HashSet<String>,
     /// A short message shown at the bottom of the window (errors, hints).
     notice: Option<SharedString>,
     mails: Vec<Mail>,
@@ -1552,9 +1563,9 @@ impl Nimbra {
                 "Gmail".into()
             },
             me_initials: if demo { "LG".into() } else { "ME".into() },
-            me_photo: None,
-            photo_not_allowed: false,
-            photo_gen: None,
+            photos: HashMap::new(),
+            photo_answers: HashMap::new(),
+            photos_asked: HashSet::new(),
             notice: None,
             done: vec![zero; mails.len()],
             history: if zero {
@@ -2933,6 +2944,8 @@ impl Nimbra {
                 outbox.changes.append(&mut this.outbox.changes);
                 this.outbox = outbox;
                 this.store = Some(store);
+                // Not only after a full listing: opening into what is saved often has none.
+                this.load_photo(this.account_id.clone(), cx);
                 if queued_meanwhile {
                     this.save_outbox();
                 }
@@ -3426,7 +3439,9 @@ impl Nimbra {
             return;
         };
         let account = self.account_id.clone();
-        match gmail::SignIn::start(&config, false) {
+        let generation = self.account_gen;
+        let expected = self.email_of(&account);
+        match gmail::SignIn::start(&config, false, expected.as_deref()) {
             Ok((pending, url)) => {
                 cx.open_url(&url);
                 self.status = Status::SigningIn;
@@ -3437,6 +3452,8 @@ impl Nimbra {
                         .spawn(async move { pending.finish(&config, &account) })
                         .await;
                     this.update(cx, |this, cx| match result {
+                        // Saved for its account, which is not the one shown any more.
+                        _ if this.account_gen != generation => {}
                         Ok(client) => {
                             this.gmail = Some(Arc::new(client));
                             this.open_store(cx);
@@ -3466,7 +3483,7 @@ impl Nimbra {
         let Ok(account) = gmail::new_account_id() else {
             return;
         };
-        match gmail::SignIn::start(&config, false) {
+        match gmail::SignIn::start(&config, false, None) {
             Ok((pending, url)) => {
                 cx.open_url(&url);
                 self.notice = Some("Sign in to the other account in your browser.".into());
@@ -3652,13 +3669,14 @@ impl Nimbra {
             let Ok((store, waiting)) = opened else {
                 return;
             };
-            this.update(cx, |this, _| {
+            this.update(cx, |this, cx| {
                 // Not if it was opened or signed out meanwhile.
                 if account != this.account_id && this.others.contains_key(&account) {
                     if waiting {
                         this.away_waiting.insert(account.clone());
                     }
-                    this.other_stores.insert(account, store);
+                    this.other_stores.insert(account.clone(), store);
+                    this.load_photo(account, cx);
                 }
             })
             .ok();
@@ -3808,9 +3826,6 @@ impl Nimbra {
         self.print_view = None;
         self.account = "".into();
         self.me_initials = "".into();
-        self.me_photo = None;
-        self.photo_not_allowed = false;
-        self.photo_gen = None;
         if let Some((mails, whole)) = all_inboxes {
             self.cache.insert(View::AllInboxes, mails);
             self.all_inboxes_whole = whole;
@@ -4105,78 +4120,113 @@ impl Nimbra {
         if self.account_gen != generation {
             return; // it was a second sign-in to an account already here
         }
-        if self.photo_gen != Some(self.account_gen) {
-            self.load_profile_photo(cx);
-        }
+        self.load_photo(self.account_id.clone(), cx);
         self.account = email.into();
 
         let fresh = threads.into_iter().map(Mail::from_summary).collect();
         self.install(fresh, cx);
     }
 
-    /// The account's profile photo: the copy kept on this Mac first, then Google's current
-    /// one (kept for next time). Once per account per session.
-    fn load_profile_photo(&mut self, cx: &mut Context<Self>) {
-        let generation = self.account_gen;
-        self.photo_gen = Some(generation);
-        self.me_photo = None;
-        let (Some(client), store) = (self.gmail.clone(), self.store.clone()) else {
+    /// An account's profile photo: the copy kept on this Mac first, then Google's current
+    /// one (kept for next time). Once per account per session, shown or not.
+    fn load_photo(&mut self, account: String, cx: &mut Context<Self>) {
+        let Some(client) = self.client_for(Some(&account)) else {
             return;
         };
+        if !self.photos_asked.insert(account.clone()) {
+            return;
+        }
+        let store = self.store_of(&account);
         cx.spawn(async move |this, cx| {
-            let kept: Option<Vec<u8>> = match &store {
-                Some(store) => {
-                    let store = store.clone();
-                    cx.background_executor()
-                        .spawn(async move { store.load::<Vec<u8>>("profile-photo") })
-                        .await
+            if let Some(store) = store.clone() {
+                let kept = cx
+                    .background_executor()
+                    .spawn(async move { store.load::<Vec<u8>>(PHOTO) })
+                    .await;
+                if let Some(image) = kept.and_then(photo_image) {
+                    this.update(cx, |this, cx| {
+                        if this.keeps(&account) {
+                            this.photos.insert(account.clone(), image);
+                            cx.notify();
+                        }
+                    })
+                    .ok();
                 }
-                None => None,
-            };
-            if let Some(bytes) = kept {
-                this.update(cx, |this, cx| {
-                    if this.account_gen == generation {
-                        this.me_photo = photo_image(bytes);
-                        cx.notify();
-                    }
-                })
-                .ok();
             }
             let fetched = cx
                 .background_executor()
-                .spawn(async move { client.profile_photo() })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.account_gen != generation {
-                    return;
-                }
-                match fetched {
-                    Ok(gmail::Photo::Image(bytes)) => {
-                        this.photo_not_allowed = false;
-                        this.me_photo = photo_image(bytes.clone());
-                        if let Some(store) = this.store.clone() {
-                            cx.background_executor()
-                                .spawn(async move {
-                                    let _ = store.save("profile-photo", &bytes);
-                                })
-                                .detach();
+                .spawn(async move {
+                    let photo = client.profile_photo()?;
+                    if let Some(store) = &store {
+                        match &photo {
+                            gmail::Photo::Image(bytes) | gmail::Photo::Unchecked(bytes) => {
+                                if store.save(PHOTO, bytes).is_err() {
+                                    eprintln!("nimbra: could not keep the profile photo");
+                                }
+                            }
+                            gmail::Photo::NoPhoto => store.remove(PHOTO),
+                            gmail::Photo::NotAllowed => {}
                         }
                     }
-                    Ok(gmail::Photo::NoPhoto) => {
-                        this.photo_not_allowed = false;
-                        this.me_photo = None;
-                    }
-                    Ok(gmail::Photo::NotAllowed) => this.photo_not_allowed = true,
-                    Err(error) => {
-                        // Counts only: never the address or the photo's link.
-                        eprintln!("nimbra: profile photo not loaded ({error})");
-                    }
+                    anyhow::Ok(photo)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                // Signed out meanwhile: nothing of it stays.
+                if !this.keeps(&account) {
+                    return;
                 }
+                let photo = match fetched {
+                    Ok(photo) => photo,
+                    Err(error) => {
+                        // Never the address or the photo's link.
+                        eprintln!("nimbra: profile photo not loaded ({error})");
+                        this.photos_asked.remove(&account); // asked again next time
+                        return;
+                    }
+                };
+                let (answer, bytes) = match photo {
+                    gmail::Photo::Image(bytes) => (PhotoAnswer::Theirs, Some(bytes)),
+                    gmail::Photo::Unchecked(bytes) => (PhotoAnswer::Unchecked, Some(bytes)),
+                    gmail::Photo::NoPhoto => (PhotoAnswer::None, None),
+                    gmail::Photo::NotAllowed => (PhotoAnswer::NotAllowed, None),
+                };
+                if let Some(image) = bytes.and_then(photo_image) {
+                    this.photos.insert(account.clone(), image);
+                } else if answer == PhotoAnswer::None {
+                    this.photos.remove(&account);
+                }
+                this.photo_answers.insert(account, answer);
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Settings › Accounts › Check again.
+    fn check_photo_again(&mut self, cx: &mut Context<Self>) {
+        let account = self.account_id.clone();
+        self.photo_answers.remove(&account);
+        self.photos_asked.remove(&account);
+        self.load_photo(account, cx);
+        cx.notify();
+    }
+
+    /// Forgets an account's photo, as it is signed out.
+    fn forget_photo(&mut self, account: &str) {
+        self.photos.remove(account);
+        self.photo_answers.remove(account);
+        self.photos_asked.remove(account);
+    }
+
+    /// The address an account has, to point signing in again at and to check it by.
+    fn email_of(&self, account: &str) -> Option<String> {
+        self.settings
+            .accounts
+            .iter()
+            .find(|a| a.id == account && a.email.contains('@'))
+            .map(|a| a.email.clone())
     }
 
     /// Settings › Accounts: signs in again to add the profile (name and photo) to this
@@ -4186,7 +4236,9 @@ impl Nimbra {
             return;
         };
         let account = self.account_id.clone();
-        match gmail::SignIn::start(&config, false) {
+        let generation = self.account_gen;
+        let expected = self.email_of(&account);
+        match gmail::SignIn::start(&config, false, expected.as_deref()) {
             Ok((pending, url)) => {
                 cx.open_url(&url);
                 self.notice = Some("Allow your profile in your browser, then come back.".into());
@@ -4196,10 +4248,12 @@ impl Nimbra {
                         .spawn(async move { pending.finish(&config, &account) })
                         .await;
                     this.update(cx, |this, cx| match result {
+                        // Another account was switched to while the browser was open.
+                        Ok(_) if this.account_gen != generation => {}
                         Ok(client) => {
                             this.gmail = Some(Arc::new(client));
                             this.notice = None;
-                            this.load_profile_photo(cx);
+                            this.check_photo_again(cx);
                         }
                         Err(error) => {
                             this.notice = Some(format!("The photo was not added: {error}").into());
@@ -5889,7 +5943,9 @@ impl Nimbra {
             return;
         };
         let account = self.account_id.clone();
-        match gmail::SignIn::start(&config, true) {
+        let generation = self.account_gen;
+        let expected = self.email_of(&account);
+        match gmail::SignIn::start(&config, true, expected.as_deref()) {
             Ok((pending, url)) => {
                 cx.open_url(&url);
                 self.notice =
@@ -5900,6 +5956,8 @@ impl Nimbra {
                         .spawn(async move { pending.finish(&config, &account) })
                         .await;
                     this.update(cx, |this, cx| match result {
+                        // Those threads are not the account's that is shown by now.
+                        Ok(_) if this.account_gen != generation => {}
                         Ok(client) => {
                             this.gmail = Some(Arc::new(client));
                             this.delete_forever(ids, cx);
@@ -9395,6 +9453,7 @@ impl Nimbra {
         });
         self.settings.accounts.retain(|a| a.id != account);
         self.others.remove(&account);
+        self.forget_photo(&account);
         self.other_stores.remove(&account);
         self.away_waiting.remove(&account);
         self.account_unread.remove(&account);
@@ -9482,6 +9541,7 @@ impl Nimbra {
             // Whoever signs in next must not send this account's mail.
             self.outbox = Outbox::default();
             let shown = self.account_id.clone();
+            self.forget_photo(&shown);
             self.abandon_sends(&shown);
             self.parked
                 .retain(|(_, c)| c.account.as_ref().is_some_and(|a| *a != shown));
@@ -10874,7 +10934,11 @@ impl Nimbra {
                         .when(shown, |d| d.relative().child(active_pill(t)))
                         .when(!shown, |d| d.hover(move |s| s.bg(hover)))
                         .press(t)
-                        .child(avatar(crate::data::tone_for(&account.email), &initial, 18.))
+                        .child(match self.photos.get(&account.id) {
+                            Some(photo) => me_avatar(Some(photo), &initial, 18.),
+                            None => avatar(crate::data::tone_for(&account.email), &initial, 18.)
+                                .into_any_element(),
+                        })
                         .child(
                             div()
                                 .flex_1()
@@ -11245,7 +11309,11 @@ impl Nimbra {
                             .cursor_pointer()
                             .tooltip(tip(t.dark, "Settings", "⌘,"))
                             .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
-                            .child(me_avatar(self.me_photo.as_ref(), &self.me_initials, 28.))
+                            .child(me_avatar(
+                                self.photos.get(&self.account_id),
+                                &self.me_initials,
+                                28.,
+                            ))
                             .child(
                                 div()
                                     .flex_1()

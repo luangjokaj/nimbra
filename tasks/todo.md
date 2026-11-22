@@ -429,3 +429,14 @@ Review: 12 reproductions (all failed before) and 33 cases that try to break the 
 the real client, a fake Gmail and a fake keychain; the new screens captured. Not checked:
 real Gmail's page tokens, real Keychain dialogs, logging out (quitting is put off for that
 too), Windows (nothing puts quitting off there), two real accounts.
+
+## Profile photos (2026-11-22)
+
+- [x] Every account's photo, also when opening into saved mail (it loaded only after a full
+      listing, and only for the account shown)
+- [x] The People API picks the user's own photo over the drawn letter; without it, said
+- [x] Found on the way, reproduced: signing in again (Allow, delete permanently, Connect) as
+      another Google account replaced this one's sign-in and wiped it
+
+Review: 14 cases against a fake Google (photo, letter, API off, relaunch, sign-out, wrong
+account). Not checked: real Google, a real Workspace photo.

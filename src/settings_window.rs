@@ -3,6 +3,7 @@
 
 use std::time::Instant;
 
+use super::PhotoAnswer;
 use super::*;
 use crate::settings::{MarkRead, TextSize, ThemeChoice};
 
@@ -573,8 +574,8 @@ impl SettingsWindow {
         let connected = n.gmail.is_some();
         let can_add = n.config.is_some();
         let active_email = n.account.to_string();
-        let photo = n.me_photo.clone();
-        let photo_not_allowed = n.photo_not_allowed && connected;
+        let photos = n.photos.clone();
+        let photo_answer = n.photo_answers.get(&active).copied().filter(|_| connected);
         let mut rows: Vec<AnyElement> = accounts
             .iter()
             .enumerate()
@@ -593,8 +594,10 @@ impl SettingsWindow {
                     .gap(px(12.))
                     .px(px(16.))
                     .py(px(12.))
-                    .child(if shown {
-                        me_avatar(photo.as_ref(), &initials, 32.)
+                    .child(if let Some(photo) = photos.get(&account.id) {
+                        me_avatar(Some(photo), &initials, 32.)
+                    } else if shown {
+                        me_avatar(None, &initials, 32.)
                     } else {
                         avatar(crate::data::tone_for(&account.email), &initials, 32.)
                             .into_any_element()
@@ -671,18 +674,39 @@ impl SettingsWindow {
                     })),
                 )
             });
-        if photo_not_allowed {
-            rows.push(row(
+        let check_again = |cx: &mut Context<Self>| {
+            button(t, ButtonKind::Secondary, "Check again", None)
+                .id("check-photo")
+                .press_soft()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.owner.update(cx, |n, cx| n.check_photo_again(cx));
+                }))
+        };
+        match photo_answer {
+            Some(PhotoAnswer::NotAllowed) => rows.push(row(
                 t,
                 "Show your Google photo",
-                "This sign-in predates profile photos. Allow your basic profile once in your browser to show it here.",
+                "This sign-in predates profile photos. Allow your basic profile once in your browser, choosing this same account.",
                 button(t, ButtonKind::Secondary, "Allow", None)
                     .id("allow-photo")
                     .press_soft()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.owner.update(cx, |n, cx| n.allow_profile_photo(cx));
                     })),
-            ));
+            )),
+            Some(PhotoAnswer::Unchecked) => rows.push(row(
+                t,
+                "A letter instead of your photo?",
+                "This is the picture Google gives every app. To look for your own photo, Nimbra needs the People API turned on in its Google Cloud project. Then check again.",
+                check_again(cx),
+            )),
+            Some(PhotoAnswer::None) => rows.push(row(
+                t,
+                "Google has no photo for this account",
+                "Google only offers a drawn letter. If you did set a photo, your Workspace admin may be keeping it from apps.",
+                check_again(cx),
+            )),
+            Some(PhotoAnswer::Theirs) | None => {}
         }
         vec![
             group(t, None, rows),
