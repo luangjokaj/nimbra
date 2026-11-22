@@ -203,9 +203,8 @@ no state adds or removes a border.
 - [x] Spam and Trash notes only for threads really there
 - [x] Reproduced with real clicks and keys on the build before; main window paths unchanged
 
-Open, found while auditing (not fixed): a row's right-click menu holds a position, so a
-refresh while it is open can shift it to another thread; Done (E) does nothing in All
-inboxes; Windows has no check that a link was clicked (and no build of it exists yet).
+Found while auditing, all fixed in the section below: a row's right-click menu held a
+position; Done (E) did nothing in All inboxes; Windows had no check that a link was clicked.
 
 ## About pane (2026-11-22)
 
@@ -228,3 +227,7 @@ inboxes; Windows has no check that a link was clicked (and no build of it exists
       sheet, and late answers from Gmail all follow the thread (id and account)
 - [x] All inboxes: Done, Snooze and Move to work as in an inbox; counts and wake-ups go to
       the thread's own account
+- [x] Windows: only a clicked link leaves the app (compiles for Windows; never run there)
+
+Review: 25 cases reproduced on the build before and rerun after, with Gmail and the wipe
+logged instead of done. Not checked: two real accounts, Windows at run time.

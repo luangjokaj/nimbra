@@ -60,3 +60,5 @@
   without checking that it is the shown account's.
 - Before adding a feature to All inboxes, follow every path it opens for another account
   (counts, labels, stores, timers, failures).
+- Code for a platform that cannot be run here: type-check it for that target (with a
+  negative control) and read the API's documentation for every flag it relies on.

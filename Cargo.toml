@@ -26,5 +26,10 @@ url = "2.5.8"
 objc = "0.2"
 block = "0.1"
 
+# The same versions wry uses, for what it does not pass on (see `webview.rs`).
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_System_Com"] }
+
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 wry = "0.53"

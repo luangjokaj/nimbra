@@ -7,7 +7,8 @@
 //!   form posts or `<base>` tricks. Remote images load only after the user asks.
 //! - It can never navigate. Clicked links are checked and handed to the system browser;
 //!   navigations the mail starts by itself (a meta refresh needs no script) go nowhere, and
-//!   pop-ups are refused. (Telling a click apart is macOS only: wry reports just the URL.)
+//!   pop-ups are refused. wry reports only the URL, so telling a click apart asks WebKit or
+//!   WebView2 itself.
 //! - `<link>` tags are made inert: the policy cannot stop a preconnect, which tells the
 //!   sender the mail was opened even with images blocked.
 //! - It runs in a non-persistent (incognito) store, so mail cannot set lasting cookies.
@@ -78,14 +79,47 @@ fn leaves_app(link: &str, followed: bool) -> bool {
     followed && is_external_link(link)
 }
 
+/// What WebView2 may do with a navigation.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, PartialEq)]
+enum Navigation {
+    /// The document Nimbra handed it.
+    Load,
+    /// A clicked link, for the system to open. The view stays where it is.
+    Open,
+    Stop,
+}
+
+/// `loads` is how many documents Nimbra handed the view that have not started yet. WebView2
+/// starts each as a navigation to a data URL (or about:blank), and counts it as the user's
+/// own, as it does everything an app asks of it. So a load is told by its URL and by one
+/// being due, never by the click flag; at any other time those URLs go nowhere.
+#[cfg(any(target_os = "windows", test))]
+fn navigation(link: &str, clicked: bool, loads: u32) -> Navigation {
+    if loads > 0 && (link == "about:blank" || link.starts_with("data:text/html")) {
+        Navigation::Load
+    } else if leaves_app(link, clicked) {
+        Navigation::Open
+    } else {
+        Navigation::Stop
+    }
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod platform {
-    use super::{document, leaves_app};
+    use super::document;
+    #[cfg(target_os = "macos")]
+    use super::leaves_app;
+    #[cfg(target_os = "macos")]
+    use wry::NewWindowResponse;
     use wry::dpi::{LogicalPosition, LogicalSize};
-    use wry::{NewWindowResponse, Rect, WebView, WebViewBuilder};
+    use wry::{Rect, WebView, WebViewBuilder};
 
     pub struct HtmlView {
         view: WebView,
+        /// Documents handed over that have not started loading (see `navigation`).
+        #[cfg(target_os = "windows")]
+        loads: std::rc::Rc<std::cell::Cell<u32>>,
         /// Where the view is (window points), and the hole cut in it, as last applied.
         frame: std::cell::Cell<(f32, f32, f32, f32)>,
         hole: std::cell::Cell<Option<(f32, f32, f32, f32)>>,
@@ -95,12 +129,19 @@ mod platform {
     impl HtmlView {
         /// Creates the (hidden) web view as a child of the app window.
         pub fn new(window: &gpui::Window) -> Option<Self> {
-            let view = WebViewBuilder::new()
-                .with_html(document("", false))
+            let builder = WebViewBuilder::new()
                 .with_javascript_disabled()
                 .with_incognito(true)
                 .with_devtools(false)
-                .with_visible(false)
+                .with_visible(false);
+            // Windows takes neither of wry's handlers, as they are not told whether it was a
+            // click: `click::watch` has its own. (wry still refuses every pop-up.) Nor does it
+            // load before those are in place, or download what a mail points at.
+            #[cfg(target_os = "windows")]
+            let builder = builder.with_download_started_handler(|_, _| false);
+            #[cfg(target_os = "macos")]
+            let builder = builder
+                .with_html(document("", false))
                 .with_navigation_handler(|link| {
                     // The page we load ourselves arrives as about:blank; nothing else may
                     // replace it. Real links open in the browser instead.
@@ -117,9 +158,11 @@ mod platform {
                         open_in_browser(&link);
                     }
                     NewWindowResponse::Deny
-                })
-                .build_as_child(window)
-                .ok()?;
+                });
+            let view = builder.build_as_child(window).ok()?;
+            // Without the check there is no view at all (the reader shows the mail instead).
+            #[cfg(target_os = "windows")]
+            let loads = click::watch(&view)?;
             #[cfg(target_os = "macos")]
             {
                 use wry::WebViewExtMacOS as _;
@@ -129,6 +172,8 @@ mod platform {
             }
             Some(Self {
                 view,
+                #[cfg(target_os = "windows")]
+                loads,
                 frame: std::cell::Cell::new((0., 0., 0., 0.)),
                 hole: std::cell::Cell::new(None),
                 applied: std::cell::Cell::new(None),
@@ -167,7 +212,14 @@ mod platform {
         fn apply_hole(&self) {}
 
         pub fn show(&self, body: &str, images: bool) {
-            let _ = self.view.load_html(&document(body, images));
+            #[cfg(target_os = "windows")]
+            self.loads.set(self.loads.get() + 1);
+            let shown = self.view.load_html(&document(body, images));
+            #[cfg(target_os = "windows")]
+            if shown.is_err() {
+                self.loads.set(self.loads.get().saturating_sub(1));
+            }
+            let _ = shown;
         }
 
         /// Position and size in window points.
@@ -337,11 +389,70 @@ mod platform {
         }
     }
 
-    /// WebView2's navigation type is not passed on by wry, so links behave as before there.
-    #[cfg(not(target_os = "macos"))]
+    /// WebView2 says whether a navigation was the user's; wry does not pass that on. So this
+    /// is the view's only navigation handler. Each one is cancelled until shown to be a load
+    /// of ours, and whatever cannot be read stays cancelled.
+    #[cfg(target_os = "windows")]
     mod click {
-        pub(super) fn followed() -> bool {
-            true
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use webview2_com::{NavigationStartingEventHandler, NewWindowRequestedEventHandler};
+        use windows::core::{BOOL, PWSTR};
+        use wry::{WebView, WebViewExtWindows as _};
+
+        use super::super::{Navigation, navigation};
+        use super::open_in_browser;
+
+        pub(super) fn watch(view: &WebView) -> Option<Rc<Cell<u32>>> {
+            let loads = Rc::new(Cell::new(0));
+            let webview = view.webview();
+            let mut token = 0i64;
+            let pending = loads.clone();
+            let starting = NavigationStartingEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                // SAFETY: WebView2 calls this on the UI thread with live arguments. The URI
+                // is its allocation, which `take_pwstr` frees.
+                unsafe {
+                    args.SetCancel(true)?;
+                    let mut uri = PWSTR::null();
+                    args.Uri(&mut uri)?;
+                    let uri = webview2_com::take_pwstr(uri);
+                    let mut clicked = BOOL::default();
+                    args.IsUserInitiated(&mut clicked)?;
+                    match navigation(&uri, clicked.as_bool(), pending.get()) {
+                        Navigation::Load => {
+                            args.SetCancel(false)?;
+                            pending.set(pending.get().saturating_sub(1));
+                        }
+                        Navigation::Open => open_in_browser(&uri),
+                        Navigation::Stop => {}
+                    }
+                }
+                Ok(())
+            }));
+            let pop_up = NewWindowRequestedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                // SAFETY: as above.
+                unsafe {
+                    args.SetHandled(true)?;
+                    let mut uri = PWSTR::null();
+                    args.Uri(&mut uri)?;
+                    let uri = webview2_com::take_pwstr(uri);
+                    let mut clicked = BOOL::default();
+                    args.IsUserInitiated(&mut clicked)?;
+                    if navigation(&uri, clicked.as_bool(), 0) == Navigation::Open {
+                        open_in_browser(&uri);
+                    }
+                }
+                Ok(())
+            }));
+            // SAFETY: on the UI thread, with the live webview wry has just built.
+            unsafe {
+                webview.add_NavigationStarting(&starting, &mut token).ok()?;
+                webview.add_NewWindowRequested(&pop_up, &mut token).ok()?;
+            }
+            Some(loads)
         }
     }
 
@@ -730,6 +841,36 @@ mod tests {
             "<p>héllo</p>",
         ] {
             assert_eq!(without_links(same), same);
+        }
+    }
+
+    #[test]
+    fn on_windows_only_our_loads_and_clicked_links_go_anywhere() {
+        use Navigation::{Load, Open, Stop};
+        let ours = "data:text/html;charset=utf-8;base64,PHA-";
+        for (link, clicked, loads, wanted) in [
+            (ours, false, 1, Load),
+            // WebView2 says a load the app asked for is the user's.
+            (ours, true, 1, Load),
+            ("about:blank", true, 1, Load),
+            // None of ours is due.
+            (ours, false, 0, Stop),
+            (ours, true, 0, Stop),
+            ("about:blank", true, 0, Stop),
+            // A refresh or a redirect, even while a load of ours is waiting.
+            ("https://example.com/a", false, 1, Stop),
+            ("mailto:a@b.co", false, 1, Stop),
+            ("ms-msdt:/id", false, 1, Stop),
+            ("https://example.com/a", true, 0, Open),
+            ("mailto:a@b.co", true, 0, Open),
+            ("file:///c:/windows/system32/calc.exe", true, 0, Stop),
+            ("ms-msdt:/id", true, 0, Stop),
+        ] {
+            assert_eq!(
+                navigation(link, clicked, loads),
+                wanted,
+                "{link} {clicked} {loads}"
+            );
         }
     }
 
