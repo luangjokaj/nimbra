@@ -241,3 +241,20 @@ logged instead of done. Not checked: two real accounts, Windows at run time.
 
 - [x] The mail screen's own layout in ink: real bars dimmed, rows and an email that could be
       real, a wave of light; nothing moves when the mail arrives
+
+## Cold launch into Inbox Zero (2026-11-22)
+
+- [x] An empty Inbox kept on this Mac opens as Inbox Zero, from the first frame
+- [x] Emptying the Inbox (and undoing it) is saved at once
+- [x] Inbox Zero fades up on that launch; still with Reduce Motion
+- [x] Checked end to end against main: launches, quit straight after, pixels
+
+Review: sandboxed copies of main and of the change, with the keychain and Gmail stubbed.
+Launches (empty, mail, first run, unreadable store, no sign-in, offline, mail arriving) and
+quitting 40 to 80ms after Done, Trash, a batch or Undo. The settled screen is byte for
+byte main's in four layouts. Not checked: real Gmail, switching accounts, Reduce Motion
+switched on in macOS (forced in the test copy), Windows.
+
+Left open: "Press Z" shows after a launch with nothing to undo; a Gmail error other than
+offline replaces Inbox Zero with the error screen; emptying the inbox from All inboxes is
+not saved at once.

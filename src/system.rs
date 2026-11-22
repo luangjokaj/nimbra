@@ -1,4 +1,5 @@
-//! Small macOS integrations: the unread count on the Dock icon, and opening at login.
+//! Small macOS integrations: the unread count on the Dock icon, Reduce Motion, and opening
+//! at login.
 
 /// Shows `count` on the Dock icon, or nothing for zero.
 #[cfg(target_os = "macos")]
@@ -32,6 +33,28 @@ pub fn set_badge(count: u32) {
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_badge(_count: u32) {}
+
+/// Whether the Mac is set to reduce motion (System Settings › Accessibility).
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+pub fn reduces_motion() -> bool {
+    use objc::runtime::{BOOL, NO, Object};
+    use objc::{class, msg_send, sel, sel_impl};
+    // SAFETY: main thread; the shared workspace lives as long as the app.
+    unsafe {
+        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace.is_null() {
+            return false;
+        }
+        let reduce: BOOL = msg_send![workspace, accessibilityDisplayShouldReduceMotion];
+        reduce != NO
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn reduces_motion() -> bool {
+    false
+}
 
 #[cfg(target_os = "macos")]
 #[link(name = "ServiceManagement", kind = "framework")]

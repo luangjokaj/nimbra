@@ -9,6 +9,7 @@ use gpui::{
     prelude::*, px, relative,
 };
 
+use crate::arrival::{Arrival, drop_for};
 use crate::data::{COMMANDS, Mail, inbox};
 use crate::gmail::{self, View};
 use crate::input::{InputEvent, TextInput};
@@ -961,6 +962,11 @@ pub struct Nimbra {
     /// Switching back shows it at once while a refresh runs in the background.
     /// Backed by the encrypted store on disk (see `persist`).
     cache: HashMap<View, Vec<Mail>>,
+    /// The Inbox kept on this Mac is empty. Until the store is open this goes by the saved
+    /// file's size, which is enough to open on Inbox Zero instead of the skeleton.
+    inbox_saved_empty: bool,
+    /// Inbox Zero coming up, on a launch that opens on it.
+    arrival: Option<Arrival>,
     /// The message whose full header (all recipients, date) is expanded: thread id and
     /// message index (0 is the latest).
     details: Option<(String, usize)>,
@@ -1276,6 +1282,8 @@ impl Nimbra {
             _ => !settings.sidebar_auto_hide,
         };
         let mut this = Self {
+            inbox_saved_empty: false,
+            arrival: None,
             finder_open: false,
             finder,
             _finder_events: finder_events,
@@ -1521,6 +1529,13 @@ impl Nimbra {
         }
         if let Some(config) = this.config.clone() {
             this.status = Status::Loading;
+            this.inbox_saved_empty =
+                crate::store::Store::saved_empty(&this.account_id, &record(View::Inbox));
+            if this.opening_to_zero() && !crate::system::reduces_motion() {
+                this.arrival = Some(Arrival::START);
+            }
+            // On every change, whichever action made it: the next launch goes by this.
+            cx.observe_self(Self::save_if_zero_changed).detach();
             let account = this.account_id.clone();
             cx.spawn(async move |this, cx| {
                 let id = account.clone();
@@ -1553,6 +1568,26 @@ impl Nimbra {
 
     fn is_demo(&self) -> bool {
         self.status == Status::Demo
+    }
+
+    /// The store is still opening, and the Inbox it holds is an empty one.
+    fn opening_to_zero(&self) -> bool {
+        self.status == Status::Loading
+            && self.store.is_none()
+            && self.mailbox == View::Inbox
+            && self.inbox_saved_empty
+    }
+
+    /// Saves the Inbox as soon as it empties or stops being empty. Waiting for the next
+    /// check for mail would lose that when Nimbra quits first.
+    fn save_if_zero_changed(&mut self, cx: &mut Context<Self>) {
+        if self.mailbox == View::Inbox
+            && self.status == Status::Ready
+            // Not `visible`: with Unread on, read mail is still in the Inbox.
+            && self.done.iter().all(|done| *done) != self.inbox_saved_empty
+        {
+            self.persist(cx);
+        }
     }
 
     fn inbox_name(&self) -> SharedString {
@@ -2538,7 +2573,13 @@ impl Nimbra {
                 .await;
             let Ok((store, saved, mails, scheduled, snoozed, outbox)) = opened else {
                 eprintln!("nimbra: mail store unavailable; continuing without it");
-                this.update(cx, |this, cx| this.fetch_inbox(cx)).ok();
+                this.update(cx, |this, cx| {
+                    if this.account_gen == generation {
+                        this.inbox_saved_empty = false;
+                    }
+                    this.fetch_inbox(cx)
+                })
+                .ok();
                 return;
             };
             this.update(cx, |this, cx| {
@@ -2546,6 +2587,9 @@ impl Nimbra {
                     return;
                 }
                 this.store = Some(Arc::new(store));
+                if view == View::Inbox {
+                    this.inbox_saved_empty = mails.as_ref().is_some_and(Vec::is_empty);
+                }
                 this.scheduled = scheduled.unwrap_or_default();
                 this.snoozed = snoozed.unwrap_or_default();
                 this.outbox = outbox.unwrap_or_default();
@@ -2574,11 +2618,14 @@ impl Nimbra {
                     this.labels = saved.labels;
                     this.synced_to = saved.synced_to;
                 }
-                let mut mails = mails.unwrap_or_default();
-                for mail in &mut mails {
-                    mail.refresh_time();
-                }
-                if !mails.is_empty() {
+                if let Some(mut mails) = mails {
+                    for mail in &mut mails {
+                        mail.refresh_time();
+                    }
+                    if mails.is_empty() {
+                        // Known to be empty, so checking it again needs no loading screen.
+                        this.cache.insert(view, Vec::new());
+                    }
                     eprintln!("nimbra: opened {} stored threads", mails.len());
                     this.done = vec![false; mails.len()];
                     this.mails = mails;
@@ -2637,6 +2684,9 @@ impl Nimbra {
                 mail
             })
             .collect();
+        if self.mailbox == View::Inbox {
+            self.inbox_saved_empty = mails.is_empty();
+        }
         let name = self.record_for(self.mailbox);
         let saved = Saved {
             account: self.account.to_string(),
@@ -3155,6 +3205,7 @@ impl Nimbra {
             self.others.insert(self.account_id.clone(), client);
         }
         self.others.remove(&id);
+        self.inbox_saved_empty = crate::store::Store::saved_empty(&id, &record(View::Inbox));
         self.account_id = id.clone();
         self.settings.active = id;
         self.save_settings(cx);
@@ -12978,6 +13029,8 @@ impl Nimbra {
                         .child(value.to_string()),
                 )
         };
+        let arrival = self.arrival.unwrap_or(Arrival::SETTLED);
+        let settle = |d: Div, shown: f32| d.relative().top(px(drop_for(shown))).opacity(shown);
         // Deterministic star field.
         let mut seed = 7u32;
         let mut rnd = move || {
@@ -12985,7 +13038,7 @@ impl Nimbra {
             seed as f32 / 233280.
         };
         let stars: Vec<Div> = (0..48)
-            .map(|_| {
+            .map(|i| {
                 let (x, y, a) = (rnd(), rnd() * 0.42, 0.2 + rnd() * 0.6);
                 div()
                     .absolute()
@@ -12993,7 +13046,7 @@ impl Nimbra {
                     .top(relative(y))
                     .size(px(if a > 0.7 { 2.5 } else { 1.5 }))
                     .rounded_full()
-                    .bg(c(0xffffff, a))
+                    .bg(c(0xffffff, a * arrival.star(i)))
             })
             .collect();
         // The sample inbox keeps the day its mail is from.
@@ -13005,11 +13058,14 @@ impl Nimbra {
                 .to_string()
                 .to_uppercase()
         };
-        let layer = |angle: f32, color: u32, alpha: f32, end: f32| {
+        let layer = |index: usize, angle: f32, color: u32, alpha: f32, end: f32| {
+            let shown = arrival.glow(index);
+            // Each reaches further from its edge as it brightens, so the light rises.
+            let reach = end * (0.6 + 0.4 * shown);
             div()
                 .absolute()
                 .inset_0()
-                .bg(fade(angle, color, alpha, end))
+                .bg(fade(angle, color, alpha * shown, reach))
         };
 
         div().flex_1().min_w(px(0.)).h_full().bg(t.surface).child(
@@ -13022,10 +13078,10 @@ impl Nimbra {
                 .overflow_hidden()
                 .bg(c(0x0a0912, 1.))
                 // Aurora: GPUI has no blur filter, so the glow is layered two-stop gradients.
-                .child(layer(45., 0x6b4dff, 0.9, 0.62))
-                .child(layer(315., 0xffa94d, 0.6, 0.5))
-                .child(layer(0., 0xff4fa0, 0.55, 0.42))
-                .child(layer(300., 0x3fa9ff, 0.22, 0.4))
+                .child(layer(0, 45., 0x6b4dff, 0.9, 0.62))
+                .child(layer(2, 315., 0xffa94d, 0.6, 0.5))
+                .child(layer(1, 0., 0xff4fa0, 0.55, 0.42))
+                .child(layer(3, 300., 0x3fa9ff, 0.22, 0.4))
                 .children(stars)
                 // Two halves with the horizon between: each holds its content in its middle.
                 .child(
@@ -13037,12 +13093,12 @@ impl Nimbra {
                         .justify_center()
                         .w_full()
                         .h(relative(HORIZON))
-                        .child(overline(today, c(0xffffff, 0.55)))
+                        .child(settle(overline(today, c(0xffffff, 0.55)), arrival.date()))
                         .child(div().h(px(18.)).flex_none())
-                        .child(serif("Inbox zero.", 120., ink))
+                        .child(settle(serif("Inbox zero.", 120., ink), arrival.headline()))
                         .child(div().h(px(14.)).flex_none())
                         .child(
-                            div()
+                            settle(div(), arrival.line())
                                 .text_size(px(17.))
                                 .line_height(px(26.))
                                 .text_color(soft)
@@ -13070,7 +13126,14 @@ impl Nimbra {
                             )
                         })
                 )
-                .child(div().flex_none().w_full().h(px(1.)).bg(c(0xffffff, 0.22)))
+                // Drawn out from the middle.
+                .child(
+                    div()
+                        .flex_none()
+                        .w(relative(arrival.horizon()))
+                        .h(px(1.))
+                        .bg(c(0xffffff, 0.22)),
+                )
                 .child(
                     div()
                         .flex()
@@ -13123,7 +13186,7 @@ impl Nimbra {
                             )
                         })
                         .child(
-                            div()
+                            settle(div(), arrival.hint())
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
@@ -13381,8 +13444,10 @@ impl Render for Nimbra {
         // Measure the display's frame interval from back-to-back frames (an animation keeps
         // them coming), smoothed; long gaps between idle frames are ignored.
         let now = std::time::Instant::now();
+        let mut since_last = 0.;
         if let Some(last) = self.last_frame {
             let dt = now.duration_since(last).as_secs_f32();
+            since_last = dt;
             if (0.004..0.035).contains(&dt) {
                 let smooth = self.frame_interval.get() * 0.8 + dt * 0.2;
                 self.frame_interval.set(smooth);
@@ -13475,6 +13540,17 @@ impl Render for Nimbra {
             window.request_animation_frame();
         }
         let empty = self.visible().is_empty();
+        let zero_shown = match self.status {
+            Status::Demo | Status::Ready => empty && self.mailbox == View::Inbox,
+            _ => self.opening_to_zero(),
+        };
+        self.arrival = self
+            .arrival
+            .filter(|_| zero_shown)
+            .and_then(|arrival| arrival.after(since_last));
+        if self.arrival.is_some() {
+            window.request_animation_frame();
+        }
         let list_shown =
             !empty && self.list_open && matches!(self.status, Status::Demo | Status::Ready);
 
@@ -13643,9 +13719,7 @@ impl Render for Nimbra {
                     .when(afloat > 0., |d| d.bg(t.surface)),
             )
             .map(|d| match self.status {
-                Status::Demo | Status::Ready if empty && self.mailbox == View::Inbox => {
-                    d.child(self.zero(&t))
-                }
+                _ if zero_shown => d.child(self.zero(&t)),
                 Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t)),
                 Status::Demo | Status::Ready => d.children(self.list_slot(&t, cx)).map(|d| {
                     if self.picked.len() >= 2 {
