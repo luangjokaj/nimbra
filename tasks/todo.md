@@ -226,3 +226,5 @@ inboxes; Windows has no check that a link was clicked (and no build of it exists
 - [x] Another account's expired sign-in no longer signs out, and wipes, the shown one
 - [x] Nothing acts by a remembered position: menus, picked rows, Undo, snooze panel, label
       sheet, and late answers from Gmail all follow the thread (id and account)
+- [x] All inboxes: Done, Snooze and Move to work as in an inbox; counts and wake-ups go to
+      the thread's own account

@@ -58,3 +58,5 @@
   closure, a request) keeps the thread's key and account, and is checked when used.
 - An error from a connection says whose it is. Never sign out, wipe or switch on an error
   without checking that it is the shown account's.
+- Before adding a feature to All inboxes, follow every path it opens for another account
+  (counts, labels, stores, timers, failures).
