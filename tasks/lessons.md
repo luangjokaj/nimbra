@@ -37,7 +37,8 @@
 - A button that fills in the composer must refuse when a message is already open:
   `open_compose` returns quietly then, and what follows writes into that message.
 - `thread_banners` and the like are drawn in message windows too: an action there must use
-  that window's thread and window, never `self.selected` or the main window.
+  that window's thread, account and window (`row_to_act_on`), never `self.selected`,
+  `picked` or the main window. When one such bug turns up, audit every shared action.
 
 ## States
 

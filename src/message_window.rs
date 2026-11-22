@@ -8,6 +8,8 @@ pub(super) struct MessageWindow {
     owner: Entity<Nimbra>,
     /// The thread's id (or, for sample mail, its subject).
     key: String,
+    /// The account it was opened from. The main window may switch to another; this stays.
+    account: String,
     /// The thread as last seen, for when it is no longer in the open mailbox.
     last: Mail,
     /// Original formatting (a web view) rather than the reader.
@@ -29,6 +31,7 @@ impl MessageWindow {
     pub(super) fn new(
         owner: Entity<Nimbra>,
         mail: Mail,
+        account: String,
         original: bool,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -36,6 +39,7 @@ impl MessageWindow {
         MessageWindow {
             owner,
             key: key_of(&mail),
+            account,
             last: mail,
             original,
             html_view: None,
@@ -53,39 +57,36 @@ impl MessageWindow {
     /// The thread, fresh from the app when it still has it.
     fn mail(&mut self, cx: &App) -> Mail {
         let n = self.owner.read(cx);
+        // Opened before the account's id was known (a first sign-in): it is the one shown.
+        if self.account.is_empty() {
+            self.account = n.account_id.clone();
+        }
         if let Some(mail) = n
             .mails
             .iter()
             .chain(n.cache.values().flatten())
-            .find(|m| key_of(m) == self.key)
+            .find(|m| key_of(m) == self.key && n.account_of(m) == self.account)
         {
             self.last = mail.clone();
         }
-        self.last.clone()
+        let mut mail = self.last.clone();
+        // On a mail no account means the one shown, which may no longer be this one's.
+        mail.account = (self.account != n.account_id).then(|| self.account.clone());
+        mail
     }
 
-    /// Runs `act` on the thread in the main window (selected there first).
+    /// Runs `act` on this window's thread, and closes the window if it was done.
     fn act(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-        act: impl FnOnce(&mut Nimbra, &mut Context<Nimbra>) + 'static,
-        close: bool,
+        act: impl FnOnce(&mut Nimbra, usize, &mut Context<Nimbra>) -> bool,
     ) {
-        let key = self.key.clone();
         let done = self.owner.update(cx, |n, cx| {
-            let Some(index) = n.mails.iter().position(|m| key_of(m) == key) else {
-                n.notice = Some("This conversation is no longer in the open mailbox.".into());
-                cx.notify();
-                return false;
-            };
-            n.picked.clear();
-            n.open(index);
-            act(n, cx);
-            cx.notify();
-            true
+            n.row_to_act_on(&self.key, &self.account, cx)
+                .is_some_and(|row| act(n, row, cx))
         });
-        if done && close {
+        if done {
             window.remove_window();
         }
     }
@@ -95,6 +96,16 @@ impl MessageWindow {
         let mail = self.mail(cx);
         let here = window.window_handle();
         self.owner.update(cx, |n, cx| {
+            // `open_compose_from` would leave that message as it is, and what follows would
+            // pull it in here, where it looks like the reply to this one.
+            if n.compose.is_some() {
+                if n.compose_host != Some(here) {
+                    n.notice =
+                        Some("Finish or close the message you are writing, then reply.".into());
+                    cx.notify();
+                }
+                return;
+            }
             n.open_compose_from(kind, Some(Source::latest(&mail)), cx);
             if let Some(composer) = &mut n.compose {
                 // Floating over the message, as in the main window.
@@ -210,12 +221,12 @@ impl Render for MessageWindow {
             .child(div().w(px(1.)).h(px(18.)).mx(px(6.)).bg(t.border))
             .child(
                 tool("done", "Done", 3).on_click(cx.listener(|this, _, window, cx| {
-                    this.act(window, cx, |n, cx| n.mark_done(cx), true)
+                    this.act(window, cx, |n, row, cx| n.done_thread(row, cx))
                 })),
             )
-            .child(tool("trash", "Move to trash", 4).on_click(
-                cx.listener(|this, _, window, cx| this.act(window, cx, |n, cx| n.trash(cx), true)),
-            ))
+            .child(tool("trash", "Move to trash", 4).on_click(cx.listener(
+                |this, _, window, cx| this.act(window, cx, |n, row, cx| n.trash_thread(row, cx)),
+            )))
             .child(div().flex_1())
             .when(m.html.is_some(), |d| {
                 d.child(
@@ -266,8 +277,9 @@ impl Render for MessageWindow {
                     .child(n.message_header(&t, &m, 0, false, cx))
             });
             let tray = (!m.header.attachments.is_empty()).then(|| {
-                self.owner
-                    .update(cx, |n, cx| n.attachment_tray(&t, &m.header.attachments, cx))
+                self.owner.update(cx, |n, cx| {
+                    n.attachment_tray(&t, &m.header.attachments, m.account.as_deref(), cx)
+                })
             });
             div()
                 .flex()
@@ -325,8 +337,14 @@ impl Render for MessageWindow {
                             )
                             .when(!e.header.attachments.is_empty(), |d| {
                                 d.child(
-                                    n.attachment_row(&t, &e.header.attachments, (k + 1) * 100, cx)
-                                        .pl(px(40.)),
+                                    n.attachment_row(
+                                        &t,
+                                        &e.header.attachments,
+                                        (k + 1) * 100,
+                                        m.account.as_deref(),
+                                        cx,
+                                    )
+                                    .pl(px(40.)),
                                 )
                             }),
                     );
@@ -343,8 +361,14 @@ impl Render for MessageWindow {
                         .child(n.message_body(&t, &m.body, 0, cx).pl(px(40.)))
                         .when(!m.header.attachments.is_empty(), |d| {
                             d.child(
-                                n.attachment_row(&t, &m.header.attachments, 0, cx)
-                                    .pl(px(40.)),
+                                n.attachment_row(
+                                    &t,
+                                    &m.header.attachments,
+                                    0,
+                                    m.account.as_deref(),
+                                    cx,
+                                )
+                                .pl(px(40.)),
                             )
                         }),
                 )
@@ -397,10 +421,10 @@ impl Render for MessageWindow {
                 this.reply(ComposeKind::Forward, window, cx)
             }))
             .on_action(cx.listener(|this, _: &MarkDone, window, cx| {
-                this.act(window, cx, |n, cx| n.mark_done(cx), true)
+                this.act(window, cx, |n, row, cx| n.done_thread(row, cx))
             }))
             .on_action(cx.listener(|this, _: &Trash, window, cx| {
-                this.act(window, cx, |n, cx| n.trash(cx), true)
+                this.act(window, cx, |n, row, cx| n.trash_thread(row, cx))
             }))
             .bg(t.surface)
             .font_family(crate::theme::SANS)

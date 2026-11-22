@@ -190,7 +190,19 @@ under it (except on Inbox Zero, where the gradient shows through the tint).
 - [x] Verify on sample mail, every width
 
 Review: the draft overwrite was reproduced on the build before and is gone. The https link
-was checked as far as the browser call (clicking a real one would unsubscribe). Open: in a
-message window, Restore, Not spam and removing a label act on the main window's thread.
+was checked as far as the browser call (clicking a real one would unsubscribe).
 Also: picking a row no longer moves it (nor the switch knob, nor the sidebar as it docks):
 no state adds or removes a border.
+
+## Message windows act on their own thread (2026-11-22)
+
+- [x] Restore, Not spam, remove label, Done, Trash: the window's thread, found by key and
+      account; the main window's selection and picks stay, nothing else is marked read
+- [x] Reply and attachments use the account the window was opened from
+- [x] Reply never takes over a message being written elsewhere
+- [x] Spam and Trash notes only for threads really there
+- [x] Reproduced with real clicks and keys on the build before; main window paths unchanged
+
+Open, found while auditing (not fixed): a row's right-click menu holds a position, so a
+refresh while it is open can shift it to another thread; Done (E) does nothing in All
+inboxes; Windows has no check that a link was clicked (and no build of it exists yet).

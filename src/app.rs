@@ -4887,8 +4887,15 @@ impl Nimbra {
                 self.done[index] = true;
             }
         }
-        self.picked.clear();
-        self.selected = self.visible().first().copied().unwrap_or(0);
+        // Asked from a message window, it need not be what is picked or shown here.
+        self.picked.retain(|i| !self.done[*i]);
+        if self.picked.len() < 2 {
+            self.picked.clear();
+        }
+        let visible = self.visible();
+        if !visible.contains(&self.selected) {
+            self.selected = visible.first().copied().unwrap_or(0);
+        }
         self.load_selected(cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -5268,6 +5275,7 @@ impl Nimbra {
                 return;
             }
         }
+        let account = self.account_of(&mail).to_string();
         let owner = cx.entity();
         let original = self.settings.original_view;
         let offset = self.message_windows.len() as f32 * 24.;
@@ -5295,7 +5303,7 @@ impl Nimbra {
                         let handle = window.window_handle();
                         guard.update(cx, |n, cx| n.may_close_window(handle, cx))
                     });
-                    cx.new(|cx| MessageWindow::new(owner, mail, original, cx))
+                    cx.new(|cx| MessageWindow::new(owner, mail, account, original, cx))
                 },
             );
             if let Ok(handle) = opened {
@@ -5761,11 +5769,35 @@ impl Nimbra {
     }
 
     /// Takes a label off the open thread.
-    fn remove_label(&mut self, label_id: String, cx: &mut Context<Self>) {
-        if self.is_foreign(self.selected) {
+    /// The account a thread is from (`None` on a mail means the one shown).
+    fn account_of<'a>(&'a self, mail: &'a Mail) -> &'a str {
+        mail.account.as_deref().unwrap_or(&self.account_id)
+    }
+
+    /// Where a thread is in the open mailbox's list.
+    fn row_of(&self, key: &str, account: &str) -> Option<usize> {
+        self.mails
+            .iter()
+            .position(|m| message_window::key_of(m) == key && self.account_of(m) == account)
+    }
+
+    /// The same, for acting on it: it has to still be listed, or a notice says why not.
+    /// Whatever a message window does starts here, not from `selected`, which is only what
+    /// the main window shows.
+    fn row_to_act_on(&mut self, key: &str, account: &str, cx: &mut Context<Self>) -> Option<usize> {
+        let row = self.row_of(key, account).filter(|i| !self.done[*i]);
+        if row.is_none() {
+            self.notice = Some("This conversation is no longer in the open mailbox.".into());
+            cx.notify();
+        }
+        row
+    }
+
+    fn remove_label(&mut self, index: usize, label_id: String, cx: &mut Context<Self>) {
+        if self.is_foreign(index) {
             return;
         }
-        let Some(mail) = self.mails.get_mut(self.selected) else {
+        let Some(mail) = self.mails.get_mut(index) else {
             return;
         };
         mail.labels.retain(|id| *id != label_id);
@@ -6144,25 +6176,15 @@ impl Nimbra {
     /// Downloads an attachment, then either previews it with Quick Look (from a private
     /// temporary folder) or saves it to Downloads and shows it in Finder. Nothing is opened
     /// with another app automatically.
-    fn fetch_attachment(&mut self, att: gmail::Attachment, save: bool, cx: &mut Context<Self>) {
-        // The attachment's own conversation, for its account.
-        let row = self
-            .mails
-            .iter()
-            .position(|m| {
-                m.header
-                    .attachments
-                    .iter()
-                    .any(|a| a.message_id == att.message_id)
-                    || m.earlier.iter().any(|e| {
-                        e.header
-                            .attachments
-                            .iter()
-                            .any(|a| a.message_id == att.message_id)
-                    })
-            })
-            .unwrap_or(self.selected);
-        let Some(client) = self.client_at(row) else {
+    fn fetch_attachment(
+        &mut self,
+        att: gmail::Attachment,
+        account: Option<&str>,
+        save: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // Through the account of the conversation it is in.
+        let Some(client) = self.client_for(account) else {
             self.notice = Some("Attachments need a connected Gmail account.".into());
             cx.notify();
             return;
@@ -8218,7 +8240,32 @@ impl Nimbra {
 
     /// `E`: archive from the inbox, or move back to the inbox from Done.
     fn mark_done(&mut self, cx: &mut Context<Self>) {
-        let change = match self.mailbox {
+        let Some(change) = self.done_change() else {
+            return;
+        };
+        if self.mailbox == View::Snoozed {
+            self.forget_snoozes(&self.targets(), cx);
+        }
+        self.remove_selected(change, cx);
+    }
+
+    /// Done from a message window. Whether it was done.
+    fn done_thread(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
+        let Some(change) = self.done_change() else {
+            self.notice = Some("Done is not available in the mailbox that is open.".into());
+            cx.notify();
+            return false;
+        };
+        if self.mailbox == View::Snoozed {
+            self.forget_snoozes(&[index], cx);
+        }
+        self.remove_thread(index, change, cx);
+        true
+    }
+
+    /// What Done does in the open mailbox.
+    fn done_change(&self) -> Option<gmail::Change> {
+        Some(match self.mailbox {
             View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social => {
                 gmail::Change::Archive
             }
@@ -8226,19 +8273,33 @@ impl Nimbra {
             View::Spam => gmail::Change::NotSpam,
             View::Trash => gmail::Change::Untrash,
             // Back to the inbox now, instead of at the snooze time.
-            View::Snoozed => {
-                let threads: Vec<String> = self
-                    .targets()
-                    .iter()
-                    .filter_map(|i| self.mails[*i].id.clone())
-                    .collect();
-                self.snoozed.retain(|s| !threads.contains(&s.thread_id));
-                self.save_snoozed(cx);
-                gmail::Change::Unarchive
-            }
-            _ => return,
+            View::Snoozed => gmail::Change::Unarchive,
+            _ => return None,
+        })
+    }
+
+    fn forget_snoozes(&mut self, rows: &[usize], cx: &mut Context<Self>) {
+        let threads: Vec<String> = rows
+            .iter()
+            .filter_map(|i| self.mails[*i].id.clone())
+            .collect();
+        self.snoozed.retain(|s| !threads.contains(&s.thread_id));
+        self.save_snoozed(cx);
+    }
+
+    /// Trash from a message window (in Trash: asks before deleting forever). Whether it
+    /// was taken on.
+    fn trash_thread(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
+        if self.mailbox != View::Trash {
+            self.remove_thread(index, gmail::Change::Trash, cx);
+            return true;
+        }
+        let Some(id) = self.mails[index].id.clone() else {
+            return false;
         };
-        self.remove_selected(change, cx);
+        self.confirm = Some(Ask::DeleteForever(vec![id]));
+        cx.notify();
+        true
     }
 
     /// Moves the open thread to Gmail's trash (kept for 30 days, and undoable with `Z`).
@@ -8267,11 +8328,27 @@ impl Nimbra {
             return;
         }
         self.picked.clear();
-        let visible = self.visible();
-        let Some(pos) = visible.iter().position(|i| *i == self.selected) else {
+        if !self.visible().contains(&self.selected) {
             return;
-        };
-        let index = self.selected;
+        }
+        self.remove_row(self.selected, change, cx);
+        self.open_selected(cx);
+    }
+
+    /// The same from a message window. The main window keeps what it shows and what is
+    /// picked; only if it showed this thread does it move on, and the thread it moves to is
+    /// not marked read, as nobody opened it.
+    fn remove_thread(&mut self, index: usize, change: gmail::Change, cx: &mut Context<Self>) {
+        let shown = index == self.selected;
+        self.remove_row(index, change, cx);
+        if shown {
+            self.load_selected(cx);
+        }
+    }
+
+    /// Takes one thread off the list and sends the change. Opens nothing.
+    fn remove_row(&mut self, index: usize, change: gmail::Change, cx: &mut Context<Self>) {
+        let visible = self.visible();
         if self.mails[index].unread {
             self.adjust_counts(index, Self::count_change(change));
         }
@@ -8281,14 +8358,19 @@ impl Nimbra {
         if let Some(id) = self.mails[index].id.clone() {
             self.removed_by.insert(id, change);
         }
-        if let Some(next) = visible
-            .get(pos + 1)
-            .or(pos.checked_sub(1).map(|p| &visible[p]))
+        if index == self.selected
+            && let Some(pos) = visible.iter().position(|i| *i == index)
+            && let Some(next) = visible
+                .get(pos + 1)
+                .or(pos.checked_sub(1).map(|p| &visible[p]))
         {
             self.selected = *next;
         }
+        self.picked.remove(&index);
+        if self.picked.len() < 2 {
+            self.picked.clear();
+        }
         self.sync(index, change, true, cx);
-        self.open_selected(cx);
         self.offer_undo(
             match change {
                 gmail::Change::Trash => "Moved to trash",
@@ -10768,6 +10850,7 @@ impl Nimbra {
                                                                             t,
                                                                             &e.header.attachments,
                                                                             (k + 1) * 100,
+                                                                            m.account.as_deref(),
                                                                             cx,
                                                                         )
                                                                         .pl(px(40.)),
@@ -10789,8 +10872,14 @@ impl Nimbra {
                                 ))
                                 .when(!m.header.attachments.is_empty(), |d| {
                                     d.child(
-                                        self.attachment_row(t, &m.header.attachments, 0, cx)
-                                            .pl(px(40.)),
+                                        self.attachment_row(
+                                            t,
+                                            &m.header.attachments,
+                                            0,
+                                            m.account.as_deref(),
+                                            cx,
+                                        )
+                                        .pl(px(40.)),
                                     )
                                 })
                                 .when(m.rich, |d| {
@@ -11375,6 +11464,7 @@ impl Nimbra {
         t: &Theme,
         attachments: &[gmail::Attachment],
         base: usize,
+        account: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Div {
         div()
@@ -11383,6 +11473,8 @@ impl Nimbra {
             .gap(px(10.))
             .children(attachments.iter().enumerate().map(|(i, att)| {
                 let (preview, save) = (att.clone(), att.clone());
+                let from = account.map(str::to_string);
+                let save_from = from.clone();
                 let kind = att
                     .name
                     .rsplit('.')
@@ -11434,7 +11526,7 @@ impl Nimbra {
                             .press(t)
                             .tooltip(tip(t.dark, "Quick Look", ""))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.fetch_attachment(preview.clone(), false, cx)
+                                this.fetch_attachment(preview.clone(), from.as_deref(), false, cx)
                             }))
                     })
                     .child({
@@ -11453,7 +11545,7 @@ impl Nimbra {
                                 "",
                             ))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.fetch_attachment(save.clone(), true, cx)
+                                this.fetch_attachment(save.clone(), save_from.as_deref(), true, cx)
                             }))
                     })
             }))
@@ -11466,10 +11558,22 @@ impl Nimbra {
         // in that mailbox (or no longer in the inbox) gets the banner.
         let has = |l: &str| mail.labels.iter().any(|x| x == l);
         let inbox = has("INBOX");
-        let spam = self.mailbox == View::Spam || (has("SPAM") && !inbox);
-        let trash = self.mailbox == View::Trash || (has("TRASH") && !inbox);
+        let key = message_window::key_of(mail);
+        let account = self.account_of(mail).to_string();
+        // The open mailbox says where a thread is only if the thread is in its list: a
+        // message window can show one from another mailbox or account.
+        let listed = self.row_of(&key, &account).is_some();
+        let spam = (listed && self.mailbox == View::Spam) || (has("SPAM") && !inbox);
+        let trash = (listed && self.mailbox == View::Trash) || (has("TRASH") && !inbox);
         let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
-        let labels = self.thread_labels(mail);
+        // Label ids are each account's own: another account's would get the wrong names.
+        let labels = if account == self.account_id {
+            self.thread_labels(mail)
+        } else {
+            Vec::new()
+        };
+        let thread = (key, account);
+        let (restore, not_spam) = (thread.clone(), thread.clone());
         div()
             .flex()
             .flex_col()
@@ -11483,6 +11587,7 @@ impl Nimbra {
                         .children(labels.into_iter().map(|(index, label)| {
                             let hover = t.hover;
                             let id = label.id.clone();
+                            let (key, account) = thread.clone();
                             div()
                                 .flex()
                                 .items_center()
@@ -11515,7 +11620,11 @@ impl Nimbra {
                                         .tooltip(tip(t.dark, "Remove label", ""))
                                         .child("×")
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.remove_label(id.clone(), cx)
+                                            if let Some(row) =
+                                                this.row_to_act_on(&key, &account, cx)
+                                            {
+                                                this.remove_label(row, id.clone(), cx)
+                                            }
                                         })),
                                 )
                         })),
@@ -11543,8 +11652,11 @@ impl Nimbra {
                             button(t, ButtonKind::Secondary, "Restore", None)
                                 .id("restore")
                                 .press_soft()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.remove_selected(gmail::Change::Untrash, cx)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let (key, account) = &restore;
+                                    if let Some(row) = this.row_to_act_on(key, account, cx) {
+                                        this.remove_thread(row, gmail::Change::Untrash, cx)
+                                    }
                                 })),
                         ),
                 )
@@ -11569,8 +11681,11 @@ impl Nimbra {
                             button(t, ButtonKind::Secondary, "Not spam", None)
                                 .id("not-spam")
                                 .press_soft()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.remove_selected(gmail::Change::NotSpam, cx)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let (key, account) = &not_spam;
+                                    if let Some(row) = this.row_to_act_on(key, account, cx) {
+                                        this.remove_thread(row, gmail::Change::NotSpam, cx)
+                                    }
                                 })),
                         ),
                 )
@@ -11682,7 +11797,7 @@ impl Nimbra {
                 }),
             )
             .when(!m.header.attachments.is_empty(), |d| {
-                d.child(self.attachment_tray(t, &m.header.attachments, cx))
+                d.child(self.attachment_tray(t, &m.header.attachments, m.account.as_deref(), cx))
             })
     }
 
@@ -11691,6 +11806,7 @@ impl Nimbra {
         &self,
         t: &Theme,
         attachments: &[gmail::Attachment],
+        account: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Div {
         let total: u64 = attachments.iter().map(|a| a.size).sum();
@@ -11725,7 +11841,7 @@ impl Nimbra {
                     )
                     .child(meta(format!("· {}", file_size(total)), t.text3)),
             )
-            .child(self.attachment_row(t, attachments, 0, cx))
+            .child(self.attachment_row(t, attachments, 0, account, cx))
     }
 
     /// The Labels or More menu, dropped under its toolbar button.
