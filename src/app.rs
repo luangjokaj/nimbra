@@ -9822,6 +9822,9 @@ fn short(text: &str, max: usize) -> SharedString {
 }
 
 const SIDEBAR_W: f32 = 236.;
+const NAV_RADIUS: f32 = 8.;
+/// Between the search field and the first row under it.
+const SEARCH_GAP: f32 = 10.;
 /// The sidebar's row of window controls. Nothing scrolls into it, so nothing shows through
 /// the buttons or outside the floating panel's round corners.
 const SIDEBAR_TOP: f32 = 40.;
@@ -9991,16 +9994,18 @@ fn nav(
         .px(px(10.))
         .h(px(NAV_ROW))
         .flex_none()
-        .rounded(px(8.))
+        .rounded(px(NAV_RADIUS))
         .cursor_pointer()
         .when(selected, |d| {
-            d.bg(t.selected).font_weight(FontWeight::MEDIUM)
+            d.relative()
+                .font_weight(FontWeight::MEDIUM)
+                .child(active_pill(t))
         })
         .when(!selected, |d| d.hover(move |s| s.bg(hover)))
         .child(icon(
             name,
             16.,
-            tint.unwrap_or(if selected { t.violet } else { t.text2 }),
+            tint.unwrap_or(if selected { t.text } else { t.text2 }),
         ))
         .child(
             div()
@@ -10008,7 +10013,13 @@ fn nav(
                 .text_color(if selected { t.text } else { t.text2 })
                 .child(label.to_string()),
         )
-        .children(count.map(|n| mono(n, if selected { t.violet } else { t.text3 })))
+        // Not violet, nor is the icon: on glass over a bright desktop it cannot be seen.
+        .children(count.map(|n| mono(n, if selected { t.text } else { t.text3 })))
+}
+
+/// What is behind the sidebar's open row.
+fn active_pill(t: &Theme) -> impl IntoElement {
+    crate::erase::glass(NAV_RADIUS, t.sidebar, t.glass, t.glass_opacity)
 }
 
 fn card(t: &Theme) -> Div {
@@ -10248,9 +10259,9 @@ impl Nimbra {
                         .gap(px(10.))
                         .px(px(10.))
                         .h(px(30.))
-                        .rounded(px(8.))
+                        .rounded(px(NAV_RADIUS))
                         .cursor_pointer()
-                        .when(shown, |d| d.bg(t.selected))
+                        .when(shown, |d| d.relative().child(active_pill(t)))
                         .when(!shown, |d| d.hover(move |s| s.bg(hover)))
                         .press(t)
                         .child(avatar(crate::data::tone_for(&account.email), &initial, 18.))
@@ -10262,7 +10273,7 @@ impl Nimbra {
                                 .text_color(if shown { t.text } else { t.text2 })
                                 .child(account.email.clone()),
                         )
-                        .children(count.map(|n| meta(n, t.text3)))
+                        .children(count.map(|n| meta(n, if shown { t.text } else { t.text3 })))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if id == this.account_id {
                                 this.select_mailbox(View::Inbox, cx);
@@ -10368,6 +10379,7 @@ impl Nimbra {
                             self.mailbox == View::AllInboxes,
                             None,
                         )
+                        .mt(px(SEARCH_GAP))
                         .id("all-inboxes")
                         .press(t)
                         .on_click(

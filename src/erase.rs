@@ -15,7 +15,7 @@
 
 use gpui::{
     Bounds, Hsla, IntoElement, PathBuilder, Pixels, ScrollHandle, Styled, UnderlineStyle, canvas,
-    point, px, size,
+    fill, point, px, size,
 };
 
 /// Has to run before the first window opens, as each builds its pipelines then.
@@ -103,6 +103,33 @@ pub fn fade(height: f32, clear: f32, material: Hsla, scroll: ScrollHandle) -> im
     .left_0()
     .right_0()
     .h(px(height))
+}
+
+/// A rounded pane on `material` that is more see-through than it, in the colour `tint`:
+/// `opacity` is what it comes out at. A tinted quad alone comes out opaque, as GPUI adds its
+/// alpha to the material's, and the blur behind is lost.
+pub fn glass(radius: f32, material: Hsla, tint: Hsla, opacity: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            window.paint_layer(bounds, |window| {
+                if let Some(path) = shape(bounds, radius) {
+                    let a = thinned(material.a, tint.a, opacity);
+                    window.paint_path(path, Hsla { a, ..material });
+                }
+            });
+            window.paint_layer(bounds, |window| {
+                window.paint_quad(fill(bounds, tint).corner_radii(px(radius)));
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// How much to erase so that `added`, which is added, brings it to `opacity`.
+fn thinned(material: f32, added: f32, opacity: f32) -> f32 {
+    (1. - (opacity - added) / material).clamp(0., 1.)
 }
 
 /// How much of what is under the fade is hidden, `at` of the way down it: eased at both ends.
@@ -286,6 +313,16 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glass_is_more_see_through_than_the_sidebar() {
+        for theme in [crate::theme::Theme::dark(), crate::theme::Theme::light()] {
+            let (material, tint) = (theme.sidebar.a, theme.glass.a);
+            let erased = thinned(material, tint, theme.glass_opacity);
+            assert!((material * (1. - erased) + tint - theme.glass_opacity).abs() < 1e-4);
+            assert!(theme.glass_opacity < material);
+        }
+    }
 
     #[test]
     fn the_fade_never_changes_the_material() {

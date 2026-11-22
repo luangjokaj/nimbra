@@ -30,6 +30,10 @@ pub struct Theme {
     pub raised: Hsla,
     pub hover: Hsla,
     pub selected: Hsla,
+    /// The open mailbox's pill in the sidebar, and how opaque it comes out: less than the
+    /// sidebar around it, so that more of the blurred desktop shows through.
+    pub glass: Hsla,
+    pub glass_opacity: f32,
     pub border: Hsla,
     pub border_strong: Hsla,
     pub text: Hsla,
@@ -56,6 +60,8 @@ impl Theme {
             raised: c(0x17171f, 1.),
             hover: c(0xffffff, 0.045),
             selected: c(0x8b7cff, 0.13),
+            glass: c(0xffffff, 0.12),
+            glass_opacity: 0.75,
             border: c(0xffffff, 0.07),
             border_strong: c(0xffffff, 0.13),
             text: c(0xf5f3ef, 1.),
@@ -82,6 +88,8 @@ impl Theme {
             raised: c(0xffffff, 1.),
             hover: c(0x000000, 0.035),
             selected: c(0x6e5cf6, 0.09),
+            glass: c(0x000000, 0.07),
+            glass_opacity: 0.78,
             border: c(0x000000, 0.07),
             border_strong: c(0x000000, 0.12),
             text: c(0x17161c, 1.),

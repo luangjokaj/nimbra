@@ -384,3 +384,11 @@ that try to make a tab show stale mail pass. Not checked: real Gmail's counts an
 Found, left open:
 - [ ] Done left open does not update by itself (it would drop the pages scrolled to)
 - [ ] The rows kept to save units are memory only: Done is read again after a relaunch
+
+## The sidebar's open row (2026-11-22)
+
+- [x] Room between the search field and All inboxes
+- [x] The open row is glass: more see-through than the sidebar, a neutral contrasting tint
+
+Review: captured with the real alpha and composited over dark, grey, coloured and white
+desktops, both themes, floating. Not seen on a real blurred desktop.
