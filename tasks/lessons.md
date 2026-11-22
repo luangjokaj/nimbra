@@ -81,3 +81,14 @@
   (`checking::within`) and a failed state. Never put that deadline on a send.
 - A request made from `render` (the next page) stops after a failure, or it loops.
 - Test an async change by switching away while it runs, and back.
+
+## Sending and sign-in
+
+- Only a revoked refresh token signs out (and wipes). A 401 is renewed and tried once more.
+- Expiry is wall-clock time: `Instant` stands still while the Mac sleeps.
+- A send is retried by itself only when it certainly never left (`gmail::never_left`). A
+  timeout is not that.
+- What must survive quitting is on disk before it starts, and is removed by the thread that
+  finishes it: the main thread's continuation does not run while quitting.
+- Test the network layer against a local HTTP fake. Stubbed `Client` methods hide its bugs.
+- Every retry loop has a pause on every failing path: count the requests in the test.

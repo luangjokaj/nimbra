@@ -14,6 +14,7 @@ mod inspiration;
 mod listing;
 mod notify;
 mod rich;
+mod sending;
 mod settings;
 mod store;
 mod system;

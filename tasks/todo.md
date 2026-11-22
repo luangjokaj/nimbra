@@ -270,7 +270,7 @@ motion, Done, Trash, refused change, composer open, a send and a discard held th
 Screens with the sidebar open and hidden, and the longest line at the minimum window.
 
 Found, left open (older than this):
-- [ ] A message is lost from sending if Nimbra quits within the undo delay (reproduced:
+- [x] A message is lost from sending if Nimbra quits within the undo delay (reproduced:
       never sent, nothing said). Switching account clears it too (read in `reset_account`,
       not run).
 
@@ -292,10 +292,35 @@ a refused message and page, sign-out, offline, expired history). Random switchin
 clicking Try again (its load was run).
 
 Found, left open (read in the code, not run):
-- [ ] The access token's expiry is an `Instant`, which stands still while the Mac sleeps:
+- [x] The access token's expiry is an `Instant`, which stands still while the Mac sleeps:
       after a long sleep an expired token is used, the 401 counts as signed out, and the
       mail kept on this Mac is wiped. A 401 should refresh the token and try once more.
-- [ ] `went_offline`'s loop can end with `retrying` still set (no connection during an
+- [x] `went_offline`'s loop can end with `retrying` still set (no connection during an
       account switch): offline is then never retried.
 - [ ] A keychain read that never answers leaves the skeleton up (no timeout on purpose:
       it can be waiting for the password prompt).
+
+## Expired tokens, lost sends, stuck reconnect (2026-11-22)
+
+- [x] All three reproduced against the real client and a fake Gmail on localhost
+- [x] A refused access token is renewed and tried once more; only a revoked sign-in signs out
+- [x] A message is on disk from Send until Gmail has it; quitting sends what waits
+- [x] A send, and the offline queue, stay with their account across a switch
+- [x] One reconnect loop, which always lets go of its flag
+- [x] The same cases rerun on the change
+- [x] Only a request that never left is sent again by itself; offline mail uses the same
+      records (an older version's queue is moved over)
+- [x] A failed first mail check waits 15 seconds (it was retried with no pause at all)
+
+Review: 61 end-to-end cases against the real client and a fake Gmail on localhost, the
+loading cases again, 25 random switching runs. Not checked: real Gmail, a real sleep, logging
+out of macOS, Windows, two real accounts.
+
+Found, left open (read in the code, not run):
+- [ ] A keychain read that fails (denied, locked) makes a new store key and deletes that
+      account's store (`load_or_create_key`), unsent mail included. It should only make a
+      key when there is none.
+- [ ] Quitting does not wait for a draft save or a Done/Trash that is on its way, and does
+      not ask about a message still being written.
+- [ ] A scheduled send that finishes after a switch updates the other account's list.
+- [ ] A 5xx answer to a send reads as "Not sent", though Gmail may have sent it.
