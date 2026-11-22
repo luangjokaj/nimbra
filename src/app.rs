@@ -24,6 +24,9 @@ use crate::webview::HtmlView;
 mod message_window;
 use message_window::MessageWindow;
 
+#[path = "skeleton.rs"]
+mod skeleton;
+
 #[path = "settings_window.rs"]
 mod settings_window;
 use settings_window::SettingsWindow;
@@ -11199,111 +11202,6 @@ impl Nimbra {
                         })),
                 )
             }))
-    }
-
-    /// Placeholder rows that pulse in a wave while a mailbox is being fetched, laid out
-    /// like the real list and reading pane so nothing jumps when the mail arrives.
-    fn skeleton(&self, t: &Theme) -> impl IntoElement {
-        let bar = |width: f32, height: f32| {
-            div()
-                .w(px(width))
-                .h(px(height))
-                .flex_none()
-                .rounded(px(height / 2.))
-                .bg(t.border_strong)
-        };
-        // Each item breathes on the same clock, offset by `phase` so the pulse travels down.
-        let pulse = |key: usize, phase: f32, element: Div| {
-            element.with_animation(
-                ("skeleton", key),
-                Animation::new(Duration::from_millis(1400))
-                    .repeat()
-                    .with_easing(move |delta| {
-                        (((delta - phase) * std::f32::consts::TAU).sin() + 1.) / 2.
-                    }),
-                |element, glow| element.opacity(0.35 + 0.65 * glow),
-            )
-        };
-        let rows = (0..9).map(|i| {
-            let wide = [0.9, 0.7, 0.82, 0.6, 0.76, 0.88, 0.66, 0.8, 0.72][i];
-            pulse(
-                i,
-                i as f32 * 0.09,
-                div()
-                    .flex()
-                    .gap(px(ROW_PAD))
-                    .pl(px(LIST_LEFT))
-                    .pr(px(ROW_PAD))
-                    .py(px(13.))
-                    .child(
-                        div()
-                            .size(px(28.))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(t.border_strong),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(9.))
-                            .pt(px(4.))
-                            .child(bar(120. + 60. * wide, 10.))
-                            .child(bar(330. * wide, 9.)),
-                    ),
-            )
-        });
-        let lines = [
-            1.0, 0.94, 0.97, 0.6, 0.0, 0.98, 0.9, 0.95, 0.72, 0.0, 0.96, 0.5,
-        ];
-
-        div()
-            .flex()
-            .flex_1()
-            .min_w(px(0.))
-            .h_full()
-            .bg(t.surface)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .w(px(self.list_width))
-                    .h_full()
-                    .border_r_1()
-                    .border_color(t.border)
-                    // As tall as the list's header and the strip under it.
-                    .child(div().flex_none().h(px(TOP_BAR + 1.)))
-                    .children(rows),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .gap(px(14.))
-                    .px(px(64.))
-                    .pt(px(96.))
-                    .child(pulse(100, 0., div().child(bar(420., 30.))))
-                    .child(pulse(101, 0.08, div().pb(px(18.)).child(bar(220., 10.))))
-                    .children(
-                        lines
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, width): (usize, f32)| {
-                                pulse(
-                                    110 + i,
-                                    0.16 + i as f32 * 0.05,
-                                    div().child(if width == 0. {
-                                        div().h(px(8.))
-                                    } else {
-                                        bar(560. * width, 9.)
-                                    }),
-                                )
-                            }),
-                    ),
-            )
     }
 
     /// Shown while an email's content is on its way.

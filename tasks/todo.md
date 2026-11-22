@@ -236,3 +236,8 @@ logged instead of done. Not checked: two real accounts, Windows at run time.
 
 - [x] Auto-hide is kept over restarts; full view does not count as choosing it; saving is
       in order and survives quitting straight after
+
+## Loading screen (2026-11-22)
+
+- [x] The mail screen's own layout in ink: real bars dimmed, rows and an email that could be
+      real, a wave of light; nothing moves when the mail arrives
