@@ -1017,6 +1017,9 @@ pub struct Nimbra {
     /// The last All inboxes listing had every account's whole Inbox: each was reached and
     /// none had a second page. Only then does empty mean Inbox Zero there.
     all_inboxes_whole: bool,
+    /// All inboxes is being listed for the first time, and every account's Inbox was empty
+    /// when last saved: what to draw until it is listed.
+    all_inboxes_saved_empty: bool,
     /// Inbox Zero coming up, on a launch that opens on it.
     arrival: Option<Arrival>,
     /// The message whose full header (all recipients, date) is expanded: thread id and
@@ -1365,6 +1368,7 @@ impl Nimbra {
         let mut this = Self {
             inbox_saved_empty: false,
             all_inboxes_whole: false,
+            all_inboxes_saved_empty: false,
             arrival: None,
             finder_open: false,
             finder,
@@ -1663,12 +1667,27 @@ impl Nimbra {
         }
     }
 
-    /// The store is still opening, and the Inbox it holds is an empty one.
+    /// Still loading what was empty when it was last saved.
     fn opening_to_zero(&self) -> bool {
         self.status == Status::Loading
-            && self.store.is_none()
-            && self.mailbox == View::Inbox
-            && self.inbox_saved_empty
+            && match self.mailbox {
+                View::Inbox => self.store.is_none() && self.inbox_saved_empty,
+                View::AllInboxes => self.all_inboxes_saved_empty,
+                _ => false,
+            }
+    }
+
+    /// Whether mail is known to be in some account's Inbox, whatever All inboxes last had.
+    fn inbox_has_mail(&self) -> bool {
+        let here = self
+            .cache
+            .get(&View::Inbox)
+            .is_some_and(|mails| !mails.is_empty());
+        let elsewhere = self
+            .account_unread
+            .iter()
+            .any(|(id, unread)| *id != self.account_id && *unread > 0);
+        here || elsewhere
     }
 
     /// Saves the Inbox as soon as it empties or stops being empty. Waiting for the next
@@ -2391,6 +2410,13 @@ impl Nimbra {
             // Show what we already have for this mailbox, then refresh it quietly.
             // A mailbox seen before (this session or on disk) shows at once, even when it
             // was empty: "Nothing in …" is known, so there is no loading screen for it.
+            // An empty All inboxes is out of date once mail has been seen in an Inbox.
+            if view == View::AllInboxes
+                && self.cache.get(&view).is_some_and(Vec::is_empty)
+                && self.inbox_has_mail()
+            {
+                self.cache.remove(&view);
+            }
             let known = match self.cache.get(&view) {
                 Some(mails) => Some(mails.clone()),
                 // Not visited this session: start from what is stored on disk.
@@ -3463,10 +3489,34 @@ impl Nimbra {
                 .unwrap_or_else(|| self.account_id.clone());
             composer.account = (from != id).then_some(from);
         }
+        // All inboxes is the same whichever account is shown: it outlives a switch, so that
+        // it does not load again each time. Not for an account being added (its mail is not
+        // in it), and without the mail of one signed out.
+        self.remember_mailbox();
+        let listed = |account: &str| self.settings.accounts.iter().any(|a| a.id == account);
+        let all_inboxes = self
+            .cache
+            .get(&View::AllInboxes)
+            .filter(|_| listed(&id))
+            .map(|mails| {
+                let kept: Vec<Mail> = mails
+                    .iter()
+                    .filter(|mail| mail.account.as_deref().is_some_and(listed))
+                    .cloned()
+                    .collect();
+                (kept, self.all_inboxes_whole)
+            });
+        // While it was shown its count was kept in `counts`: hand that on, or the sidebar
+        // and the Dock go back to the number from before it was shown.
+        if listed(&self.account_id)
+            && let Some((unread, _)) = self.counts.get("INBOX")
+        {
+            self.account_unread.insert(self.account_id.clone(), *unread);
+        }
         self.account_gen += 1;
         // The account shown so far stays connected (All inboxes, new-mail checks).
+        // The first account's id is "": it is an account like the others.
         if let Some(client) = self.gmail.take()
-            && !self.account_id.is_empty()
             && self
                 .settings
                 .accounts
@@ -3528,6 +3578,10 @@ impl Nimbra {
         self.me_photo = None;
         self.photo_not_allowed = false;
         self.photo_gen = None;
+        if let Some((mails, whole)) = all_inboxes {
+            self.cache.insert(View::AllInboxes, mails);
+            self.all_inboxes_whole = whole;
+        }
         self.pending_focus = Some(self.focus.clone());
         cx.notify();
     }
@@ -3682,6 +3736,11 @@ impl Nimbra {
         }
         if self.mails.is_empty() && !self.cache.contains_key(&View::AllInboxes) {
             self.status = Status::Loading;
+            // As when Nimbra opens: what was saved picks what to draw until Gmail answers.
+            self.all_inboxes_saved_empty = !self.inbox_has_mail()
+                && self.settings.accounts.iter().all(|account| {
+                    crate::store::Store::saved_empty(&account.id, &record(View::Inbox))
+                });
         }
         let check = self.checks.start(View::AllInboxes, "");
         let seen = Asked::now(self.changes_seen());

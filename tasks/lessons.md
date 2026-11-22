@@ -125,3 +125,6 @@
 
 - A control renamed to a thing opens that thing. Asked to call a row Settings, I left its
   menu in place and only asked about it: the user had to come back for it.
+- The first account's id is "". Never test an id with `is_empty` for "no account".
+- Test a screen that is shared by the accounts (All inboxes) across an account switch, and
+  sample what is drawn while it loads: the state after it settles hid a skeleton.

@@ -402,3 +402,9 @@ desktops, both themes, floating. Not seen on a real blurred desktop.
 
 - [x] The night sky there too, with "Your inboxes are empty."
 - [x] Only when every account was reached and none has more than is listed
+
+## All inboxes after switching accounts (2026-11-22)
+
+- [x] Its list outlives a switch (it loaded again, behind the skeleton, after each one)
+- [x] The first visit draws Inbox Zero when every account's Inbox was saved empty
+- [x] Switching away from the first account (id "") kept dropping its connection
