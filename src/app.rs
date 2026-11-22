@@ -1049,6 +1049,12 @@ pub struct Nimbra {
     last_frame: Option<std::time::Instant>,
     /// When the sidebar last started opening or closing (to keep the email still meanwhile).
     sidebar_toggled: Option<std::time::Instant>,
+    /// The hidden sidebar, floating in from the window's edge (see `autohide`).
+    peek: crate::autohide::Peek,
+    /// The floating panel's left edge when it was docked: it slides to its place from there.
+    docked_from: Option<f32>,
+    /// The pointer is being watched for the hidden sidebar.
+    watching_edge: bool,
     /// Full view: the sidebar and list were hidden by a double-click (or Return); this is
     /// whether each was open before, to put them back.
     focus_restore: Option<(bool, bool)>,
@@ -1193,7 +1199,6 @@ pub struct Nimbra {
     /// The strip is closing after a finished check: it says "Done" on the way up.
     pull_done: bool,
     /// Bumped on every toggle / reload so the matching animation replays.
-    sidebar_gen: usize,
     reload_gen: usize,
     /// Remote images the user asked to load, by URL. Nothing is fetched before that.
     images: HashMap<String, Arc<gpui::Image>>,
@@ -1290,6 +1295,9 @@ impl Nimbra {
             notice_gen: 0,
             focus_restore: None,
             sidebar_toggled: None,
+            peek: crate::autohide::Peek::new(),
+            docked_from: None,
+            watching_edge: false,
             frame_interval: std::cell::Cell::new(1. / 60.),
             last_frame: None,
             folding: HashMap::new(),
@@ -1411,7 +1419,6 @@ impl Nimbra {
             pull_hold: false,
             pull_done: false,
             sidebar_open: std::env::var("NIMBRA_SIDEBAR").as_deref() != Ok("closed"),
-            sidebar_gen: 0,
             reload_gen: 0,
             images: HashMap::new(),
             image_requests: HashSet::new(),
@@ -4215,6 +4222,19 @@ impl Nimbra {
             self.html_shown = Some(wanted);
         }
         view.set_visible(true);
+        // The web view is above all the app draws, so the floating sidebar gets a hole in
+        // it, a frame ahead while it moves (see `pane_lead`).
+        let ahead = if self.peek.moving() || self.sidebar_sliding() {
+            self.frame_interval.get()
+        } else {
+            0.
+        };
+        let height = f32::from(window.viewport_size().height);
+        view.set_hole(
+            self.sidebar_place(ahead)
+                .filter(|place| place.inset > 0.)
+                .map(|place| (place.x, place.inset, SIDEBAR_W, height - 2. * place.inset)),
+        );
     }
 
     fn set_hint(
@@ -5088,7 +5108,7 @@ impl Nimbra {
                 _ => size * to,
             }
         };
-        let side_now = part(self.sidebar_open, self.sidebar_toggled, 236.);
+        let side_now = part(self.sidebar_open, self.sidebar_toggled, SIDEBAR_W);
         let list_now = part(self.list_open, self.list_toggled, self.list_width);
         let end = if self.sidebar_open { 236. } else { 0. }
             + if self.list_open { self.list_width } else { 0. };
@@ -8026,44 +8046,128 @@ impl Nimbra {
     }
 
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        // Opened while it floats: it docks from where it is. Shut: away until the edge is
+        // reached again, though the pointer is still on it.
+        self.docked_from = self
+            .sidebar_place(0.)
+            .filter(|place| !self.sidebar_open && place.inset > 0.)
+            .map(|place| place.x);
+        self.peek.reset();
         self.sidebar_open = !self.sidebar_open;
         self.sidebar_toggled = Some(std::time::Instant::now());
         if self.sidebar_open {
             self.focus_restore = None;
         }
-        self.sidebar_gen += 1;
         cx.notify();
     }
 
-    /// Runs `apply` with how open the sidebar is (0 = hidden, 1 = shown), animating
-    /// towards the current state after a toggle.
-    fn with_sidebar_progress<E: IntoElement + 'static>(
-        &self,
-        key: &'static str,
-        element: E,
-        apply: impl Fn(E, f32) -> E + 'static,
-    ) -> AnyElement {
-        let (from, to) = if self.sidebar_open {
-            (0., 1.)
-        } else {
-            (1., 0.)
-        };
-        // Only while the sidebar is actually sliding. Without this an element that is drawn
-        // again later (the list, each time it opens) would replay the old slide.
-        let sliding = self
-            .sidebar_toggled
-            .is_some_and(|at| at.elapsed().as_secs_f32() < PANEL_SLIDE_SECONDS);
-        if self.sidebar_gen == 0 || !sliding {
-            return apply(element, to).into_any_element();
+    fn sidebar_sliding(&self) -> bool {
+        self.sidebar_toggled
+            .is_some_and(|at| at.elapsed().as_secs_f32() < PANEL_SLIDE_SECONDS)
+    }
+
+    /// Where the sidebar is drawn `ahead` seconds from now: docked, sliding, floating over
+    /// the content, or (`None`) nowhere.
+    fn sidebar_place(&self, ahead: f32) -> Option<SidebarPlace> {
+        let sliding = self.sidebar_sliding();
+        if self.sidebar_open || sliding {
+            if sliding
+                && self.sidebar_open
+                && let (Some(from), Some(at)) = (self.docked_from, self.sidebar_toggled)
+            {
+                let left =
+                    1. - panel_ease((at.elapsed().as_secs_f32() + ahead) / PANEL_SLIDE_SECONDS);
+                return Some(SidebarPlace {
+                    x: from * left,
+                    inset: FLOAT_INSET * left,
+                });
+            }
+            let width = self.sidebar_width(ahead);
+            return (width > 0.).then_some(SidebarPlace {
+                x: width - SIDEBAR_W,
+                inset: 0.,
+            });
         }
-        element
-            .with_animation(
-                (key, self.sidebar_gen),
-                Animation::new(Duration::from_secs_f32(PANEL_SLIDE_SECONDS))
-                    .with_easing(panel_ease),
-                move |element, delta| apply(element, from + (to - from) * delta),
-            )
-            .into_any_element()
+        let shown = self.peek.progress(ahead);
+        (shown > 0.).then_some(SidebarPlace {
+            x: FLOAT_INSET - (SIDEBAR_W + 2. * FLOAT_INSET) * (1. - shown),
+            inset: FLOAT_INSET,
+        })
+    }
+
+    /// The room the panes leave for the sidebar, following its slide.
+    fn sidebar_width(&self, ahead: f32) -> f32 {
+        let to = if self.sidebar_open { 1. } else { 0. };
+        match self
+            .sidebar_toggled
+            .map(|at| at.elapsed().as_secs_f32() + ahead)
+        {
+            Some(elapsed) if elapsed < PANEL_SLIDE_SECONDS => {
+                let from = 1. - to;
+                SIDEBAR_W * (from + (to - from) * panel_ease(elapsed / PANEL_SLIDE_SECONDS))
+            }
+            _ => SIDEBAR_W * to,
+        }
+    }
+
+    /// Something is drawn over the whole window, so the hidden sidebar stays away.
+    fn window_covered(&self) -> bool {
+        self.palette
+            || self.finder_open
+            || self.new_label.is_some()
+            || self.confirm.is_some()
+            || (self.compose.is_some() && self.compose_host.is_none())
+    }
+
+    /// While the sidebar is hidden, follows the pointer to bring it in and send it away.
+    fn watch_edge(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.sidebar_open || self.watching_edge {
+            return;
+        }
+        self.watching_edge = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let mut wait = Duration::from_millis(16);
+            loop {
+                cx.background_executor().timer(wait).await;
+                let Ok(next) = this.update_in(cx, |this, window, cx| this.look_at_edge(window, cx))
+                else {
+                    break;
+                };
+                match next {
+                    Some(next) => wait = next,
+                    None => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// One look at the pointer. Returns when to take the next, or `None` when done.
+    fn look_at_edge(&mut self, window: &Window, cx: &mut Context<Self>) -> Option<Duration> {
+        if self.sidebar_open {
+            self.watching_edge = false;
+            return None;
+        }
+        // An open menu is a window of its own, which takes the focus from this one.
+        let hold = self.menu_window.is_some();
+        let right = FLOAT_INSET + SIDEBAR_W;
+        let pointer = if self.sidebar_sliding() || self.window_covered() {
+            None
+        } else {
+            crate::autohide::pointer(window, right)
+        };
+        if self
+            .peek
+            .look(pointer, right, hold && !self.window_covered())
+        {
+            cx.notify();
+        }
+        // Nothing can happen while inactive except becoming active: look less often.
+        Some(Duration::from_millis(if window.is_window_active() {
+            16
+        } else {
+            250
+        }))
     }
 
     /// Checks for mail. With the sample data, everything that was cleared arrives again.
@@ -8520,6 +8624,23 @@ fn short(text: &str, max: usize) -> SharedString {
     }
 }
 
+const SIDEBAR_W: f32 = 236.;
+/// The gap around the sidebar while it floats over the content.
+const FLOAT_INSET: f32 = 6.;
+/// Its corners then. The hole it cuts in the email's web view is rounded the same.
+const FLOAT_RADIUS: f32 = 18.;
+/// How wide the frame is drawn that fills in around the floating panel: enough to reach the
+/// window's corners. Also how far the panel's shadow is drawn.
+const FLOAT_FRAME: f32 = 40.;
+
+/// Where the sidebar is drawn: its left edge, and its gap from the window's top and bottom
+/// (none when docked).
+#[derive(Clone, Copy)]
+struct SidebarPlace {
+    x: f32,
+    inset: f32,
+}
+
 /// How long the sidebar and the message list take to slide open or shut.
 const PANEL_SLIDE_SECONDS: f32 = 0.3;
 
@@ -8624,6 +8745,7 @@ impl Nimbra {
     fn window_controls(
         &self,
         t: &Theme,
+        x: f32,
         list_shown: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -8642,7 +8764,7 @@ impl Nimbra {
         div()
             .absolute()
             .top(px(11.))
-            .left(px(84.))
+            .left(px(x + 84.))
             .flex()
             .items_center()
             .gap(px(4.))
@@ -8768,7 +8890,7 @@ impl Nimbra {
             .child(meta(self.offline_label(), t.text2))
     }
 
-    fn sidebar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn sidebar(&self, t: &Theme, floating: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let left = self.visible().len();
         let unread = self
             .visible()
@@ -8897,15 +9019,16 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(236.))
+            .w(px(SIDEBAR_W))
             .h_full()
             // With several accounts it can be taller than the window: it scrolls.
             .overflow_y_scroll()
             .px(px(12.))
             .pb(px(14.))
-            .bg(t.sidebar)
-            .border_r_1()
-            .border_color(t.border)
+            // Floating, the panel around it has the colour and the outline.
+            .when(!floating, |d| {
+                d.bg(t.sidebar).border_r_1().border_color(t.border)
+            })
             // Space for the native traffic lights; dragging here moves the window.
             .child(
                 div()
@@ -9624,12 +9747,6 @@ impl Nimbra {
                         }),
                     ),
             )
-            // Makes room for the window controls while the sidebar is hidden.
-            .child(
-                self.with_sidebar_progress("list-top", div().flex_none(), |d, open| {
-                    d.h(px(34. * (1. - open)))
-                }),
-            )
             .child(
                 div()
                     .flex()
@@ -10160,9 +10277,8 @@ impl Nimbra {
                     .flex_none()
                     .items_center()
                     .gap(px(2.))
-                    // Clear of the window controls when nothing is to the left; this follows
-                    // the slide, so the toolbar glides instead of jumping.
-                    .pl(px((236. - self.pane_left()).max(20.)))
+                    // Nothing to clear: the window controls leave with the sidebar.
+                    .pl(px(20.))
                     .pr(px(20.))
                     .h(px(TOP_BAR))
                     .border_b_1()
@@ -10722,7 +10838,7 @@ impl Nimbra {
                             .flex_col()
                             .gap(px(4.))
                             .pl(px(24.))
-                            .pt(px(if self.sidebar_open { 19. } else { 53. }))
+                            .pt(px(19.))
                             .pb(px(29.))
                             .child(overline(self.inbox_name().to_uppercase(), t.text3)),
                     )
@@ -12931,6 +13047,34 @@ impl Render for Nimbra {
             self.pull_anim = Some((now, 0., std::time::Instant::now()));
             self.pull_gen += 1;
         }
+        self.watch_edge(window, cx);
+        let place = self.sidebar_place(0.);
+        // 1 while the sidebar floats, down to 0 as it docks.
+        let afloat = place.map_or(0., |place| place.inset / FLOAT_INSET);
+        // The floating panel is the docked sidebar's material, which is see-through to the
+        // blurred desktop. The window's blur is only of what is behind the window, so the
+        // content is not painted left of this line (the panel's right edge). Inbox Zero is
+        // left whole: it is all soft gradient there, which looks right through the tint.
+        let cut = afloat > 0.
+            && !(matches!(self.status, Status::Demo | Status::Ready)
+                && self.mailbox == View::Inbox
+                && self.visible().is_empty());
+        let edge = place.map_or(0., |place| (place.x + SIDEBAR_W).max(0.));
+        let clip = if cut { edge } else { 0. };
+        // The traffic lights travel with the sidebar. A full-page composer has room of its
+        // own for them in its header.
+        let full_compose = !composing_elsewhere && self.compose.as_ref().is_some_and(|c| c.full);
+        crate::autohide::place_traffic_lights(
+            window,
+            if full_compose {
+                Some(18.)
+            } else {
+                place.map(|place| 18. + place.x)
+            },
+        );
+        if self.peek.moving() || self.sidebar_sliding() {
+            window.request_animation_frame();
+        }
         let empty = self.visible().is_empty();
         let list_shown =
             !empty && self.list_open && matches!(self.status, Status::Demo | Status::Ready);
@@ -13086,36 +13230,149 @@ impl Render for Nimbra {
             .line_height(px(18.))
             .text_color(t.text)
             .child(
-                self.with_sidebar_progress(
-                    "sidebar-width",
-                    // The sidebar keeps its full width and slides behind the clip, so
-                    // nothing in it moves or re-wraps while it opens or closes.
-                    div()
-                        .flex()
-                        .justify_end()
-                        .flex_none()
-                        .h_full()
-                        .overflow_hidden()
-                        .child(self.sidebar(&t, cx)),
-                    |d, open| d.w(px(236. * open)),
-                ),
+                // Always these two wrappers (no ids), floating or not: the panes keep their
+                // element paths, so their scroll positions and their layout.
+                div()
+                    .absolute()
+                    .left(px(clip))
+                    .top_0()
+                    .w(px((viewport.0 - clip).max(0.)))
+                    .h(px(viewport.1))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(-clip))
+                            .top_0()
+                            .w(px(viewport.0))
+                            .h(px(viewport.1))
+                            .flex()
+                            // The room the docked sidebar takes. The sidebar itself is drawn
+                            // over it, so floating in does not move or re-wrap anything.
+                            .child(div().flex_none().h_full().w(px(self.sidebar_width(0.))))
+                            .map(|d| match self.status {
+                                Status::Demo | Status::Ready
+                                    if empty && self.mailbox == View::Inbox =>
+                                {
+                                    d.child(self.zero(&t))
+                                }
+                                Status::Demo | Status::Ready if empty => {
+                                    d.child(self.empty_mailbox(&t))
+                                }
+                                Status::Demo | Status::Ready => {
+                                    d.children(self.list_slot(&t, cx)).map(|d| {
+                                        if self.picked.len() >= 2 {
+                                            d.child(self.bulk_pane(&t, cx))
+                                        } else {
+                                            d.child(self.reading(&t, cx))
+                                        }
+                                    })
+                                }
+                                Status::Loading => d.child(self.skeleton(&t)),
+                                _ => d.child(self.status_screen(&t, cx)),
+                            }),
+                    ),
             )
-            .map(|d| match self.status {
-                Status::Demo | Status::Ready if empty && self.mailbox == View::Inbox => {
-                    d.child(self.zero(&t))
-                }
-                Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t)),
-                Status::Demo | Status::Ready => d.children(self.list_slot(&t, cx)).map(|d| {
-                    if self.picked.len() >= 2 {
-                        d.child(self.bulk_pane(&t, cx))
-                    } else {
-                        d.child(self.reading(&t, cx))
-                    }
-                }),
-                Status::Loading => d.child(self.skeleton(&t)),
-                _ => d.child(self.status_screen(&t, cx)),
+            .when(self.offline && !list_shown && place.is_none(), |d| {
+                // No list and no reload button to carry it.
+                d.child(
+                    div()
+                        .id("offline-dot")
+                        .absolute()
+                        .left(px(8.))
+                        .top(px(22.))
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(t.amber)
+                        .tooltip(tip(t.dark, self.offline_label(), "")),
+                )
             })
-            .child(self.window_controls(&t, list_shown, cx))
+            .when_some(place, |d, place| {
+                let floating = afloat > 0.;
+                let radius = FLOAT_RADIUS * afloat;
+                let height = viewport.1 - 2. * place.inset;
+                d.when(cut, |d| {
+                    // Left of the clip, all but the panel's rounded shape is filled with the
+                    // surface: the gaps and the corners. (A border's inner corner is its
+                    // radius less its width, so this one fits the panel exactly.)
+                    d.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .w(px(clip))
+                            .h(px(viewport.1))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(place.x - FLOAT_FRAME))
+                                    .top(px(place.inset - FLOAT_FRAME))
+                                    .w(px(SIDEBAR_W + 2. * FLOAT_FRAME))
+                                    .h(px(height + 2. * FLOAT_FRAME))
+                                    .rounded(px(radius + FLOAT_FRAME))
+                                    .border(px(FLOAT_FRAME))
+                                    .border_color(t.surface),
+                            ),
+                    )
+                })
+                .when(floating, |d| {
+                    // Only beside the panel: a shadow is filled, and would darken the
+                    // see-through panel from underneath.
+                    d.child(
+                        div()
+                            .absolute()
+                            .left(px(edge))
+                            .top_0()
+                            .w(px(FLOAT_FRAME))
+                            .h(px(viewport.1))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(-SIDEBAR_W))
+                                    .top(px(place.inset))
+                                    .w(px(SIDEBAR_W))
+                                    .h(px(height))
+                                    .rounded(px(radius))
+                                    .shadow(vec![shadow(t.shadow.opacity(afloat), 10., 30., -6.)]),
+                            ),
+                    )
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(place.x))
+                        .top(px(place.inset))
+                        .w(px(SIDEBAR_W))
+                        .h(px(height))
+                        .overflow_hidden()
+                        .occlude()
+                        .when(floating, |d| d.rounded(px(radius)).bg(t.sidebar))
+                        // Moved up by the gap, so that docking shifts nothing vertically.
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top(px(-place.inset))
+                                .w(px(SIDEBAR_W))
+                                .h(px(viewport.1 - place.inset))
+                                .child(self.sidebar(&t, floating, cx)),
+                        )
+                        // Over the contents, so it takes no width from them.
+                        .when(floating, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(px(radius))
+                                    .border_1()
+                                    .border_color(t.border_strong.opacity(afloat)),
+                            )
+                        }),
+                )
+                .child(self.window_controls(&t, place.x, list_shown, cx))
+            })
             .when(self.palette && !empty, |d| d.child(self.palette(&t, cx)))
             .when(self.compose.is_some() && !composing_elsewhere, |d| {
                 d.child(self.compose_view(&t, viewport, cx))

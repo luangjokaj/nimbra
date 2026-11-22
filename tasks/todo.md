@@ -157,3 +157,26 @@ disabled and are gone with them. Colours and hostile mail: 52 harness checks. Ap
 mail: both windows, theme and setting switched live, setting kept over a restart, link
 clicks, no white frame on load, Print panel light with its header. Not checked: macOS 13,
 Windows (no darkening and no click check there), a real mailbox, DNS-only lookups.
+
+## Auto-hide sidebar (2026-11-22)
+
+Goal: ⌘B hides the sidebar into auto-hide, as in the recording.
+
+- [x] Hidden: nothing of it stays (sidebar, window controls, traffic lights); the panes use
+      the whole width, their titles on the top line
+- [x] The pointer reaching the left edge springs it in as a floating panel (about 0.18s)
+      over the content, which does not move; leaving slides it out (about 0.12s)
+- [x] ⌘B or the toggle while it floats docks it from where it is; toggling shut hides it
+      until the edge is reached again
+- [x] Works over the email's native view (a hole for the panel, the pointer read from AppKit)
+- [x] Stays while one of its menus is open or the mouse is down; stays away under overlays,
+      other windows and while inactive; traffic lights kept in full screen and full compose
+- [x] Verify: state tests, screenshots of every state, hit tests over the email, idle CPU
+
+Review: built 2026-11-22, checked on sample mail with a scripted pointer: every state in
+screenshots, traffic lights measured, hit tests over the email, an open menu, resize, 397
+random steps without a crash, about 1% CPU idle while hidden. The AppKit pointer read was
+checked against the screen's. Not checked: a hand on the mouse, full screen, two displays,
+Windows.
+Afterwards (asked for): the floating panel has the docked blur, by clipping the content
+under it (except on Inbox Zero, where the gradient shows through the tint).

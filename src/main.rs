@@ -1,6 +1,7 @@
 //! Nimbra — a mail client concept, mocked in GPUI with static data.
 
 mod app;
+mod autohide;
 mod blur;
 mod data;
 mod editor;

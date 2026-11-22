@@ -38,7 +38,7 @@ What it does with your mailbox:
 - `H` (or ⌘K) snoozes: later today, tomorrow, this weekend, next week, or “remind me if no reply”. Snoozed threads leave the inbox and come back unread with a notification (a reminder only if nobody replied). Snoozing is kept on this Mac, because Gmail’s API has no snooze, and happens while Nimbra is running. `E` in Snoozed brings a thread back now.
 - Messages are written in a formatted editor: bold (⌘B), italic (⌘I), underline (⌘U), links (⌘K), bulleted and numbered lists, quotes. They are sent with both an HTML and a plain-text version. Pasted text keeps simple formatting only; scripts, styles and images are removed.
 - Several Gmail accounts: click your account at the bottom of the sidebar to switch, or Add account (also in Settings). Each account has its own sign-in in the keychain and its own encrypted store and key; Sign out removes only that account. With two or more accounts the sidebar adds **All inboxes** (every account's inbox merged, newest first, each row badged in its account's colour) and an Accounts list to see one account on its own. Every account is checked for new mail and notifies; snoozes and scheduled sends run for all of them; the Dock badge counts them all. In All inboxes, actions and replies go to the message's own account (replies say which address they go out from); labels stay per account.
-- Offline, archive, star, read and the like still work: changes are kept (encrypted, on this Mac) and sent once Gmail can be reached, and messages sent while offline go out then too. An Offline pill at the top of the message list shows how many changes are waiting; when the list is not showing, the reload button gets an amber dot and says the same in its tooltip.
+- Offline, archive, star, read and the like still work: changes are kept (encrypted, on this Mac) and sent once Gmail can be reached, and messages sent while offline go out then too. An Offline pill at the top of the message list shows how many changes are waiting; when the list is not showing, the reload button (or, with the sidebar hidden too, the window's top-left corner) gets an amber dot and says the same in its tooltip.
 - The menu bar has File (New Message ⌘N, Check for Mail ⌘R, Print ⌘P), Edit, View and Message menus; the Dock icon shows the inbox’s unread count. The mail store keeps the newest 300 threads per mailbox, with full text for the newest 100.
 - Settings (⌘, or click your account in the sidebar): signature, light, dark or system appearance, original formatting and remote images, notifications, open at login, and Sign out (which removes the mail kept on this Mac).
 - The composer has Cc and Bcc (click “Cc Bcc”), suggests addresses from your mail as you type (Tab or Enter picks one), and takes attachments from the paperclip or by dropping files on it (25 MB in total). Drafts save themselves a moment after you stop typing. Sending waits six seconds so you can undo it (⌘Z), and Discard can be undone the same way. Send later sends the saved draft from this Mac at the chosen time while Nimbra is running.
@@ -92,7 +92,7 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 | `⌘K` or `H` | Command palette (snooze) |
 | `↵` / `esc` | Run command / close palette |
 | `⌘⇧L` | Toggle light and dark |
-| `⌘B` | Show or hide the sidebar |
+| `⌘B` | Show the sidebar, or hide it: hidden, it floats in, with the same blurred material, when the pointer reaches the window’s left edge |
 | `⌘W` | Close the window; Nimbra keeps running and checking mail (click the Dock icon to bring it back, `⌘Q` to quit) |
 | `⌘⇧B` | Show or hide the message list (also the first toolbar button; drag the list's right edge to resize it) |
 | `⌘[` / `⌘]` | Back / forward through opened threads |
@@ -101,7 +101,7 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 
 ## Screenshot states
 
-`NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose` or `compose-full` opens that screen directly on the sample data. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` starts with the sidebar hidden. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
+`NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose` or `compose-full` opens that screen directly on the sample data. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` starts with the sidebar hidden (auto-hide). `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
 
 ## Sidebar blur
 

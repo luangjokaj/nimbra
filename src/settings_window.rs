@@ -1117,7 +1117,7 @@ impl SettingsWindow {
                     ("/ or ⌘F", "Search"),
                     ("⌘K", "Snooze palette"),
                     ("⌘R", "Check for mail"),
-                    ("⌘B / ⌘⇧B", "Sidebar / message list"),
+                    ("⌘B / ⌘⇧B", "Sidebar (auto-hide) / message list"),
                     ("⌘⇧L", "Light or dark"),
                     ("⌘,", "Settings"),
                     ("⌘P", "Print"),

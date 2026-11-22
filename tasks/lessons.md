@@ -2,8 +2,8 @@
 
 ## Window top row
 
-- The window controls float over the panes and fill the sidebar's 236pt up to the reload
-  button. Never append to that row: anything wider than a badge lands on the pane beside it.
+- The window controls and traffic lights travel with the sidebar (and are gone while it is
+  hidden) and fill its 236pt up to the reload button. Never append to that row: anything wider than a badge lands on the pane beside it.
   Status goes inside the pane's own header.
 - Everything in the top row is centred on y = 25 (traffic lights, window controls, list
   title, reading toolbar). A new header element goes on that line.
@@ -18,3 +18,16 @@
   by default when it is the better experience. Do not plan such a feature without one.
 - The CSP is not the whole lockdown: meta refresh and preconnect both get past it. Test a
   web view change with a hostile mail and a localhost listener, and with a negative control.
+
+## Native window work
+
+- Never open a window during `render`: GPUI draws it at once and clears the element arena
+  shared with the frame being built (a segfault). Use a click handler or `cx.defer_in`.
+- Moving or hiding a traffic light makes AppKit lay all three out again: set every button's
+  whole frame, every frame, and never use `setHidden:` on them.
+- The window's blur shows only where nothing opaque is painted. A see-through panel over
+  the content needs that content clipped away, and a shadow only outside it (shadows are
+  filled). A floating version of a docked panel keeps the docked one's material.
+- Test copies: build them with `focus: false` and without `cx.activate(true)`.
+- Test copies of the app take the keyboard focus while the user is working, and their keys
+  land in it. Keep those runs few and short, and log state so stray input is recognised.
