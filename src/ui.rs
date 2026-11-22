@@ -192,7 +192,7 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
 /// The small label shown when the mouse rests on a button: what it does, and its shortcut.
 pub struct Tip {
     dark: bool,
-    label: &'static str,
+    label: SharedString,
     key: &'static str,
 }
 
@@ -221,7 +221,7 @@ impl gpui::Render for Tip {
                 .text_size(px(12.))
                 .line_height(px(16.))
                 .text_color(t.text)
-                .child(self.label)
+                .child(self.label.clone())
                 .when(!self.key.is_empty(), |d| d.child(kbd(&t, self.key))),
         )
     }
@@ -230,8 +230,16 @@ impl gpui::Render for Tip {
 /// Builds the tooltip for a button. Pass an empty `key` when there is no shortcut.
 pub fn tip(
     dark: bool,
-    label: &'static str,
+    label: impl Into<SharedString>,
     key: &'static str,
 ) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView + 'static {
-    move |_, cx| cx.new(|_| Tip { dark, label, key }).into()
+    let label = label.into();
+    move |_, cx| {
+        cx.new(|_| Tip {
+            dark,
+            label: label.clone(),
+            key,
+        })
+        .into()
+    }
 }

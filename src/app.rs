@@ -8613,7 +8613,12 @@ fn card(t: &Theme) -> Div {
 impl Nimbra {
     /// Sidebar toggle, back, forward and reload, sitting beside the traffic lights.
     /// Drawn above the panes so it stays put when the sidebar is hidden.
-    fn window_controls(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn window_controls(
+        &self,
+        t: &Theme,
+        list_shown: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let hover = t.hover;
         let control = |name: &str, enabled: bool| {
             div()
@@ -8661,7 +8666,16 @@ impl Nimbra {
             .child(
                 div()
                     .id("reload")
-                    .tooltip(tip(t.dark, "Check for mail", "⌘R"))
+                    .tooltip(tip(
+                        t.dark,
+                        if self.offline {
+                            self.offline_label().into()
+                        } else {
+                            SharedString::from("Check for mail")
+                        },
+                        "⌘R",
+                    ))
+                    .relative()
                     .flex()
                     .flex_none()
                     .items_center()
@@ -8700,40 +8714,50 @@ impl Nimbra {
                                 },
                             )
                             .into_any_element()
+                    })
+                    // The list's header has the Offline pill; without a list, a dot here.
+                    .when(self.offline && !list_shown, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(3.))
+                                .right(px(3.))
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(t.amber),
+                        )
                     }),
             )
-            // Offline: say so, and how much is waiting to go out.
-            .when(self.offline, |d| {
-                let waiting = self.outbox.changes.len() + self.outbox.mail.len();
-                d.child(
-                    div()
-                        .id("offline")
-                        .ml(px(6.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .px(px(8.))
-                        .py(px(2.))
-                        .rounded_full()
-                        .bg(t.amber.opacity(0.14))
-                        .border_1()
-                        .border_color(t.amber.opacity(0.4))
-                        .tooltip(tip(
-                            t.dark,
-                            "Changes are kept and sent when the connection is back",
-                            "",
-                        ))
-                        .child(div().size(px(6.)).rounded_full().bg(t.amber))
-                        .child(meta(
-                            if waiting == 0 {
-                                "Offline".to_string()
-                            } else {
-                                format!("Offline · {waiting} waiting")
-                            },
-                            t.text2,
-                        )),
-                )
-            })
+    }
+
+    /// "Offline", and how much is waiting to go out.
+    fn offline_label(&self) -> String {
+        match self.outbox.changes.len() + self.outbox.mail.len() {
+            0 => "Offline".to_string(),
+            waiting => format!("Offline · {waiting} waiting"),
+        }
+    }
+
+    fn offline_pill(&self, t: &Theme) -> impl IntoElement {
+        div()
+            .id("offline")
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .px(px(8.))
+            .py(px(2.))
+            .rounded_full()
+            .bg(t.amber.opacity(0.14))
+            .border_1()
+            .border_color(t.amber.opacity(0.4))
+            .tooltip(tip(
+                t.dark,
+                "Changes are kept and sent when the connection is back",
+                "",
+            ))
+            .child(div().size(px(6.)).rounded_full().bg(t.amber))
+            .child(meta(self.offline_label(), t.text2))
     }
 
     fn sidebar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -9605,16 +9629,31 @@ impl Nimbra {
                     .gap(px(4.))
                     .pl(px(24.))
                     .pr(px(18.))
-                    .pt(px(26.))
+                    .pt(px(14.))
                     .pb(px(10.))
                     .on_mouse_down(MouseButton::Left, drag_or_zoom)
-                    // Small mailbox name, then filters and Compose on one row.
-                    .child(overline(self.inbox_name().to_uppercase(), t.text3))
+                    // Small mailbox name, centred on the window controls' line (y = 25), then
+                    // filters and Compose on one row. The height is fixed so that the
+                    // Offline pill moves nothing when it comes and goes.
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .mt(px(8.))
+                            .justify_between()
+                            .gap(px(8.))
+                            .h(px(22.))
+                            .child(
+                                overline(self.inbox_name().to_uppercase(), t.text3)
+                                    .min_w(px(0.))
+                                    .truncate(),
+                            )
+                            .when(self.offline, |d| d.child(self.offline_pill(t))),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .mt(px(10.))
                             .child(
                                 div()
                                     .relative()
@@ -10678,8 +10717,8 @@ impl Nimbra {
                             .flex_col()
                             .gap(px(4.))
                             .pl(px(24.))
-                            .pt(px(if self.sidebar_open { 26. } else { 60. }))
-                            .pb(px(22.))
+                            .pt(px(if self.sidebar_open { 19. } else { 53. }))
+                            .pb(px(29.))
                             .child(overline(self.inbox_name().to_uppercase(), t.text3)),
                     )
                     .children(rows),
@@ -12884,6 +12923,8 @@ impl Render for Nimbra {
             self.pull_gen += 1;
         }
         let empty = self.visible().is_empty();
+        let list_shown =
+            !empty && self.list_open && matches!(self.status, Status::Demo | Status::Ready);
 
         div()
             .id("nimbra")
@@ -13065,7 +13106,7 @@ impl Render for Nimbra {
                 Status::Loading => d.child(self.skeleton(&t)),
                 _ => d.child(self.status_screen(&t, cx)),
             })
-            .child(self.window_controls(&t, cx))
+            .child(self.window_controls(&t, list_shown, cx))
             .when(self.palette && !empty, |d| d.child(self.palette(&t, cx)))
             .when(self.compose.is_some() && !composing_elsewhere, |d| {
                 d.child(self.compose_view(&t, viewport, cx))
