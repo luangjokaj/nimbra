@@ -974,6 +974,9 @@ pub struct Nimbra {
     compose_ask_at: Option<std::time::Instant>,
     /// The composer is in a window of its own (detached), so it always fills it.
     compose_detached: bool,
+    /// Where a composer in a window of its own goes back to: the message window it came
+    /// from, or the main window (None).
+    compose_home: Option<gpui::AnyWindowHandle>,
     /// The formatting button under the mouse: its name and keys, shown in the toolbar (a
     /// tooltip would open under the editor, which is a native view and covers it).
     format_hint: Option<(&'static str, &'static str)>,
@@ -1326,6 +1329,7 @@ impl Nimbra {
             compose_host: None,
             format_hint: None,
             compose_detached: false,
+            compose_home: None,
             compose_ask: false,
             compose_ask_at: None,
             editor_window: None,
@@ -6339,6 +6343,9 @@ impl Nimbra {
                 .key_context("Composer")
                 .on_action(cx.listener(|this, _: &SendMail, _, cx| this.send_mail(cx)))
                 .on_action(cx.listener(|this, _: &SaveDraft, _, cx| this.save_draft(cx)))
+                .on_action(
+                    cx.listener(|this, _: &ToggleFullCompose, _, cx| this.toggle_full_compose(cx)),
+                )
                 .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
                     if let Some(composer) = this.compose.as_mut()
                         && composer.suggest.take().is_some()
@@ -6359,6 +6366,7 @@ impl Nimbra {
             return;
         }
         let owner = cx.entity();
+        self.compose_home = self.compose_host;
         cx.defer(move |cx| {
             let bounds = gpui::Bounds::centered(None, gpui::size(px(820.), px(700.)), cx);
             let me = owner.clone();
@@ -6397,6 +6405,35 @@ impl Nimbra {
                 });
             }
         });
+    }
+
+    /// Puts a composer in a window of its own back where it came from (the main window if
+    /// that message window has closed), floating in its corner. Its window then closes.
+    fn attach_compose(&mut self, cx: &mut Context<Self>) {
+        if !self.compose_detached || self.compose.is_none() {
+            return;
+        }
+        let home = self
+            .compose_home
+            .take()
+            .filter(|home| cx.windows().contains(home));
+        self.compose_host = home;
+        self.compose_detached = false;
+        if let Some(composer) = &mut self.compose {
+            composer.full = false;
+            composer.position = None;
+            composer.grab = None;
+            self.pending_focus = Some(composer.to.read(cx).focus_handle(cx));
+        }
+        if let Some(home) = home {
+            cx.defer(move |cx| {
+                home.update(cx, |_, window, _| window.activate_window())
+                    .ok();
+            });
+        } else {
+            crate::show_main_window(cx);
+        }
+        cx.notify();
     }
 
     fn toggle_full_compose(&mut self, cx: &mut Context<Self>) {
@@ -11806,14 +11843,18 @@ impl Nimbra {
                                     .map(|a| meta(format!("from {}", a.email), t.text3)),
                             )
                             .child(div().flex_1())
-                            .when(self.compose_host.is_none(), |d| {
+                            .when(!self.compose_detached, |d| {
                                 d.child(
                                     icon_button(t, "detach")
                                         .id("compose-detach")
                                         .press(t)
                                         .tooltip(tip(t.dark, "Open in its own window", ""))
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.detach_compose(cx)),
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.detach_compose(cx)
+                                            }),
                                         ),
                                 )
                             })
@@ -11823,9 +11864,14 @@ impl Nimbra {
                                         .id("compose-size")
                                         .press(t)
                                         .tooltip(tip(t.dark, "Full page or floating", "⌘⇧F"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.toggle_full_compose(cx)
-                                        })),
+                                        // On press, as the close button (see there).
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.toggle_full_compose(cx)
+                                            }),
+                                        ),
                                 )
                             })
                             // Close (asks about the draft if there is one). A window of
@@ -11848,7 +11894,22 @@ impl Nimbra {
                                         ),
                                 )
                             })
-                            .when(self.compose_detached, |d| d.child(kbd(t, "esc"))),
+                            .when(self.compose_detached, |d| {
+                                d.child(
+                                    icon_button(t, "attach")
+                                        .id("compose-attach")
+                                        .press(t)
+                                        .tooltip(tip(t.dark, "Back into the window", ""))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                this.attach_compose(cx)
+                                            }),
+                                        ),
+                                )
+                                .child(kbd(t, "esc"))
+                            }),
                     ),
             )
             .child(field(
