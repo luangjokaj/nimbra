@@ -206,3 +206,7 @@ no state adds or removes a border.
 Open, found while auditing (not fixed): a row's right-click menu holds a position, so a
 refresh while it is open can shift it to another thread; Done (E) does nothing in All
 inboxes; Windows has no check that a link was clicked (and no build of it exists yet).
+
+## About pane (2026-11-22)
+
+- [x] The app's own icon (rendered from AppIcon.icon), everything centred in the pane

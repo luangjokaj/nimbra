@@ -6,6 +6,18 @@ use std::time::Instant;
 use super::*;
 use crate::settings::{MarkRead, TextSize, ThemeChoice};
 
+/// The app's icon on About, in points.
+const ABOUT_ICON: f32 = 96.;
+
+/// The app's icon, rendered from `assets/AppIcon.icon` (README: how to render it again).
+static APP_ICON: std::sync::LazyLock<std::sync::Arc<gpui::Image>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            include_bytes!("../assets/app-icon.png").to_vec(),
+        ))
+    });
+
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Tab {
     General,
@@ -265,10 +277,17 @@ impl Render for SettingsWindow {
                             .gap(px(18.))
                             // A definite width, so wrapped text is measured at its real width.
                             .w_full()
-                            .max_w(px(680.))
                             .px(px(40.))
-                            .pt(px(44.))
-                            .pb(px(40.))
+                            .map(|d| match tab {
+                                // In the middle of the pane, whatever the window's size
+                                // (and scrolling when it is too short).
+                                // (A percentage height does not resolve inside a scroll.)
+                                Tab::About => d
+                                    .min_h(window.viewport_size().height)
+                                    .justify_center()
+                                    .py(px(40.)),
+                                _ => d.max_w(px(680.)).pt(px(44.)).pb(px(40.)),
+                            })
                             .when(tab != Tab::About, |d| {
                                 d.child(
                                     div()
@@ -1159,17 +1178,13 @@ impl SettingsWindow {
                 .flex_col()
                 .items_center()
                 .gap(px(14.))
-                .pt(px(30.))
                 .child(
                     div()
-                        .size(px(96.))
-                        .rounded(px(24.))
-                        .bg(gradient(135., c(0x8b7cff, 1.), c(0xff7ab6, 1.)))
+                        .size(px(ABOUT_ICON))
+                        // The glow follows the icon's own shape, which the image brings.
+                        .rounded(px(ABOUT_ICON / 4.))
                         .shadow(vec![shadow(c(0x8b7cff, 0.45), 14., 40., -6.)])
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(icon("mail", 44., gpui::white())),
+                        .child(gpui::img(APP_ICON.clone()).size_full()),
                 )
                 .child(serif("Nimbra", 44., t.text))
                 .child(meta(format!("Version {}", env!("CARGO_PKG_VERSION")), t.text3))
