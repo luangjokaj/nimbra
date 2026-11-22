@@ -7,6 +7,8 @@
 //! - It can never navigate. Clicked links are checked and handed to the system browser;
 //!   navigations the mail starts by itself (a meta refresh needs no script) go nowhere, and
 //!   pop-ups are refused. (Telling a click apart is macOS only: wry reports just the URL.)
+//! - `<link>` tags are made inert: the policy cannot stop a preconnect, which tells the
+//!   sender the mail was opened even with images blocked.
 //! - It runs in a non-persistent (incognito) store, so mail cannot set lasting cookies.
 
 /// Puts the policy above in front of the email's own document.
@@ -31,8 +33,34 @@ pub fn document(body: &str, images: bool) -> String {
         "<!doctype html><meta charset=\"utf-8\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
          img-src {img}; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'\">\
-         <style>{DEFAULTS}</style>{body}"
+         <style>{DEFAULTS}</style>{}",
+        without_links(body)
     )
+}
+
+/// The mail with each `<link` start tag renamed to `<meta`, which is also empty, also allowed
+/// in the head, and ignores `rel` and `href`. Nothing is lost, as the policy blocks all a
+/// link could load. No parser is needed: a tag's name can only be written out literally
+/// (entities and NULs cannot spell one), in any letter case.
+fn without_links(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut done = 0;
+    for (at, _) in html.match_indices('<') {
+        let tag = &html.as_bytes()[at + 1..];
+        if tag.len() >= 4
+            && tag[..4].eq_ignore_ascii_case(b"link")
+            && matches!(
+                tag.get(4),
+                None | Some(b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'/' | b'>')
+            )
+        {
+            out.push_str(&html[done..at]);
+            out.push_str("<meta");
+            done = at + 5;
+        }
+    }
+    out.push_str(&html[done..]);
+    out
 }
 
 /// Only web and mail links may leave the app.
@@ -575,6 +603,34 @@ mod tests {
                 .all(|rule| rule.starts_with(":where("))
         );
         assert!(!DEFAULTS.contains("max-width") && !DEFAULTS.contains("overflow-wrap"));
+    }
+
+    #[test]
+    fn link_tags_are_inert() {
+        for tag in [
+            "<link rel=preconnect href=x>",
+            "<LiNk\trel=preconnect>",
+            "<link/rel=preconnect>",
+            "<link\nrel=preconnect>",
+            "<link\r\nrel=preconnect>",
+            "<link\x0crel=preconnect>",
+            "<link>",
+            "<<link rel=preconnect>",
+            "é<link rel=preconnect>ü",
+            "<link",
+        ] {
+            let page = document(tag, false).to_ascii_lowercase();
+            assert!(!page.contains("<link"), "{tag:?}");
+        }
+        for same in [
+            "<linkbox>",
+            "a link",
+            "&lt;link&gt;",
+            "</p>",
+            "<p>héllo</p>",
+        ] {
+            assert_eq!(without_links(same), same);
+        }
     }
 
     #[test]
