@@ -370,7 +370,17 @@ within 2 of 255), and toasts from two words to 2,000 characters, CJK and emoji i
 Measured on 89cb71b (fake Gmail, Google's quota table; 6,000 units a minute per user):
 a known category 2 units, a label or Done about 1,340 on every click, a first visit 3,860.
 
-- [ ] A click shows what is saved; it asks Gmail only after a change or a minute
-- [ ] A label's sync point is never saved (`holds(&[], None)` in `fetch_inbox`)
-- [ ] Search-based tabs re-read only threads whose history id moved
-- [ ] Fetch fewer emails ahead than 20 (2,400 units)
+- [x] A click shows what is saved; it asks Gmail only after a change or a minute
+- [x] A label's sync point is never saved (`holds(&[], None)` in `fetch_inbox`)
+- [x] Search-based tabs re-read only threads whose history id moved
+- [x] Fetch fewer emails ahead than 20 (2,400 units)
+- [x] Found on the way: page 2 fetched with every first listing, the mail on show fetched
+      twice, two saves of a record at once failing, no next page after a relaunch
+
+Review: units counted on a fake Gmail with history, pages and versions (table in the
+session): a seen tab 0, a first visit at most about 1,570, a cold launch 1,700. 33 cases
+that try to make a tab show stale mail pass. Not checked: real Gmail's counts and limits.
+
+Found, left open:
+- [ ] Done left open does not update by itself (it would drop the pages scrolled to)
+- [ ] The rows kept to save units are memory only: Done is read again after a relaunch

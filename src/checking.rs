@@ -5,11 +5,37 @@ use crate::gmail::View;
 use anyhow::Result;
 use gpui::{BackgroundExecutor, FutureExt as _};
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// Each request has a timeout of its own, but not while the address is being looked up,
 /// and one check makes dozens of them, some tried again.
 const LIMIT: Duration = Duration::from_secs(60);
+
+/// How long what a check found stands, while nothing is seen to change.
+const STANDS: Duration = Duration::from_secs(60);
+
+/// When something was asked of Gmail, and how much had been seen to change by then: our own
+/// writes and what the change feed brought.
+#[derive(Clone, Copy)]
+pub struct Asked {
+    // Not an `Instant`, which stands still while the Mac sleeps.
+    at: SystemTime,
+    changes: u64,
+}
+
+impl Asked {
+    pub fn now(changes: u64) -> Self {
+        Self {
+            at: SystemTime::now(),
+            changes,
+        }
+    }
+
+    /// Whether asking again now would be for nothing.
+    pub fn stands(self, changes: u64) -> bool {
+        self.changes == changes && self.at.elapsed().is_ok_and(|age| age < STANDS)
+    }
+}
 
 /// Gmail did not answer within `LIMIT`.
 #[derive(Debug)]
@@ -40,6 +66,8 @@ struct Check {
     serial: u64,
     view: View,
     query: String,
+    /// Nobody asked for it: it does not show.
+    quiet: bool,
 }
 
 impl Check {
@@ -64,8 +92,30 @@ impl Checks {
             serial: self.last,
             view,
             query: query.to_string(),
+            quiet: false,
         });
         self.last
+    }
+
+    /// The check just started is one nobody asked for.
+    pub fn quiet(&mut self) {
+        if let Some(check) = &mut self.running {
+            check.quiet = true;
+        }
+    }
+
+    /// Somebody asked while it was running.
+    pub fn show(&mut self) {
+        if let Some(check) = &mut self.running {
+            check.quiet = false;
+        }
+    }
+
+    /// Whether the screen says that it is checking.
+    pub fn shows_for(&self, view: View, query: &str) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|check| !check.quiet && check.is_for(view, query))
     }
 
     pub fn running_for(&self, view: View, query: &str) -> bool {
@@ -110,6 +160,33 @@ mod tests {
         assert!(!checks.finish(first, View::Inbox, ""));
         assert!(checks.running_for(View::Inbox, ""));
         assert!(checks.finish(second, View::Inbox, ""));
+    }
+
+    #[test]
+    fn a_quiet_check_runs_without_showing_until_asked_for() {
+        let mut checks = Checks::default();
+        checks.start(View::Inbox, "");
+        checks.quiet();
+        assert!(checks.running_for(View::Inbox, "") && !checks.shows_for(View::Inbox, ""));
+        checks.show();
+        assert!(checks.shows_for(View::Inbox, ""));
+    }
+
+    #[test]
+    fn what_was_found_stands_for_a_minute_or_until_a_change() {
+        let asked = Asked::now(3);
+        assert!(asked.stands(3) && !asked.stands(4));
+        let aged = |seconds| Asked {
+            at: SystemTime::now() - Duration::from_secs(seconds),
+            changes: 3,
+        };
+        assert!(aged(50).stands(3) && !aged(61).stands(3));
+        // The clock was set back.
+        let ahead = Asked {
+            at: SystemTime::now() + Duration::from_secs(600),
+            changes: 3,
+        };
+        assert!(!ahead.stands(3));
     }
 
     #[test]

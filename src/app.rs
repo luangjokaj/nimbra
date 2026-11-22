@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use crate::arrival::{Arrival, drop_for};
-use crate::checking::{Checks, TooSlow, within};
+use crate::checking::{Asked, Checks, TooSlow, within};
 use crate::data::{COMMANDS, Mail, inbox};
 use crate::gmail::{self, View};
 use crate::input::{InputEvent, TextInput};
@@ -1287,6 +1287,14 @@ pub struct Nimbra {
     /// top, and whether the current trackpad gesture started at the top.
     list_scroll: gpui::ScrollHandle,
     sidebar_scroll: gpui::ScrollHandle,
+    /// When each mailbox was last checked, by its record.
+    checked: HashMap<String, Asked>,
+    /// When the sidebar's counts were last fetched (131 units, with 8 labels).
+    counted: Option<Asked>,
+    /// How often the change feeds have brought something.
+    feed_changes: u64,
+    /// The mailboxes whose next page is known, or known not to exist.
+    paged: HashSet<View>,
     /// The search panel's results, kept scrolled to the highlighted one.
     finder_scroll: gpui::ScrollHandle,
     pull: f32,
@@ -1536,6 +1544,10 @@ impl Nimbra {
             list_gen: 0,
             list_scroll: gpui::ScrollHandle::new(),
             sidebar_scroll: gpui::ScrollHandle::new(),
+            checked: HashMap::new(),
+            counted: None,
+            feed_changes: 0,
+            paged: HashSet::new(),
             finder_scroll: gpui::ScrollHandle::new(),
             pull: 0.,
             pull_armed: false,
@@ -2386,7 +2398,11 @@ impl Nimbra {
                 self.status = Status::Ready;
                 self.load_selected(cx);
             }
-            self.refresh(cx);
+            if known.is_some() {
+                self.look_again(cx);
+            } else {
+                self.refresh(cx);
+            }
         }
     }
 
@@ -2419,6 +2435,39 @@ impl Nimbra {
             .filter(|_| !self.more_failed.contains(&self.mailbox))
     }
 
+    /// How much has been seen to change. It only grows while an account is shown.
+    fn changes_seen(&self) -> u64 {
+        let connected = self.gmail.iter().chain(self.others.values());
+        self.feed_changes + connected.map(|client| client.writes()).sum::<u64>()
+    }
+
+    /// A mailbox that is already on screen from what is kept. Gmail is asked only if
+    /// something changed since it was last checked, or that was a while ago, and the screen
+    /// does not say so.
+    fn look_again(&mut self, cx: &mut Context<Self>) {
+        let changes = self.changes_seen();
+        let checked = self.checked.get(&self.record_for(self.mailbox));
+        if self.fetching() || checked.is_some_and(|asked| asked.stands(changes)) {
+            return;
+        }
+        self.refresh(cx);
+        if self.fetching() {
+            self.checks.quiet();
+        }
+    }
+
+    /// Forgets what was checked and when: the lists it was true of are gone.
+    fn forget_checked(&mut self) {
+        self.checked.clear();
+        self.counted = None;
+        self.paged.clear();
+    }
+
+    /// The open mailbox is being checked, and says so.
+    fn shows_checking(&self) -> bool {
+        self.checks.shows_for(self.mailbox, &self.query)
+    }
+
     /// Brings the open mailbox up to date: only what changed since it was last synced when
     /// that is known, otherwise a full fetch of its newest threads.
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -2449,6 +2498,12 @@ impl Nimbra {
             return true;
         }
         let check = self.checks.start(view, &self.query);
+        let asked = Asked::now(self.changes_seen());
+        let count = self
+            .counted
+            .is_none_or(|at| !at.stands(self.changes_seen()));
+        // From this Mac, a list has no token for its next page.
+        let (find_page, listed) = (!self.paged.contains(&view), self.mails.len());
         cx.notify();
         let recipient = matches!(view, View::Sent | View::Drafts);
         let count_ids: Vec<String> = [
@@ -2481,8 +2536,15 @@ impl Nimbra {
                         Err(error) => return Err(error),
                     }
                 }
-                let counts = (!updates.is_empty()).then(|| client.counts(&count_ids));
-                anyhow::Ok((changes.latest, updates, counts))
+                let counts = (count && !updates.is_empty()).then(|| client.counts(&count_ids));
+                let page = if !find_page {
+                    None
+                } else if (1..=500).contains(&listed) {
+                    client.page_after(view, label_id.as_deref(), listed).ok()
+                } else {
+                    Some(None)
+                };
+                anyhow::Ok(((changes.latest, updates, counts, page), label_id))
             })
             .await;
             this.update(cx, |this, cx| {
@@ -2494,10 +2556,18 @@ impl Nimbra {
                     return;
                 }
                 match result {
-                    Ok((latest, updates, counts)) => {
+                    Ok(((latest, updates, counts, page), label_id)) => {
                         this.synced_to.insert(this.record_for(view), latest);
+                        this.checked.insert(this.record_for(view), asked);
+                        if let Some(next) = page {
+                            this.paged.insert(view);
+                            if let Some(next) = next {
+                                this.next_pages.insert(view, next);
+                            }
+                        }
                         if let Some(counts) = counts.filter(|c| !c.is_empty()) {
                             this.counts = counts;
+                            this.counted = Some(asked);
                         }
                         // Count only; never log subjects or addresses.
                         eprintln!(
@@ -2535,7 +2605,8 @@ impl Nimbra {
     /// Fetches, in the background, the content of the newest threads on screen that have not
     /// been downloaded yet, and saves it, so opening them is instant now and after a restart.
     fn prefetch(&mut self, cx: &mut Context<Self>) {
-        const AHEAD: usize = 20;
+        // A thread in full is 120 units of the 6,000 a minute: not the whole screen.
+        const AHEAD: usize = 3;
         const WORKERS: usize = 4;
         if self.gmail.is_none() {
             return;
@@ -2547,9 +2618,10 @@ impl Nimbra {
         let mut ids = Vec::new();
         let mut accounts = Vec::new();
         let mut clients = Vec::new();
-        for i in self.visible() {
-            if ids.len() == AHEAD {
-                break;
+        // The top few only, not the next few that are missing: each check would fetch more.
+        for i in self.visible().into_iter().take(AHEAD) {
+            if i == self.selected {
+                continue; // the one on show is loaded by itself
             }
             if let Some(mail) = self.mails.get(i).filter(|mail| !mail.loaded)
                 && let (Some(id), Some(client)) = (mail.id.clone(), self.client_at(i))
@@ -2809,6 +2881,7 @@ impl Nimbra {
             self.inbox_saved_empty = mails.is_empty();
         }
         let name = self.record_for(self.mailbox);
+        let taken = store.snapshot();
         let saved = Saved {
             account: self.account.to_string(),
             initials: self.me_initials.to_string(),
@@ -2818,9 +2891,10 @@ impl Nimbra {
         };
         cx.background_executor()
             .spawn(async move {
+                // The list first: a sync point ahead of its list would miss what changed.
                 if let Err(error) = store
-                    .save(&name, &mails)
-                    .and_then(|_| store.save("meta", &saved))
+                    .save_newest(&name, &mails, taken)
+                    .and_then(|_| store.save_newest("meta", &saved, taken))
                 {
                     eprintln!("nimbra: saving the mail store failed: {error}");
                 }
@@ -2875,6 +2949,10 @@ impl Nimbra {
                 self.unread_only = false;
                 if thread != "more" && !self.open_listed(&thread, cx) {
                     self.open_when_listed = Some(thread);
+                    // Opened when it is listed, so it has to be listed again.
+                    if !self.fetching() {
+                        self.refresh(cx);
+                    }
                 }
                 return;
             }
@@ -2980,6 +3058,9 @@ impl Nimbra {
                         let Some(changes) = changes else {
                             return Vec::new();
                         };
+                        if !changes.threads.is_empty() {
+                            this.feed_changes += 1;
+                        }
                         // Anything changed: bring the open mailbox up to date, cheaply.
                         if !changes.threads.is_empty() && this.compose.is_none() {
                             // All inboxes cannot be patched from one feed: list it again.
@@ -2987,9 +3068,10 @@ impl Nimbra {
                                 // Started again each time, a slow one would never finish.
                                 if !this.fetching() {
                                     this.fetch_all_inboxes(cx);
+                                    this.checks.quiet();
                                 }
-                            } else {
-                                this.sync_view(cx);
+                            } else if !this.fetching() && this.sync_view(cx) {
+                                this.checks.quiet();
                             }
                         }
                         changes.new_unread_inbox
@@ -3116,6 +3198,9 @@ impl Nimbra {
                             return;
                         }
                         this.account_unread.insert(id.clone(), unread);
+                        if changed {
+                            this.feed_changes += 1;
+                        }
                         if this.settings.notifications {
                             for mail in &summaries {
                                 crate::notify::show(
@@ -3140,6 +3225,7 @@ impl Nimbra {
                             && !this.fetching()
                         {
                             this.fetch_all_inboxes(cx);
+                            this.checks.quiet();
                         }
                         cx.notify();
                     })
@@ -3412,6 +3498,7 @@ impl Nimbra {
         self.confirm = None;
         self.new_label = None;
         self.next_pages.clear();
+        self.forget_checked();
         self.more_failed.clear();
         self.back.clear();
         self.forward.clear();
@@ -3482,6 +3569,7 @@ impl Nimbra {
         }
         let view = self.mailbox;
         let check = self.checks.start(view, &self.query);
+        let asked = Asked::now(self.changes_seen());
         cx.notify();
         let label_id = match view {
             View::Label(index) => self.labels.get(index).map(|label| label.id.clone()),
@@ -3490,6 +3578,12 @@ impl Nimbra {
         };
         let need_labels = self.labels.is_empty();
         let known_labels: Vec<String> = self.labels.iter().map(|l| l.id.clone()).collect();
+        let count = need_labels
+            || self
+                .counted
+                .is_none_or(|at| !at.stands(self.changes_seen()));
+        // A label is only known to hold by its id.
+        let syncs = view.holds(&[], label_id.as_deref()).is_some();
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let result = within(cx.background_executor(), async move {
@@ -3515,7 +3609,11 @@ impl Nimbra {
                     Some(labels) => labels.iter().take(8).map(|l| l.id.clone()).collect(),
                     None => known_labels.into_iter().take(8).collect::<Vec<_>>(),
                 });
-                let counts = client.counts(&ids);
+                let counts = if count {
+                    client.counts(&ids)
+                } else {
+                    HashMap::new()
+                };
                 anyhow::Ok((email, history_id, threads, labels, counts, next_page))
             })
             .await;
@@ -3531,15 +3629,18 @@ impl Nimbra {
                 }
                 match result {
                     Ok((email, history_id, threads, labels, counts, next_page)) => {
+                        this.checked.insert(this.record_for(view), asked);
+                        this.paged.insert(view);
                         match next_page {
                             Some(page) => this.next_pages.insert(view, page),
                             None => this.next_pages.remove(&view),
                         };
-                        if view.holds(&[], None).is_some() {
+                        if syncs {
                             this.synced_to.insert(this.record_for(view), history_id);
                         }
                         if !counts.is_empty() {
                             this.counts = counts;
+                            this.counted = Some(asked);
                         }
                         if let Some(labels) = labels {
                             this.labels = labels;
@@ -3572,6 +3673,7 @@ impl Nimbra {
             self.status = Status::Loading;
         }
         let check = self.checks.start(View::AllInboxes, "");
+        let seen = Asked::now(self.changes_seen());
         cx.notify();
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
@@ -3621,6 +3723,9 @@ impl Nimbra {
                 }
                 fresh.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
                 this.install(fresh, cx);
+                if failed == 0 {
+                    this.checked.insert(this.record_for(View::AllInboxes), seen);
+                }
                 // After the listing, which clears the notice.
                 if failed > 0 {
                     this.notice = Some(
@@ -3648,6 +3753,7 @@ impl Nimbra {
             self.outbox = Outbox::default();
             self.counts.clear();
             self.labels.clear();
+            self.forget_checked();
         }
         self.me_initials = email
             .chars()
@@ -5250,6 +5356,7 @@ impl Nimbra {
         }
         self.next_pages
             .retain(|view, _| !matches!(view, View::Label(_)));
+        self.paged.retain(|view| !matches!(view, View::Label(_)));
         // So is a check, by the label's old position: ask again.
         self.checks.forget();
         if checking {
@@ -6162,6 +6269,12 @@ impl Nimbra {
     }
 
     /// "Load more" at the end of the list: the next page of the mailbox.
+    fn near_list_end(&self) -> bool {
+        let left = f32::from(self.list_scroll.max_offset().height)
+            + f32::from(self.list_scroll.offset().y);
+        left < 700.
+    }
+
     fn load_more(&mut self, cx: &mut Context<Self>) {
         let (Some(client), Some(page)) = (self.gmail.clone(), self.more().cloned()) else {
             return;
@@ -8637,6 +8750,10 @@ impl Nimbra {
         self.cache.clear();
         self.synced_to.clear();
         self.notify_from = None;
+        self.forget_checked();
+        for client in self.gmail.iter().chain(self.others.values()) {
+            client.forget_rows();
+        }
         self.notice =
             Some("Cleared the mail kept on this Mac. It is downloaded again as needed.".into());
         self.fetch_inbox(cx);
@@ -8688,6 +8805,7 @@ impl Nimbra {
         // Whoever signs in next must not send this account's queue.
         self.outbox = Outbox::default();
         self.next_pages.clear();
+        self.forget_checked();
         self.cache.clear();
         self.mails.clear();
         self.done.clear();
@@ -8756,6 +8874,7 @@ impl Nimbra {
             self.parked
                 .retain(|(_, c)| c.account.as_ref().is_some_and(|a| *a != shown));
             self.next_pages.clear();
+            self.forget_checked();
             let account = self.account_id.clone();
             std::thread::spawn(move || crate::store::wipe(&account));
             self.cache.clear();
@@ -9176,7 +9295,10 @@ impl Nimbra {
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.reload_gen += 1;
         if !self.is_demo() {
+            self.counted = None;
             self.refresh(cx);
+            // One that was running quietly is what was asked for now.
+            self.checks.show();
             return;
         }
         self.done.fill(false);
@@ -9975,7 +10097,7 @@ impl Nimbra {
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
-                    .child(if self.fetching() {
+                    .child(if self.shows_checking() {
                         // Keeps turning for as long as a mailbox request is in flight.
                         icon("reload", 17., t.violet)
                             .with_animation(
@@ -14229,18 +14351,21 @@ impl Render for Nimbra {
         }
         // Infinite list: the next page starts loading as the end of the list comes near
         // (or straight away when the list does not fill the pane yet).
-        if self.more().is_some() && !self.loading_more && !self.fetching() {
-            let left = f32::from(self.list_scroll.max_offset().height)
-                + f32::from(self.list_scroll.offset().y);
-            if left < 700. {
-                cx.spawn(async move |this, cx| {
-                    this.update(cx, |this, cx| this.load_more(cx)).ok();
+        if self.more().is_some() && !self.loading_more && !self.fetching() && self.near_list_end() {
+            // Asked again once this frame is laid out: until then a list that has just
+            // arrived has no height, and each first listing fetched its second page too.
+            let this = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                this.update(cx, |this, cx| {
+                    if !this.fetching() && this.near_list_end() {
+                        this.load_more(cx);
+                    }
                 })
-                .detach();
-            }
+                .ok();
+            });
         }
         // The checking-for-mail bar fades out when the check is done, instead of vanishing.
-        let bar = self.fetching() && !self.pull_hold && self.pull == 0.;
+        let bar = self.shows_checking() && !self.pull_hold && self.pull == 0.;
         if self.bar_shown && !bar {
             let n = self.bar_fade.map_or(0, |(_, n)| n + 1);
             self.bar_fade = Some((std::time::Instant::now(), n));

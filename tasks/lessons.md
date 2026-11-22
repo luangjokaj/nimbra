@@ -110,6 +110,9 @@
 
 ## Gmail's quota
 
+- "Nothing changed" counts our own writes as well as the change feed, taken when the check
+  starts. Test: act, then click the mailbox it lands in at once.
+- A scroll offset read in `render` is last frame's: decide on "near the end" after layout.
 - Count units per click before shipping anything that fetches (6,000 a minute per user;
   a thread in full is 120, its headers 40, the change feed 2).
 - Test copies are never on the user's screen: the scratch GPUI puts them under the wallpaper,
