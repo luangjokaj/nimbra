@@ -1140,9 +1140,7 @@ pub struct Nimbra {
     /// The hidden web view that print jobs are laid out in, always light.
     print_view: Option<HtmlView>,
     /// What the web view currently shows (thread, images allowed), to avoid reloading.
-    html_shown: Option<(String, bool)>,
-    /// The colour scheme the web view was last told to use.
-    html_dark: Option<bool>,
+    html_shown: Option<(String, bool, bool, bool)>,
     /// The message being written, if the composer is open.
     compose: Option<Composer>,
     /// Focus to hand over on the next frame (set where no window is at hand).
@@ -1363,7 +1361,6 @@ impl Nimbra {
             html_view: None,
             html_shown: None,
             print_view: None,
-            html_dark: None,
             compose: None,
             pending_focus: None,
             unread_only: false,
@@ -4165,6 +4162,11 @@ impl Nimbra {
         Some((key, mail.html.clone()?))
     }
 
+    /// Whether light emails are given a dark page right now (Settings › Reading).
+    fn darkens_mail(&self) -> bool {
+        cfg!(target_os = "macos") && self.dark && self.settings.dark_emails
+    }
+
     /// Creates, loads, shows or hides the web view to match the current state.
     fn sync_html_view(&mut self, window: &mut Window) {
         // A print job has a view of its own, so the email shown does not replace it, and it
@@ -4174,7 +4176,7 @@ impl Nimbra {
                 self.print_view = HtmlView::new(window);
             }
             if let Some(view) = &self.print_view {
-                view.set_dark(false);
+                view.set_dark(false, false);
                 // Never shown, but it needs a page's size to lay the document out.
                 view.set_bounds(0., 0., 800., 1000.);
                 view.show(&doc, self.original_images);
@@ -4195,21 +4197,20 @@ impl Nimbra {
             self.notice = Some("The original view is not available on this system.".into());
             return;
         };
-        // The page follows Nimbra's light or dark theme, so emails with dark styles use them.
-        if self.html_dark != Some(self.dark) {
-            view.set_dark(self.dark);
-            self.html_dark = Some(self.dark);
-        }
         // A different thread starts with remote images on again.
         if self
             .html_shown
             .as_ref()
-            .is_some_and(|(shown, _)| *shown != key)
+            .is_some_and(|(shown, ..)| *shown != key)
         {
             self.original_images = self.settings.load_images;
         }
-        let wanted = (key, self.original_images);
+        let darkened = self.darkens_mail();
+        let wanted = (key, self.original_images, self.dark, darkened);
         if self.html_shown.as_ref() != Some(&wanted) {
+            // The page follows Nimbra's theme. Both take effect as the mail loads, so a
+            // change of either loads it again.
+            view.set_dark(self.dark, darkened);
             view.show(&html, self.original_images);
             self.html_shown = Some(wanted);
         }
@@ -11415,7 +11416,11 @@ impl Nimbra {
                 )
                 .flex_1()
                 .w_full()
-                .bg(gpui::white()),
+                .bg(if self.darkens_mail() {
+                    t.surface
+                } else {
+                    gpui::white()
+                }),
             )
             .when(!m.header.attachments.is_empty(), |d| {
                 d.child(self.attachment_tray(t, &m.header.attachments, cx))

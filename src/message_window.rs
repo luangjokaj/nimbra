@@ -13,7 +13,7 @@ pub(super) struct MessageWindow {
     /// Original formatting (a web view) rather than the reader.
     original: bool,
     html_view: Option<std::rc::Rc<HtmlView>>,
-    html_shown: Option<(String, bool, bool)>,
+    html_shown: Option<(String, bool, bool, bool)>,
     /// Holds the keyboard so R, A, F, E and ⌫ work here.
     focus: FocusHandle,
     focused_once: bool,
@@ -107,7 +107,14 @@ impl MessageWindow {
         });
     }
 
-    fn sync_web_view(&mut self, mail: &Mail, dark: bool, images: bool, window: &mut Window) {
+    fn sync_web_view(
+        &mut self,
+        mail: &Mail,
+        dark: bool,
+        darkened: bool,
+        images: bool,
+        window: &mut Window,
+    ) {
         let wanted = self.original && mail.loaded && mail.html.is_some();
         if !wanted {
             if let Some(view) = &self.html_view {
@@ -122,9 +129,9 @@ impl MessageWindow {
             self.original = false;
             return;
         };
-        let shown = (self.key.clone(), dark, images);
+        let shown = (self.key.clone(), dark, darkened, images);
         if self.html_shown.as_ref() != Some(&shown) {
-            view.set_dark(dark);
+            view.set_dark(dark, darkened);
             if let Some(html) = &mail.html {
                 view.show(html, images);
             }
@@ -137,9 +144,9 @@ impl MessageWindow {
 impl Render for MessageWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let m = self.mail(cx);
-        let (dark, images) = {
+        let (dark, darkened, images) = {
             let n = self.owner.read(cx);
-            (n.dark, n.settings.load_images)
+            (n.dark, n.darkens_mail(), n.settings.load_images)
         };
         let t = if dark { Theme::dark() } else { Theme::light() };
         window.set_window_title(&m.subject);
@@ -157,7 +164,7 @@ impl Render for MessageWindow {
                 view.set_visible(false);
             }
         } else {
-            self.sync_web_view(&m, dark, images, window);
+            self.sync_web_view(&m, dark, darkened, images, window);
             if let Some(view) = &self.html_view {
                 view.set_hole(if compose.is_some() { reply_rect } else { None });
             }

@@ -135,3 +135,25 @@ and two fake accounts (sidebar, badges, counts); 44 tests pass. Not checked agai
 Gmail accounts: needs a second sign-in. Limits: All inboxes shows each inbox's first 30
 threads (no endless loading yet), labels apply per account, and another account's change
 made offline is rolled back rather than queued.
+
+## Dark emails in Original formatting (2026-11-22)
+
+Goal: in dark theme HTML mail is dark like Spark's, with the sender's scripts still off.
+Five commits: toolbar spacing (already done), navigation, link leak, print, dark emails.
+
+- [x] 1. Reproduce navigation without a click (meta refresh and the like); only followed
+      links may leave the app
+- [x] 2. Print: a view of its own, always light, so the email does not replace the document
+- [x] 3. Dark rendering: isolated-world script, theme in the cache key, dark canvas, docs
+- [x] 3b. Setting in Settings > Reading to turn dark emails off; on by default (asked for
+      after the plan was approved), applies to open windows at once
+- [x] 4. Verify: harness (colours, hostile mail, no requests), the real app on sample mail
+      (both windows, theme switch, link click, print), tests, fmt, clippy
+- [x] 5. Found while verifying: `<link rel=preconnect>` got past the policy with images
+      blocked; link tags are now inert
+
+Review: done 2026-11-22. Both security holes were reproduced in the real app with the fixes
+disabled and are gone with them. Colours and hostile mail: 52 harness checks. App on sample
+mail: both windows, theme and setting switched live, setting kept over a restart, link
+clicks, no white frame on load, Print panel light with its header. Not checked: macOS 13,
+Windows (no darkening and no click check there), a real mailbox, DNS-only lookups.

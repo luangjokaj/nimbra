@@ -1,7 +1,8 @@
 //! "Show original": the email's own HTML in a system web view placed inside the window.
 //!
 //! Email HTML is untrusted, so the view is locked down:
-//! - JavaScript is disabled.
+//! - The mail's JavaScript is disabled. The one script that can run is Nimbra's own
+//!   `dark_mail.js`, in a WebKit world of its own, which only reads and sets colours.
 //! - A Content-Security-Policy blocks everything remote: no scripts, frames, fonts, media,
 //!   form posts or `<base>` tricks. Remote images load only after the user asks.
 //! - It can never navigate. Clicked links are checked and handed to the system browser;
@@ -67,6 +68,10 @@ fn without_links(html: &str) -> String {
 fn is_external_link(link: &str) -> bool {
     url::Url::parse(link).is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
 }
+
+/// Nimbra's script that gives light mail a dark page; see the file.
+#[cfg(any(target_os = "macos", test))]
+const DARK_MAIL: &str = include_str!("dark_mail.js");
 
 /// A navigation is handed to the system only for a followed link to the web or mail.
 fn leaves_app(link: &str, followed: bool) -> bool {
@@ -193,10 +198,11 @@ mod platform {
 
         /// Makes the page see a light or dark colour scheme, following the app's theme
         /// rather than the system's. Emails that ship dark-mode styles then use them;
-        /// emails that do not simply stay as designed.
+        /// with `darken`, light emails get a dark page too (macOS only). Takes effect at
+        /// the next `show`.
         #[cfg(target_os = "macos")]
         #[allow(unexpected_cfgs)] // emitted by the objc crate's macros
-        pub fn set_dark(&self, dark: bool) {
+        pub fn set_dark(&self, dark: bool, darken: bool) {
             use objc::runtime::Object;
             use objc::{class, msg_send, sel, sel_impl};
             use wry::WebViewExtMacOS as _;
@@ -218,11 +224,21 @@ mod platform {
                 if !appearance.is_null() {
                     let _: () = msg_send![view, setAppearance: appearance];
                 }
+                let manager = self.view.manager();
+                let manager = &*manager as *const _ as *mut Object;
+                let darkened = restyle::install(manager, dark && darken);
+                // See-through while darkening: before the page's first paint WebKit would
+                // show white, and the app's dark surface is what lies under the view.
+                let draws = sel!(_setDrawsBackground:);
+                let can: bool = msg_send![view, respondsToSelector: draws];
+                if can {
+                    let _: () = msg_send![view, _setDrawsBackground: !darkened];
+                }
             }
         }
 
         #[cfg(target_os = "windows")]
-        pub fn set_dark(&self, dark: bool) {
+        pub fn set_dark(&self, dark: bool, _darken: bool) {
             use wry::WebViewExtWindows as _;
             let theme = if dark {
                 wry::Theme::Dark
@@ -326,6 +342,57 @@ mod platform {
     mod click {
         pub(super) fn followed() -> bool {
             true
+        }
+    }
+
+    /// Puts `dark_mail.js` in, or takes it out. wry's own script calls always run in the
+    /// page's world, so this goes to WebKit directly for a world the mail cannot reach.
+    #[cfg(target_os = "macos")]
+    #[allow(unexpected_cfgs)]
+    mod restyle {
+        use objc::runtime::{Class, Object};
+        use objc::{msg_send, sel, sel_impl};
+
+        /// Whether the script is in.
+        ///
+        /// # Safety
+        /// Main thread only, with the live WKUserContentController of a view that shows mail.
+        pub(super) unsafe fn install(manager: *mut Object, on: bool) -> bool {
+            unsafe {
+                // This also drops wry's message stub, which the mail view has no use for.
+                let _: () = msg_send![manager, removeAllUserScripts];
+                if !on {
+                    return false;
+                }
+                let (Some(strings), Some(worlds), Some(scripts), Ok(source)) = (
+                    Class::get("NSString"),
+                    Class::get("WKContentWorld"),
+                    Class::get("WKUserScript"),
+                    std::ffi::CString::new(super::super::DARK_MAIL),
+                ) else {
+                    return false;
+                };
+                let name: *mut Object =
+                    msg_send![strings, stringWithUTF8String: c"Nimbra".as_ptr()];
+                let world: *mut Object = msg_send![worlds, worldWithName: name];
+                let source: *mut Object = msg_send![strings, stringWithUTF8String: source.as_ptr()];
+                if world.is_null() || source.is_null() {
+                    return false;
+                }
+                let script: *mut Object = msg_send![scripts, alloc];
+                // WKUserScriptInjectionTimeAtDocumentStart = 0.
+                let script: *mut Object = msg_send![script,
+                    initWithSource: source
+                    injectionTime: 0isize
+                    forMainFrameOnly: true
+                    inContentWorld: world];
+                if script.is_null() {
+                    return false;
+                }
+                let _: () = msg_send![manager, addUserScript: script];
+                let _: () = msg_send![script, release];
+                true
+            }
         }
     }
 
@@ -572,7 +639,7 @@ mod platform {
         pub fn set_bounds(&self, _x: f32, _y: f32, _width: f32, _height: f32) {}
         pub fn set_visible(&self, _visible: bool) {}
         pub fn set_hole(&self, _hole: Option<(f32, f32, f32, f32)>) {}
-        pub fn set_dark(&self, _dark: bool) {}
+        pub fn set_dark(&self, _dark: bool, _darken: bool) {}
         pub fn print(&self) {}
     }
 }
@@ -603,6 +670,39 @@ mod tests {
                 .all(|rule| rule.starts_with(":where("))
         );
         assert!(!DEFAULTS.contains("max-width") && !DEFAULTS.contains("overflow-wrap"));
+    }
+
+    #[test]
+    fn the_dark_mail_script_only_touches_colours() {
+        let code: String = DARK_MAIL
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect();
+        for sink in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacent",
+            "document.write",
+            "eval(",
+            "Function(",
+            "fetch(",
+            "XMLHttpRequest",
+            "WebSocket",
+            "sendBeacon",
+            "postMessage",
+            "messageHandlers",
+            "location",
+            "createElement",
+            "setAttribute",
+            "http:",
+            "https:",
+            "url(",
+        ] {
+            assert!(!code.contains(sink), "{sink}");
+        }
+        assert!(!DARK_MAIL.contains('\0'));
+        // The page it paints is the surface around it.
+        assert!(code.contains("const SURFACE = [14, 14, 20]"));
     }
 
     #[test]

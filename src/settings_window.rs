@@ -812,12 +812,12 @@ impl SettingsWindow {
 
     fn reading(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let n = self.owner.read(cx);
-        let (original, images) = (n.settings.original_view, n.settings.load_images);
-        vec![
-            group(
-                t,
-                None,
-                vec![
+        let (original, images, dark_emails) = (
+            n.settings.original_view,
+            n.settings.load_images,
+            n.settings.dark_emails,
+        );
+        let mut rows = vec![
                     self.toggle(
                         t,
                         "original",
@@ -842,8 +842,24 @@ impl SettingsWindow {
                             n.original_images = n.settings.load_images;
                         },
                     ),
-                ],
-            ),
+        ];
+        // Darkening needs WebKit (see webview.rs), so the switch is only where it works.
+        if cfg!(target_os = "macos") {
+            rows.insert(
+                1,
+                self.toggle(
+                    t,
+                    "dark-emails",
+                    "Darken emails in dark theme",
+                    "Light emails get a dark page and light text. Pictures keep their colours. Off shows mail as sent.",
+                    dark_emails,
+                    cx,
+                    |n| n.settings.dark_emails = !n.settings.dark_emails,
+                ),
+            );
+        }
+        vec![
+            group(t, None, rows),
             div()
                 .flex()
                 .items_center()
@@ -851,7 +867,7 @@ impl SettingsWindow {
                 .px(px(4.))
                 .child(icon("ban", 14., t.text3))
                 .child(meta(
-                    "Original formatting always runs with scripts off, and links open in your browser.",
+                    "Original formatting always runs with the sender's scripts off, and links open in your browser.",
                     t.text3,
                 ))
                 .into_any_element(),

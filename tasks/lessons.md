@@ -11,3 +11,10 @@
   top and bottom padding: the gaps show as soon as a button has a background.
 - Check a header change with the sidebar and the list each open and closed, an empty
   mailbox, loading, both themes, and the list at its 300pt minimum.
+
+## Reading mail
+
+- Anything that changes how the sender's mail looks gets a switch in Settings › Reading, on
+  by default when it is the better experience. Do not plan such a feature without one.
+- The CSP is not the whole lockdown: meta refresh and preconnect both get past it. Test a
+  web view change with a hostile mail and a localhost listener, and with a negative control.
