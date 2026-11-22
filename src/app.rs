@@ -8741,9 +8741,6 @@ const SIDEBAR_W: f32 = 236.;
 const FLOAT_INSET: f32 = 6.;
 /// Its corners then. The hole it cuts in the email's web view is rounded the same.
 const FLOAT_RADIUS: f32 = 18.;
-/// How wide the frame is drawn that fills in around the floating panel: enough to reach the
-/// window's corners. Also how far the panel's shadow is drawn.
-const FLOAT_FRAME: f32 = 40.;
 
 /// Where the sidebar is drawn: its left edge, and its gap from the window's top and bottom
 /// (none when docked).
@@ -13310,16 +13307,6 @@ impl Render for Nimbra {
         let place = self.sidebar_place(0.);
         // 1 while the sidebar floats, down to 0 as it docks.
         let afloat = place.map_or(0., |place| place.inset / FLOAT_INSET);
-        // The floating panel is the docked sidebar's material, which is see-through to the
-        // blurred desktop. The window's blur is only of what is behind the window, so the
-        // content is not painted left of this line (the panel's right edge). Inbox Zero is
-        // left whole: it is all soft gradient there, which looks right through the tint.
-        let cut = afloat > 0.
-            && !(matches!(self.status, Status::Demo | Status::Ready)
-                && self.mailbox == View::Inbox
-                && self.visible().is_empty());
-        let edge = place.map_or(0., |place| (place.x + SIDEBAR_W).max(0.));
-        let clip = if cut { edge } else { 0. };
         // The traffic lights travel with the sidebar. A full-page composer has room of its
         // own for them in its header.
         let full_compose = !composing_elsewhere && self.compose.as_ref().is_some_and(|c| c.full);
@@ -13488,50 +13475,31 @@ impl Render for Nimbra {
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
+            // The room the docked sidebar takes. The sidebar itself is drawn over it, so
+            // floating in does not move or re-wrap anything. As it docks, what is around the
+            // panel is filled (the panel's own shape is erased out of it).
             .child(
-                // Always these two wrappers (no ids), floating or not: the panes keep their
-                // element paths, so their scroll positions and their layout.
                 div()
-                    .absolute()
-                    .left(px(clip))
-                    .top_0()
-                    .w(px((viewport.0 - clip).max(0.)))
-                    .h(px(viewport.1))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(-clip))
-                            .top_0()
-                            .w(px(viewport.0))
-                            .h(px(viewport.1))
-                            .flex()
-                            // The room the docked sidebar takes. The sidebar itself is drawn
-                            // over it, so floating in does not move or re-wrap anything.
-                            .child(div().flex_none().h_full().w(px(self.sidebar_width(0.))))
-                            .map(|d| match self.status {
-                                Status::Demo | Status::Ready
-                                    if empty && self.mailbox == View::Inbox =>
-                                {
-                                    d.child(self.zero(&t))
-                                }
-                                Status::Demo | Status::Ready if empty => {
-                                    d.child(self.empty_mailbox(&t))
-                                }
-                                Status::Demo | Status::Ready => {
-                                    d.children(self.list_slot(&t, cx)).map(|d| {
-                                        if self.picked.len() >= 2 {
-                                            d.child(self.bulk_pane(&t, cx))
-                                        } else {
-                                            d.child(self.reading(&t, cx))
-                                        }
-                                    })
-                                }
-                                Status::Loading => d.child(self.skeleton(&t)),
-                                _ => d.child(self.status_screen(&t, cx)),
-                            }),
-                    ),
+                    .flex_none()
+                    .h_full()
+                    .w(px(self.sidebar_width(0.)))
+                    .when(afloat > 0., |d| d.bg(t.surface)),
             )
+            .map(|d| match self.status {
+                Status::Demo | Status::Ready if empty && self.mailbox == View::Inbox => {
+                    d.child(self.zero(&t))
+                }
+                Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t)),
+                Status::Demo | Status::Ready => d.children(self.list_slot(&t, cx)).map(|d| {
+                    if self.picked.len() >= 2 {
+                        d.child(self.bulk_pane(&t, cx))
+                    } else {
+                        d.child(self.reading(&t, cx))
+                    }
+                }),
+                Status::Loading => d.child(self.skeleton(&t)),
+                _ => d.child(self.status_screen(&t, cx)),
+            })
             .when(self.offline && !list_shown && place.is_none(), |d| {
                 // No list and no reload button to carry it.
                 d.child(
@@ -13550,52 +13518,29 @@ impl Render for Nimbra {
                 let floating = afloat > 0.;
                 let radius = FLOAT_RADIUS * afloat;
                 let height = viewport.1 - 2. * place.inset;
-                d.when(cut, |d| {
-                    // Left of the clip, all but the panel's rounded shape is filled with the
-                    // surface: the gaps and the corners. (A border's inner corner is its
-                    // radius less its width, so this one fits the panel exactly.)
+                d.when(floating, |d| {
+                    // The panel is the docked sidebar's material, see-through to the blurred
+                    // desktop. The window's blur is only of what is behind the window, so
+                    // what is painted under the panel is erased in its exact shape: its
+                    // shadow (which is filled) too, leaving it only around the outside.
                     d.child(
                         div()
                             .absolute()
-                            .left_0()
-                            .top_0()
-                            .w(px(clip))
-                            .h(px(viewport.1))
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left(px(place.x - FLOAT_FRAME))
-                                    .top(px(place.inset - FLOAT_FRAME))
-                                    .w(px(SIDEBAR_W + 2. * FLOAT_FRAME))
-                                    .h(px(height + 2. * FLOAT_FRAME))
-                                    .rounded(px(radius + FLOAT_FRAME))
-                                    .border(px(FLOAT_FRAME))
-                                    .border_color(t.surface),
-                            ),
+                            .left(px(place.x))
+                            .top(px(place.inset))
+                            .w(px(SIDEBAR_W))
+                            .h(px(height))
+                            .rounded(px(radius))
+                            .shadow(vec![shadow(t.shadow.opacity(afloat), 10., 30., -6.)]),
                     )
-                })
-                .when(floating, |d| {
-                    // Only beside the panel: a shadow is filled, and would darken the
-                    // see-through panel from underneath.
-                    d.child(
+                    .child(
                         div()
                             .absolute()
-                            .left(px(edge))
-                            .top_0()
-                            .w(px(FLOAT_FRAME))
-                            .h(px(viewport.1))
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left(px(-SIDEBAR_W))
-                                    .top(px(place.inset))
-                                    .w(px(SIDEBAR_W))
-                                    .h(px(height))
-                                    .rounded(px(radius))
-                                    .shadow(vec![shadow(t.shadow.opacity(afloat), 10., 30., -6.)]),
-                            ),
+                            .left(px(place.x))
+                            .top(px(place.inset))
+                            .w(px(SIDEBAR_W))
+                            .h(px(height))
+                            .child(crate::erase::rounded(radius, t.surface)),
                     )
                 })
                 .child(

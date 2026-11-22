@@ -214,3 +214,4 @@ inboxes; Windows has no check that a link was clicked (and no build of it exists
 ## Tooltips and the floating sidebar's corners (2026-11-22)
 
 - [x] Tooltips are click-through windows, so the email does not cut them off
+- [x] The content under the floating sidebar is cut in the panel's rounded shape

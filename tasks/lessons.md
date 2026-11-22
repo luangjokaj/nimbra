@@ -26,12 +26,14 @@
 - Moving or hiding a traffic light makes AppKit lay all three out again: set every button's
   whole frame, every frame, and never use `setHidden:` on them.
 - The window's blur shows only where nothing opaque is painted. A see-through panel over
-  the content needs that content clipped away, and a shadow only outside it (shadows are
-  filled). A floating version of a docked panel keeps the docked one's material.
+  the content needs `erase::rounded` under it, after its shadow (shadows are filled): a
+  rectangular clip leaves square corners in the content. Paths erase, so never draw one
+  for anything else. A floating version of a docked panel keeps the docked one's material.
 - Anything GPUI draws is under the email's web view, tooltips included: what can overlap the
   email is a window of its own (`tooltip.rs`, menus, notices) or needs a hole in the view.
 - GPUI's tooltip view is not always released (a reference cycle when its element goes):
   tie nothing's lifetime to that release alone.
+- A screenshot check of corners uses content that crosses them, not a plain background.
 - Test copies: build them with `focus: false` and without `cx.activate(true)`.
 - Test copies of the app take the keyboard focus while the user is working, and their keys
   land in it. Keep those runs few and short, and log state so stray input is recognised.
