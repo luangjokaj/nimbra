@@ -210,3 +210,7 @@ inboxes; Windows has no check that a link was clicked (and no build of it exists
 ## About pane (2026-11-22)
 
 - [x] The app's own icon (rendered from AppIcon.icon), everything centred in the pane
+
+## Tooltips and the floating sidebar's corners (2026-11-22)
+
+- [x] Tooltips are click-through windows, so the email does not cut them off

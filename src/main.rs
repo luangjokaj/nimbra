@@ -13,6 +13,7 @@ mod settings;
 mod store;
 mod system;
 mod theme;
+mod tooltip;
 mod ui;
 mod webview;
 

@@ -181,3 +181,94 @@ pub fn set_visible(window: &gpui::Window, visible: bool) {
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_visible(_window: &gpui::Window, _visible: bool) {}
+
+/// Screen geometry for the tooltips' windows, in AppKit's own coordinates (from the bottom
+/// left, across all displays).
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+mod screen {
+    use objc::runtime::Object;
+    use objc::{Encode, Encoding, class, msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Point {
+        x: f64,
+        y: f64,
+    }
+    unsafe impl Encode for Point {
+        fn encode() -> Encoding {
+            // SAFETY: the encoding of NSPoint on 64-bit macOS.
+            unsafe { Encoding::from_str("{CGPoint=dd}") }
+        }
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Frame {
+        origin: Point,
+        size: Point,
+    }
+
+    fn ns_window(window: &gpui::Window) -> Option<*mut Object> {
+        let handle = HasWindowHandle::window_handle(window).ok()?;
+        let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+            return None;
+        };
+        // SAFETY: `ns_view` is the live content view of this window, on the main thread.
+        let found: *mut Object =
+            unsafe { msg_send![handle.ns_view.as_ptr() as *mut Object, window] };
+        (!found.is_null()).then_some(found)
+    }
+
+    /// A point of the window (from its top left) on the screen.
+    pub fn screen_point(window: &gpui::Window, x: f32, y: f32) -> Option<(f64, f64)> {
+        let ns_window = ns_window(window)?;
+        // SAFETY: a getter on a live NSWindow, main thread.
+        let frame: Frame = unsafe { msg_send![ns_window, frame] };
+        Some((
+            frame.origin.x + f64::from(x),
+            frame.origin.y + frame.size.y - f64::from(y),
+        ))
+    }
+
+    /// Puts the window's top left corner there.
+    pub fn move_to(window: &gpui::Window, (x, y): (f64, f64)) {
+        if let Some(ns_window) = ns_window(window) {
+            // SAFETY: a live NSWindow, main thread.
+            unsafe {
+                let _: () = msg_send![ns_window, setFrameTopLeftPoint: Point { x, y }];
+            }
+        }
+    }
+
+    /// The window takes no mouse at all: clicks and hovers reach what is under it.
+    pub fn click_through(window: &gpui::Window) {
+        if let Some(ns_window) = ns_window(window) {
+            // SAFETY: a live NSWindow, main thread.
+            unsafe {
+                let _: () = msg_send![ns_window, setIgnoresMouseEvents: true];
+            }
+        }
+    }
+
+    pub fn screen_pointer() -> (f64, f64) {
+        // SAFETY: a class method that only reads the pointer's position.
+        let at: Point = unsafe { msg_send![class!(NSEvent), mouseLocation] };
+        (at.x, at.y)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod screen {
+    pub fn screen_point(_window: &gpui::Window, _x: f32, _y: f32) -> Option<(f64, f64)> {
+        None
+    }
+    pub fn move_to(_window: &gpui::Window, _to: (f64, f64)) {}
+    pub fn click_through(_window: &gpui::Window) {}
+    pub fn screen_pointer() -> (f64, f64) {
+        (0., 0.)
+    }
+}
+
+pub use screen::{click_through, move_to, screen_point, screen_pointer};

@@ -193,44 +193,6 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
     }
 }
 
-/// The small label shown when the mouse rests on a button: what it does, and its shortcut.
-pub struct Tip {
-    dark: bool,
-    label: SharedString,
-    key: &'static str,
-}
-
-impl gpui::Render for Tip {
-    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
-        let t = if self.dark {
-            Theme::dark()
-        } else {
-            Theme::light()
-        };
-        // The outer padding keeps the tooltip off the pointer.
-        div().pt(px(6.)).child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .pl(px(10.))
-                .pr(px(if self.key.is_empty() { 10. } else { 6. }))
-                .py(px(5.))
-                .rounded(px(8.))
-                .bg(t.raised)
-                .border_1()
-                .border_color(t.border_strong)
-                .shadow(vec![shadow(t.shadow, 8., 20., -4.)])
-                .font_family(crate::theme::SANS)
-                .text_size(px(12.))
-                .line_height(px(16.))
-                .text_color(t.text)
-                .child(self.label.clone())
-                .when(!self.key.is_empty(), |d| d.child(kbd(&t, self.key))),
-        )
-    }
-}
-
 /// Builds the tooltip for a button. Pass an empty `key` when there is no shortcut.
 pub fn tip(
     dark: bool,
@@ -238,12 +200,5 @@ pub fn tip(
     key: &'static str,
 ) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView + 'static {
     let label = label.into();
-    move |_, cx| {
-        cx.new(|_| Tip {
-            dark,
-            label: label.clone(),
-            key,
-        })
-        .into()
-    }
+    move |window, cx| crate::tooltip::build(dark, label.clone(), key, window, cx)
 }
