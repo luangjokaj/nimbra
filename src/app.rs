@@ -12864,6 +12864,15 @@ impl Nimbra {
                     .bg(c(0xffffff, a))
             })
             .collect();
+        // The sample inbox keeps the day its mail is from.
+        let today = if self.is_demo() {
+            "THURSDAY, NOVEMBER 20".to_string()
+        } else {
+            chrono::Local::now()
+                .format("%A, %B %-d")
+                .to_string()
+                .to_uppercase()
+        };
         let layer = |angle: f32, color: u32, alpha: f32, end: f32| {
             div()
                 .absolute()
@@ -12896,7 +12905,7 @@ impl Nimbra {
                         .justify_center()
                         .w_full()
                         .h(relative(HORIZON))
-                        .child(overline("THURSDAY, NOVEMBER 20", c(0xffffff, 0.55)))
+                        .child(overline(today, c(0xffffff, 0.55)))
                         .child(div().h(px(18.)).flex_none())
                         .child(serif("Inbox zero.", 120., ink))
                         .child(div().h(px(14.)).flex_none())

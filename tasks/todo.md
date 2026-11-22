@@ -219,3 +219,4 @@ inboxes; Windows has no check that a link was clicked (and no build of it exists
 ## Inbox Zero (2026-11-22)
 
 - [x] The headline in the middle of the sky, Press Z in the middle of the ground
+- [x] Today's date on real mail (it was the sample's hard-coded day)
