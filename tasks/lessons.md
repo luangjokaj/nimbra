@@ -120,3 +120,8 @@
   took a test copy's "Scheduled message sent" toast for their own mail.
 - GPUI's quads add alpha up. Anything see-through laid over see-through material needs the
   compositing underline pipeline (`erase::fade`). Measure a bare column, do not eyeball it.
+
+## Names
+
+- A control renamed to a thing opens that thing. Asked to call a row Settings, I left its
+  menu in place and only asked about it: the user had to come back for it.

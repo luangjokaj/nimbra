@@ -392,3 +392,8 @@ Found, left open:
 
 Review: captured with the real alpha and composited over dark, grey, coloured and white
 desktops, both themes, floating. Not seen on a real blurred desktop.
+
+## Settings opens Settings (2026-11-22)
+
+- [x] The row opens Settings; its menu is gone (switch, add and sign out are in
+      Settings › Accounts, and switching in the sidebar's Accounts list)

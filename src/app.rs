@@ -220,8 +220,6 @@ enum Menu {
     SendLater,
     /// Inbox, a label or Spam, for the open thread.
     MoveTo,
-    /// The accounts on this Mac, Add account and Settings (from the account row).
-    Accounts,
     /// Rename or delete a label (right-click in the sidebar), by index.
     Label(usize),
     /// The right-click menu of a row in the list (by index into the loaded threads).
@@ -1219,9 +1217,8 @@ pub struct Nimbra {
     menu_for: Option<MeantFor>,
     palette_for: Option<MeantFor>,
     label_for: Option<MeantFor>,
-    /// The labels and account ids the open menu lists, as it lists them.
+    /// The labels the open menu lists, as it lists them.
     menu_labels: Vec<gmail::Label>,
-    menu_accounts: Vec<String>,
     /// The "Undo" pill shown after a thread is removed, in a window of its own so it
     /// floats above the email's web view; `undo_gen` restarts its timer.
     undo_window: Option<gpui::WindowHandle<UndoToast>>,
@@ -1489,7 +1486,6 @@ impl Nimbra {
             palette_for: None,
             label_for: None,
             menu_labels: Vec::new(),
-            menu_accounts: Vec::new(),
             menu_window: None,
             undo_window: None,
             undo_gen: 0,
@@ -4724,12 +4720,6 @@ impl Nimbra {
             Menu::Label(index) => self.labels.get(index).cloned().into_iter().collect(),
             _ => Vec::new(),
         };
-        self.menu_accounts = self
-            .settings
-            .accounts
-            .iter()
-            .map(|a| a.id.clone())
-            .collect();
         let t = self.theme();
         let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
         let items: Vec<(&'static str, SharedString, Hsla)> = match menu {
@@ -4793,23 +4783,6 @@ impl Nimbra {
                     items
                 }
             }
-            Menu::Accounts => self
-                .settings
-                .accounts
-                .iter()
-                .map(|a| {
-                    let active = a.id == self.account_id;
-                    (
-                        if active { "done" } else { "mail" },
-                        short(&a.email, 30),
-                        if active { t.violet } else { t.text2 },
-                    )
-                })
-                .chain([
-                    ("users", "Add account…".into(), t.text2),
-                    ("sun", "Settings…".into(), t.text2),
-                ])
-                .collect(),
             Menu::Label(_) => vec![
                 ("tag", "Rename…".into(), t.text2),
                 ("trash", "Delete label…".into(), t.rose),
@@ -4884,8 +4857,6 @@ impl Nimbra {
         let (left, top) = match menu {
             Menu::Labels => (pane_left + 150., 50.),
             Menu::MoveTo => (pane_left + 186., 50.),
-            // Above the account row at the bottom of the sidebar.
-            Menu::Accounts => (14., f32::from(viewport.height) - 64. - height),
             Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
             // Above the composer's Send later button.
             Menu::SendLater => {
@@ -5037,19 +5008,6 @@ impl Nimbra {
                 } else {
                     self.confirm = Some(Ask::DeleteLabel(label.id, label.name));
                     cx.notify();
-                }
-            }
-            (Menu::Accounts, index) => {
-                let accounts = self.menu_accounts.len();
-                if index < accounts {
-                    let id = self.menu_accounts[index].clone();
-                    if self.settings.accounts.iter().any(|a| a.id == id) {
-                        self.switch_account(id, cx);
-                    }
-                } else if index == accounts {
-                    self.add_account(cx);
-                } else {
-                    self.open_settings(cx);
                 }
             }
             (Menu::MoveTo, index) => {
@@ -10633,14 +10591,8 @@ impl Nimbra {
                             .items_center()
                             .gap(px(10.))
                             .cursor_pointer()
-                            .tooltip(tip(t.dark, "Accounts and settings", ""))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.settings.accounts.is_empty() {
-                                    this.open_settings(cx)
-                                } else {
-                                    this.toggle_menu(Menu::Accounts, window, cx)
-                                }
-                            }))
+                            .tooltip(tip(t.dark, "Settings", "⌘,"))
+                            .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
                             .child(me_avatar(self.me_photo.as_ref(), &self.me_initials, 28.))
                             .child(
                                 div()
@@ -12942,7 +12894,7 @@ impl Nimbra {
             }));
         Some(match menu {
             // These menus only exist as pop-up windows.
-            Menu::Row(_) | Menu::SendLater | Menu::MoveTo | Menu::Accounts | Menu::Label(_) => {
+            Menu::Row(_) | Menu::SendLater | Menu::MoveTo | Menu::Label(_) => {
                 return None;
             }
             Menu::Labels => {
