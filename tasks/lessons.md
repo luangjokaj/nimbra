@@ -7,5 +7,7 @@
   Status goes inside the pane's own header.
 - Everything in the top row is centred on y = 25 (traffic lights, window controls, list
   title, reading toolbar). A new header element goes on that line.
+- A bar is `ui::TOP_BAR` tall with its content centred. Never reach that line with uneven
+  top and bottom padding: the gaps show as soon as a button has a background.
 - Check a header change with the sidebar and the list each open and closed, an empty
   mailbox, loading, both themes, and the list at its 300pt minimum.

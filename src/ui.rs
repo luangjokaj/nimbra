@@ -14,6 +14,10 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
         .text_color(color)
 }
 
+/// A window's top bar with its 1pt bottom border. The 50pt above the border centre what is in
+/// it on y = 25, the line of the traffic lights, with the same space above and below.
+pub const TOP_BAR: f32 = 51.;
+
 pub fn mono(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .font_family(MONO)

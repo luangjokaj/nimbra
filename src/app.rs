@@ -15,8 +15,8 @@ use crate::input::{InputEvent, TextInput};
 use crate::rich::{self, Block, Kind};
 use crate::theme::{Accent, SERIF, Theme, Tone, c, fade, gradient};
 use crate::ui::{
-    ButtonKind, Press, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill, shadow,
-    tip,
+    ButtonKind, Press, TOP_BAR, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill,
+    shadow, tip,
 };
 use crate::webview::HtmlView;
 
@@ -10156,10 +10156,7 @@ impl Nimbra {
                     // the slide, so the toolbar glides instead of jumping.
                     .pl(px((236. - self.pane_left()).max(20.)))
                     .pr(px(20.))
-                    // 2pt above centre, so its icons sit on one line with the traffic
-                    // lights and the window controls on the left.
-                    .pt(px(9.))
-                    .pb(px(13.))
+                    .h(px(TOP_BAR))
                     .border_b_1()
                     .border_color(t.border)
                     .on_mouse_down(MouseButton::Left, drag_or_zoom)

@@ -183,7 +183,7 @@ impl Render for MessageWindow {
             .flex_none()
             .items_center()
             .gap(px(4.))
-            .h(px(52.))
+            .h(px(crate::ui::TOP_BAR))
             .pl(px(84.))
             .pr(px(14.))
             .border_b_1()
