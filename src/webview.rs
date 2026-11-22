@@ -5,7 +5,8 @@
 //! - A Content-Security-Policy blocks everything remote: no scripts, frames, fonts, media,
 //!   form posts or `<base>` tricks. Remote images load only after the user asks.
 //! - It can never navigate. Clicked links are checked and handed to the system browser;
-//!   pop-ups are refused.
+//!   navigations the mail starts by itself (a meta refresh needs no script) go nowhere, and
+//!   pop-ups are refused. (Telling a click apart is macOS only: wry reports just the URL.)
 //! - It runs in a non-persistent (incognito) store, so mail cannot set lasting cookies.
 
 /// Puts the policy above in front of the email's own document.
@@ -39,9 +40,14 @@ fn is_external_link(link: &str) -> bool {
     url::Url::parse(link).is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
 }
 
+/// A navigation is handed to the system only for a followed link to the web or mail.
+fn leaves_app(link: &str, followed: bool) -> bool {
+    followed && is_external_link(link)
+}
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod platform {
-    use super::{document, is_external_link};
+    use super::{document, leaves_app};
     use wry::dpi::{LogicalPosition, LogicalSize};
     use wry::{NewWindowResponse, Rect, WebView, WebViewBuilder};
 
@@ -68,19 +74,26 @@ mod platform {
                     if link == "about:blank" {
                         return true;
                     }
-                    if is_external_link(&link) {
+                    if leaves_app(&link, click::followed()) {
                         open_in_browser(&link);
                     }
                     false
                 })
                 .with_new_window_req_handler(|link, _| {
-                    if is_external_link(&link) {
+                    if leaves_app(&link, click::followed()) {
                         open_in_browser(&link);
                     }
                     NewWindowResponse::Deny
                 })
                 .build_as_child(window)
                 .ok()?;
+            #[cfg(target_os = "macos")]
+            {
+                use wry::WebViewExtMacOS as _;
+                let webview = view.webview();
+                // SAFETY: main thread, a live WKWebView that wry has just given its delegate.
+                unsafe { click::watch(&*webview as *const _ as *mut objc::runtime::Object) };
+            }
             Some(Self {
                 view,
                 frame: std::cell::Cell::new((0., 0., 0., 0.)),
@@ -189,6 +202,102 @@ mod platform {
                 wry::Theme::Light
             };
             let _ = self.view.set_theme(theme);
+        }
+    }
+
+    /// Whether the navigation being decided is a link someone followed. wry's handler only
+    /// gets the URL, so the view's navigation delegate is given a subclass that notes WebKit's
+    /// navigation type and then lets wry decide as before. Without it no link leaves the app.
+    #[cfg(target_os = "macos")]
+    #[allow(unexpected_cfgs)]
+    mod click {
+        use std::cell::Cell;
+
+        use objc::declare::ClassDecl;
+        use objc::runtime::{Class, Object, Sel};
+        use objc::{msg_send, sel, sel_impl};
+
+        /// WKNavigationTypeLinkActivated. A refresh, a redirect or a load is `Other` (-1).
+        const LINK_ACTIVATED: isize = 0;
+        const GATE: &str = "NimbraClickGate";
+
+        #[link(name = "objc")]
+        unsafe extern "C" {
+            fn object_setClass(object: *mut Object, class: *const Class) -> *const Class;
+        }
+
+        thread_local! {
+            static FOLLOWED: Cell<bool> = const { Cell::new(false) };
+        }
+
+        pub(super) fn followed() -> bool {
+            FOLLOWED.with(Cell::get)
+        }
+
+        extern "C" fn decide(
+            this: &Object,
+            _: Sel,
+            view: *mut Object,
+            action: *mut Object,
+            reply: *mut Object,
+        ) {
+            let Some(wrys) = Class::get(GATE).and_then(Class::superclass) else {
+                return;
+            };
+            // SAFETY: WebKit calls this on the main thread with live objects; they are passed
+            // on untouched to the method this overrides, which answers before it returns.
+            unsafe {
+                let kind: isize = msg_send![action, navigationType];
+                FOLLOWED.with(|f| f.set(kind == LINK_ACTIVATED));
+                let _: () = msg_send![super(this, wrys),
+                    webView: view
+                    decidePolicyForNavigationAction: action
+                    decisionHandler: reply];
+                FOLLOWED.with(|f| f.set(false));
+            }
+        }
+
+        /// # Safety
+        /// Main thread only, with a live WKWebView built by wry.
+        pub(super) unsafe fn watch(view: *mut Object) {
+            unsafe {
+                let delegate: *mut Object = msg_send![view, navigationDelegate];
+                if delegate.is_null() {
+                    return;
+                }
+                let gate = match Class::get(GATE) {
+                    Some(gate) => gate,
+                    None => {
+                        let Some(mut decl) = ClassDecl::new(GATE, (*delegate).class()) else {
+                            return;
+                        };
+                        decl.add_method(
+                            sel!(webView:decidePolicyForNavigationAction:decisionHandler:),
+                            decide
+                                as extern "C" fn(
+                                    &Object,
+                                    Sel,
+                                    *mut Object,
+                                    *mut Object,
+                                    *mut Object,
+                                ),
+                        );
+                        decl.register()
+                    }
+                };
+                // Only a delegate of the class the gate extends: it adds no fields to it.
+                if gate.superclass() == Some((*delegate).class()) {
+                    object_setClass(delegate, gate);
+                }
+            }
+        }
+    }
+
+    /// WebView2's navigation type is not passed on by wry, so links behave as before there.
+    #[cfg(not(target_os = "macos"))]
+    mod click {
+        pub(super) fn followed() -> bool {
+            true
         }
     }
 
@@ -466,6 +575,14 @@ mod tests {
                 .all(|rule| rule.starts_with(":where("))
         );
         assert!(!DEFAULTS.contains("max-width") && !DEFAULTS.contains("overflow-wrap"));
+    }
+
+    #[test]
+    fn mail_cannot_open_the_browser_by_itself() {
+        assert!(leaves_app("https://example.com/a", true));
+        assert!(!leaves_app("https://example.com/a", false));
+        assert!(!leaves_app("mailto:a@b.co", false));
+        assert!(!leaves_app("file:///etc/passwd", true));
     }
 
     #[test]
