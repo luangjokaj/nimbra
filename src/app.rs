@@ -1265,6 +1265,13 @@ impl Nimbra {
             InputEvent::Enter => this.finder_open_selected(cx),
             _ => {}
         });
+        let settings = crate::settings::load();
+        // As it was left. NIMBRA_SIDEBAR=closed or open overrides that (screenshots).
+        let sidebar_open = match std::env::var("NIMBRA_SIDEBAR").as_deref() {
+            Ok("closed") => false,
+            Ok("open") => true,
+            _ => !settings.sidebar_auto_hide,
+        };
         let mut this = Self {
             finder_open: false,
             finder,
@@ -1347,7 +1354,7 @@ impl Nimbra {
             editor_theme: None,
             editor_focus: cx.focus_handle(),
             editor_keys: false,
-            settings: crate::settings::load(),
+            settings,
             settings_window: None,
             message_windows: Vec::new(),
             others: HashMap::new(),
@@ -1441,7 +1448,7 @@ impl Nimbra {
             pull_gen: 0,
             pull_hold: false,
             pull_done: false,
-            sidebar_open: std::env::var("NIMBRA_SIDEBAR").as_deref() != Ok("closed"),
+            sidebar_open,
             reload_gen: 0,
             images: HashMap::new(),
             image_requests: HashSet::new(),
@@ -5364,7 +5371,7 @@ impl Nimbra {
         match self.focus_restore.take() {
             Some((sidebar, list)) => {
                 if self.sidebar_open != sidebar {
-                    self.toggle_sidebar(cx);
+                    self.slide_sidebar(cx);
                 }
                 if self.list_open != list {
                     self.toggle_list(cx);
@@ -5376,7 +5383,7 @@ impl Nimbra {
                 }
                 self.focus_restore = Some((self.sidebar_open, self.list_open));
                 if self.sidebar_open {
-                    self.toggle_sidebar(cx);
+                    self.slide_sidebar(cx);
                 }
                 if self.list_open {
                     self.toggle_list(cx);
@@ -7870,15 +7877,12 @@ impl Nimbra {
         cx.notify();
     }
 
-    fn save_settings(&self, cx: &mut Context<Self>) {
-        let settings = self.settings.clone();
-        cx.background_executor()
-            .spawn(async move {
-                if crate::settings::save(&settings).is_err() {
-                    eprintln!("nimbra: could not save settings");
-                }
-            })
-            .detach();
+    fn save_settings(&self, _cx: &mut Context<Self>) {
+        // Not in the background: the last change has to be the one on disk, also when two
+        // come quickly or the app quits straight after. It is a tiny file, moved into place.
+        if crate::settings::save(&self.settings).is_err() {
+            eprintln!("nimbra: could not save settings");
+        }
     }
 
     /// ⌘, or the account menu: the Settings window (brought forward if already open).
@@ -8315,7 +8319,15 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// ⌘B, the toggle and the menu: the choice is kept for the next launch. Full view hides
+    /// the sidebar only for as long as it lasts, so it calls `slide_sidebar` instead.
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.slide_sidebar(cx);
+        self.settings.sidebar_auto_hide = !self.sidebar_open;
+        self.save_settings(cx);
+    }
+
+    fn slide_sidebar(&mut self, cx: &mut Context<Self>) {
         // Opened while it floats: it docks from where it is. Shut: away until the edge is
         // reached again, though the pointer is still on it.
         self.docked_from = self

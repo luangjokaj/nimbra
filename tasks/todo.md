@@ -231,3 +231,8 @@ position; Done (E) did nothing in All inboxes; Windows had no check that a link 
 
 Review: 25 cases reproduced on the build before and rerun after, with Gmail and the wipe
 logged instead of done. Not checked: two real accounts, Windows at run time.
+
+## Remembered sidebar (2026-11-22)
+
+- [x] Auto-hide is kept over restarts; full view does not count as choosing it; saving is
+      in order and survives quitting straight after

@@ -94,7 +94,7 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 | `⌘K` or `H` | Command palette (snooze) |
 | `↵` / `esc` | Run command / close palette |
 | `⌘⇧L` | Toggle light and dark |
-| `⌘B` | Show the sidebar, or hide it: hidden, it floats in, with the same blurred material, when the pointer reaches the window’s left edge |
+| `⌘B` | Show the sidebar, or hide it: hidden, it floats in, with the same blurred material, when the pointer reaches the window’s left edge. Nimbra starts the way you left it |
 | `⌘W` | Close the window; Nimbra keeps running and checking mail (click the Dock icon to bring it back, `⌘Q` to quit) |
 | `⌘⇧B` | Show or hide the message list (also the first toolbar button; drag the list's right edge to resize it) |
 | `⌘[` / `⌘]` | Back / forward through opened threads |
@@ -103,7 +103,7 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 
 ## Screenshot states
 
-`NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose` or `compose-full` opens that screen directly on the sample data. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` starts with the sidebar hidden (auto-hide). `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
+`NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose` or `compose-full` opens that screen directly on the sample data. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden (auto-hide) or docked, whatever was saved. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
 
 ## Sidebar blur
 
