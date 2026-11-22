@@ -1014,6 +1014,9 @@ pub struct Nimbra {
     /// The Inbox kept on this Mac is empty. Until the store is open this goes by the saved
     /// file's size, which is enough to open on Inbox Zero instead of the skeleton.
     inbox_saved_empty: bool,
+    /// The last All inboxes listing had every account's whole Inbox: each was reached and
+    /// none had a second page. Only then does empty mean Inbox Zero there.
+    all_inboxes_whole: bool,
     /// Inbox Zero coming up, on a launch that opens on it.
     arrival: Option<Arrival>,
     /// The message whose full header (all recipients, date) is expanded: thread id and
@@ -1361,6 +1364,7 @@ impl Nimbra {
         };
         let mut this = Self {
             inbox_saved_empty: false,
+            all_inboxes_whole: false,
             arrival: None,
             finder_open: false,
             finder,
@@ -1647,6 +1651,16 @@ impl Nimbra {
 
     fn is_demo(&self) -> bool {
         self.status == Status::Demo
+    }
+
+    /// Whether nothing on screen means Inbox Zero, rather than nothing in this mailbox.
+    fn is_zero(&self) -> bool {
+        match self.mailbox {
+            View::Inbox => true,
+            // Not while mail is filtered away (Unread), unchecked or past an account's first page.
+            View::AllInboxes => self.all_inboxes_whole && self.done.iter().all(|done| *done),
+            _ => false,
+        }
     }
 
     /// The store is still opening, and the Inbox it holds is an empty one.
@@ -2457,6 +2471,7 @@ impl Nimbra {
         self.checked.clear();
         self.counted = None;
         self.paged.clear();
+        self.all_inboxes_whole = false;
     }
 
     /// The open mailbox is being checked, and says so.
@@ -3677,12 +3692,12 @@ impl Nimbra {
             // A deadline each, so that one account cannot hold up the others.
             let results = futures::future::join_all(accounts.into_iter().map(|(id, client)| {
                 let listing = within(executor, async move {
-                    let (threads, _) = client.threads_page(View::Inbox, None, 30, None)?;
+                    let (threads, next) = client.threads_page(View::Inbox, None, 30, None)?;
                     let unread = client
                         .counts(&["INBOX".to_string()])
                         .get("INBOX")
                         .map_or(0, |(unread, _)| *unread);
-                    Ok((threads, unread))
+                    Ok((threads, next.is_some(), unread))
                 });
                 async move { (id, listing.await) }
             }))
@@ -3694,10 +3709,12 @@ impl Nimbra {
                 let mut fresh: Vec<Mail> = Vec::new();
                 let mut first_error = None;
                 let mut failed = 0;
+                let mut more = false;
                 let asked = results.len();
                 for (id, result) in results {
                     match result {
-                        Ok((threads, unread)) => {
+                        Ok((threads, has_more, unread)) => {
+                            more |= has_more;
                             this.account_unread.insert(id.clone(), unread);
                             fresh.extend(threads.into_iter().map(|summary| {
                                 let mut mail = Mail::from_summary(summary);
@@ -3711,6 +3728,8 @@ impl Nimbra {
                         }
                     }
                 }
+                this.all_inboxes_whole =
+                    failed == 0 && !more && asked >= this.settings.accounts.len();
                 if failed == asked
                     && let Some(error) = first_error
                 {
@@ -13953,6 +13972,8 @@ impl Nimbra {
                                 .text_color(soft)
                                 .child(if self.is_demo() {
                                     "Every important thread is handled. Go make something wonderful."
+                                } else if self.mailbox == View::AllInboxes {
+                                    "Your inboxes are empty. Go make something wonderful."
                                 } else {
                                     "Your inbox is empty. Go make something wonderful."
                                 }),
@@ -14391,7 +14412,7 @@ impl Render for Nimbra {
         }
         let empty = self.visible().is_empty();
         let zero_shown = match self.status {
-            Status::Demo | Status::Ready => empty && self.mailbox == View::Inbox,
+            Status::Demo | Status::Ready => empty && self.is_zero(),
             _ => self.opening_to_zero(),
         };
         self.arrival = self

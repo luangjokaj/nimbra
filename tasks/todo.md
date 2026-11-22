@@ -397,3 +397,8 @@ desktops, both themes, floating. Not seen on a real blurred desktop.
 
 - [x] The row opens Settings; its menu is gone (switch, add and sign out are in
       Settings › Accounts, and switching in the sidebar's Accounts list)
+
+## Inbox Zero in All inboxes (2026-11-22)
+
+- [x] The night sky there too, with "Your inboxes are empty."
+- [x] Only when every account was reached and none has more than is listed
