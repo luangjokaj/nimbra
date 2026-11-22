@@ -58,7 +58,8 @@ impl Arrival {
         self.part(0.5, 0.8)
     }
 
-    pub fn hint(self) -> f32 {
+    /// What is below the horizon.
+    pub fn below(self) -> f32 {
         self.part(0.8, 0.8)
     }
 }
@@ -73,7 +74,13 @@ mod tests {
     use super::*;
 
     fn parts(at: Arrival) -> Vec<f32> {
-        let mut all = vec![at.horizon(), at.date(), at.headline(), at.line(), at.hint()];
+        let mut all = vec![
+            at.horizon(),
+            at.date(),
+            at.headline(),
+            at.line(),
+            at.below(),
+        ];
         all.extend((0..4).map(|i| at.glow(i)));
         all.extend((0..48).map(|i| at.star(i)));
         all

@@ -9,6 +9,7 @@ mod editor;
 mod erase;
 mod gmail;
 mod input;
+mod inspiration;
 mod listing;
 mod notify;
 mod rich;

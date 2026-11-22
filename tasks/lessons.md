@@ -67,3 +67,9 @@
 
 - Inserting a function before another: insert before its doc comment, not its `fn` line
   (this stranded three). When moving code, take its doc along, and diff docs per function.
+
+## Hints
+
+- A key hint shows only while that key would do something, decided by the same check the
+  action uses. When animating or restyling a screen, ask of everything on it whether it is
+  true in that state: do not carry a wrong hint along and list it as "left open".

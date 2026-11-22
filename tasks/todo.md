@@ -255,6 +255,21 @@ quitting 40 to 80ms after Done, Trash, a batch or Undo. The settled screen is by
 byte main's in four layouts. Not checked: real Gmail, switching accounts, Reduce Motion
 switched on in macOS (forced in the test copy), Windows.
 
-Left open: "Press Z" shows after a launch with nothing to undo; a Gmail error other than
+Left open: a Gmail error other than
 offline replaces Inbox Zero with the error screen; emptying the inbox from All inboxes is
 not saved at once.
+
+## Inbox Zero below the horizon (2026-11-22)
+
+- [x] "Press Z to undo" only while Z would bring something back
+- [x] Otherwise, as on a fresh launch, a line for the day, fading up last
+- [x] Checked in sandboxed copies: launch, clear, undo, send, discard, layouts
+
+Review: 14 runs with the keychain and Gmail stubbed (launch, relaunch, offline, reduced
+motion, Done, Trash, refused change, composer open, a send and a discard held then over).
+Screens with the sidebar open and hidden, and the longest line at the minimum window.
+
+Found, left open (older than this):
+- [ ] A message is lost from sending if Nimbra quits within the undo delay (reproduced:
+      never sent, nothing said). Switching account clears it too (read in `reset_account`,
+      not run).

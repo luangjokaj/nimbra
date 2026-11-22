@@ -7214,6 +7214,8 @@ impl Nimbra {
             }
             Parked::Closing | Parked::InFlight => {}
         }
+        // Inbox Zero offers Z only until now.
+        cx.notify();
     }
 
     /// Sends a message whose undo delay is over.
@@ -8797,18 +8799,30 @@ impl Nimbra {
         }
     }
 
+    /// The message being sent or the discarded draft that `Z` would bring back.
+    fn held_back(&self) -> Option<u64> {
+        if self.compose.is_some() {
+            return None;
+        }
+        self.parked
+            .iter()
+            .rev()
+            .find(|(kind, _)| matches!(kind, Parked::Sending | Parked::Discarded))
+            .map(|(_, c)| c.serial)
+    }
+
+    /// Pressing `Z` in the main window now would bring something back.
+    fn can_undo(&self) -> bool {
+        // With the composer in this window, Z is a letter.
+        let typing = self.compose.is_some() && self.compose_host.is_none();
+        !typing && (self.held_back().is_some() || !self.history.is_empty())
+    }
+
     /// `Z`: brings back the last thread that was archived, moved or trashed.
     fn undo(&mut self, cx: &mut Context<Self>) {
         self.close_undo(cx);
         // A message being sent or a discarded draft comes back first.
-        if self.compose.is_none()
-            && let Some(serial) = self
-                .parked
-                .iter()
-                .rev()
-                .find(|(kind, _)| matches!(kind, Parked::Sending | Parked::Discarded))
-                .map(|(_, c)| c.serial)
-        {
+        if let Some(serial) = self.held_back() {
             if let Some(composer) = self.composer_mut(serial) {
                 composer.error = None;
             }
@@ -13068,6 +13082,29 @@ impl Nimbra {
                 .bg(fade(angle, color, alpha * shown, reach))
         };
 
+        let below = if self.can_undo() {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(meta("Press", c(0xffffff, 0.5)))
+                .child(kbd(&Theme::dark(), "Z"))
+                .child(meta("to undo", c(0xffffff, 0.5)))
+        } else {
+            div()
+                .w_full()
+                .px(px(32.))
+                .text_center()
+                .font_family(SERIF)
+                .italic()
+                .text_size(px(24.))
+                .line_height(px(30.))
+                .text_color(soft)
+                .child(crate::inspiration::line_for(
+                    chrono::Local::now().date_naive(),
+                ))
+        };
+
         div().flex_1().min_w(px(0.)).h_full().bg(t.surface).child(
             div()
                 .relative()
@@ -13185,15 +13222,7 @@ impl Nimbra {
                                     )),
                             )
                         })
-                        .child(
-                            settle(div(), arrival.hint())
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .child(meta("Press", c(0xffffff, 0.5)))
-                                .child(kbd(&Theme::dark(), "Z"))
-                                .child(meta("to bring the last thread back", c(0xffffff, 0.5))),
-                        ),
+                        .child(settle(below, arrival.below())),
                 ),
         )
     }

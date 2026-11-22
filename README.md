@@ -26,7 +26,7 @@ What it does with your mailbox:
 - Remote images stay hidden until you click **Load images** on a message. Tracking pixels are never loaded.
 - Links open in your browser, and only `http`, `https` and `mailto` links are clickable.
 - The sidebar switches between Inbox, Gmail's categories (Primary, Updates, Promotions, Social), Starred, Snoozed, Drafts, Sent, Done (Gmail's archive) and your own labels, 30 newest threads each.
-- Opening a thread marks it read. `S` stars, `⌘⌫` moves to Gmail's trash (kept 30 days), and `E` in Done moves a thread back to the inbox. `Z` undoes the last removal.
+- Opening a thread marks it read. `S` stars, `⌘⌫` moves to Gmail's trash (kept 30 days), and `E` in Done moves a thread back to the inbox. `Z` undoes the last removal; Inbox Zero says so while there is something to undo, and shows a line for the day when there is not.
 - While the app is open it reads Gmail's change feed every 30 seconds (or 1 or 5 minutes, set in Settings › General): only what changed since the last look is fetched, the open mailbox is updated in place, and a macOS notification (sender and subject) is shown for each thread with a new unread inbox message. The content of the 20 newest threads in the open mailbox is fetched ahead in the background and stored, so opening them is instant. Opening the app and pressing reload work the same way; a full fetch only happens when there is no starting point yet, the point is older than Gmail keeps (about a week), or the mailbox is search-based (Done, Snoozed, search results). Clicking a notification opens that email. Notifications need the bundled `Nimbra.app` and your permission, and only arrive while Nimbra is running.
 - Mailboxes, opened threads and sidebar counts are saved in an encrypted local store (`~/Library/Application Support/Nimbra/store`), so the app opens straight into your mail (or into Inbox Zero, which fades up, unless the Mac is set to reduce motion) and refreshes in the background. Each record is encrypted with ChaCha20-Poly1305 using a key kept only in the system keychain (`nimbra` / `store-key`); the files alone, or a backup of them, are unreadable. When the Google sign-in ends, the store and its key are deleted. Search results are never stored.
 - `/` or ⌘F opens the search panel: matches from the mail on this Mac appear as you type, Gmail’s own results join a moment later, ↑↓ pick one and Return opens it (or “All results”). With an empty box it shows recent searches and Gmail search tips.
@@ -117,6 +117,7 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/webview.rs`: the locked-down web view behind Show original
 - `src/store.rs`: the encrypted on-disk mail store
 - `src/arrival.rs`: the timing of Inbox Zero coming up at launch
+- `src/inspiration.rs`: the lines Inbox Zero shows when there is nothing to undo
 - `src/rich.rs`: turns HTML or plain-text mail into styled blocks; fetches images on request
 - `src/data.rs`: the mail model, sample inbox and palette commands
 - `src/ui.rs`: icon, kbd, avatar, pill, buttons
