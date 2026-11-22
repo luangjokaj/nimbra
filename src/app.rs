@@ -19,6 +19,7 @@ use crate::rich::{self, Block, Kind};
 use crate::scheduled::{self, Outcome, Scheduled};
 use crate::sending::{Job, QueuedMail, Stage};
 use crate::theme::{Accent, SERIF, Theme, Tone, c, fade, gradient};
+use crate::toast::{self, Toast};
 use crate::ui::{
     ButtonKind, Press, TOP_BAR, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill,
     shadow, tip,
@@ -615,7 +616,7 @@ struct MenuPopup {
 /// A short message at the bottom of the window (see `Nimbra::sync_notice_window`).
 struct NoticeToast {
     owner: gpui::WeakEntity<Nimbra>,
-    text: SharedString,
+    toast: Toast,
     dark: bool,
 }
 
@@ -638,20 +639,31 @@ impl Render for NoticeToast {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .justify_between()
+                    .gap(px(toast::GAP))
                     .size_full()
-                    .pl(px(16.))
-                    .pr(px(6.))
+                    .pl(px(toast::LEFT))
+                    .pr(px(toast::RIGHT))
                     .rounded(px(12.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
                     .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
-                    // Two lines of it fit.
-                    .child(div().flex_1().min_w(px(0.)).child(short(&self.text, 140)))
+                    // As wide as it was measured, so that it wraps as it was measured.
                     .child(
-                        button(&t, ButtonKind::Ghost, "Dismiss", None)
+                        div()
+                            .flex_none()
+                            .w(px(self.toast.text_width))
+                            .text_size(px(toast::FONT))
+                            .line_height(px(toast::LINE))
+                            .child(self.toast.text.clone()),
+                    )
+                    .child(
+                        button(&t, ButtonKind::Secondary, "Dismiss", None)
                             .id("dismiss-notice")
+                            .justify_center()
+                            .w(px(toast::DISMISS.0))
+                            .h(px(toast::DISMISS.1))
                             .press_soft()
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 owner
@@ -1274,6 +1286,7 @@ pub struct Nimbra {
     /// Pull to refresh: the list's scroll position, how far it has been pulled past the
     /// top, and whether the current trackpad gesture started at the top.
     list_scroll: gpui::ScrollHandle,
+    sidebar_scroll: gpui::ScrollHandle,
     /// The search panel's results, kept scrolled to the highlighted one.
     finder_scroll: gpui::ScrollHandle,
     pull: f32,
@@ -1522,6 +1535,7 @@ impl Nimbra {
             list_toggled: None,
             list_gen: 0,
             list_scroll: gpui::ScrollHandle::new(),
+            sidebar_scroll: gpui::ScrollHandle::new(),
             finder_scroll: gpui::ScrollHandle::new(),
             pull: 0.,
             pull_armed: false,
@@ -9377,17 +9391,18 @@ impl Nimbra {
     /// Shows the current message in a small window at the bottom centre, above the email
     /// (a native view that would cover anything drawn in the main window). It goes away by
     /// itself after a few seconds, longer for longer messages.
-    fn sync_notice_window(&mut self, cx: &mut Context<Self>) {
+    fn sync_notice_window(&mut self, toast: Option<Toast>, cx: &mut Context<Self>) {
         if let Some(handle) = self.notice_window.take() {
             handle
                 .update(cx, |_, window, _| window.remove_window())
                 .ok();
         }
-        let (Some(text), Some(frame)) = (self.notice.clone(), self.frame) else {
+        let (Some(toast), Some(frame)) = (toast, self.frame) else {
             return;
         };
-        let width = (text.chars().count() as f32 * 7.2 + 130.).clamp(260., 620.);
-        let height = 44.;
+        let (width, height) = (toast.width, toast.height);
+        // Long enough to read it.
+        let seconds = (4. + toast.text.chars().count() as f32 / 25.).min(20.);
         // Above the Undo pill when that is showing too.
         let lift = if self.undo_window.is_some() { 54. } else { 0. };
         let origin = gpui::point(
@@ -9413,11 +9428,7 @@ impl Nimbra {
             },
             |window, cx| {
                 crate::blur::no_window_shadow(window);
-                cx.new(|_| NoticeToast {
-                    owner,
-                    text: text.clone(),
-                    dark,
-                })
+                cx.new(|_| NoticeToast { owner, toast, dark })
             },
         );
         let Ok(handle) = opened else {
@@ -9426,7 +9437,6 @@ impl Nimbra {
         self.notice_window = Some(handle);
         self.notice_gen += 1;
         let shown = self.notice_gen;
-        let seconds = (4. + text.chars().count() as f32 / 25.).min(10.);
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_secs_f32(seconds))
@@ -9690,6 +9700,13 @@ fn short(text: &str, max: usize) -> SharedString {
 }
 
 const SIDEBAR_W: f32 = 236.;
+/// The sidebar's row of window controls. Nothing scrolls into it, so nothing shows through
+/// the buttons or outside the floating panel's round corners.
+const SIDEBAR_TOP: f32 = 40.;
+/// The room from there to the search field.
+const SIDEBAR_CLEAR: f32 = 12.;
+/// Below that row, where what scrolls up fades out.
+const SIDEBAR_FADE: f32 = 28.;
 /// The gap around the sidebar while it floats over the content.
 const FLOAT_INSET: f32 = 6.;
 /// Its corners then. The hole it cuts in the email's web view is rounded the same.
@@ -10167,6 +10184,7 @@ impl Nimbra {
         let scrolled =
             div()
                 .id("sidebar")
+                .track_scroll(&self.sidebar_scroll)
                 .flex()
                 .flex_col()
                 .flex_1()
@@ -10175,10 +10193,9 @@ impl Nimbra {
                 .overflow_y_scroll()
                 .px(px(12.))
                 .pb(px(10.))
-                // Space for the native traffic lights; dragging here moves the window.
                 .child(
                     div()
-                        .h(px(52.))
+                        .h(px(SIDEBAR_CLEAR))
                         .flex_none()
                         .on_mouse_down(MouseButton::Left, drag_or_zoom),
                 )
@@ -10540,7 +10557,28 @@ impl Nimbra {
                 t.border
             })
             .when(!floating, |d| d.bg(t.sidebar))
-            .child(scrolled)
+            // Space for the native traffic lights; dragging here moves the window.
+            .child(
+                div()
+                    .h(px(SIDEBAR_TOP))
+                    .flex_none()
+                    .on_mouse_down(MouseButton::Left, drag_or_zoom),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .child(scrolled)
+                    .child(crate::erase::fade(
+                        SIDEBAR_FADE,
+                        SIDEBAR_CLEAR,
+                        t.sidebar,
+                        self.sidebar_scroll.clone(),
+                    )),
+            )
             .child(footer)
     }
 
@@ -14178,8 +14216,14 @@ impl Render for Nimbra {
         // A new message (or none): show it in its window, after this frame.
         if self.notice != self.notice_shown {
             self.notice_shown = self.notice.clone();
+            let room = f32::from(window.bounds().size.width);
+            let toast = self
+                .notice
+                .as_ref()
+                .map(|text| Toast::new(text, room, window.text_system()));
             cx.spawn(async move |this, cx| {
-                this.update(cx, |this, cx| this.sync_notice_window(cx)).ok();
+                this.update(cx, |this, cx| this.sync_notice_window(toast, cx))
+                    .ok();
             })
             .detach();
         }

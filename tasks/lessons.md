@@ -112,3 +112,8 @@
 
 - Count units per click before shipping anything that fetches (6,000 a minute per user;
   a thread in full is 120, its headers 40, the change feed 2).
+- Test copies are never on the user's screen: the scratch GPUI puts them under the wallpaper,
+  transparent unless capturing, with no Dock icon. `focus: false` was not enough: the user
+  took a test copy's "Scheduled message sent" toast for their own mail.
+- GPUI's quads add alpha up. Anything see-through laid over see-through material needs the
+  compositing underline pipeline (`erase::fade`). Measure a bare column, do not eyeball it.

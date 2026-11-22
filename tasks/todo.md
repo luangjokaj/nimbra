@@ -355,9 +355,17 @@ Found, left open:
 - [x] One account: its address is the line under it
 
 Review: screenshots in both themes, floating, one and two accounts, at the minimum window.
-Found, left open (older): scrolled rows show under the window controls.
+Found then, fixed since: scrolled rows showed under the window controls.
 
-## Reloading on every tab click (asked 2026-11-22, not started: waiting for a yes)
+## Sidebar top and toasts (2026-11-22)
+
+- [x] What scrolls up fades out under the window controls, in the sidebar's own material
+- [x] A toast grows with its text (six lines, then an ellipsis); Dismiss is a bordered button
+
+Review: captured in both themes, docked and floating, at five scroll positions (the material
+within 2 of 255), and toasts from two words to 2,000 characters, CJK and emoji included.
+
+## Reloading on every tab click (asked 2026-11-22, approved)
 
 Measured on 89cb71b (fake Gmail, Google's quota table; 6,000 units a minute per user):
 a known category 2 units, a label or Done about 1,340 on every click, a first visit 3,860.

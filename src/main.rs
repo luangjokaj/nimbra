@@ -21,6 +21,7 @@ mod settings;
 mod store;
 mod system;
 mod theme;
+mod toast;
 mod tooltip;
 mod ui;
 mod webview;

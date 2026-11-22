@@ -7,8 +7,16 @@
 //! **A path therefore erases: do not draw anything else with `paint_path`.** Where the
 //! pipeline is not the one expected (another GPUI, not macOS) a path is painted as usual,
 //! and the shape is simply opaque, in the colour given.
+//!
+//! `fade` also needs to lay a see-through colour back, and GPUI adds up alpha instead of
+//! compositing it: on the sidebar's material that comes out opaque, a dark band. So the
+//! underline pipeline (a plain rectangle) composites alpha too. Over anything opaque, where
+//! underlines of text are, that is the same as before.
 
-use gpui::{Bounds, Hsla, IntoElement, PathBuilder, Pixels, Styled, canvas, point, px};
+use gpui::{
+    Bounds, Hsla, IntoElement, PathBuilder, Pixels, ScrollHandle, Styled, UnderlineStyle, canvas,
+    point, px, size,
+};
 
 /// Has to run before the first window opens, as each builds its pipelines then.
 pub fn install() {
@@ -27,6 +35,90 @@ pub fn rounded(radius: f32, fallback: Hsla) -> impl IntoElement {
     )
     .absolute()
     .inset_0()
+}
+
+/// Fades what scrolls up to the top edge of the element it is in into `material`, which is
+/// see-through. Painting the material over it would be a darker band on the blurred desktop,
+/// so each line of pixels is erased part-way and gets that much material back. Nothing shows
+/// at rest. `clear` is the room above the first thing scrolled: by then it is all there.
+pub fn fade(height: f32, clear: f32, material: Hsla, scroll: ScrollHandle) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let strength = (-f32::from(scroll.offset().y) / clear).clamp(0., 1.);
+            if strength == 0. {
+                return;
+            }
+            // Whole device pixels, or the lines' soft edges add up to stripes.
+            let scale = window.scale_factor();
+            let pixel = |at: Pixels| (f32::from(at) * scale).round();
+            let (left, top, right) = (
+                pixel(bounds.left()),
+                pixel(bounds.top()),
+                pixel(bounds.right()),
+            );
+            let lines = (height * scale).round() as usize;
+            let line = |row: usize| {
+                Bounds::new(
+                    point(px(left / scale), px((top + row as f32) / scale)),
+                    size(px((right - left) / scale), px(1. / scale)),
+                )
+            };
+            let covered = |row: usize| strength * covered(row as f32 / lines as f32);
+            // A layer each, so that all of it is erased before any is laid back.
+            window.paint_layer(bounds, |window| {
+                for row in 0..lines {
+                    if let Some(path) = shape(line(row), 0.) {
+                        let erased = erased(covered(row), material.a);
+                        window.paint_path(
+                            path,
+                            Hsla {
+                                a: erased,
+                                ..material
+                            },
+                        );
+                    }
+                }
+            });
+            window.paint_layer(bounds, |window| {
+                for row in 0..lines {
+                    let laid = material.a * covered(row);
+                    let line = line(row);
+                    // An underline for how it blends: see the top of this file.
+                    let style = UnderlineStyle {
+                        thickness: line.size.height,
+                        color: Some(Hsla {
+                            a: laid,
+                            ..material
+                        }),
+                        wavy: false,
+                    };
+                    window.paint_underline(line.origin, line.size.width, &style);
+                }
+            });
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .right_0()
+    .h(px(height))
+}
+
+/// How much of what is under the fade is hidden, `at` of the way down it: eased at both ends.
+fn covered(at: f32) -> f32 {
+    let at = at.clamp(0., 1.);
+    1. - at * at * (3. - 2. * at)
+}
+
+/// How much to erase so that laying `covered` of a material of this opacity over it leaves
+/// exactly that material, with `1 - covered` of what was scrolled there showing.
+fn erased(covered: f32, opacity: f32) -> f32 {
+    let left = 1. - opacity * covered;
+    if left <= f32::EPSILON {
+        return 1.;
+    }
+    (1. - (1. - covered) / left).clamp(0., 1.)
 }
 
 fn shape(bounds: Bounds<Pixels>, radius: f32) -> Option<gpui::Path<Pixels>> {
@@ -80,6 +172,8 @@ mod platform {
 
     /// What `build_path_sprite_pipeline_state` in GPUI's Metal renderer calls it.
     const LABEL: &CStr = c"path_sprites";
+    /// And the pipeline that lays colour back in `fade`.
+    const OVER_LABEL: &CStr = c"underlines";
     const ZERO: usize = 0;
     const ONE_MINUS_SOURCE_ALPHA: usize = 5;
 
@@ -118,13 +212,18 @@ mod platform {
             return std::ptr::null_mut();
         };
         // SAFETY: Metal's own arguments, passed on to the method this stands in for. Only
-        // GPUI's path pipeline is changed, and only its blend.
+        // GPUI's path and underline pipelines are changed, and only their blend.
         unsafe {
             if !descriptor.is_null() {
                 let label: *mut Object = msg_send![descriptor, label];
                 if !label.is_null() {
                     let text: *const std::os::raw::c_char = msg_send![label, UTF8String];
-                    if !text.is_null() && CStr::from_ptr(text) == LABEL {
+                    if !text.is_null() && CStr::from_ptr(text) == OVER_LABEL {
+                        let all: *mut Object = msg_send![descriptor, colorAttachments];
+                        let target: *mut Object = msg_send![all, objectAtIndexedSubscript: 0usize];
+                        let _: () = msg_send![target,
+                            setDestinationAlphaBlendFactor: ONE_MINUS_SOURCE_ALPHA];
+                    } else if !text.is_null() && CStr::from_ptr(text) == LABEL {
                         let all: *mut Object = msg_send![descriptor, colorAttachments];
                         let target: *mut Object = msg_send![all, objectAtIndexedSubscript: 0usize];
                         // Nothing of the path, and what is there less the path's coverage.
@@ -182,4 +281,22 @@ mod platform {
 #[cfg(not(target_os = "macos"))]
 mod platform {
     pub fn install() {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_fade_never_changes_the_material() {
+        let material = 0.88;
+        for step in 0..=20 {
+            let hidden = covered(step as f32 / 20.);
+            // Over a bare stretch of the sidebar: the material, exactly.
+            let left = material * (1. - erased(hidden, material));
+            let laid = material * hidden;
+            assert!((laid + left * (1. - laid) - material).abs() < 1e-4);
+        }
+        assert_eq!((covered(0.), covered(1.)), (1., 0.));
+    }
 }
