@@ -62,3 +62,8 @@
   (counts, labels, stores, timers, failures).
 - Code for a platform that cannot be run here: type-check it for that target (with a
   negative control) and read the API's documentation for every flag it relies on.
+
+## Editing
+
+- Inserting a function before another: insert before its doc comment, not its `fn` line
+  (this stranded three). When moving code, take its doc along, and diff docs per function.

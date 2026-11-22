@@ -2201,7 +2201,6 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Saves the current listing (minus threads cleared from it) for a later return.
     /// The thread left the undo history by itself (back with a newer message, or Gmail
     /// refused the change).
     fn forget_cleared(&mut self, position: usize, cx: &mut Context<Self>) {
@@ -2222,6 +2221,7 @@ impl Nimbra {
             .collect()
     }
 
+    /// Saves the current listing (minus threads cleared from it) for a later return.
     fn remember_mailbox(&mut self) {
         if self.is_demo() || self.status != Status::Ready {
             return;
