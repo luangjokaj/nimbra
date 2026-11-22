@@ -1137,6 +1137,8 @@ pub struct Nimbra {
     original_images: bool,
     /// The web view, created the first time it is needed.
     html_view: Option<std::rc::Rc<HtmlView>>,
+    /// The hidden web view that print jobs are laid out in, always light.
+    print_view: Option<HtmlView>,
     /// What the web view currently shows (thread, images allowed), to avoid reloading.
     html_shown: Option<(String, bool)>,
     /// The colour scheme the web view was last told to use.
@@ -1360,6 +1362,7 @@ impl Nimbra {
             original_images: true,
             html_view: None,
             html_shown: None,
+            print_view: None,
             html_dark: None,
             compose: None,
             pending_focus: None,
@@ -3119,6 +3122,7 @@ impl Nimbra {
         self.open_when_listed = None;
         self.search_opened = None;
         self.html_shown = None;
+        self.print_view = None;
         self.account = "".into();
         self.me_initials = "".into();
         self.me_photo = None;
@@ -4163,14 +4167,17 @@ impl Nimbra {
 
     /// Creates, loads, shows or hides the web view to match the current state.
     fn sync_html_view(&mut self, window: &mut Window) {
-        // A print job borrows the web view: load the document, then open the print panel.
+        // A print job has a view of its own, so the email shown does not replace it, and it
+        // is light whatever the theme.
         if let Some(doc) = self.print_pending.take() {
-            if self.html_view.is_none() {
-                self.html_view = HtmlView::new(window).map(std::rc::Rc::new);
+            if self.print_view.is_none() {
+                self.print_view = HtmlView::new(window);
             }
-            if let Some(view) = &self.html_view {
+            if let Some(view) = &self.print_view {
+                view.set_dark(false);
+                // Never shown, but it needs a page's size to lay the document out.
+                view.set_bounds(0., 0., 800., 1000.);
                 view.show(&doc, self.original_images);
-                self.html_shown = None;
             }
         }
         let Some((key, html)) = self.original_target() else {
@@ -4743,7 +4750,7 @@ impl Nimbra {
                 .timer(Duration::from_millis(700))
                 .await;
             this.update(cx, |this, _| {
-                if let Some(view) = &this.html_view {
+                if let Some(view) = &this.print_view {
                     view.print();
                 }
             })
