@@ -243,11 +243,7 @@ impl Render for MessageWindow {
                 .flex()
                 .flex_col()
                 .gap(px(12.))
-                .child(serif(
-                    &balance_title(&m.subject, 28., title_w, cx),
-                    28.,
-                    t.text,
-                ))
+                .child(n.subject_row(&t, &m, 28., title_w, cx))
                 .child(n.thread_banners(&t, &m, cx))
         };
 

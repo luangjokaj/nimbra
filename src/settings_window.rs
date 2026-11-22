@@ -351,13 +351,17 @@ fn switch(t: &Theme, on: bool) -> Div {
         .flex_none()
         .w(px(36.))
         .h(px(21.))
-        .p(px(2.))
+        // A border either way, so the knob keeps the same inset on and off.
+        .p(px(1.))
+        .border_1()
         .rounded_full()
         .cursor_pointer()
-        .when(on, |d| d.justify_end().bg(t.violet))
-        .when(!on, |d| {
-            d.bg(t.hover).border_1().border_color(t.border_strong)
+        .when(on, |d| {
+            d.justify_end()
+                .bg(t.violet)
+                .border_color(gpui::transparent_black())
         })
+        .when(!on, |d| d.bg(t.hover).border_color(t.border_strong))
         .child(
             div()
                 .size(px(17.))

@@ -6231,28 +6231,58 @@ impl Nimbra {
     }
 
     /// Leaves a mailing list: an https link opens in the browser (where the list asks for
-    /// confirmation); a mailto address opens a prepared message in the composer.
-    fn unsubscribe(&mut self, link: String, cx: &mut Context<Self>) {
+    /// confirmation); a mailto address opens a prepared message, from the account the mail
+    /// came to, in the window the button was in (`host`; `None` is the main window).
+    fn unsubscribe(
+        &mut self,
+        link: &str,
+        account: Option<String>,
+        host: Option<gpui::AnyWindowHandle>,
+        cx: &mut Context<Self>,
+    ) {
         if link.to_ascii_lowercase().starts_with("https://") {
-            cx.open_url(&link);
+            cx.open_url(link);
             return;
         }
-        let rest = &link["mailto:".len().min(link.len())..];
-        let (address, query) = rest.split_once('?').unwrap_or((rest, ""));
-        let subject = query
-            .split('&')
-            .find_map(|kv| kv.strip_prefix("subject="))
-            .map(|s| s.replace("%20", " ").replace('+', " "))
-            .unwrap_or_else(|| "unsubscribe".to_string());
-        self.open_compose(ComposeKind::New, cx);
-        if let Some(composer) = &self.compose {
-            let (to, subj) = (composer.to.clone(), composer.subject.clone());
-            let address = address.to_string();
-            to.update(cx, |input, cx| input.set(address, usize::MAX, cx));
-            if let Some(composer) = &mut self.compose {
-                composer.chipify(Field::To, true, cx);
-            }
-            subj.update(cx, |input, cx| input.set(subject, usize::MAX, cx));
+        let Some(mail) = gmail::unsubscribe_mail(link) else {
+            self.notice = Some("This list’s unsubscribe address is not valid.".into());
+            cx.notify();
+            return;
+        };
+        // Never into a message that is being written: it would gain the list as a recipient.
+        if self.compose.is_some() || self.palette {
+            self.notice =
+                Some("Finish or close what you are writing, then click Unsubscribe again.".into());
+            cx.notify();
+            return;
+        }
+        self.open_compose_from(ComposeKind::New, None, cx);
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        composer.account = account;
+        composer
+            .to
+            .update(cx, |input, cx| input.set(mail.to, usize::MAX, cx));
+        composer.chipify(Field::To, true, cx);
+        composer
+            .subject
+            .update(cx, |input, cx| input.set(mail.subject, usize::MAX, cx));
+        // A program reads it: exactly what the list asked for, and no signature.
+        if composer.rich {
+            composer.load = Some(if mail.body.is_empty() {
+                "<div><br></div>".to_string()
+            } else {
+                crate::editor::text_to_html(&mail.body)
+            });
+        } else if let Some(line) = composer.lines.first() {
+            line.update(cx, |input, cx| {
+                input.set(mail.body.replace('\n', " "), usize::MAX, cx)
+            });
+        }
+        if host.is_some() {
+            self.compose_host = host;
+            self.compose_detached = false;
         }
     }
 
@@ -8655,6 +8685,70 @@ fn panel_ease(t: f32) -> f32 {
     }
 }
 
+/// The space either side of a row's avatar, and at the row's right. With the list's own
+/// 10pt margin it puts the avatars on `LIST_LEFT`.
+const ROW_PAD: f32 = 14.;
+
+/// The list header's margins: the list's text starts and ends on them.
+const LIST_LEFT: f32 = 24.;
+const LIST_RIGHT: f32 = 18.;
+const HEADER_GAP: f32 = 8.;
+
+/// How Compose is drawn, as the room for it shrinks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ComposeLook {
+    Keyed,
+    Plain,
+    Icon,
+}
+
+impl ComposeLook {
+    fn width(self) -> f32 {
+        match self {
+            ComposeLook::Keyed => 112.,
+            ComposeLook::Plain => 88.,
+            ComposeLook::Icon => 34.,
+        }
+    }
+}
+
+/// What fits in the list's one-row header. The list can be 300pt narrow, so first the
+/// Offline pill loses its words, then Compose its key, then Compose its label.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HeaderFit {
+    words: bool,
+    compose: ComposeLook,
+}
+
+impl HeaderFit {
+    fn new(room: f32, switch: f32, offline: Option<f32>) -> Self {
+        use ComposeLook::{Icon, Keyed, Plain};
+        for (words, compose) in [(true, Keyed), (false, Keyed), (false, Plain)] {
+            let pill = offline.map_or(0., |wide| HEADER_GAP + if words { wide } else { 22. });
+            if switch + pill + HEADER_GAP + compose.width() <= room {
+                return HeaderFit { words, compose };
+            }
+        }
+        HeaderFit {
+            words: false,
+            compose: Icon,
+        }
+    }
+}
+
+/// The width of `text` on one line.
+fn text_width(text: &str, size: f32, family: &'static str, cx: &App) -> f32 {
+    let system = cx.text_system();
+    let font = system.resolve_font(&gpui::font(family));
+    text.chars()
+        .map(|c| {
+            system
+                .advance(font, px(size), c)
+                .map_or(size * 0.6, |a| f32::from(a.width))
+        })
+        .sum()
+}
+
 /// The height of an option in the All / Unread switch.
 const SEGMENT_H: f32 = 26.;
 /// The height of a sidebar row (folding animates rows to and from it).
@@ -8868,7 +8962,8 @@ impl Nimbra {
         }
     }
 
-    fn offline_pill(&self, t: &Theme) -> impl IntoElement {
+    /// Without room for the words it is only the dot, and the tooltip says the rest.
+    fn offline_pill(&self, t: &Theme, words: bool) -> impl IntoElement {
         div()
             .id("offline")
             .flex()
@@ -8881,13 +8976,19 @@ impl Nimbra {
             .bg(t.amber.opacity(0.14))
             .border_1()
             .border_color(t.amber.opacity(0.4))
+            .h(px(22.))
+            .when(!words, |d| d.w(px(22.)).justify_center())
             .tooltip(tip(
                 t.dark,
-                "Changes are kept and sent when the connection is back",
+                if words {
+                    SharedString::from("Changes are kept and sent when the connection is back")
+                } else {
+                    self.offline_label().into()
+                },
                 "",
             ))
-            .child(div().size(px(6.)).rounded_full().bg(t.amber))
-            .child(meta(self.offline_label(), t.text2))
+            .child(div().size(px(6.)).flex_none().rounded_full().bg(t.amber))
+            .when(words, |d| d.child(meta(self.offline_label(), t.text2)))
     }
 
     fn sidebar(&self, t: &Theme, floating: bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -9025,10 +9126,15 @@ impl Nimbra {
             .overflow_y_scroll()
             .px(px(12.))
             .pb(px(14.))
-            // Floating, the panel around it has the colour and the outline.
-            .when(!floating, |d| {
-                d.bg(t.sidebar).border_r_1().border_color(t.border)
+            // Floating, the panel around it has the colour and the outline. The border keeps
+            // its 1pt, so that docking moves nothing inside.
+            .border_r_1()
+            .border_color(if floating {
+                gpui::transparent_black()
+            } else {
+                t.border
             })
+            .when(!floating, |d| d.bg(t.sidebar))
             // Space for the native traffic lights; dragging here moves the window.
             .child(
                 div()
@@ -9385,7 +9491,7 @@ impl Nimbra {
         let hover = t.hover;
         // How many characters fit on a row at the list's current width (the text is cut
         // with an ellipsis by character count, so this follows the resize handle).
-        let line = ((self.list_width - 116.) / 7.4).max(8.) as usize;
+        let line = ((self.list_width - 104.) / 7.4).max(8.) as usize;
         // On a narrow list the tag gives way so the sender's name stays readable.
         let tag = m
             .tag
@@ -9421,15 +9527,26 @@ impl Nimbra {
         div()
             .id(("row", i))
             .press(t)
+            .relative()
             .flex()
-            .gap(px(12.))
-            .pl(px(10.))
-            .pr(px(14.))
+            .gap(px(ROW_PAD))
+            .px(px(ROW_PAD))
             .py(px(12.))
             .rounded(px(12.))
             .cursor_pointer()
             .when(selected || picked, |d| d.bg(t.selected))
-            .when(picked, |d| d.border_1().border_color(t.violet.opacity(0.5)))
+            // Drawn over the row rather than as its border, which would take up space and
+            // make the row (and those below it) jump.
+            .when(picked, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(t.violet.opacity(0.5)),
+                )
+            })
             .when(!selected && !picked, |d| d.hover(move |s| s.bg(hover)))
             .on_mouse_down(
                 MouseButton::Right,
@@ -9440,14 +9557,18 @@ impl Nimbra {
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 this.click_row(i, event.modifiers(), event.click_count(), cx)
             }))
-            .child(
-                div().w(px(6.)).pt(px(11.)).flex_none().child(
+            // The unread dot sits in the padding, so the avatar has the same space either side.
+            .when(m.unread, |d| {
+                d.child(
                     div()
+                        .absolute()
+                        .left(px((ROW_PAD - 6.) / 2.))
+                        .top(px(23.))
                         .size(px(6.))
                         .rounded_full()
-                        .when(m.unread, |d| d.bg(t.violet)),
-                ),
-            )
+                        .bg(t.violet),
+                )
+            })
             .child({
                 // In All inboxes, a small badge in the account's colour says whose it is.
                 let badge = m
@@ -9657,6 +9778,20 @@ impl Nimbra {
         // the other (and nothing shifts when it does).
         let unread_text = unread.to_string();
         let widths = [44., 70. + 7. * unread_text.len() as f32];
+        // The switch: its options, the 2pt between them, its padding and its border.
+        let mut switch_w = widths[0] + widths[1] + 2. + 8.;
+        if self.is_demo() {
+            switch_w += 2. + 112.;
+        }
+        // Dot, gap, padding and border around the pill's words.
+        let offline_w = self
+            .offline
+            .then(|| 30. + text_width(&self.offline_label(), 12., crate::theme::SANS, cx));
+        let fit = HeaderFit::new(
+            self.list_width - 1. - LIST_LEFT - LIST_RIGHT,
+            switch_w,
+            offline_w,
+        );
         let segment = |label: &str, count: Option<(&str, Hsla)>, active: bool, width: f32| {
             div()
                 .flex()
@@ -9748,90 +9883,74 @@ impl Nimbra {
                     ),
             )
             .child(
+                // One row on the top line (y = 25): the filters, then Offline and Compose.
                 div()
                     .flex()
-                    .flex_col()
-                    .gap(px(4.))
-                    .pl(px(24.))
-                    .pr(px(18.))
-                    .pt(px(14.))
-                    .pb(px(10.))
+                    .flex_none()
+                    .items_center()
+                    .gap(px(HEADER_GAP))
+                    .h(px(TOP_BAR - 1.))
+                    .pl(px(LIST_LEFT))
+                    .pr(px(LIST_RIGHT))
                     .on_mouse_down(MouseButton::Left, drag_or_zoom)
-                    // Small mailbox name, centred on the window controls' line (y = 25), then
-                    // filters and Compose on one row. The height is fixed so that the
-                    // Offline pill moves nothing when it comes and goes.
                     .child(
                         div()
+                            .relative()
                             .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(px(8.))
-                            .h(px(22.))
+                            .flex_none()
+                            .gap(px(2.))
+                            .p(px(3.))
+                            .rounded(px(10.))
+                            .bg(t.hover)
+                            .border_1()
+                            .border_color(t.border)
+                            .child(pill)
                             .child(
-                                overline(self.inbox_name().to_uppercase(), t.text3)
-                                    .min_w(px(0.))
-                                    .truncate(),
-                            )
-                            .when(self.offline, |d| d.child(self.offline_pill(t))),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .mt(px(10.))
-                            .child(
-                                div()
-                                    .relative()
-                                    .flex()
-                                    .gap(px(2.))
-                                    .p(px(3.))
-                                    .rounded(px(10.))
-                                    .bg(t.hover)
-                                    .border_1()
-                                    .border_color(t.border)
-                                    .child(pill)
-                                    .child(
-                                        segment("All", None, !self.unread_only, widths[0])
-                                            .id("filter-all")
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.set_unread_only(false, cx)
-                                            })),
-                                    )
-                                    .child(
-                                        segment(
-                                            "Unread",
-                                            Some((&unread_text, t.faint)),
-                                            self.unread_only,
-                                            widths[1],
-                                        )
-                                        .id("filter-unread")
-                                        .cursor_pointer()
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| {
-                                                this.set_unread_only(true, cx)
-                                            }),
-                                        ),
-                                    )
-                                    .when(self.is_demo(), |d| {
-                                        d.child(segment(
-                                            "Needs reply",
-                                            Some(("2", t.rose)),
-                                            false,
-                                            112.,
-                                        ))
-                                    }),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                button(t, ButtonKind::Secondary, "Compose", Some("C"))
-                                    .id("compose")
-                                    .press_soft()
-                                    .tooltip(tip(t.dark, "New message", "C"))
+                                segment("All", None, !self.unread_only, widths[0])
+                                    .id("filter-all")
+                                    .cursor_pointer()
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_compose(ComposeKind::New, cx)
+                                        this.set_unread_only(false, cx)
                                     })),
-                            ),
+                            )
+                            .child(
+                                segment(
+                                    "Unread",
+                                    Some((&unread_text, t.faint)),
+                                    self.unread_only,
+                                    widths[1],
+                                )
+                                .id("filter-unread")
+                                .cursor_pointer()
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.set_unread_only(true, cx)),
+                                ),
+                            )
+                            .when(self.is_demo(), |d| {
+                                d.child(segment("Needs reply", Some(("2", t.rose)), false, 112.))
+                            }),
+                    )
+                    .child(div().flex_1().min_w(px(0.)).mx(px(-HEADER_GAP / 2.)))
+                    .when(self.offline, |d| d.child(self.offline_pill(t, fit.words)))
+                    .child(
+                        match fit.compose {
+                            ComposeLook::Keyed => {
+                                button(t, ButtonKind::Secondary, "Compose", Some("C"))
+                            }
+                            ComposeLook::Plain => button(t, ButtonKind::Secondary, "Compose", None),
+                            ComposeLook::Icon => icon_button(t, "draft")
+                                .size(px(34.))
+                                .bg(t.hover)
+                                .border_1()
+                                .border_color(t.border_strong),
+                        }
+                        .id("compose")
+                        .h(px(34.))
+                        .press_soft()
+                        .tooltip(tip(t.dark, "New message", "C"))
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::New, cx)),
+                        ),
                     ),
             )
             // While mail is checked, a thin bar glides along the top of the list. Its 2px
@@ -9906,9 +10025,8 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .flex_none()
-                                .gap(px(12.))
-                                .pl(px(26.))
-                                .pr(px(14.))
+                                .gap(px(ROW_PAD))
+                                .px(px(ROW_PAD))
                                 .py(px(14.))
                                 .child(div().size(px(28.)).flex_none().rounded_full().bg(t.hover))
                                 .child(
@@ -10187,7 +10305,6 @@ impl Nimbra {
         } else {
             pane_w
         };
-        let subject_reader = balance_title(&m.subject, 38., (column - 128.).max(0.), cx);
         let visible = self.visible();
         let pos = visible
             .iter()
@@ -10554,7 +10671,7 @@ impl Nimbra {
                                             ))
                                         }),
                                 )
-                                .child(serif(&subject_reader, 38., t.text))
+                                .child(self.subject_row(t, m, 38., column - 128., cx))
                                 .child(self.thread_banners(t, m, cx))
                                 .child(
                                     div()
@@ -10791,9 +10908,9 @@ impl Nimbra {
                 i as f32 * 0.09,
                 div()
                     .flex()
-                    .gap(px(12.))
-                    .pl(px(26.))
-                    .pr(px(14.))
+                    .gap(px(ROW_PAD))
+                    .pl(px(LIST_LEFT))
+                    .pr(px(ROW_PAD))
                     .py(px(13.))
                     .child(
                         div()
@@ -10832,16 +10949,8 @@ impl Nimbra {
                     .h_full()
                     .border_r_1()
                     .border_color(t.border)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.))
-                            .pl(px(24.))
-                            .pt(px(19.))
-                            .pb(px(29.))
-                            .child(overline(self.inbox_name().to_uppercase(), t.text3)),
-                    )
+                    // As tall as the list's header and the strip under it.
+                    .child(div().flex_none().h(px(TOP_BAR + 1.)))
                     .children(rows),
             )
             .child(
@@ -11350,7 +11459,7 @@ impl Nimbra {
             }))
     }
 
-    /// The Spam warning and the Unsubscribe link for the open thread, when they apply.
+    /// The thread's labels, and the Trash and Spam notes, when they apply.
     fn thread_banners(&self, t: &Theme, mail: &Mail, cx: &mut Context<Self>) -> Div {
         // Labels are gathered from every message in the thread, so one deleted (or spam)
         // message would mark the whole conversation. Like Gmail, only a conversation that is
@@ -11359,7 +11468,6 @@ impl Nimbra {
         let inbox = has("INBOX");
         let spam = self.mailbox == View::Spam || (has("SPAM") && !inbox);
         let trash = self.mailbox == View::Trash || (has("TRASH") && !inbox);
-        let unsubscribe = mail.header.unsubscribe.clone();
         let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
         let labels = self.thread_labels(mail);
         div()
@@ -11467,17 +11575,56 @@ impl Nimbra {
                         ),
                 )
             })
-            .when_some(unsubscribe, |d, link| {
-                d.child(
-                    div().flex().child(
-                        button(t, ButtonKind::Secondary, "Unsubscribe", None)
-                            .id("unsubscribe")
-                            .press_soft()
-                            .tooltip(tip(t.dark, "Leave this mailing list", ""))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.unsubscribe(link.clone(), cx)
-                            })),
+    }
+
+    /// A thread's subject, with Unsubscribe at its top right when it is from a mailing list.
+    /// `width` is what the two have together.
+    fn subject_row(
+        &self,
+        t: &Theme,
+        mail: &Mail,
+        size: f32,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        const BUTTON_W: f32 = 112.;
+        const BUTTON_H: f32 = 32.;
+        const GAP: f32 = 16.;
+        let link = mail.header.unsubscribe.clone();
+        let taken = if link.is_some() { BUTTON_W + GAP } else { 0. };
+        let title = balance_title(&mail.subject, size, (width - taken).max(0.), cx);
+        let account = mail.account.clone();
+        div()
+            .flex()
+            .items_start()
+            .gap(px(GAP))
+            .child(serif(&title, size, t.text).flex_1().min_w(px(0.)))
+            .when_some(link, |d, link| {
+                // Where it goes is the sender's choice, so the tooltip says.
+                let hint = match url::Url::parse(&link).ok() {
+                    Some(url) if url.scheme() == "https" => format!(
+                        "Opens {} in your browser to unsubscribe",
+                        short(url.host_str().unwrap_or("the list’s page"), 48)
                     ),
+                    _ => "Prepares an unsubscribe email for you to send".to_string(),
+                };
+                d.child(
+                    button(t, ButtonKind::Secondary, "Unsubscribe", None)
+                        .id("unsubscribe")
+                        .justify_center()
+                        .w(px(BUTTON_W))
+                        .h(px(BUTTON_H))
+                        // Centred on the subject's first line.
+                        .mt(px(((size * 1.14).round() - BUTTON_H) / 2.))
+                        .press_soft()
+                        .tooltip(tip(t.dark, hint, ""))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let host = window
+                                .root::<MessageWindow>()
+                                .flatten()
+                                .map(|_| window.window_handle());
+                            this.unsubscribe(&link, account.clone(), host, cx)
+                        })),
                 )
             })
     }
@@ -11506,11 +11653,7 @@ impl Nimbra {
                     .pb(px(12.))
                     .border_b_1()
                     .border_color(t.border)
-                    .child(serif(
-                        &balance_title(&m.subject, 26., (pane_w - 56.).max(0.), cx),
-                        26.,
-                        t.text,
-                    ))
+                    .child(self.subject_row(t, m, 26., pane_w - 56., cx))
                     .child(self.thread_banners(t, m, cx))
                     .child(self.message_header(t, m, 0, false, cx)),
             )
@@ -13513,5 +13656,34 @@ fn carry_out_due(account: &str, client: &gmail::Client) {
         if scheduled.len() != before {
             let _ = store.save("scheduled", &scheduled);
         }
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+
+    #[test]
+    fn the_list_header_fits_at_every_width() {
+        let used = |fit: HeaderFit, switch: f32, offline: Option<f32>| {
+            let pill = offline.map_or(0., |w| HEADER_GAP + if fit.words { w } else { 22. });
+            switch + pill + HEADER_GAP + fit.compose.width()
+        };
+        for list in 300..=720 {
+            let room = list as f32 - 1. - LIST_LEFT - LIST_RIGHT;
+            for digits in 1..=4 {
+                let switch = 124. + 7. * digits as f32;
+                for offline in [None, Some(67.), Some(140.)] {
+                    let fit = HeaderFit::new(room, switch, offline);
+                    assert!(
+                        used(fit, switch, offline) <= room,
+                        "{list} {digits} {offline:?}"
+                    );
+                }
+            }
+        }
+        // At the default width there is room for all of it.
+        let full = HeaderFit::new(452. - 1. - LIST_LEFT - LIST_RIGHT, 131., Some(126.));
+        assert_eq!((full.words, full.compose), (true, ComposeLook::Keyed));
     }
 }

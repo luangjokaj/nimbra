@@ -180,3 +180,17 @@ checked against the screen's. Not checked: a hand on the mouse, full screen, two
 Windows.
 Afterwards (asked for): the floating panel has the docked blur, by clipping the content
 under it (except on Inbox Zero, where the gradient shows through the tint).
+
+## Unsubscribe, list header, row padding (2026-11-22)
+
+- [x] Unsubscribe at the subject's top right; mailto fixed (never into an open draft, right
+      account and window, body kept, no signature)
+- [x] List header: one row on the top line, no title, Offline left of Compose
+- [x] Rows: the same space either side of the avatar
+- [x] Verify on sample mail, every width
+
+Review: the draft overwrite was reproduced on the build before and is gone. The https link
+was checked as far as the browser call (clicking a real one would unsubscribe). Open: in a
+message window, Restore, Not spam and removing a label act on the main window's thread.
+Also: picking a row no longer moves it (nor the switch knob, nor the sidebar as it docks):
+no state adds or removes a border.
