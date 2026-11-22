@@ -215,3 +215,7 @@ inboxes; Windows has no check that a link was clicked (and no build of it exists
 
 - [x] Tooltips are click-through windows, so the email does not cut them off
 - [x] The content under the floating sidebar is cut in the panel's rounded shape
+
+## Inbox Zero (2026-11-22)
+
+- [x] The headline in the middle of the sky, Press Z in the middle of the ground

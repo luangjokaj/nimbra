@@ -8828,6 +8828,9 @@ fn text_width(text: &str, size: f32, family: &'static str, cx: &App) -> f32 {
         .sum()
 }
 
+/// How far down Inbox Zero's horizon is.
+const HORIZON: f32 = 0.72;
+
 /// The height of an option in the All / Unread switch.
 const SEGMENT_H: f32 = 26.;
 /// The height of a sidebar row (folding animates rows to and from it).
@@ -12882,102 +12885,111 @@ impl Nimbra {
                 .child(layer(315., 0xffa94d, 0.6, 0.5))
                 .child(layer(0., 0xff4fa0, 0.55, 0.42))
                 .child(layer(300., 0x3fa9ff, 0.22, 0.4))
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(relative(0.72))
-                        .h(px(1.))
-                        .bg(c(0xffffff, 0.22)),
-                )
                 .children(stars)
-                .child(div().h(px(72.)).flex_none())
-                .child(overline("THURSDAY, NOVEMBER 20", c(0xffffff, 0.55)))
-                .child(div().h(px(18.)).flex_none())
-                .child(serif("Inbox zero.", 120., ink))
-                .child(div().h(px(14.)).flex_none())
-                .child(
-                    div()
-                        .text_size(px(17.))
-                        .line_height(px(26.))
-                        .text_color(soft)
-                        .child(if self.is_demo() {
-                            "Every important thread is handled. Go make something wonderful."
-                        } else {
-                            "Your inbox is empty. Go make something wonderful."
-                        }),
-                )
-                .child(div().h(px(40.)).flex_none())
-                // Stats and calendar are sample content; real mail shows the headline only.
-                .when(self.is_demo(), |d| {
-                    d.child(
-                        div()
-                            .flex()
-                            .gap(px(12.))
-                            .child(stat(
-                                "done",
-                                t.mint,
-                                "threads handled",
-                                &(32 + self.history.len()).to_string(),
-                            ))
-                            .child(stat("clock", t.sky, "time in inbox", "38m"))
-                            .child(stat("zap", t.amber, "zero streak", "8 days")),
-                    )
-                })
-                .child(div().flex_1())
-                .when(self.is_demo(), |d| {
-                    d.child(
-                        glass(div())
-                            .bg(c(0x14131c, 0.72))
-                            .flex()
-                            .items_center()
-                            .gap(px(14.))
-                            .pl(px(14.))
-                            .pr(px(10.))
-                            .py(px(10.))
-                            .text_color(ink)
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .size(px(34.))
-                                    .rounded(px(9.))
-                                    .bg(Tone::Sky.gradient())
-                                    .child(icon("calendar", 16., gpui::white())),
-                            )
-                            .child(
-                                div()
-                                    .mr(px(40.))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child("Up next · Design crit"),
-                                    )
-                                    .child(meta(
-                                        "2:00 PM · Studio B · in 42 min",
-                                        c(0xffffff, 0.55),
-                                    )),
-                            )
-                            .child(button(
-                                &Theme::dark(),
-                                ButtonKind::Secondary,
-                                "Join",
-                                Some("J"),
-                            )),
-                    )
-                })
+                // Two halves with the horizon between: each holds its content in its middle.
                 .child(
                     div()
                         .flex()
+                        .flex_col()
+                        .flex_none()
                         .items_center()
-                        .gap(px(6.))
-                        .mt(px(18.))
-                        .mb(px(36.))
-                        .child(meta("Press", c(0xffffff, 0.5)))
-                        .child(kbd(&Theme::dark(), "Z"))
-                        .child(meta("to bring the last thread back", c(0xffffff, 0.5))),
+                        .justify_center()
+                        .w_full()
+                        .h(relative(HORIZON))
+                        .child(overline("THURSDAY, NOVEMBER 20", c(0xffffff, 0.55)))
+                        .child(div().h(px(18.)).flex_none())
+                        .child(serif("Inbox zero.", 120., ink))
+                        .child(div().h(px(14.)).flex_none())
+                        .child(
+                            div()
+                                .text_size(px(17.))
+                                .line_height(px(26.))
+                                .text_color(soft)
+                                .child(if self.is_demo() {
+                                    "Every important thread is handled. Go make something wonderful."
+                                } else {
+                                    "Your inbox is empty. Go make something wonderful."
+                                }),
+                        )
+                        // Sample content: real mail shows the headline only.
+                        .when(self.is_demo(), |d| {
+                            d.child(
+                                div()
+                                    .flex()
+                                    .mt(px(40.))
+                                    .gap(px(12.))
+                                    .child(stat(
+                                        "done",
+                                        t.mint,
+                                        "threads handled",
+                                        &(32 + self.history.len()).to_string(),
+                                    ))
+                                    .child(stat("clock", t.sky, "time in inbox", "38m"))
+                                    .child(stat("zap", t.amber, "zero streak", "8 days")),
+                            )
+                        })
+                )
+                .child(div().flex_none().w_full().h(px(1.)).bg(c(0xffffff, 0.22)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .w_full()
+                        .gap(px(18.))
+                        .when(self.is_demo(), |d| {
+                            d.child(
+                                glass(div())
+                                    .bg(c(0x14131c, 0.72))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(14.))
+                                    .pl(px(14.))
+                                    .pr(px(10.))
+                                    .py(px(10.))
+                                    .text_color(ink)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .size(px(34.))
+                                            .rounded(px(9.))
+                                            .bg(Tone::Sky.gradient())
+                                            .child(icon("calendar", 16., gpui::white())),
+                                    )
+                                    .child(
+                                        div()
+                                            .mr(px(40.))
+                                            .child(
+                                                div()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child("Up next · Design crit"),
+                                            )
+                                            .child(meta(
+                                                "2:00 PM · Studio B · in 42 min",
+                                                c(0xffffff, 0.55),
+                                            )),
+                                    )
+                                    .child(button(
+                                        &Theme::dark(),
+                                        ButtonKind::Secondary,
+                                        "Join",
+                                        Some("J"),
+                                    )),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(meta("Press", c(0xffffff, 0.5)))
+                                .child(kbd(&Theme::dark(), "Z"))
+                                .child(meta("to bring the last thread back", c(0xffffff, 0.5))),
+                        ),
                 ),
         )
     }
