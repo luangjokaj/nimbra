@@ -3316,6 +3316,7 @@ impl Nimbra {
                 let mut fresh: Vec<Mail> = Vec::new();
                 let mut first_error = None;
                 let mut failed = 0;
+                let asked = results.len();
                 for (id, result) in results {
                     match result {
                         Ok((threads, unread)) => {
@@ -3332,21 +3333,22 @@ impl Nimbra {
                         }
                     }
                 }
-                if fresh.is_empty()
+                if failed == asked
                     && let Some(error) = first_error
                 {
                     this.fail(error, cx);
                     return;
                 }
+                fresh.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+                this.next_page = None;
+                this.install(fresh, cx);
+                // After the listing, which clears the notice.
                 if failed > 0 {
                     this.notice = Some(
                         format!("{failed} account(s) could not be checked; showing the rest.")
                             .into(),
                     );
                 }
-                fresh.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
-                this.next_page = None;
-                this.install(fresh, cx);
                 // Count only; never addresses or subjects.
                 eprintln!("nimbra: All inboxes listed ({} threads)", this.mails.len());
             })
@@ -6727,7 +6729,7 @@ impl Nimbra {
         cx: &mut Context<Self>,
     ) {
         let result = match result {
-            Err(error) if error.is::<gmail::SignedOut>() => {
+            Err(error) if self.shown_signed_out(&error) => {
                 self.compose = None;
                 self.parked.clear();
                 self.fail(error, cx);
@@ -7009,7 +7011,7 @@ impl Nimbra {
                             this.refresh(cx);
                         }
                     }
-                    Err(error) if error.is::<gmail::SignedOut>() => {
+                    Err(error) if this.shown_signed_out(&error) => {
                         this.parked.clear();
                         this.compose = None;
                         this.fail(error, cx);
@@ -7803,6 +7805,14 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// Whether an error ends the shown account's sign-in. Other accounts' connections are in
+    /// use too (All inboxes, message windows, requests from before a switch): theirs do not.
+    fn shown_signed_out(&self, error: &anyhow::Error) -> bool {
+        error
+            .downcast_ref::<gmail::SignedOut>()
+            .is_some_and(|e| e.account.is_empty() || e.account == self.account_id)
+    }
+
     fn fail(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
         // Offline is a state, not an error: keep showing what is here, and catch up later.
         if error.is::<gmail::Offline>() {
@@ -7815,7 +7825,24 @@ impl Nimbra {
             return;
         }
         eprintln!("nimbra: {error}");
-        if error.is::<gmail::SignedOut>() {
+        if let Some(out) = error.downcast_ref::<gmail::SignedOut>()
+            && !self.shown_signed_out(&error)
+        {
+            // Another account's: the mail, snoozes and sign-in of the one shown are not its.
+            self.fetching = false;
+            let whose = self
+                .settings
+                .accounts
+                .iter()
+                .find(|a| a.id == out.account)
+                .map_or("another account".to_string(), |a| a.email.clone());
+            self.notice = Some(
+                format!("The sign-in for {whose} expired. Switch to it to connect again.").into(),
+            );
+            cx.notify();
+            return;
+        }
+        if self.shown_signed_out(&error) {
             self.gmail = None;
             // The stored mail belongs to that sign-in: remove it, and its key.
             self.store = None;

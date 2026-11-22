@@ -51,3 +51,8 @@
 - A state (picked, active, on, floating) never adds or removes a border: that changes the
   layout and the element jumps. Keep the border and change its colour, or draw it as an
   absolute overlay.
+
+## Positions and accounts
+
+- An error from a connection says whose it is. Never sign out, wipe or switch on an error
+  without checking that it is the shown account's.

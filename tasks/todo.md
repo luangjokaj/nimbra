@@ -220,3 +220,7 @@ inboxes; Windows has no check that a link was clicked (and no build of it exists
 
 - [x] The headline in the middle of the sky, Press Z in the middle of the ground
 - [x] Today's date on real mail (it was the sample's hard-coded day)
+
+## Positions, All inboxes, Windows links (2026-11-22)
+
+- [x] Another account's expired sign-in no longer signs out, and wipes, the shown one
