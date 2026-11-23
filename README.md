@@ -82,6 +82,15 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 | Key | Action |
 | --- | --- |
 | `J` / `K` or arrows | Next / previous thread |
+| `←` | Move the keys to the sidebar (a hidden sidebar comes in until you leave it); `↑` `↓` or `J` `K` walk its rows, `→` or `↵` opens one, `esc` goes back to the list. Walking fetches nothing until you open a row |
+| `Home` / `End` (or `⌘↑` / `⌘↓`) | First / last thread, or sidebar row |
+| `X` | Pick or unpick the open thread |
+| `⇧↑` / `⇧↓` (or `⇧K` / `⇧J`) | Pick more threads from the open one |
+| `O` | Open the thread in its own window |
+| `Space` / `⇧Space` | Page down / up through the message |
+| `G` then `I` `S` `B` `T` `D` `A` | Go to Inbox, Starred, Snoozed, Sent, Drafts, All mail |
+| `⌘1` … `⌘9` | All inboxes, then each account (with one account, `⌘1` is the Inbox) |
+| `?` | Every shortcut on one sheet |
 | `E` | Mark done (clear them all to reach Inbox Zero) |
 | `Z`, `⌘Z` or `Ctrl+Z` | Undo the last archive, move or trash (an Undo pill also appears for a few seconds) |
 | `/` or `⌘F` | Search (Enter runs it, `esc` clears it) |

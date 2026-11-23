@@ -11,6 +11,7 @@ mod erase;
 mod gmail;
 mod input;
 mod inspiration;
+mod keyboard;
 mod leaving;
 mod listing;
 mod notify;
@@ -35,12 +36,15 @@ use gpui::{
 };
 
 use app::{
-    Back, Compose, Confirm, Dismiss, FocusSearch, Forward, ForwardMessage, HideApp, HideOthers,
-    HideWindow, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReply,
-    MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal, MenuToggleSidebar,
-    MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenSettings, Prev, Print, Quit, Reload, Reply,
-    ReplyAll, SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList,
-    ToggleOriginal, TogglePalette, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
+    Back, Compose, Confirm, Dismiss, First, FocusSearch, FocusSidebar, Forward, ForwardMessage,
+    GoAllMail, GoDrafts, GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp, HideOthers,
+    HideWindow, Last, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread,
+    MenuReply, MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal,
+    MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenInWindow, OpenSettings,
+    OpenSidebarRow, PageDown, PageUp, PickDown, PickThread, PickUp, Prev, Print, Quit, Reload,
+    Reply, ReplyAll, SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList,
+    ToggleOriginal, TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash,
+    Undo,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -236,8 +240,45 @@ fn main() {
             KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("cmd-n", Compose, None),
             KeyBinding::new("cmd-p", Print, None),
+            // Walking the window: ← to the sidebar, → back with what is under the cursor.
+            KeyBinding::new("left", FocusSidebar, mail),
+            KeyBinding::new(
+                "right",
+                OpenSidebarRow,
+                Some("Mail && Sidebar && !TextInput"),
+            ),
+            KeyBinding::new("home", First, mail),
+            KeyBinding::new("end", Last, mail),
+            KeyBinding::new("cmd-up", First, mail),
+            KeyBinding::new("cmd-down", Last, mail),
+            KeyBinding::new("x", PickThread, mail),
+            KeyBinding::new("shift-down", PickDown, mail),
+            KeyBinding::new("shift-j", PickDown, mail),
+            KeyBinding::new("shift-up", PickUp, mail),
+            KeyBinding::new("shift-k", PickUp, mail),
+            KeyBinding::new("o", OpenInWindow, mail),
+            KeyBinding::new("space", PageDown, mail),
+            KeyBinding::new("shift-space", PageUp, mail),
+            KeyBinding::new("?", ToggleShortcuts, mail),
+            KeyBinding::new("shift-/", ToggleShortcuts, mail),
+            // Gmail's: G, then where.
+            KeyBinding::new("g i", GoInbox, mail),
+            KeyBinding::new("g s", GoStarred, mail),
+            KeyBinding::new("g b", GoSnoozed, mail),
+            KeyBinding::new("g t", GoSent, mail),
+            KeyBinding::new("g d", GoDrafts, mail),
+            KeyBinding::new("g a", GoAllMail, mail),
             KeyBinding::new("cmd-a", SelectAllThreads, mail),
             KeyBinding::new("ctrl-a", SelectAllThreads, mail),
+            KeyBinding::new("cmd-1", GoNumber(1), Some("Mail")),
+            KeyBinding::new("cmd-2", GoNumber(2), Some("Mail")),
+            KeyBinding::new("cmd-3", GoNumber(3), Some("Mail")),
+            KeyBinding::new("cmd-4", GoNumber(4), Some("Mail")),
+            KeyBinding::new("cmd-5", GoNumber(5), Some("Mail")),
+            KeyBinding::new("cmd-6", GoNumber(6), Some("Mail")),
+            KeyBinding::new("cmd-7", GoNumber(7), Some("Mail")),
+            KeyBinding::new("cmd-8", GoNumber(8), Some("Mail")),
+            KeyBinding::new("cmd-9", GoNumber(9), Some("Mail")),
             // ⌘W hides the window; Nimbra keeps running and checking mail until ⌘Q.
             KeyBinding::new("cmd-w", HideWindow, None),
             // While writing in the message editor these keys format text (bold, link) or

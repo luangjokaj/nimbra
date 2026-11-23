@@ -248,6 +248,15 @@ mod platform {
             let _ = self.view.print();
         }
 
+        /// Space and Shift-Space: a page down or up. The mail's own scripts are off; one
+        /// run by the app still is, and this one is fixed text.
+        pub fn scroll_page(&self, down: bool) {
+            let sign = if down { "" } else { "-" };
+            let _ = self.view.evaluate_script(&format!(
+                "window.scrollBy({{top: {sign}window.innerHeight * 0.9, behavior: 'smooth'}})"
+            ));
+        }
+
         /// Makes the page see a light or dark colour scheme, following the app's theme
         /// rather than the system's. Emails that ship dark-mode styles then use them;
         /// with `darken`, light emails get a dark page too (macOS only). Takes effect at
@@ -752,6 +761,7 @@ mod platform {
         pub fn set_hole(&self, _hole: Option<(f32, f32, f32, f32)>) {}
         pub fn set_dark(&self, _dark: bool, _darken: bool) {}
         pub fn print(&self) {}
+        pub fn scroll_page(&self, _down: bool) {}
     }
 }
 

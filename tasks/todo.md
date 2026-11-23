@@ -440,3 +440,15 @@ too), Windows (nothing puts quitting off there), two real accounts.
 
 Review: 14 cases against a fake Google (photo, letter, API off, relaunch, sign-out, wrong
 account). Not checked: real Google, a real Workspace photo.
+
+## The keyboard (2026-11-23)
+
+- [x] `←` puts the keys in the sidebar: arrows walk it, `→`/`↵` open, `esc` leaves; a hidden
+      sidebar comes in for it and goes again
+- [x] Home/End, `X` and Shift-arrows to pick, `O`, Space paging, `G` chords, `⌘1`–`⌘9`
+- [x] `?` shortcuts sheet
+- [x] Found on the way: J/K never scrolled the list, so the open thread went off screen
+
+Review: 34 real keystrokes through the keymap on a fake Gmail (both accounts, hidden
+sidebar, search box, Settings); walking the sidebar cost 0 Gmail units; the sheet and the
+cursor captured. Not checked: Space in the original (web) view on real mail, light theme.

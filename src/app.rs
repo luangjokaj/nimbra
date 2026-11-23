@@ -14,6 +14,7 @@ use crate::checking::{Asked, Checks, within};
 use crate::data::{COMMANDS, Mail, inbox};
 use crate::gmail::{self, View};
 use crate::input::{InputEvent, TextInput};
+use crate::keyboard::{self, Pane, Row as SidebarRow};
 use crate::leaving::{self, End, Leaving, SavedAs, Steps, Underway};
 use crate::rich::{self, Block, Kind};
 use crate::scheduled::{self, Outcome, Scheduled};
@@ -88,9 +89,32 @@ actions!(
         MenuToggleOriginal,
         MenuToggleSidebar,
         MenuSearch,
-        Quit
+        Quit,
+        // The keyboard (see `keyboard.rs`).
+        FocusSidebar,
+        OpenSidebarRow,
+        First,
+        Last,
+        PickThread,
+        PickDown,
+        PickUp,
+        OpenInWindow,
+        PageDown,
+        PageUp,
+        ToggleShortcuts,
+        GoInbox,
+        GoStarred,
+        GoSnoozed,
+        GoSent,
+        GoDrafts,
+        GoAllMail
     ]
 );
+
+/// ⌘1 to ⌘9: All inboxes, then each account (`keyboard::Sidebar::numbered`).
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = nimbra, no_json)]
+pub struct GoNumber(pub usize);
 
 /// Where the app is in connecting to a mailbox.
 #[derive(Clone, PartialEq)]
@@ -1314,6 +1338,22 @@ pub struct Nimbra {
     palette_sel: usize,
     dark: bool,
     sidebar_open: bool,
+    /// Which pane Up, Down, Enter and Escape act in.
+    pane: Pane,
+    /// The sidebar row the keyboard is on (in `keyboard::Sidebar::rows`).
+    sidebar_cursor: usize,
+    /// The sidebar was hidden and came in for the keyboard: it goes again when left.
+    sidebar_for_keys: bool,
+    /// The far end of a Shift-arrow pick (a thread's index).
+    pick_end: Option<usize>,
+    /// The next frame scrolls the list to the open thread (or the pick's end), or the
+    /// sidebar to its cursor: set when the keyboard moves them.
+    reveal_row: std::rc::Rc<std::cell::Cell<bool>>,
+    reveal_cursor: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The shortcuts sheet (?).
+    shortcuts: bool,
+    /// What the conversation is scrolled to, for Space.
+    reader_scroll: gpui::ScrollHandle,
     /// The message list: shown or hidden, its width, and an in-progress resize
     /// (mouse x at the start, width at the start).
     list_open: bool,
@@ -1606,6 +1646,14 @@ impl Nimbra {
             pull_hold: false,
             pull_done: false,
             sidebar_open,
+            pane: Pane::List,
+            sidebar_cursor: 0,
+            sidebar_for_keys: false,
+            pick_end: None,
+            reveal_row: Default::default(),
+            reveal_cursor: Default::default(),
+            shortcuts: false,
+            reader_scroll: gpui::ScrollHandle::new(),
             reload_gen: 0,
             images: HashMap::new(),
             image_requests: HashSet::new(),
@@ -2511,6 +2559,7 @@ impl Nimbra {
 
     /// Switches the list to another mailbox.
     fn select_mailbox(&mut self, view: View, cx: &mut Context<Self>) {
+        self.leave_sidebar(cx);
         if self.mailbox == view || matches!(self.status, Status::SignedOut | Status::SigningIn) {
             return;
         }
@@ -3515,6 +3564,7 @@ impl Nimbra {
 
     /// Shows another of the accounts signed in on this Mac.
     fn switch_account(&mut self, id: String, cx: &mut Context<Self>) {
+        self.leave_sidebar(cx);
         if self.config.is_none() || id == self.account_id || !gmail::is_account_id(&id) {
             return;
         }
@@ -4575,6 +4625,7 @@ impl Nimbra {
 
     /// Opens the composer, empty or as a reply to the open thread.
     fn open_compose(&mut self, kind: ComposeKind, cx: &mut Context<Self>) {
+        self.leave_sidebar(cx);
         let source = self
             .mails
             .get(self.selected)
@@ -5977,6 +6028,102 @@ impl Nimbra {
     }
 
     /// The yes-or-no sheet for permanent actions.
+    /// ?: every shortcut, grouped. Escape, ? or a click outside closes it.
+    fn shortcuts_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let group = |(title, keys): &(&'static str, &'static [keyboard::Shortcut])| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(div().pb(px(2.)).child(overline(*title, t.text3)))
+                .children(keys.iter().map(|(chips, what)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .h(px(22.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_color(t.text2)
+                                .child(*what),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .gap(px(4.))
+                                .children(chips.iter().map(|k| kbd(t, k))),
+                        )
+                }))
+        };
+        let columns = keyboard::SHORTCUT_COLUMNS.iter().map(|column| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(20.))
+                .w(px(228.))
+                .children(column.iter().map(|i| group(&keyboard::SHORTCUTS[*i])))
+        });
+        div()
+            .id("shortcuts-scrim")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(px(16.))
+            .bg(t.scrim)
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.shortcuts = false;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .id("shortcuts")
+                    .max_w(px(3. * 228. + 2. * 32. + 2. * 24. + 2.))
+                    .max_h_full()
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .p(px(24.))
+                    .rounded(px(18.))
+                    .bg(t.raised)
+                    .border_1()
+                    .border_color(t.border_strong)
+                    .shadow(vec![shadow(
+                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
+                        30.,
+                        80.,
+                        -10.,
+                    )])
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .flex()
+                            .items_end()
+                            .justify_between()
+                            .child(serif("Keyboard shortcuts", 28., t.text))
+                            .child(meta("esc to close".to_string(), t.text3)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_x(px(32.))
+                            .gap_y(px(20.))
+                            .children(columns),
+                    ),
+            )
+    }
+
     fn confirm_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, body, yes): (String, String, &str) = match &self.confirm {
             Some(Ask::DeleteForever(ids)) => (
@@ -9609,15 +9756,189 @@ impl Nimbra {
         if self.palette {
             let max = self.palette_len() as isize - 1;
             self.palette_sel = (self.palette_sel as isize + delta).clamp(0, max) as usize;
+        } else if self.pane == Pane::Sidebar {
+            let len = self.sidebar_now().rows().len();
+            self.sidebar_cursor = keyboard::step(self.sidebar_cursor, delta, len);
+            self.reveal_cursor.set(true);
         } else {
             self.picked.clear();
+            self.pick_end = None;
             let visible = self.visible();
             if let Some(pos) = visible.iter().position(|i| *i == self.selected) {
-                let next = (pos as isize + delta).clamp(0, visible.len() as isize - 1);
-                self.open(visible[next as usize]);
+                let next = keyboard::step(pos, delta, visible.len());
+                self.open(visible[next]);
                 self.open_selected(cx);
+                if next == 0 {
+                    // The top, with the heading above the first thread.
+                    self.list_scroll.set_offset(gpui::point(px(0.), px(0.)));
+                } else {
+                    self.reveal_row.set(true);
+                }
             }
         }
+        cx.notify();
+    }
+
+    /// Home and End: the first or last thread, palette row or sidebar row.
+    fn step_to_end(&mut self, last: bool, cx: &mut Context<Self>) {
+        let far = if last { isize::MAX / 2 } else { isize::MIN / 2 };
+        self.step(far, cx);
+    }
+
+    /// What the sidebar shows now, for the keyboard.
+    fn sidebar_now(&self) -> keyboard::Sidebar<'_> {
+        keyboard::Sidebar {
+            accounts: self
+                .settings
+                .accounts
+                .iter()
+                .map(|a| a.id.clone())
+                .collect(),
+            shown: &self.account_id,
+            mailbox: self.mailbox,
+            demo: self.is_demo(),
+            labels: self.labels.len(),
+            collapsed: &self.settings.collapsed,
+        }
+    }
+
+    /// ←: the keys go to the sidebar, its cursor on what is open. A hidden sidebar (or
+    /// full view) comes in for as long as the keys are there.
+    fn focus_sidebar(&mut self, cx: &mut Context<Self>) {
+        if self.pane == Pane::Sidebar
+            || self.window_covered()
+            || self.shortcuts
+            || matches!(self.status, Status::SignedOut | Status::SigningIn)
+        {
+            return;
+        }
+        if self.focus_restore.is_some() {
+            self.toggle_full_view(cx);
+        }
+        if !self.sidebar_open {
+            self.slide_sidebar(cx);
+            self.sidebar_for_keys = true;
+        }
+        let sidebar = self.sidebar_now();
+        let here = sidebar.here();
+        self.sidebar_cursor = sidebar.rows().iter().position(|r| *r == here).unwrap_or(0);
+        self.pane = Pane::Sidebar;
+        self.reveal_cursor.set(true);
+        cx.notify();
+    }
+
+    /// The keys back on the list; a sidebar that came in for them goes again.
+    fn leave_sidebar(&mut self, cx: &mut Context<Self>) {
+        if self.pane != Pane::Sidebar {
+            return;
+        }
+        self.pane = Pane::List;
+        if std::mem::take(&mut self.sidebar_for_keys) && self.sidebar_open {
+            self.slide_sidebar(cx);
+        }
+        cx.notify();
+    }
+
+    /// → or Return in the sidebar: what the row under the cursor stands for, as a click.
+    fn open_sidebar_row(&mut self, cx: &mut Context<Self>) {
+        let rows = self.sidebar_now().rows();
+        let Some(row) = rows.get(self.sidebar_cursor.min(rows.len().saturating_sub(1))) else {
+            return;
+        };
+        let row = row.clone();
+        self.leave_sidebar(cx);
+        self.go_to_row(row, cx);
+    }
+
+    fn go_to_row(&mut self, row: SidebarRow, cx: &mut Context<Self>) {
+        match row {
+            SidebarRow::Search => self.focus_search(cx),
+            SidebarRow::AllInboxes => self.select_mailbox(View::AllInboxes, cx),
+            SidebarRow::Mailbox(view) => self.select_mailbox(view, cx),
+            SidebarRow::Account(id) if id == self.account_id => {
+                self.select_mailbox(View::Inbox, cx)
+            }
+            SidebarRow::Account(id) => self.switch_account(id, cx),
+            SidebarRow::Settings => self.open_settings(cx),
+        }
+    }
+
+    /// G then a letter, from anywhere in the window.
+    fn go_to(&mut self, view: View, cx: &mut Context<Self>) {
+        if self.window_covered() {
+            return;
+        }
+        self.shortcuts = false;
+        self.leave_sidebar(cx);
+        self.select_mailbox(view, cx);
+    }
+
+    /// ⌘1 to ⌘9.
+    fn go_number(&mut self, n: usize, cx: &mut Context<Self>) {
+        if self.window_covered() {
+            return;
+        }
+        let Some(row) = n
+            .checked_sub(1)
+            .and_then(|i| self.sidebar_now().numbered().get(i).cloned())
+        else {
+            return;
+        };
+        self.shortcuts = false;
+        self.leave_sidebar(cx);
+        self.go_to_row(row, cx);
+    }
+
+    /// X: the open thread in or out of the picked ones.
+    fn pick_thread(&mut self, cx: &mut Context<Self>) {
+        if self.palette || !self.visible().contains(&self.selected) {
+            return;
+        }
+        if !self.picked.remove(&self.selected) {
+            self.picked.insert(self.selected);
+        }
+        self.pick_end = None;
+        cx.notify();
+    }
+
+    /// Shift with Up or Down: picks from the open thread to one further along.
+    fn pick_more(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.palette || self.pane == Pane::Sidebar {
+            return;
+        }
+        let visible = self.visible();
+        let Some(open) = visible.iter().position(|i| *i == self.selected) else {
+            return;
+        };
+        let end = self
+            .pick_end
+            .filter(|end| self.picked.contains(end))
+            .and_then(|end| visible.iter().position(|i| *i == end))
+            .unwrap_or(open);
+        let (end, picked) = keyboard::extend(open, end, delta, visible.len());
+        self.picked = picked.into_iter().map(|p| visible[p]).collect();
+        self.pick_end = Some(visible[end]);
+        self.reveal_row.set(true);
+        cx.notify();
+    }
+
+    /// Space and Shift-Space: the conversation a page further or back.
+    fn page_message(&mut self, down: bool, cx: &mut Context<Self>) {
+        if self.palette || self.pane == Pane::Sidebar || self.visible().is_empty() {
+            return;
+        }
+        if self.original_target().is_some()
+            && let Some(view) = &self.html_view
+        {
+            view.scroll_page(down);
+            return;
+        }
+        let handle = &self.reader_scroll;
+        let page = f32::from(handle.bounds().size.height) * 0.9;
+        let max = f32::from(handle.max_offset().height);
+        let offset = handle.offset();
+        let y = (f32::from(offset.y) + if down { -page } else { page }).clamp(-max, 0.);
+        handle.set_offset(gpui::point(offset.x, px(y)));
         cx.notify();
     }
 
@@ -9832,6 +10153,10 @@ impl Nimbra {
     /// the sidebar only for as long as it lasts, so it calls `slide_sidebar` instead.
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.slide_sidebar(cx);
+        self.sidebar_for_keys = false;
+        if !self.sidebar_open {
+            self.pane = Pane::List;
+        }
         self.settings.sidebar_auto_hide = !self.sidebar_open;
         self.save_settings(cx);
     }
@@ -10687,6 +11012,38 @@ fn nav(
         .children(count.map(|n| mono(n, if selected { t.text } else { t.text3 })))
 }
 
+/// Laid over a row: once `armed`, scrolls `handle` so the row is in view, at least `top`
+/// below the top (what a fade covers there).
+fn reveal(
+    handle: gpui::ScrollHandle,
+    armed: std::rc::Rc<std::cell::Cell<bool>>,
+    top: f32,
+) -> impl IntoElement {
+    gpui::canvas(
+        move |bounds, window, _| {
+            if !armed.replace(false) {
+                return;
+            }
+            let view = handle.bounds();
+            let above = f32::from(view.top()) + top - f32::from(bounds.top());
+            let below = f32::from(bounds.bottom()) - f32::from(view.bottom());
+            let shift = if above > 0. {
+                above
+            } else if below > 0. {
+                -below
+            } else {
+                return;
+            };
+            let offset = handle.offset();
+            handle.set_offset(gpui::point(offset.x, offset.y + px(shift)));
+            window.refresh();
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}
+
 /// What is behind the sidebar's open row.
 fn active_pill(t: &Theme) -> impl IntoElement {
     crate::erase::glass(NAV_RADIUS, t.sidebar, t.glass, t.glass_opacity)
@@ -10861,6 +11218,13 @@ impl Nimbra {
     }
 
     fn sidebar(&self, t: &Theme, floating: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let cursor = (self.pane == Pane::Sidebar)
+            .then(|| {
+                let rows = self.sidebar_now().rows();
+                rows.get(self.sidebar_cursor.min(rows.len().saturating_sub(1)))
+                    .cloned()
+            })
+            .flatten();
         let left = self.visible().len();
         let unread = self
             .visible()
@@ -10954,7 +11318,16 @@ impl Nimbra {
                             } else {
                                 this.switch_account(id.clone(), cx);
                             }
-                        }))
+                        }));
+                    let row = self
+                        .cursor_on(
+                            row,
+                            t,
+                            &cursor,
+                            SidebarRow::Account(account.id.clone()),
+                            shown,
+                            NAV_RADIUS,
+                        )
                         .into_any_element();
                     self.fold_row("accounts", shown, 950 + i, row)
                 })
@@ -10983,8 +11356,17 @@ impl Nimbra {
             )
             .id(("mailbox", view_key(view)))
             .press(t)
-            .on_click(cx.listener(move |this, _, _, cx| this.select_mailbox(view, cx)))
-            .into_any_element();
+            .on_click(cx.listener(move |this, _, _, cx| this.select_mailbox(view, cx)));
+            let row = self
+                .cursor_on(
+                    row,
+                    t,
+                    &cursor,
+                    SidebarRow::Mailbox(view),
+                    self.mailbox == view,
+                    NAV_RADIUS,
+                )
+                .into_any_element();
             self.fold_row(section, self.mailbox == view, view_key(view), row)
         };
 
@@ -11023,6 +11405,13 @@ impl Nimbra {
                         .cursor(gpui::CursorStyle::IBeam)
                         .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
                         .when(self.mailbox == View::Search, |d| d.border_color(t.mint))
+                        .when(cursor == Some(SidebarRow::Search), |d| {
+                            d.border_color(t.mint).relative().child(reveal(
+                                self.sidebar_scroll.clone(),
+                                self.reveal_cursor.clone(),
+                                SIDEBAR_CLEAR,
+                            ))
+                        })
                         .child(icon("search", 16., t.text3))
                         .child(
                             div()
@@ -11058,7 +11447,17 @@ impl Nimbra {
                         .press(t)
                         .on_click(
                             cx.listener(|this, _, _, cx| this.select_mailbox(View::AllInboxes, cx)),
-                        ),
+                        )
+                        .map(|row| {
+                            self.cursor_on(
+                                row,
+                                t,
+                                &cursor,
+                                SidebarRow::AllInboxes,
+                                self.mailbox == View::AllInboxes,
+                                NAV_RADIUS,
+                            )
+                        }),
                     )
                     .children(accounts_toggle)
                     .children(account_rows)
@@ -11235,8 +11634,17 @@ impl Nimbra {
                                     },
                                 ),
                             )
-                            .press(t)
-                            .into_any_element();
+                            .press(t);
+                            let row = self
+                                .cursor_on(
+                                    row,
+                                    t,
+                                    &cursor,
+                                    SidebarRow::Mailbox(view),
+                                    self.mailbox == view,
+                                    NAV_RADIUS,
+                                )
+                                .into_any_element();
                             self.fold_row("labels", self.mailbox == view, view_key(view), row)
                         },
                     ))
@@ -11292,7 +11700,7 @@ impl Nimbra {
             .border_t_1()
             .border_color(t.border_strong)
             .child(
-                div()
+                self.cursor_on(div(), t, &cursor, SidebarRow::Settings, false, 10.)
                     .flex()
                     .items_center()
                     .gap(px(10.))
@@ -11388,6 +11796,40 @@ impl Nimbra {
             .child(footer)
     }
 
+    /// A sidebar row with the keyboard's cursor on it: lit, ringed, and scrolled to.
+    fn cursor_on<E: Styled + ParentElement>(
+        &self,
+        el: E,
+        t: &Theme,
+        cursor: &Option<SidebarRow>,
+        row: SidebarRow,
+        open: bool,
+        radius: f32,
+    ) -> E {
+        if cursor.as_ref() != Some(&row) {
+            return el;
+        }
+        // Settings sits below the scrolled rows, always in view.
+        let scrolled = row != SidebarRow::Settings;
+        let el = if open { el } else { el.bg(t.hover) };
+        let el = el.relative().child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(px(radius))
+                .border_1()
+                .border_color(t.mint),
+        );
+        if !scrolled {
+            return el;
+        }
+        el.child(reveal(
+            self.sidebar_scroll.clone(),
+            self.reveal_cursor.clone(),
+            SIDEBAR_CLEAR,
+        ))
+    }
+
     fn row(&self, t: &Theme, i: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let m = &self.mails[i];
         let picked = self.picked.contains(&i);
@@ -11433,6 +11875,13 @@ impl Nimbra {
             .id(SharedString::from(format!("row:{account}:{key}")))
             .press(t)
             .relative()
+            .when(self.pick_end.unwrap_or(self.selected) == i, |d| {
+                d.child(reveal(
+                    self.list_scroll.clone(),
+                    self.reveal_row.clone(),
+                    0.,
+                ))
+            })
             .flex()
             .gap(px(ROW_PAD))
             .px(px(ROW_PAD))
@@ -12516,6 +12965,7 @@ impl Nimbra {
                         .flex_1()
                         .min_h(px(0.))
                         .overflow_y_scroll()
+                        .track_scroll(&self.reader_scroll)
                         // Full view centres the column it keeps narrow.
                         .when(self.focus_restore.is_some(), |d| {
                             d.flex().flex_col().items_center()
@@ -15162,12 +15612,60 @@ impl Render for Nimbra {
             .id("nimbra")
             .key_context(if self.compose.is_some() && !composing_elsewhere {
                 "Composer"
+            } else if self.pane == Pane::Sidebar {
+                "Mail Sidebar"
             } else {
                 "Mail"
             })
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &Next, _, cx| this.step(1, cx)))
             .on_action(cx.listener(|this, _: &Prev, _, cx| this.step(-1, cx)))
+            .on_action(cx.listener(|this, _: &First, _, cx| this.step_to_end(false, cx)))
+            .on_action(cx.listener(|this, _: &Last, _, cx| this.step_to_end(true, cx)))
+            .on_action(cx.listener(|this, _: &FocusSidebar, _, cx| this.focus_sidebar(cx)))
+            .on_action(cx.listener(|this, _: &OpenSidebarRow, _, cx| {
+                if this.pane == Pane::Sidebar && !this.palette {
+                    this.open_sidebar_row(cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &PickThread, _, cx| this.pick_thread(cx)))
+            .on_action(cx.listener(|this, _: &PickDown, _, cx| this.pick_more(1, cx)))
+            .on_action(cx.listener(|this, _: &PickUp, _, cx| this.pick_more(-1, cx)))
+            .on_action(cx.listener(|this, _: &OpenInWindow, _, cx| {
+                if !this.palette && this.visible().contains(&this.selected) {
+                    this.open_message_window(this.selected, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &PageDown, _, cx| this.page_message(true, cx)))
+            .on_action(cx.listener(|this, _: &PageUp, _, cx| this.page_message(false, cx)))
+            .on_action(cx.listener(|this, _: &ToggleShortcuts, _, cx| {
+                this.shortcuts = !this.shortcuts && !this.window_covered();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &GoInbox, _, cx| this.go_to(View::Inbox, cx)))
+            .on_action(cx.listener(|this, _: &GoStarred, _, cx| this.go_to(View::Starred, cx)))
+            .on_action(cx.listener(|this, _: &GoSnoozed, _, cx| this.go_to(View::Snoozed, cx)))
+            .on_action(cx.listener(|this, _: &GoSent, _, cx| this.go_to(View::Sent, cx)))
+            .on_action(cx.listener(|this, _: &GoDrafts, _, cx| this.go_to(View::Drafts, cx)))
+            .on_action(cx.listener(|this, _: &GoAllMail, _, cx| {
+                if !this.is_demo() {
+                    this.go_to(View::AllMail, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, go: &GoNumber, _, cx| this.go_number(go.0, cx)))
+            // A click anywhere but the sidebar gives the keys back to the list.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                    if this.shortcuts {
+                        this.shortcuts = false;
+                        cx.notify();
+                    }
+                    if f32::from(event.position.x) > SIDEBAR_W + FLOAT_INSET {
+                        this.leave_sidebar(cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &MarkDone, _, cx| {
                 if !this.palette {
                     this.mark_done(cx)
@@ -15198,6 +15696,7 @@ impl Render for Nimbra {
                 if this.palette {
                     this.palette = false;
                 } else if !this.visible().is_empty() {
+                    this.leave_sidebar(cx);
                     this.open_palette();
                 }
                 this.palette_sel = 0;
@@ -15254,6 +15753,11 @@ impl Render for Nimbra {
                     cx.notify();
                 } else if this.new_label.is_some() {
                     this.close_new_label(cx);
+                } else if this.shortcuts {
+                    this.shortcuts = false;
+                    cx.notify();
+                } else if this.pane == Pane::Sidebar && !this.palette {
+                    this.leave_sidebar(cx);
                 } else if !this.picked.is_empty() && !this.palette {
                     this.picked.clear();
                     cx.notify();
@@ -15275,6 +15779,8 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &Confirm, _, cx| {
                 if this.palette {
                     this.run_command(cx);
+                } else if this.pane == Pane::Sidebar {
+                    this.open_sidebar_row(cx);
                 } else {
                     // Return: the open message in full view (and back).
                     this.toggle_full_view(cx);
@@ -15427,6 +15933,9 @@ impl Render for Nimbra {
                 d.child(self.confirm_view(&t, cx))
             })
             .when(self.finder_open, |d| d.child(self.finder_view(&t, cx)))
+            .when(self.shortcuts && !self.window_covered(), |d| {
+                d.child(self.shortcuts_view(&t, cx))
+            })
     }
 }
 
