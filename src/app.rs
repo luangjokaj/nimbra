@@ -240,6 +240,8 @@ impl RowAction {
 enum Menu {
     Labels,
     More,
+    /// Which account a new message is from (the composer's From).
+    From,
     /// Times to send the open composer's message at.
     SendLater,
     /// Inbox, a label or Spam, for the open thread.
@@ -4685,7 +4687,12 @@ impl Nimbra {
             size: (720., 520.),
             grab: None,
             draft_id: None,
-            account: source.as_ref().and_then(|s| s.account.clone()),
+            // A new message is from the default account; an answer from its message's.
+            account: if kind == ComposeKind::New {
+                self.new_message_account()
+            } else {
+                source.as_ref().and_then(|s| s.account.clone())
+            },
             quoted: None,
             show_quoted: false,
             saving: false,
@@ -5261,6 +5268,20 @@ impl Nimbra {
                     items
                 }
             }
+            Menu::From => {
+                let from = self.compose_from();
+                self.settings
+                    .accounts
+                    .iter()
+                    .map(|a| {
+                        if Some(a.id.as_str()) == from.as_deref() {
+                            ("done", a.email.clone().into(), t.text)
+                        } else {
+                            ("mail", a.email.clone().into(), t.text2)
+                        }
+                    })
+                    .collect()
+            }
             Menu::Label(_) => vec![
                 ("tag", "Rename…".into(), t.text2),
                 ("trash", "Delete label…".into(), t.rose),
@@ -5336,6 +5357,16 @@ impl Nimbra {
             Menu::Labels => (pane_left + 150., 50.),
             Menu::MoveTo => (pane_left + 186., 50.),
             Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
+            // Under the composer's From, beside its title.
+            Menu::From => match &self.compose {
+                Some(c) if !c.full && !self.compose_detached => {
+                    let vw = f32::from(viewport.width);
+                    let (w, _) = c.size;
+                    let (l, t) = c.position.unwrap_or((((vw - w) / 2.).max(0.), 96.));
+                    (l + 20., t + 58.)
+                }
+                _ => (24., 72.),
+            },
             // Above the composer's Send later button.
             Menu::SendLater => {
                 let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
@@ -5496,6 +5527,11 @@ impl Nimbra {
             (Menu::More, 0) => self.mark_unread(cx),
             (Menu::More, 1) => self.open_in_gmail(cx),
             (Menu::More, _) => self.remove_selected(gmail::Change::Spam, cx),
+            (Menu::From, index) => {
+                if let Some(id) = self.settings.accounts.get(index).map(|a| a.id.clone()) {
+                    self.set_compose_account(id, cx);
+                }
+            }
             (Menu::SendLater, index) => {
                 if let Some(at) = self.send_later_times.get(index).copied() {
                     self.schedule_send(at, cx);
@@ -8106,6 +8142,9 @@ impl Nimbra {
             composer.error = None;
         }
         let saved_as = composer.saved_as.clone();
+        // The account it saves to, should the composer's From change on the way.
+        let saved_in = from.clone().unwrap_or_else(|| self.account_id.clone());
+        let saving_client = client.clone();
         cx.notify();
         let working = self.saves.begin();
         cx.spawn(async move |this, cx| {
@@ -8121,7 +8160,14 @@ impl Nimbra {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.composer_saved(serial, edits, explicit, result, cx)
+                this.composer_saved(
+                    serial,
+                    edits,
+                    explicit,
+                    result,
+                    (saved_in, saving_client),
+                    cx,
+                )
             })
             .ok();
         })
@@ -8134,6 +8180,7 @@ impl Nimbra {
         edits: u64,
         explicit: bool,
         result: anyhow::Result<String>,
+        (saved_in, saved_with): (String, Arc<gmail::Client>),
         cx: &mut Context<Self>,
     ) {
         let result = match result {
@@ -8153,7 +8200,25 @@ impl Nimbra {
             return;
         };
         composer.saving = false;
+        let shown = self.account_id.clone();
+        let Some(composer) = self.composer_mut(serial) else {
+            return;
+        };
+        let now_from = composer.account.clone().unwrap_or(shown);
         let ok = match result {
+            // Its From changed while this was saving: that draft is in the wrong account's
+            // Drafts. Delete it there and save again from the account chosen.
+            Ok(id) if now_from != saved_in => {
+                std::thread::spawn(move || {
+                    if let Err(error) = saved_with.delete_draft(&id)
+                        && !gmail::is_gone(&error)
+                    {
+                        eprintln!("nimbra: a draft left in the account it was moved from");
+                    }
+                });
+                composer.resave = true;
+                true
+            }
             Ok(id) => {
                 composer.draft_id = Some(id);
                 composer.saved_edits = composer.saved_edits.max(edits);
@@ -9496,6 +9561,88 @@ impl Nimbra {
             crate::settings::ThemeChoice::Light
         };
         self.save_settings(cx);
+        cx.notify();
+    }
+
+    /// The account the open composer writes from.
+    fn compose_from(&self) -> Option<String> {
+        let composer = self.compose.as_ref()?;
+        Some(
+            composer
+                .account
+                .clone()
+                .unwrap_or_else(|| self.account_id.clone()),
+        )
+    }
+
+    /// The composer's From can change: a new message (not an answer, which belongs to its
+    /// thread's account), with more than one account.
+    fn can_change_from(&self) -> bool {
+        !self.is_demo()
+            && self.settings.accounts.len() >= 2
+            && self
+                .compose
+                .as_ref()
+                .is_some_and(|c| c.reply.is_none() && c.quoted.is_none())
+    }
+
+    /// The composer's From changes. A draft it already saved is deleted from the old
+    /// account's Drafts and saved again in the new one's.
+    fn set_compose_account(&mut self, id: String, cx: &mut Context<Self>) {
+        if !self.can_change_from() || self.compose_from().as_deref() == Some(id.as_str()) {
+            return;
+        }
+        if self.client_for(Some(&id)).is_none() {
+            self.notice = Some("That account is not connected yet. Try again in a moment.".into());
+            cx.notify();
+            return;
+        }
+        let old = self.compose_from();
+        let old_client = self.client_for(old.as_deref());
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        composer.account = Some(id);
+        // What quitting would keep belongs to the old account: start afresh.
+        composer.saved_as = SavedAs::default();
+        let serial = composer.serial;
+        let moved = composer.draft_id.take();
+        if let (Some(draft), Some(client)) = (moved.clone(), old_client) {
+            std::thread::spawn(move || {
+                if let Err(error) = client.delete_draft(&draft)
+                    && !gmail::is_gone(&error)
+                {
+                    eprintln!("nimbra: a draft left in the account it was moved from");
+                }
+            });
+        }
+        if moved.is_some() || composer.saving {
+            // Unsaved in the new account: it counts as an edit, so it is saved there.
+            composer.edits += 1;
+            composer.saved = false;
+            self.save_composer(serial, false, cx);
+        }
+        cx.notify();
+    }
+
+    /// Where a new message is from: the default account, with several and it connected;
+    /// otherwise (`None`) the account shown.
+    fn new_message_account(&self) -> Option<String> {
+        if self.is_demo() || self.settings.accounts.len() < 2 {
+            return None;
+        }
+        let id = self.settings.default_account()?.to_string();
+        self.client_for(Some(&id)).map(|_| id)
+    }
+
+    /// Settings › Accounts › Make default.
+    fn set_default_account(&mut self, id: String, cx: &mut Context<Self>) {
+        if !self.settings.accounts.iter().any(|a| a.id == id) {
+            return;
+        }
+        self.settings.default_account = Some(id.clone());
+        self.save_settings(cx);
+        self.load_photo(id, cx);
         cx.notify();
     }
 
@@ -11723,11 +11870,39 @@ impl Nimbra {
                             .cursor_pointer()
                             .tooltip(tip(t.dark, "Settings", "⌘,"))
                             .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
-                            .child(me_avatar(
-                                self.photos.get(&self.account_id),
-                                &self.me_initials,
-                                28.,
-                            ))
+                            .child({
+                                // With several accounts, the default one's profile.
+                                let default = (!demo && self.settings.accounts.len() >= 2)
+                                    .then(|| self.settings.default_account())
+                                    .flatten()
+                                    .filter(|id| *id != self.account_id);
+                                match default {
+                                    Some(id) => {
+                                        let initial = self
+                                            .settings
+                                            .default_email()
+                                            .and_then(|e| e.chars().next())
+                                            .map(|c| c.to_uppercase().to_string())
+                                            .unwrap_or_default();
+                                        match self.photos.get(id) {
+                                            Some(photo) => me_avatar(Some(photo), &initial, 28.),
+                                            None => avatar(
+                                                crate::data::tone_for(
+                                                    self.settings.default_email().unwrap_or(""),
+                                                ),
+                                                &initial,
+                                                28.,
+                                            )
+                                            .into_any_element(),
+                                        }
+                                    }
+                                    None => me_avatar(
+                                        self.photos.get(&self.account_id),
+                                        &self.me_initials,
+                                        28.,
+                                    ),
+                                }
+                            })
                             .child(
                                 div()
                                     .flex_1()
@@ -11747,7 +11922,12 @@ impl Nimbra {
                                                 short(&self.account, 22).to_string()
                                             }
                                             (false, 0 | 1) => "Gmail".to_string(),
-                                            (false, n) => format!("Gmail · {n} accounts"),
+                                            // Several: the default account's address.
+                                            (false, n) => self
+                                                .settings
+                                                .default_email()
+                                                .map(|e| short(e, 22).to_string())
+                                                .unwrap_or_else(|| format!("Gmail · {n} accounts")),
                                         },
                                         t.text3,
                                     )),
@@ -14073,7 +14253,7 @@ impl Nimbra {
             }));
         Some(match menu {
             // These menus only exist as pop-up windows.
-            Menu::Row(_) | Menu::SendLater | Menu::MoveTo | Menu::Label(_) => {
+            Menu::Row(_) | Menu::SendLater | Menu::MoveTo | Menu::Label(_) | Menu::From => {
                 return None;
             }
             Menu::Labels => {
@@ -14442,17 +14622,64 @@ impl Nimbra {
                                 if full { 38. } else { 26. },
                                 t.text,
                             ))
-                            // Written from another account than the one shown (All inboxes).
-                            .children(
-                                composer
-                                    .account
-                                    .as_deref()
-                                    .filter(|a| *a != self.account_id)
+                            // A new message: who it is from, and a menu to change it.
+                            .when(self.can_change_from(), |d| {
+                                let email = self
+                                    .compose_from()
                                     .and_then(|id| {
                                         self.settings.accounts.iter().find(|a| a.id == id)
                                     })
-                                    .map(|a| meta(format!("from {}", a.email), t.text3)),
-                            )
+                                    .map(|a| a.email.clone())
+                                    .unwrap_or_default();
+                                let hover = t.hover;
+                                d.child(
+                                    div()
+                                        .id("compose-from")
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        .min_w(px(0.))
+                                        .px(px(8.))
+                                        .py(px(3.))
+                                        .rounded(px(7.))
+                                        .cursor_pointer()
+                                        .hover(move |s| s.bg(hover))
+                                        .when(self.menu == Some(Menu::From), |d| d.bg(t.selected))
+                                        .tooltip(tip(t.dark, "Send from another account", ""))
+                                        .child(meta("From".to_string(), t.text3))
+                                        .child(
+                                            div()
+                                                .min_w(px(0.))
+                                                .truncate()
+                                                .text_color(t.text2)
+                                                .child(email),
+                                        )
+                                        .child(icon("down", 12., t.text3))
+                                        // On press, as the header's other buttons (it is also
+                                        // where the card is dragged from).
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.toggle_menu(Menu::From, window, cx)
+                                            }),
+                                        ),
+                                )
+                            })
+                            // An answer written from another account than the one shown
+                            // (All inboxes).
+                            .when(!self.can_change_from(), |d| {
+                                d.children(
+                                    composer
+                                        .account
+                                        .as_deref()
+                                        .filter(|a| *a != self.account_id)
+                                        .and_then(|id| {
+                                            self.settings.accounts.iter().find(|a| a.id == id)
+                                        })
+                                        .map(|a| meta(format!("from {}", a.email), t.text3)),
+                                )
+                            })
                             .child(div().flex_1())
                             .when(!self.compose_detached, |d| {
                                 d.child(

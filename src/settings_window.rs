@@ -576,12 +576,16 @@ impl SettingsWindow {
         let active_email = n.account.to_string();
         let photos = n.photos.clone();
         let photo_answer = n.photo_answers.get(&active).copied().filter(|_| connected);
+        let several = accounts.len() >= 2;
+        let default = n.settings.default_account().map(str::to_string);
         let mut rows: Vec<AnyElement> = accounts
             .iter()
             .enumerate()
             .map(|(i, account)| {
                 let shown = account.id == active;
+                let is_default = several && default.as_deref() == Some(account.id.as_str());
                 let id = account.id.clone();
+                let make_default = account.id.clone();
                 let initials = account
                     .email
                     .chars()
@@ -612,10 +616,35 @@ impl SettingsWindow {
                                     .child(account.email.clone()),
                             )
                             .child(meta(
-                                if shown { "Shown now" } else { "Gmail" },
-                                if shown { t.violet } else { t.text3 },
+                                match (is_default, shown) {
+                                    (true, true) => "Default · Shown now",
+                                    (true, false) => "Default",
+                                    (false, true) => "Shown now",
+                                    (false, false) => "Gmail",
+                                },
+                                if shown || is_default {
+                                    t.violet
+                                } else {
+                                    t.text3
+                                },
                             )),
                     )
+                    .when(several && !is_default, |d| {
+                        d.child(
+                            button(t, ButtonKind::Ghost, "Make default", None)
+                                .id(("default-account", i))
+                                .press_soft()
+                                .tooltip(tip(
+                                    t.dark,
+                                    "Its profile in the sidebar, and new messages from it",
+                                    "",
+                                ))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let id = make_default.clone();
+                                    this.owner.update(cx, |n, cx| n.set_default_account(id, cx));
+                                })),
+                        )
+                    })
                     .when(!shown, |d| {
                         d.child(
                             button(t, ButtonKind::Secondary, "Switch to", None)
@@ -739,23 +768,35 @@ impl SettingsWindow {
         let tile =
             |id: usize, label: &'static str, choice: ThemeChoice, light: bool, dark: bool| {
                 let on = theme == choice;
-                let half = |th: Theme| {
+                // GPUI clips to a rectangle, not to the rounded tile: the preview's own outer
+                // corners are rounded to fit inside the border (10 less its 2).
+                const INNER: f32 = 8.;
+                let half = |th: Theme, left: bool, right: bool| {
                     div()
                         .flex_1()
+                        // Its share of the tile, whatever it holds: wider, its rounded
+                        // corner would fall outside the tile and the square middle show.
+                        .min_w(px(0.))
+                        .overflow_hidden()
                         .h_full()
                         .flex()
                         .bg(th.surface)
+                        .when(left, |d| d.rounded_l(px(INNER)))
+                        .when(right, |d| d.rounded_r(px(INNER)))
                         .child(
                             div()
+                                .flex_none()
                                 .w(px(22.))
                                 .h_full()
                                 .bg(th.sidebar)
+                                .when(left, |d| d.rounded_l(px(INNER)))
                                 .border_r_1()
                                 .border_color(th.border),
                         )
                         .child(
                             div()
                                 .flex_1()
+                                .min_w(px(0.))
                                 .flex()
                                 .flex_col()
                                 .gap(px(5.))
@@ -792,8 +833,8 @@ impl SettingsWindow {
                             .overflow_hidden()
                             .border_2()
                             .border_color(if on { t.violet } else { t.border })
-                            .when(light, |d| d.child(half(Theme::light())))
-                            .when(dark, |d| d.child(half(Theme::dark()))),
+                            .when(light, |d| d.child(half(Theme::light(), true, !dark)))
+                            .when(dark, |d| d.child(half(Theme::dark(), !light, true))),
                     )
                     .child(
                         div()

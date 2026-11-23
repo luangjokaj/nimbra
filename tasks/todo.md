@@ -485,3 +485,18 @@ Review: real AppKit events posted into a test copy's event queue; the monitor to
 arrows and the cursor moved (body "aabb" for a b ← ← a → ↑ ↓ b). The boxes themselves need
 an app in front, which a test copy never is: not reproduced, the path that makes them is
 closed. Keyboard suite 34/34.
+
+## A default account (2026-11-23)
+
+- [x] Settings › Accounts: Make default, and "Default" on the chosen one (the first until
+      chosen; one signed out falls back to the first)
+- [x] The sidebar's profile is the default account's photo and address
+- [x] New messages are from the default account; answers stay with their thread's account
+- [x] The composer's From (new messages, several accounts) opens a menu of the accounts; a
+      saved draft moves with it, and a save on its way to the old account is caught
+- [x] Found on the way: the theme previews in Settings › Appearance showed square corners
+      past their rounded border (GPUI clips to a rectangle; a half also grew past its share)
+
+Review: 7 cases on two fake accounts (sent from the right account, the draft deleted in
+one and saved in the other, a save in flight), unit tests for the setting; the chip, the
+menu, Settings › Accounts and the previews captured in both themes.
