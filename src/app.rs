@@ -5367,15 +5367,29 @@ impl Nimbra {
             Menu::Labels => (pane_left + 150., 50.),
             Menu::MoveTo => (pane_left + 186., 50.),
             Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
-            // Under the composer's From, beside its title.
+            // Under the composer's From: beside the title of a draft, and in the fields'
+            // value column on a new message, which has no title.
             Menu::From => match &self.compose {
-                Some(c) if !c.full && !self.compose_detached => {
+                Some(c) => {
                     let vw = f32::from(viewport.width);
-                    let (w, _) = c.size;
-                    let (l, t) = c.position.unwrap_or((((vw - w) / 2.).max(0.), 96.));
-                    (l + 20., t + 58.)
+                    let titled = c.draft_id.is_some();
+                    let floating = !c.full && !self.compose_detached;
+                    let (l, t) = if floating {
+                        let (w, _) = c.size;
+                        c.position.unwrap_or((((vw - w) / 2.).max(0.), 96.))
+                    } else if c.full {
+                        // The readable column, under the room left for the traffic lights.
+                        (((vw - 860.) / 2.).max(0.), 36.)
+                    } else {
+                        (0., 0.)
+                    };
+                    match (titled, floating) {
+                        (true, true) => (l + 20., t + 58.),
+                        (true, false) => (24., 72.),
+                        (false, _) => (l + 80., t + 47.),
+                    }
                 }
-                _ => (24., 72.),
+                None => (24., 72.),
             },
             // Above the composer's Send later button.
             Menu::SendLater => {
@@ -14644,7 +14658,19 @@ impl Nimbra {
                                     .map(|a| a.email.clone())
                                     .unwrap_or_default();
                                 let hover = t.hover;
-                                d.child(
+                                // The label is the fields' label column (56 wide, 12 to the
+                                // value) and only the address is the button: its padding
+                                // hangs into that gap, so the address starts where values do.
+                                d.child(if title.is_some() {
+                                    meta("From".to_string(), t.text3)
+                                } else {
+                                    div()
+                                        .w(px(56.))
+                                        .flex_none()
+                                        .text_color(t.text3)
+                                        .child("From")
+                                })
+                                .child(
                                     div()
                                         .id("compose-from")
                                         .flex()
@@ -14653,26 +14679,12 @@ impl Nimbra {
                                         .min_w(px(0.))
                                         .px(px(8.))
                                         .py(px(3.))
-                                        // Without a title it lines up with the fields below:
-                                        // the padding hangs outside their left edge.
-                                        .when(title.is_none(), |d| d.ml(px(-8.)))
+                                        .ml(px(-4.))
                                         .rounded(px(7.))
                                         .cursor_pointer()
                                         .hover(move |s| s.bg(hover))
                                         .when(self.menu == Some(Menu::From), |d| d.bg(t.selected))
                                         .tooltip(tip(t.dark, "Send from another account", ""))
-                                        .child(if title.is_some() {
-                                            meta("From".to_string(), t.text3)
-                                        } else {
-                                            // The fields' label column: 56 wide, 12 to the value
-                                            // (8 here, with the row's gap of 4).
-                                            div()
-                                                .w(px(56.))
-                                                .mr(px(8.))
-                                                .flex_none()
-                                                .text_color(t.text3)
-                                                .child("From")
-                                        })
                                         .child(
                                             div()
                                                 .min_w(px(0.))
