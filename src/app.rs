@@ -14572,6 +14572,13 @@ impl Nimbra {
             }))
             .collect();
         let accent = t.violet;
+        let title = if composer.draft_id.is_some() {
+            Some("Draft")
+        } else if composer.reply.is_some() {
+            Some("Reply")
+        } else {
+            None
+        };
         let card = div()
             .id("compose-card")
             .flex()
@@ -14621,17 +14628,12 @@ impl Nimbra {
                             .px(px(20.))
                             .pt(px(16.))
                             .pb(px(8.))
-                            .child(serif(
-                                if composer.draft_id.is_some() {
-                                    "Draft"
-                                } else if composer.reply.is_some() {
-                                    "Reply"
-                                } else {
-                                    "New message"
-                                },
-                                if full { 38. } else { 26. },
-                                t.text,
-                            ))
+                            // A new message has no title: its From is the first row.
+                            .children(
+                                title.map(|title| {
+                                    serif(title, if full { 38. } else { 26. }, t.text)
+                                }),
+                            )
                             // A new message: who it is from, and a menu to change it.
                             .when(self.can_change_from(), |d| {
                                 let email = self
@@ -14651,16 +14653,31 @@ impl Nimbra {
                                         .min_w(px(0.))
                                         .px(px(8.))
                                         .py(px(3.))
+                                        // Without a title it lines up with the fields below:
+                                        // the padding hangs outside their left edge.
+                                        .when(title.is_none(), |d| d.ml(px(-8.)))
                                         .rounded(px(7.))
                                         .cursor_pointer()
                                         .hover(move |s| s.bg(hover))
                                         .when(self.menu == Some(Menu::From), |d| d.bg(t.selected))
                                         .tooltip(tip(t.dark, "Send from another account", ""))
-                                        .child(meta("From".to_string(), t.text3))
+                                        .child(if title.is_some() {
+                                            meta("From".to_string(), t.text3)
+                                        } else {
+                                            // The fields' label column: 56 wide, 12 to the value
+                                            // (8 here, with the row's gap of 4).
+                                            div()
+                                                .w(px(56.))
+                                                .mr(px(8.))
+                                                .flex_none()
+                                                .text_color(t.text3)
+                                                .child("From")
+                                        })
                                         .child(
                                             div()
                                                 .min_w(px(0.))
                                                 .truncate()
+                                                .when(title.is_none(), |d| d.text_size(px(14.)))
                                                 .text_color(t.text2)
                                                 .child(email),
                                         )
