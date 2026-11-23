@@ -1578,6 +1578,8 @@ impl Nimbra {
                     this.copy_text(key.clone(), address.clone(), cx)
                 }))
         };
+        // The label as wide as the longest ("Reply-To") needs, and level with the first line
+        // of its value: one address is 24pt tall, and several wrap under it.
         let row = |name: &str, value: AnyElement| {
             div()
                 .flex()
@@ -1585,9 +1587,11 @@ impl Nimbra {
                 .gap(px(8.))
                 .child(
                     div()
-                        .w(px(72.))
+                        .w(px(58.))
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
                         .flex_none()
-                        .pt(px(3.))
                         .text_size(px(11.5))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(t.text3)
@@ -1635,8 +1639,11 @@ impl Nimbra {
             .reply_to
             .as_ref()
             .map(|p| people(std::slice::from_ref(p), &mut chip, cx));
+        // In line with the text under it: the sender's name and the message in the reader,
+        // the avatar and the email itself in the original view (which starts at the left).
+        let flush = self.original_target().is_some();
         div()
-            .ml(px(40.))
+            .ml(px(if flush { 0. } else { 40. }))
             .flex()
             .flex_col()
             .gap(px(6.))
