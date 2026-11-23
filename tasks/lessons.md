@@ -139,3 +139,14 @@
 
 - A sign-in into an existing account is checked (`profile`) before its token is saved: the
   browser lets any account be picked, and `login_hint` is only a hint.
+
+## Keys and web views
+
+- A key fix is tested at the edges too: ← at the very start and → at the very end are the
+  keys a web view hands back unhandled, up the responder chain to GPUI. My first arrow fix
+  only covered keys going in, and the user found the boxes again at the first character.
+  Log GPUI's own key entry in a test build (`handle_key_event`) to see what reaches it.
+- Never put a responder of our own between WebKit and GPUI's view: it lost typed letters
+  now and then. Keep unhandled keys in the page (`preventDefault`) instead.
+- Repeat a key test a few times before believing it: WebKit handles keys in another process,
+  and one passing run proved nothing either way.
