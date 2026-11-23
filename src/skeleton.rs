@@ -2,7 +2,10 @@
 //!
 //! The bars along the top are the real components, dimmed and out of reach, and everything
 //! under them has the real layout's margins and line heights, so nothing moves when the mail
-//! arrives. A slow wave of light runs down both panes.
+//! arrives. A slow, faint wave of light runs down both panes.
+//!
+//! It is all in the two greys of `inks`: no accent colours, and nothing marked as open or
+//! unread, so that it reads as a place being filled and not as mail.
 
 use super::*;
 
@@ -19,30 +22,28 @@ struct Row {
     subject: f32,
     snippet: f32,
     label: Option<f32>,
-    unread: bool,
 }
 
-const fn row(sender: f32, subject: f32, snippet: f32, label: Option<f32>, unread: bool) -> Row {
+const fn row(sender: f32, subject: f32, snippet: f32, label: Option<f32>) -> Row {
     Row {
         sender,
         subject,
         snippet,
         label,
-        unread,
     }
 }
 
 /// Uneven, as mail is. Repeated down the list.
 const MAIL: [Row; 9] = [
-    row(0.30, 0.46, 0.40, Some(54.), true),
-    row(0.20, 0.34, 0.60, None, true),
-    row(0.38, 0.62, 0.27, None, false),
-    row(0.26, 0.28, 0.52, Some(40.), false),
-    row(0.17, 0.52, 0.38, None, true),
-    row(0.33, 0.40, 0.44, None, false),
-    row(0.24, 0.70, 0.18, None, false),
-    row(0.29, 0.31, 0.63, Some(62.), false),
-    row(0.21, 0.48, 0.30, None, false),
+    row(0.30, 0.46, 0.40, Some(54.)),
+    row(0.20, 0.34, 0.60, None),
+    row(0.38, 0.62, 0.27, None),
+    row(0.26, 0.28, 0.52, Some(40.)),
+    row(0.17, 0.52, 0.38, None),
+    row(0.33, 0.40, 0.44, None),
+    row(0.24, 0.70, 0.18, None),
+    row(0.29, 0.31, 0.63, Some(62.)),
+    row(0.21, 0.48, 0.30, None),
 ];
 
 /// The email's paragraphs, as the share of the column each line fills.
@@ -50,6 +51,11 @@ const GREETING: [f32; 1] = [0.22];
 const OPENING: [f32; 4] = [0.97, 0.92, 0.99, 0.58];
 const MIDDLE: [f32; 3] = [0.94, 0.98, 0.41];
 const SIGN_OFF: [f32; 2] = [0.16, 0.27];
+
+/// The two greys everything is drawn in: where bold words will be, and the rest.
+fn inks(t: &Theme) -> (Hsla, Hsla) {
+    (t.border, t.border.opacity(0.6))
+}
 
 /// A line of text's ink, centred in that line's height.
 fn ink(width: impl Into<gpui::Length> + Clone, thick: f32, line: f32, color: Hsla) -> Div {
@@ -72,7 +78,7 @@ fn wave(key: usize, down: f32, element: Div) -> AnyElement {
             Animation::new(Duration::from_millis(1700)).repeat(),
             move |element, delta| {
                 let light = ((delta - down * 0.8) * std::f32::consts::TAU).cos();
-                element.opacity(0.72 + 0.28 * light)
+                element.opacity(0.86 + 0.14 * light)
             },
         )
         .into_any_element()
@@ -100,7 +106,7 @@ impl Nimbra {
     }
 
     fn skeleton_list(&self, t: &Theme) -> Div {
-        let (strong, soft) = (t.border_strong, t.border);
+        let (strong, soft) = inks(t);
         // All, and Unread with room for a count of one digit.
         let options = [("All", 44.), ("Unread", 77.)];
         let switch_w = options.iter().map(|(_, w)| w).sum::<f32>() + 2. + 8.;
@@ -137,13 +143,11 @@ impl Nimbra {
                 .pb(px(6.))
                 .child(ink(px(width), 6., 12., soft))
         };
-        let tones = [t.violet, t.sky, t.rose, t.mint, t.amber];
         // Only those that fit: the wave draws each one again every frame.
         let height = self.frame.map_or(920., |f| f32::from(f.size.height));
         let fitting = ((height - TOP_BAR) / ROW_H).ceil().max(1.) as usize;
         let rows = (0..fitting).flat_map(|i| {
             let mail = &MAIL[i % MAIL.len()];
-            let open = i == 0;
             let top_line = div()
                 .flex()
                 .items_center()
@@ -162,29 +166,11 @@ impl Nimbra {
                         .rounded_full()
                         .border_1()
                         .border_color(t.border)
-                        .child(
-                            div()
-                                .size(px(6.))
-                                .rounded_full()
-                                .bg(tones[i % tones.len()].opacity(0.45)),
-                        )
+                        .child(div().size(px(6.)).rounded_full().bg(soft))
                         .child(ink(px(width), 6., 16., soft))
                 }))
                 .child(div().flex_1())
-                .when(!open, |d| d.child(ink(px(26.), 7., 22., soft).flex_none()))
-                // The open row has its three actions instead of a time.
-                .when(open, |d| {
-                    d.children(["done", "clock", "bell"].map(|name| {
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .w(px(18.))
-                            .h(px(22.))
-                            .child(icon(name, 15., t.faint))
-                    }))
-                });
+                .child(ink(px(26.), 7., 22., soft).flex_none());
             let row = div()
                 .relative()
                 .flex()
@@ -193,27 +179,7 @@ impl Nimbra {
                 .px(px(ROW_PAD))
                 .py(px(12.))
                 .rounded(px(12.))
-                .when(open, |d| d.bg(t.selected))
-                .when(mail.unread, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .left(px((ROW_PAD - 6.) / 2.))
-                            .top(px(23.))
-                            .size(px(6.))
-                            .rounded_full()
-                            .bg(t.violet.opacity(0.5)),
-                    )
-                })
-                .child(
-                    div()
-                        .flex_none()
-                        .size(px(28.))
-                        .rounded_full()
-                        .bg(tones[i % tones.len()].opacity(0.22))
-                        .border_1()
-                        .border_color(t.border),
-                )
+                .child(div().flex_none().size(px(28.)).rounded_full().bg(soft))
                 .child(
                     div()
                         .flex()
@@ -365,7 +331,7 @@ impl Nimbra {
 
     /// Subject and sender, as they are over an email in its original formatting.
     fn skeleton_original_head(&self, t: &Theme) -> Div {
-        let (strong, soft) = (t.border_strong, t.border);
+        let (strong, soft) = inks(t);
         div()
             .flex()
             .flex_col()
@@ -386,15 +352,7 @@ impl Nimbra {
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(28.))
-                            .rounded_full()
-                            .bg(t.violet.opacity(0.22))
-                            .border_1()
-                            .border_color(t.border),
-                    )
+                    .child(div().flex_none().size(px(28.)).rounded_full().bg(soft))
                     .child(
                         div()
                             .flex()
@@ -416,7 +374,7 @@ impl Nimbra {
 
     /// Label, subject and people, as they are in the reader.
     fn skeleton_reader_head(&self, t: &Theme) -> Div {
-        let (strong, soft) = (t.border_strong, t.border);
+        let (strong, soft) = inks(t);
         div()
             .flex()
             .flex_col()
@@ -445,13 +403,7 @@ impl Nimbra {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(28.))
-                            .rounded_full()
-                            .bg(t.violet.opacity(0.22)),
-                    )
+                    .child(div().flex_none().size(px(28.)).rounded_full().bg(soft))
                     .child(ink(px(180.), 8., 18., soft))
                     .child(div().flex_1())
                     .child(ink(px(28.), 7., 16., soft).flex_none()),
@@ -460,7 +412,7 @@ impl Nimbra {
 
     /// An email that could be one: a greeting, text, a picture, a button and a sign-off.
     fn skeleton_email(&self, t: &Theme, side: f32, top: f32) -> Div {
-        let (strong, soft) = (t.border_strong, t.border);
+        let (_, soft) = inks(t);
         let paragraph = |lines: &'static [f32]| {
             div().flex().flex_col().children(
                 lines
@@ -487,8 +439,8 @@ impl Nimbra {
                 .w(px(148.))
                 .h(px(36.))
                 .rounded(px(9.))
-                .bg(t.violet.opacity(0.16))
-                .child(ink(px(84.), 8., 16., strong)),
+                .bg(t.hover)
+                .child(ink(px(84.), 8., 16., soft)),
         );
         let parts = [
             (0.22, paragraph(&GREETING)),
