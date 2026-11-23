@@ -640,7 +640,8 @@ To run the live tests (OrbStack or Docker):
       so a switch of account is listened to soon.
 - [x] Without Google's sign-in set up, an account with its own servers opens at launch
       instead of the sample mail.
-- [ ] Microsoft (and Zoho) sign-in with OAuth: waits for an app registered with each.
+- [x] Microsoft sign-in with OAuth (`microsoft.rs`; client id in oauth.env). Zoho's free plan has
+      no IMAP at all; its paid plans work with an app password, so no Zoho sign-in is planned.
 
 Review: 166 tests, and all 4 live tests together against Dovecot and Mailpit (twice). The
 IDLE test once took over 10 s on a server that had just started (37 s run); alone and
