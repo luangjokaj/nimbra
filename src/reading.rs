@@ -132,7 +132,7 @@ impl Nimbra {
             || self.picked.len() >= 2
             || self.compose.is_some()
             || self.new_label.is_some()
-            || self.account_sheet.is_some()
+            || self.account_sheet_over_main()
             || self.confirm.is_some();
         if !self.original
             || !ready

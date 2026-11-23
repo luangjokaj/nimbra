@@ -142,7 +142,12 @@ impl SettingsWindow {
         }
         SettingsWindow {
             owner,
-            tab: Tab::General,
+            // Screenshots of Add account open on Accounts.
+            tab: if std::env::var("NIMBRA_SCREEN").as_deref() == Ok("settings-account") {
+                Tab::Accounts
+            } else {
+                Tab::General
+            },
             signature,
             pending_focus: None,
             armed: None,
@@ -197,6 +202,11 @@ impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(focus) = self.pending_focus.take() {
             window.focus(&focus);
+        }
+        // The Add account form (it belongs to the app) wants the keyboard.
+        let form = self.owner.update(cx, |n, _| n.account_form_in_settings());
+        if let Some(Some(focus)) = &form {
+            window.focus(focus);
         }
         let dark = self.owner.read(cx).dark;
         let t = if dark { Theme::dark() } else { Theme::light() };
@@ -568,6 +578,18 @@ impl SettingsWindow {
     }
 
     fn accounts(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        // Adding an account: the form, here in Settings, instead of the list.
+        if self
+            .owner
+            .read(cx)
+            .account_sheet
+            .as_ref()
+            .is_some_and(|s| s.in_settings)
+        {
+            return self
+                .owner
+                .update(cx, |n, cx| n.account_settings_page(t, cx));
+        }
         let n = self.owner.read(cx);
         let accounts = n.settings.accounts.clone();
         let active = n.account_id.clone();
@@ -685,7 +707,9 @@ impl SettingsWindow {
                         .id("add-account")
                         .press_soft()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.owner.update(cx, |n, cx| n.add_account(cx));
+                            this.tab = Tab::Accounts;
+                            this.owner
+                                .update(cx, |n, cx| n.open_account_form_in_settings(cx));
                         })),
                 )
             })

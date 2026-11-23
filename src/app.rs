@@ -976,10 +976,18 @@ impl Nimbra {
             this.picked = this.visible().into_iter().take(3).collect();
         }
         // NIMBRA_SCREEN=settings opens the Settings sheet (screenshots).
-        if screen == "settings" {
+        // NIMBRA_SCREEN=settings-account opens it on Add account.
+        if screen == "settings" || screen == "settings-account" {
+            let form = screen == "settings-account";
             // After the main window is up.
             cx.spawn(async move |this, cx| {
-                this.update(cx, |this, cx| this.open_settings(cx)).ok();
+                this.update(cx, |this, cx| {
+                    if form {
+                        this.open_account_form_in_settings(cx);
+                    }
+                    this.open_settings(cx)
+                })
+                .ok();
             })
             .detach();
         }
@@ -2321,7 +2329,7 @@ impl Render for Nimbra {
                     cx.notify();
                 } else if this.new_label.is_some() {
                     this.close_new_label(cx);
-                } else if this.account_sheet.is_some() {
+                } else if this.account_sheet_over_main() {
                     this.close_account_sheet(cx);
                 } else if this.shortcuts {
                     this.shortcuts = false;
@@ -2499,7 +2507,7 @@ impl Render for Nimbra {
             .when(self.new_label.is_some(), |d| {
                 d.child(self.new_label_view(&t, cx))
             })
-            .when(self.account_sheet.is_some(), |d| {
+            .when(self.account_sheet_over_main(), |d| {
                 d.child(self.account_sheet_view(&t, cx))
             })
             .when(self.confirm.is_some(), |d| {

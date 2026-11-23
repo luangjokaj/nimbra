@@ -258,7 +258,7 @@ impl Nimbra {
         self.palette
             || self.finder_open
             || self.new_label.is_some()
-            || self.account_sheet.is_some()
+            || self.account_sheet_over_main()
             || self.confirm.is_some()
             || (self.compose.is_some() && self.compose_host.is_none())
     }

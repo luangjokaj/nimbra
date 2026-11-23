@@ -50,11 +50,6 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Add account: Google, or any other address (the sheet in `add_account.rs`).
-    pub(super) fn add_account(&mut self, cx: &mut Context<Self>) {
-        self.open_account_sheet(None, cx);
-    }
-
     /// The account shown has its own servers (IMAP and SMTP), not Gmail.
     pub(super) fn own_servers(&self) -> bool {
         self.servers_of(&self.account_id).is_some()

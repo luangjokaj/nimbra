@@ -19,6 +19,10 @@ static GOOGLE_LOGO: std::sync::LazyLock<Arc<gpui::Image>> = std::sync::LazyLock:
 pub(super) struct AccountSheet {
     /// Asking again for an account that is already here (its password stopped working).
     pub(super) for_account: Option<String>,
+    /// Shown in the Settings window (Accounts) rather than over the main window.
+    pub(super) in_settings: bool,
+    /// The field to put the keyboard in, for the window it is shown in to take.
+    pub(super) focus: Option<FocusHandle>,
     email: Entity<TextInput>,
     password: Entity<TextInput>,
     /// The server fields are shown: nothing was found, or the ones found did not work.
@@ -39,10 +43,38 @@ pub(super) struct AccountSheet {
 }
 
 impl Nimbra {
-    /// Opens the sheet: empty for a new account, or for `account`'s password.
+    /// Opens the sheet over the main window: empty for a new account, or for `account`'s
+    /// password.
     pub(super) fn open_account_sheet(
         &mut self,
         for_account: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_account_form(for_account, false, cx);
+    }
+
+    /// The sheet is open over the main window (not in Settings).
+    pub(super) fn account_sheet_over_main(&self) -> bool {
+        self.account_sheet.as_ref().is_some_and(|s| !s.in_settings)
+    }
+
+    /// The form shown in Settings, if it is, and the field to focus there (once).
+    pub(super) fn account_form_in_settings(&mut self) -> Option<Option<FocusHandle>> {
+        self.account_sheet
+            .as_mut()
+            .filter(|s| s.in_settings)
+            .map(|s| s.focus.take())
+    }
+
+    /// Opens the form in the Settings window's Accounts section.
+    pub(super) fn open_account_form_in_settings(&mut self, cx: &mut Context<Self>) {
+        self.open_account_form(None, true, cx);
+    }
+
+    fn open_account_form(
+        &mut self,
+        for_account: Option<String>,
+        in_settings: bool,
         cx: &mut Context<Self>,
     ) {
         self.menu = None;
@@ -92,13 +124,18 @@ impl Nimbra {
         .into_iter()
         .map(|input| cx.subscribe(input, enter))
         .collect();
-        self.pending_focus = Some(if for_account.is_some() {
+        let focus = if for_account.is_some() {
             password.read(cx).focus_handle(cx)
         } else {
             email.read(cx).focus_handle(cx)
-        });
+        };
+        if !in_settings {
+            self.pending_focus = Some(focus.clone());
+        }
         self.account_sheet = Some(AccountSheet {
             for_account,
+            in_settings,
+            focus: in_settings.then_some(focus),
             email,
             password,
             manual,
@@ -136,8 +173,13 @@ impl Nimbra {
     }
 
     pub(super) fn close_account_sheet(&mut self, cx: &mut Context<Self>) {
-        self.account_sheet = None;
-        self.pending_focus = Some(self.focus.clone());
+        let in_settings = self
+            .account_sheet
+            .take()
+            .is_some_and(|sheet| sheet.in_settings);
+        if !in_settings {
+            self.pending_focus = Some(self.focus.clone());
+        }
         cx.notify();
     }
 
@@ -317,9 +359,133 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// The sheet over the main window: a card with the title, Google, and the form.
     pub(super) fn account_sheet_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(sheet) = &self.account_sheet else {
+        let Some(sheet) = self.account_sheet.as_ref().filter(|s| !s.in_settings) else {
             return div().into_any_element();
+        };
+        let asking_again = sheet.for_account.is_some();
+        div()
+            .id("account-scrim")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(t.scrim)
+            .occlude()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.close_account_sheet(cx)),
+            )
+            .child(
+                div()
+                    .id("account-sheet")
+                    .w(px(480.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .p(px(22.))
+                    .rounded(px(18.))
+                    .bg(t.raised)
+                    .border_1()
+                    .border_color(t.border_strong)
+                    .shadow(vec![shadow(
+                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
+                        30.,
+                        80.,
+                        -10.,
+                    )])
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(serif(
+                        if asking_again {
+                            "Sign in again"
+                        } else {
+                            "Add account"
+                        },
+                        28.,
+                        t.text,
+                    ))
+                    .when(!asking_again, |d| {
+                        d.child(self.google_button(t, cx).w_full()).child(meta(
+                            "Or any other address (Zoho, iCloud, Fastmail, your own domain):"
+                                .to_string(),
+                            t.text3,
+                        ))
+                    })
+                    .child(self.account_fields(t, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// The form as Settings shows it, in its own cards: Google, then any other address.
+    pub(super) fn account_settings_page(
+        &self,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let card = |title: &str, detail: &str, body: AnyElement| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .pl(px(4.))
+                        .child(overline(title.to_uppercase(), t.text3)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(14.))
+                        .p(px(16.))
+                        .rounded(px(14.))
+                        .bg(t.raised)
+                        .border_1()
+                        .border_color(t.border)
+                        .when(!detail.is_empty(), |d| {
+                            d.child(meta(detail.to_string(), t.text3))
+                        })
+                        .child(body),
+                )
+                .into_any_element()
+        };
+        vec![
+            card(
+                "Google",
+                "Gmail and Google Workspace. You sign in in your browser, with Google.",
+                self.google_button(t, cx).into_any_element(),
+            ),
+            card(
+                "Any other address",
+                "Zoho, iCloud, Fastmail, Yahoo, or your own domain. Nimbra finds the servers.",
+                self.account_fields(t, cx).into_any_element(),
+            ),
+        ]
+    }
+
+    /// Continue with Google, with Google's logo.
+    fn google_button(&self, t: &Theme, cx: &mut Context<Self>) -> Stateful<Div> {
+        button(t, ButtonKind::Secondary, "Continue with Google", None)
+            .id("account-google")
+            .press_soft()
+            .justify_center()
+            .gap(px(10.))
+            // The logo is added after the label: shown before it.
+            .flex_row_reverse()
+            .child(gpui::img(GOOGLE_LOGO.clone()).size(px(16.)).flex_none())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.close_account_sheet(cx);
+                this.add_google_account(cx);
+            }))
+    }
+
+    /// Email, password, the servers when they are shown, what is happening, and the
+    /// buttons: the same wherever the form is.
+    fn account_fields(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
+        let Some(sheet) = &self.account_sheet else {
+            return div();
         };
         let asking_again = sheet.for_account.is_some();
         let field = |label: &str, input: &Entity<TextInput>| {
@@ -391,63 +557,9 @@ impl Nimbra {
                 .child(div().flex_none().pb(px(1.)).child(secured))
         };
         div()
-            .id("account-scrim")
-            .absolute()
-            .inset_0()
             .flex()
-            .items_center()
-            .justify_center()
-            .bg(t.scrim)
-            .occlude()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.close_account_sheet(cx)),
-            )
-            .child(
-                div()
-                    .id("account-sheet")
-                    .w(px(480.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(14.))
-                    .p(px(22.))
-                    .rounded(px(18.))
-                    .bg(t.raised)
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![shadow(
-                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
-                        30.,
-                        80.,
-                        -10.,
-                    )])
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(serif(
-                        if asking_again { "Sign in again" } else { "Add account" },
-                        28.,
-                        t.text,
-                    ))
-                    .when(!asking_again, |d| {
-                        d.child(
-                            button(t, ButtonKind::Secondary, "Continue with Google", None)
-                                .id("account-google")
-                                .press_soft()
-                                .justify_center()
-                                .gap(px(10.))
-                                // The logo is added after the label: shown before it.
-                                .flex_row_reverse()
-                                .child(gpui::img(GOOGLE_LOGO.clone()).size(px(16.)).flex_none())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_account_sheet(cx);
-                                    this.add_google_account(cx);
-                                })),
-                        )
-                        .child(meta(
-                            "Or any other address (Zoho, iCloud, Fastmail, your own domain):"
-                                .to_string(),
-                            t.text3,
-                        ))
-                    })
+            .flex_col()
+            .gap(px(14.))
                     .child(field("Email", &sheet.email))
                     .child(field("Password", &sheet.password))
                     .when(sheet.manual, |d| {
@@ -502,9 +614,7 @@ impl Nimbra {
                                     cx.listener(|this, _, _, cx| this.account_sheet_continue(cx)),
                                 ),
                             ),
-                    ),
-            )
-            .into_any_element()
+                    )
     }
 }
 
