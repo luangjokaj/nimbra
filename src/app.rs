@@ -2432,17 +2432,6 @@ impl Render for Nimbra {
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
-                if let Some((start, width)) = this.sidebar_grab {
-                    if event.pressed_button != Some(MouseButton::Left) {
-                        this.sidebar_grab = None;
-                        this.save_settings(cx);
-                        return;
-                    }
-                    this.settings.sidebar_width = (width + f32::from(event.position.x) - start)
-                        .clamp(SIDEBAR_MIN, SIDEBAR_MAX);
-                    cx.notify();
-                    return;
-                }
                 let Some((start, width)) = this.list_grab else {
                     return;
                 };
@@ -2455,13 +2444,7 @@ impl Render for Nimbra {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.list_grab = None;
-                    // The width it was dragged to is kept.
-                    if this.sidebar_grab.take().is_some() {
-                        this.save_settings(cx);
-                    }
-                }),
+                cx.listener(|this, _, _, _| this.list_grab = None),
             )
             .on_action(cx.listener(|this, _: &ToggleList, _, cx| this.toggle_list(cx)))
             .relative()
@@ -2576,6 +2559,11 @@ impl Render for Nimbra {
                 // Its right edge: drag to resize, docked or floating; double-click for the
                 // usual width. Out here, over the sidebar and the pane beside it, where
                 // nothing clips or covers it.
+                // Dragging it follows the pointer over the whole window: the sidebar keeps its
+                // moves from the window's own listeners, so shrinking would stop at once.
+                .when(self.sidebar_grab.is_some(), |d| {
+                    d.child(self.sidebar_drag(cx))
+                })
                 // Deferred: painted after the panes, which would cover its right half.
                 .child(gpui::deferred(
                     div()
@@ -2657,6 +2645,52 @@ fn me_avatar(photo: Option<&Arc<gpui::Image>>, initials: &str, size: f32) -> Any
             .child(gpui::img(photo.clone()).size_full().rounded_full())
             .into_any_element(),
         None => avatar(Tone::Graphite, initials, size).into_any_element(),
+    }
+}
+
+impl Nimbra {
+    /// While the sidebar's edge is dragged: its width follows the pointer anywhere in the
+    /// window, and is kept when the button is let go.
+    fn sidebar_drag(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        gpui::canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                let moved = entity.clone();
+                window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
+                    if phase != gpui::DispatchPhase::Bubble {
+                        return;
+                    }
+                    moved.update(cx, |this, cx| {
+                        let Some((start, width)) = this.sidebar_grab else {
+                            return;
+                        };
+                        if event.pressed_button != Some(MouseButton::Left) {
+                            this.sidebar_grab = None;
+                            this.save_settings(cx);
+                        } else {
+                            this.settings.sidebar_width = (width + f32::from(event.position.x)
+                                - start)
+                                .clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+                        }
+                        cx.notify();
+                    });
+                });
+                let released = entity.clone();
+                window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, _, cx| {
+                    if phase == gpui::DispatchPhase::Bubble {
+                        released.update(cx, |this, cx| {
+                            if this.sidebar_grab.take().is_some() {
+                                this.save_settings(cx);
+                                cx.notify();
+                            }
+                        });
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_0()
     }
 }
 
