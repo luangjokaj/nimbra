@@ -629,3 +629,76 @@ To run the live tests (OrbStack or Docker):
 - SMTP: `docker run -d --name nimbra-mailpit -p 127.0.0.1:10587:1025 -v $PWD/certs:/certs:ro axllent/mailpit --smtp-tls-cert /certs/server.pem --smtp-tls-key /certs/server.key --smtp-auth-accept-any --smtp-require-starttls`
 - `NIMBRA_TEST_CA=certs/ca.pem cargo test live -- --ignored` (debug builds only read it)
 
+## Providers, the rest (2026-11-23)
+
+- [x] Custom domains at Google Workspace, Microsoft 365 or Zoho found from their MX records
+      (`dns.rs`: a small MX lookup to the system's resolvers; `discover.rs` maps the
+      most preferred MX host, or asks Thunderbird's database by its domain).
+- [x] IMAP: CONDSTORE (only what changed since the last look; a folder where nothing moved
+      is skipped) and IDLE (a second connection listens on INBOX; new mail is checked at
+      once instead of at the next interval). The watch loop waits in half-minute slices
+      so a switch of account is listened to soon.
+- [x] Without Google's sign-in set up, an account with its own servers opens at launch
+      instead of the sample mail.
+- [ ] Microsoft (and Zoho) sign-in with OAuth: waits for an app registered with each.
+
+Review: 166 tests, and all 4 live tests together against Dovecot and Mailpit (twice). The
+IDLE test once took over 10 s on a server that had just started (37 s run); alone and
+together afterwards it passes in 7 to 11 s.
+
+The live tests' `dovecot.conf`:
+
+```
+protocols = imap
+listen = *
+log_path = /dev/stderr
+ssl = required
+ssl_cert = </certs/server.pem
+ssl_key = </certs/server.key
+disable_plaintext_auth = yes
+auth_mechanisms = plain login
+first_valid_uid = 1000
+passdb {
+  driver = static
+  args = password=pass
+}
+userdb {
+  driver = static
+  args = uid=1000 gid=1000 home=/srv/mail/%u
+}
+mail_location = maildir:~/Maildir
+namespace inbox {
+  inbox = yes
+  separator = /
+  mailbox Drafts {
+    special_use = \Drafts
+    auto = subscribe
+  }
+  mailbox Sent {
+    special_use = \Sent
+    auto = subscribe
+  }
+  mailbox Trash {
+    special_use = \Trash
+    auto = subscribe
+  }
+  mailbox Junk {
+    special_use = \Junk
+    auto = subscribe
+  }
+  mailbox Archive {
+    special_use = \Archive
+    auto = subscribe
+  }
+}
+service imap-login {
+  inet_listener imap {
+    port = 0
+  }
+  inet_listener imaps {
+    port = 993
+    ssl = yes
+  }
+}
+```
+
