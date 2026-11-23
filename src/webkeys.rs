@@ -6,6 +6,10 @@
 //! can type the key's private character (U+F700 to U+F8FF) into the message as a box. So
 //! while the editor has the keyboard, these keys go straight to it. (An email shown in its
 //! original formatting keeps them for the app: there they move between threads.)
+//!
+//! A key the editor has nothing to do with (← at the very start, → at the very end) would
+//! go back up the responder chain to GPUI's view, which hands it to the input system all
+//! the same: the page (`editor.html`) keeps those itself.
 
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)] // emitted by the objc crate's macros
@@ -31,6 +35,26 @@ mod platform {
             let name: *mut Object =
                 msg_send![class!(NSString), stringWithUTF8String: name.as_ptr()];
             let _: () = msg_send![view, setIdentifier: name];
+        }
+    }
+
+    /// An arrow, Home, End or Page key (or another of AppKit's function keys), without ⌃.
+    unsafe fn navigation_key(event: *mut Object) -> bool {
+        unsafe {
+            let flags: u64 = msg_send![event, modifierFlags];
+            if flags & CONTROL != 0 {
+                return false;
+            }
+            let chars: *mut Object = msg_send![event, charactersIgnoringModifiers];
+            if chars.is_null() {
+                return false;
+            }
+            let length: usize = msg_send![chars, length];
+            if length == 0 {
+                return false;
+            }
+            let first: u16 = msg_send![chars, characterAtIndex: 0usize];
+            is_function_key(first)
         }
     }
 
@@ -61,17 +85,7 @@ mod platform {
     /// The event, to go on as usual, or nothing once a web view has had it.
     unsafe fn route(event: *mut Object) -> *mut Object {
         unsafe {
-            let flags: u64 = msg_send![event, modifierFlags];
-            if flags & CONTROL != 0 {
-                return event;
-            }
-            let chars: *mut Object = msg_send![event, charactersIgnoringModifiers];
-            let length: usize = msg_send![chars, length];
-            if length == 0 {
-                return event;
-            }
-            let first: u16 = msg_send![chars, characterAtIndex: 0usize];
-            if !is_function_key(first) {
+            if !navigation_key(event) {
                 return event;
             }
             let window: *mut Object = msg_send![event, window];

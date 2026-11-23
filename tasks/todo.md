@@ -500,3 +500,14 @@ closed. Keyboard suite 34/34.
 Review: 7 cases on two fake accounts (sent from the right account, the draft deleted in
 one and saved in the other, a save in flight), unit tests for the setting; the chip, the
 menu, Settings › Accounts and the previews captured in both themes.
+
+## Arrow keys at the ends of the message (2026-11-23)
+
+- [x] ← at the very start or → at the very end still typed boxes: the editor hands a key it
+      has nothing to do with back to GPUI's view, which gives it to the input system. The
+      page now keeps those keys itself (and the link box's), and scrolls for Home, End and
+      Page Up/Down, so none is handed back. (A responder between the two was tried first:
+      it lost typed letters now and then, so it is not used.)
+
+Review: GPUI's own key entry logged in a test build: 0 keys reach it, against 2 ← and 3 →
+before; typing stays right (aabb, abb) over repeated runs; arrows still cross lines.

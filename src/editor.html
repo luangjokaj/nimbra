@@ -116,6 +116,28 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
     return before.toString().length === 0 && !before.cloneContents().querySelector('br, div, p, li');
   }
 
+  // A key the editor has nothing to do with goes back to the app, which would type it in as
+  // a box (an arrow's private character). These say when an arrow has nowhere to go: the
+  // moving end of the selection is at the very start (or end) of what is written.
+  function atEdge(forward) {
+    const selection = window.getSelection();
+    if (!selection.rangeCount || !editor.contains(selection.focusNode)) return false;
+    const rest = document.createRange();
+    rest.selectNodeContents(editor);
+    if (forward) rest.setStart(selection.focusNode, selection.focusOffset);
+    else rest.setEnd(selection.focusNode, selection.focusOffset);
+    if (rest.toString().length) return false;
+    // Only what is really there counts: a range copies the empty part of the line it ends
+    // in, and one line break after the cursor only holds the last line open.
+    const parts = rest.cloneContents();
+    if (parts.querySelector('img')) return false;
+    const breaks = parts.querySelectorAll('br').length;
+    return breaks === 0 || (forward && breaks === 1);
+  }
+  const BACK = ['ArrowLeft', 'ArrowUp'];
+  const ON = ['ArrowRight', 'ArrowDown'];
+  const SCROLL = { Home: -Infinity, End: Infinity, PageUp: -0.9, PageDown: 0.9 };
+
   function openLink() {
     restore();
     const selection = window.getSelection();
@@ -267,6 +289,18 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
     } else if (event.key === 'ArrowUp' && !mod && !event.shiftKey && atStart()) {
       event.preventDefault();
       post({ t: 'key', k: 'up' });
+    } else if (!event.ctrlKey && (BACK.includes(event.key) || ON.includes(event.key))
+        && (event.shiftKey || window.getSelection().isCollapsed)
+        && atEdge(ON.includes(event.key))) {
+      // Nowhere to go: kept here, so it is not handed back.
+      event.preventDefault();
+    } else if (!event.ctrlKey && event.key in SCROLL) {
+      // On a Mac these scroll; the page does it, so they are never handed back either.
+      event.preventDefault();
+      const page = document.scrollingElement;
+      const by = SCROLL[event.key];
+      if (Math.abs(by) === Infinity) page.scrollTo({ top: by > 0 ? page.scrollHeight : 0 });
+      else page.scrollBy({ top: by * window.innerHeight });
     } else if (event.key === 'Escape') {
       event.preventDefault();
       post({ t: 'key', k: 'esc' });
@@ -274,7 +308,12 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
   });
 
   url.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); closeLink(true); }
+    const end = url.value.length;
+    const back = BACK.includes(event.key) || event.key === 'Home' || event.key === 'PageUp';
+    const on = ON.includes(event.key) || event.key === 'End' || event.key === 'PageDown';
+    if (!event.ctrlKey && back && url.selectionStart === 0 && (event.shiftKey || url.selectionEnd === 0)) event.preventDefault();
+    else if (!event.ctrlKey && on && url.selectionEnd === end && (event.shiftKey || url.selectionStart === end)) event.preventDefault();
+    else if (event.key === 'Enter') { event.preventDefault(); closeLink(true); }
     else if (event.key === 'Escape') { event.preventDefault(); closeLink(false); }
   });
   url.addEventListener('blur', () => { if (bar.classList.contains('open')) bar.classList.remove('open'); });
