@@ -2573,6 +2573,36 @@ impl Render for Nimbra {
                             )
                         }),
                 )
+                // Its right edge: drag to resize, docked or floating; double-click for the
+                // usual width. Out here, over the sidebar and the pane beside it, where
+                // nothing clips or covers it.
+                // Deferred: painted after the panes, which would cover its right half.
+                .child(gpui::deferred(
+                    div()
+                        .id("sidebar-resize")
+                        .absolute()
+                        .left(px(place.x + self.side_w() - 4.))
+                        .top(px(place.inset))
+                        .w(px(8.))
+                        .h(px(height))
+                        .cursor(gpui::CursorStyle::ResizeLeftRight)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                if event.click_count == 2 {
+                                    this.sidebar_grab = None;
+                                    this.settings.sidebar_width =
+                                        crate::settings::Settings::default().sidebar_width;
+                                    this.save_settings(cx);
+                                } else {
+                                    this.sidebar_grab =
+                                        Some((f32::from(event.position.x), this.side_w()));
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                ))
                 .child(self.window_controls(&t, place.x, list_shown, cx))
             })
             .when(self.palette && !empty, |d| d.child(self.palette(&t, cx)))

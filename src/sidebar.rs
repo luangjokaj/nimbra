@@ -1083,36 +1083,6 @@ impl Nimbra {
             .flex_none()
             .w(px(self.side_w()))
             .h_full()
-            .relative()
-            // Its right edge: drag to resize (docked or floating), double-click for the
-            // usual width.
-            // Painted last (deferred), so the sidebar's own content does not cover it.
-            .child(gpui::deferred(
-                div()
-                    .id("sidebar-resize")
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right(px(-3.))
-                    .w(px(7.))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            if event.click_count == 2 {
-                                this.sidebar_grab = None;
-                                this.settings.sidebar_width =
-                                    crate::settings::Settings::default().sidebar_width;
-                                this.save_settings(cx);
-                            } else {
-                                this.sidebar_grab =
-                                    Some((f32::from(event.position.x), this.side_w()));
-                            }
-                            cx.notify();
-                        }),
-                    ),
-            ))
             // Floating, the panel around it has the colour and the outline. The border keeps
             // its 1pt, so that docking moves nothing inside.
             .border_r_1()
