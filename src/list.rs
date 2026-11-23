@@ -481,30 +481,7 @@ impl Nimbra {
                         .bg(t.violet),
                 )
             })
-            .child({
-                // In All inboxes, a small badge in the account's colour says whose it is.
-                let badge = m
-                    .account
-                    .as_deref()
-                    .filter(|_| self.mailbox == View::AllInboxes)
-                    .and_then(|id| self.settings.accounts.iter().find(|a| a.id == id))
-                    .map(|a| crate::data::tone_for(&a.email));
-                div()
-                    .relative()
-                    .flex_none()
-                    .child(avatar(m.tone, &m.initials, 28.))
-                    .children(badge.map(|tone| {
-                        div()
-                            .absolute()
-                            .right(px(-2.))
-                            .bottom(px(-2.))
-                            .size(px(11.))
-                            .rounded_full()
-                            .bg(tone.gradient())
-                            .border_2()
-                            .border_color(t.surface)
-                    }))
-            })
+            .child(div().flex_none().child(avatar(m.tone, &m.initials, 28.)))
             .child(
                 div()
                     .flex()
