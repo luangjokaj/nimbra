@@ -456,6 +456,8 @@ cursor captured. Not checked: Space in the original (web) view on real mail, lig
 ## A living night over Inbox Zero (2026-11-23)
 
 - [x] Stars twinkle (a third hold still), each at its own pace, easing in after the fade-up
+- [x] Gentler: each fades nearly out and back over 4.5 to 9 seconds, lingering lit and
+      faint, with a soft glow as it comes back to full
 - [x] A star falls every 8 to 22 seconds (the first after 3.5), one at a time
 - [x] Still with Reduce Motion and while the window is in the background
 

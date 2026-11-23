@@ -15111,16 +15111,36 @@ impl Nimbra {
         let stars: Vec<Div> = (0..48)
             .map(|i| {
                 let (x, y, a) = (rnd(), rnd() * 0.42, 0.2 + rnd() * 0.6);
+                let size = if a > 0.7 { 2.5 } else { 1.5 };
+                let (lit, sparkle) = self
+                    .sky
+                    .as_ref()
+                    .map_or((1., 0.), |sky| (sky.twinkle(i), sky.sparkle(i)));
+                let alpha = a * arrival.star(i);
+                // A soft glow as it comes back to full, centred on the star.
+                let halo = size * 3.;
                 div()
                     .absolute()
                     .left(relative(x))
                     .top(relative(y))
-                    .size(px(if a > 0.7 { 2.5 } else { 1.5 }))
-                    .rounded_full()
-                    .bg(c(
-                        0xffffff,
-                        a * arrival.star(i) * self.sky.as_ref().map_or(1., |sky| sky.twinkle(i)),
-                    ))
+                    .when(sparkle > 0., |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .left(px((size - halo) / 2.))
+                                .top(px((size - halo) / 2.))
+                                .size(px(halo))
+                                .rounded_full()
+                                .bg(c(0xffffff, alpha * 0.18 * sparkle)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .size(px(size))
+                            .rounded_full()
+                            .bg(c(0xffffff, alpha * lit)),
+                    )
             })
             .collect();
         let falling = self

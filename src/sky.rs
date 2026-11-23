@@ -103,18 +103,29 @@ impl Sky {
     }
 
     /// How bright star `index` is now, as a share of its own brightness. About a third
-    /// hold still; the rest breathe, each at its own pace.
+    /// hold still; the rest fade nearly out and back in, slowly, each at its own pace.
     pub fn twinkle(&self, index: usize) -> f32 {
         let hash = (index as u32).wrapping_mul(2_654_435_761);
         if hash.is_multiple_of(3) {
             return 1.;
         }
-        let period = 2.2 + ((hash >> 8) % 100) as f32 / 100. * 3.8;
+        let period = 4.5 + ((hash >> 8) % 100) as f32 / 100. * 4.5;
         let phase = ((hash >> 16) % 628) as f32 / 100.;
-        let wave = 0.5 + 0.5 * (TAU * self.seconds / period + phase).sin();
-        let depth = 0.65 * (self.seconds / EASE_IN).min(1.);
-        // Dimming briefly, bright most of the time.
-        1. - depth * wave * wave * wave
+        let wave = 0.5 + 0.5 * (TAU * self.seconds / period + phase).cos();
+        // Eased at both ends: it lingers when lit and when faint, and turns softly.
+        let lit = wave * wave * (3. - 2. * wave);
+        let depth = 0.9 * (self.seconds / EASE_IN).min(1.);
+        1. - depth * (1. - lit)
+    }
+
+    /// The soft glow around a twinkling star as it comes back to full brightness: 0 to 1.
+    pub fn sparkle(&self, index: usize) -> f32 {
+        let hash = (index as u32).wrapping_mul(2_654_435_761);
+        if hash.is_multiple_of(3) {
+            return 0.;
+        }
+        let near_full = ((self.twinkle(index) - 0.8) / 0.2).max(0.);
+        near_full * near_full
     }
 
     /// The falling star now: where it started, and its dots from the head back.
@@ -154,18 +165,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn twinkling_stays_in_range_and_starts_still() {
+    fn twinkling_stays_in_range_starts_still_and_moves_gently() {
         let mut sky = Sky::new();
         assert!((0..48).all(|i| sky.twinkle(i) == 1.));
-        for _ in 0..2000 {
+        let mut faint = false;
+        for _ in 0..(60 * 30) {
+            let before: Vec<f32> = (0..48).map(|i| sky.twinkle(i)).collect();
             sky.advance(1. / 60.);
-            for i in 0..48 {
+            for (i, was) in before.iter().enumerate() {
                 let b = sky.twinkle(i);
-                assert!((0.34..=1.).contains(&b), "{b}");
+                assert!((0.099..=1.).contains(&b), "{b}");
+                // No jumps: a frame moves it by little.
+                assert!((b - was).abs() < 0.02, "{i}: {was} to {b}");
+                let glow = sky.sparkle(i);
+                assert!((0. ..=1.).contains(&glow));
+                assert!(glow == 0. || b > 0.8, "glows only when nearly full");
+                faint |= b < 0.2;
             }
         }
-        // Some do breathe.
-        assert!((0..48).any(|i| sky.twinkle(i) < 0.9));
+        assert!(faint, "some fade nearly out");
     }
 
     #[test]
