@@ -638,6 +638,16 @@ const MENU_WIDTH: f32 = 220.;
 /// Transparent space around the menu inside its window, so its shadow is not cut off.
 const MENU_MARGIN: f32 = 28.;
 
+/// The shadow of a pop-up window's card (menus, the Undo and notice pills). It has to fade
+/// out inside the window's margin: GPUI draws a shadow out to 3 times its blur, and what
+/// reaches the window's edge is cut off there, which shows as a box around the card.
+fn popup_shadow(t: &Theme) -> gpui::BoxShadow {
+    shadow(t.shadow, POPUP_SHADOW.0, POPUP_SHADOW.1, POPUP_SHADOW.2)
+}
+
+/// Offset down, blur, spread.
+const POPUP_SHADOW: (f32, f32, f32) = (4., 8., -2.);
+
 /// A toolbar menu, shown in a small window of its own (see `Nimbra::toggle_menu`).
 struct MenuPopup {
     owner: gpui::WeakEntity<Nimbra>,
@@ -686,7 +696,7 @@ impl Render for NoticeToast {
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
-                    .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
+                    .shadow(vec![popup_shadow(&t)])
                     // As wide as it was measured, so that it wraps as it was measured.
                     .child(
                         div()
@@ -750,7 +760,7 @@ impl Render for UndoToast {
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
-                    .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
+                    .shadow(vec![popup_shadow(&t)])
                     .child(div().flex_1().child(self.label))
                     .child(
                         button(&t, ButtonKind::Ghost, "Undo", Some("⌘Z"))
@@ -805,7 +815,7 @@ impl Render for MenuPopup {
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
-                    .shadow(vec![shadow(t.shadow, 10., 24., -6.)])
+                    .shadow(vec![popup_shadow(&t)])
                     .children(
                         self.items
                             .iter()
@@ -16392,6 +16402,19 @@ fn carry_out_due(
 #[cfg(test)]
 mod header_tests {
     use super::*;
+
+    #[test]
+    fn a_pop_up_shadow_fades_inside_its_window() {
+        let (down, blur, spread) = POPUP_SHADOW;
+        // How far the shadow reaches past the card, below and to the sides.
+        // GPUI's shader draws a shadow out to 3 times its blur (see `shaders.metal`).
+        let below = down + spread + 3. * blur;
+        let sides = spread + 3. * blur;
+        assert!(
+            below <= MENU_MARGIN && sides <= MENU_MARGIN,
+            "{below} {sides}"
+        );
+    }
 
     #[test]
     fn the_list_header_fits_at_every_width() {

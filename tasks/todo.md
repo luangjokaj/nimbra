@@ -511,3 +511,12 @@ menu, Settings › Accounts and the previews captured in both themes.
 
 Review: GPUI's own key entry logged in a test build: 0 keys reach it, against 2 ← and 3 →
 before; typing stays right (aabb, abb) over repeated runs; arrows still cross lines.
+
+## Pop-up shadows (2026-11-23)
+
+- [x] The Undo pill (and the notice pill and menus) showed a box behind it: their shadow
+      reached past the pop-up window's 28 pt margin (GPUI draws out to 3 times the blur) and
+      was cut off at the window's edge. One shadow for them that fades out inside it.
+
+Review: the pill's window captured on its own: 9% opacity at its edge before, 0 after;
+unit test ties the shadow to the margin.
