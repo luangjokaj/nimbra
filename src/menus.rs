@@ -445,7 +445,7 @@ impl Nimbra {
 
         // Where the menu goes, in window coordinates: under its button.
         let viewport = window.viewport_size();
-        let pane_left = if self.sidebar_open { 236. } else { 0. }
+        let pane_left = if self.sidebar_open { self.side_w() } else { 0. }
             + if self.list_open { self.list_width } else { 0. };
         // Addresses can be longer than the usual menu: From grows to fit its longest one,
         // so it keeps the same space on its right as on its left.

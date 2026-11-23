@@ -645,6 +645,8 @@ pub struct Nimbra {
     list_open: bool,
     list_width: f32,
     list_grab: Option<(f32, f32)>,
+    /// Dragging the sidebar's right edge: where the pointer started, and the width then.
+    sidebar_grab: Option<(f32, f32)>,
     /// When the list was last shown or hidden, to animate it and restart the animation.
     list_toggled: Option<std::time::Instant>,
     list_gen: usize,
@@ -933,6 +935,7 @@ impl Nimbra {
                 .and_then(|v| v.parse::<f32>().ok())
                 .map_or(452., |w| w.clamp(300., 720.)),
             list_grab: None,
+            sidebar_grab: None,
             list_toggled: None,
             list_gen: 0,
             list_scroll: gpui::ScrollHandle::new(),
@@ -1377,9 +1380,9 @@ impl Nimbra {
                 _ => size * to,
             }
         };
-        let side_now = part(self.sidebar_open, self.sidebar_toggled, SIDEBAR_W);
+        let side_now = part(self.sidebar_open, self.sidebar_toggled, self.side_w());
         let list_now = part(self.list_open, self.list_toggled, self.list_width);
-        let end = if self.sidebar_open { 236. } else { 0. }
+        let end = if self.sidebar_open { self.side_w() } else { 0. }
             + if self.list_open { self.list_width } else { 0. };
         (side_now + list_now, end)
     }
@@ -2292,7 +2295,7 @@ impl Render for Nimbra {
                         this.shortcuts = false;
                         cx.notify();
                     }
-                    if f32::from(event.position.x) > SIDEBAR_W + FLOAT_INSET {
+                    if f32::from(event.position.x) > this.side_w() + FLOAT_INSET {
                         this.leave_sidebar(cx);
                     }
                 }),
@@ -2429,6 +2432,17 @@ impl Render for Nimbra {
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                if let Some((start, width)) = this.sidebar_grab {
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        this.sidebar_grab = None;
+                        this.save_settings(cx);
+                        return;
+                    }
+                    this.settings.sidebar_width = (width + f32::from(event.position.x) - start)
+                        .clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+                    cx.notify();
+                    return;
+                }
                 let Some((start, width)) = this.list_grab else {
                     return;
                 };
@@ -2441,7 +2455,13 @@ impl Render for Nimbra {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.list_grab = None),
+                cx.listener(|this, _, _, cx| {
+                    this.list_grab = None;
+                    // The width it was dragged to is kept.
+                    if this.sidebar_grab.take().is_some() {
+                        this.save_settings(cx);
+                    }
+                }),
             )
             .on_action(cx.listener(|this, _: &ToggleList, _, cx| this.toggle_list(cx)))
             .relative()
@@ -2506,7 +2526,7 @@ impl Render for Nimbra {
                             .absolute()
                             .left(px(place.x))
                             .top(px(place.inset))
-                            .w(px(SIDEBAR_W))
+                            .w(px(self.side_w()))
                             .h(px(height))
                             .rounded(px(radius))
                             .shadow(vec![shadow(t.shadow.opacity(afloat), 10., 30., -6.)]),
@@ -2516,7 +2536,7 @@ impl Render for Nimbra {
                             .absolute()
                             .left(px(place.x))
                             .top(px(place.inset))
-                            .w(px(SIDEBAR_W))
+                            .w(px(self.side_w()))
                             .h(px(height))
                             .child(crate::erase::rounded(radius, t.surface)),
                     )
@@ -2526,7 +2546,7 @@ impl Render for Nimbra {
                         .absolute()
                         .left(px(place.x))
                         .top(px(place.inset))
-                        .w(px(SIDEBAR_W))
+                        .w(px(self.side_w()))
                         .h(px(height))
                         .overflow_hidden()
                         .occlude()
@@ -2537,7 +2557,7 @@ impl Render for Nimbra {
                                 .absolute()
                                 .left_0()
                                 .top(px(-place.inset))
-                                .w(px(SIDEBAR_W))
+                                .w(px(self.side_w()))
                                 .h(px(viewport.1 - place.inset))
                                 .child(self.sidebar(&t, floating, cx)),
                         )

@@ -213,7 +213,14 @@ impl Nimbra {
         view.set_hole(
             self.sidebar_place(ahead)
                 .filter(|place| place.inset > 0.)
-                .map(|place| (place.x, place.inset, SIDEBAR_W, height - 2. * place.inset)),
+                .map(|place| {
+                    (
+                        place.x,
+                        place.inset,
+                        self.side_w(),
+                        height - 2. * place.inset,
+                    )
+                }),
         );
     }
 

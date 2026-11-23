@@ -4,6 +4,11 @@
 use super::*;
 
 impl Nimbra {
+    /// The sidebar's width now (dragged, kept in the settings).
+    pub(super) fn side_w(&self) -> f32 {
+        self.settings.sidebar_width.clamp(SIDEBAR_MIN, SIDEBAR_MAX)
+    }
+
     fn section_open(&self, key: &str) -> bool {
         !self.settings.collapsed.iter().any(|k| k == key)
     }
@@ -227,13 +232,13 @@ impl Nimbra {
             }
             let width = self.sidebar_width(ahead);
             return (width > 0.).then_some(SidebarPlace {
-                x: width - SIDEBAR_W,
+                x: width - self.side_w(),
                 inset: 0.,
             });
         }
         let shown = self.peek.progress(ahead);
         (shown > 0.).then_some(SidebarPlace {
-            x: FLOAT_INSET - (SIDEBAR_W + 2. * FLOAT_INSET) * (1. - shown),
+            x: FLOAT_INSET - (self.side_w() + 2. * FLOAT_INSET) * (1. - shown),
             inset: FLOAT_INSET,
         })
     }
@@ -247,9 +252,9 @@ impl Nimbra {
         {
             Some(elapsed) if elapsed < PANEL_SLIDE_SECONDS => {
                 let from = 1. - to;
-                SIDEBAR_W * (from + (to - from) * panel_ease(elapsed / PANEL_SLIDE_SECONDS))
+                self.side_w() * (from + (to - from) * panel_ease(elapsed / PANEL_SLIDE_SECONDS))
             }
-            _ => SIDEBAR_W * to,
+            _ => self.side_w() * to,
         }
     }
 
@@ -293,8 +298,9 @@ impl Nimbra {
             return None;
         }
         // An open menu is a window of its own, which takes the focus from this one.
-        let hold = self.menu_window.is_some();
-        let right = FLOAT_INSET + SIDEBAR_W;
+        // So does dragging its edge: the pointer is past it while it widens.
+        let hold = self.menu_window.is_some() || self.sidebar_grab.is_some();
+        let right = FLOAT_INSET + self.side_w();
         let pointer = if self.sidebar_sliding() || self.window_covered() {
             None
         } else {
@@ -573,7 +579,11 @@ impl Nimbra {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_color(if shown { t.text } else { t.text2 })
-                                .child(fit(&account.email, label_room(count.as_deref(), cx), cx)),
+                                .child(fit(
+                                    &account.email,
+                                    label_room(self.side_w(), count.as_deref(), cx),
+                                    cx,
+                                )),
                         )
                         .children(count.map(|n| count_pill(t, n, shown)))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1071,8 +1081,38 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(SIDEBAR_W))
+            .w(px(self.side_w()))
             .h_full()
+            .relative()
+            // Its right edge: drag to resize (docked or floating), double-click for the
+            // usual width.
+            // Painted last (deferred), so the sidebar's own content does not cover it.
+            .child(gpui::deferred(
+                div()
+                    .id("sidebar-resize")
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(px(-3.))
+                    .w(px(7.))
+                    .cursor(gpui::CursorStyle::ResizeLeftRight)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            if event.click_count == 2 {
+                                this.sidebar_grab = None;
+                                this.settings.sidebar_width =
+                                    crate::settings::Settings::default().sidebar_width;
+                                this.save_settings(cx);
+                            } else {
+                                this.sidebar_grab =
+                                    Some((f32::from(event.position.x), this.side_w()));
+                            }
+                            cx.notify();
+                        }),
+                    ),
+            ))
             // Floating, the panel around it has the colour and the outline. The border keeps
             // its 1pt, so that docking moves nothing inside.
             .border_r_1()
@@ -1108,7 +1148,9 @@ impl Nimbra {
     }
 }
 
-pub(super) const SIDEBAR_W: f32 = 236.;
+/// How narrow and how wide the sidebar can be dragged.
+pub(super) const SIDEBAR_MIN: f32 = 200.;
+pub(super) const SIDEBAR_MAX: f32 = 380.;
 
 pub(super) const NAV_RADIUS: f32 = 8.;
 
@@ -1261,11 +1303,11 @@ const COUNT_PAD: f32 = 6.;
 
 /// The room an account row has for its address: the sidebar, less its padding, the
 /// avatar, the gaps and the count's pill.
-fn label_room(count: Option<&str>, cx: &App) -> f32 {
+fn label_room(sidebar: f32, count: Option<&str>, cx: &App) -> f32 {
     let pill = count.map_or(0., |n| {
         text_width(n, 12., crate::theme::SANS, cx) + 2. * COUNT_PAD + 10.
     });
-    SIDEBAR_W - 2. * 12. - 2. * 10. - 18. - 10. - pill
+    sidebar - 2. * 12. - 2. * 10. - 18. - 10. - pill
 }
 
 /// The text, cut with "…" so that it fits `room` (13 pt, the sidebar's size).
