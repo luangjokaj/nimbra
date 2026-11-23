@@ -463,3 +463,13 @@ cursor captured. Not checked: Space in the original (web) view on real mail, lig
 
 Review: unit tests for the twinkle range, the fall schedule and each fall's path; captured
 a fall on screen. Release build: 1.7% CPU still, about 4% twinkling at 10 frames a second.
+
+## The icon in the Dock (2026-11-23)
+
+- [x] The glyph (eclipse and flap) was 62% of the plate's width and sat high, leaving the
+      bottom third empty; now 1.2 times larger and centred, about 76% wide, like the
+      glyphs of Safari, Messages and Dia beside it
+- [x] Settings › About's render (`assets/app-icon.png`) made again from it
+
+Review: rendered with Icon Composer's own tool in Default, Dark, Tinted and Clear, and laid
+into the Figma Dock (node 7341:290) beside the system icons, dark and light.
