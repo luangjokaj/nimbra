@@ -2580,6 +2580,9 @@ impl Render for Nimbra {
                 .child(gpui::deferred(
                     div()
                         .id("sidebar-resize")
+                        // Takes the press itself: what is under it (the list, under a
+                        // floating sidebar) must not take it as a click.
+                        .occlude()
                         .absolute()
                         .left(px(place.x + self.side_w() - 4.))
                         .top(px(place.inset))
