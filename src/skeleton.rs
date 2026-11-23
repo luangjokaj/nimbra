@@ -179,7 +179,13 @@ impl Nimbra {
                 .px(px(ROW_PAD))
                 .py(px(12.))
                 .rounded(px(12.))
-                .child(div().flex_none().size(px(28.)).rounded_full().bg(soft))
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .child(div().size(px(28.)).rounded_full().bg(soft)),
+                )
                 .child(
                     div()
                         .flex()

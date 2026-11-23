@@ -475,13 +475,22 @@ impl Nimbra {
                     div()
                         .absolute()
                         .left(px((ROW_PAD - 6.) / 2.))
-                        .top(px(23.))
+                        // Level with the avatar's middle: the row's padding (12), then half
+                        // of its two lines and their gap (22 + 3 + 18).
+                        .top(px(12. + 43. / 2. - 3.))
                         .size(px(6.))
                         .rounded_full()
                         .bg(t.violet),
                 )
             })
-            .child(div().flex_none().child(avatar(m.tone, &m.initials, 28.)))
+            // Centred on the two lines of text beside it.
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .child(avatar(m.tone, &m.initials, 28.)),
+            )
             .child(
                 div()
                     .flex()
