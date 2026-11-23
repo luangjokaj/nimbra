@@ -7,6 +7,7 @@ mod blur;
 mod checking;
 mod data;
 mod discover;
+mod dns;
 mod editor;
 mod erase;
 mod gmail;
