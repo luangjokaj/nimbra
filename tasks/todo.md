@@ -473,3 +473,15 @@ a fall on screen. Release build: 1.7% CPU still, about 4% twinkling at 10 frames
 
 Review: rendered with Icon Composer's own tool in Default, Dark, Tinted and Clear, and laid
 into the Figma Dock (node 7341:290) beside the system icons, dark and light.
+
+## Arrow keys in the message editor (2026-11-23)
+
+- [x] Arrows typed boxes into the message instead of moving the cursor: GPUI takes them as
+      key equivalents and hands them to its own text input context. A key monitor now sends
+      arrow, Home, End and Page keys straight to the editor's web view while it has the
+      keyboard. An email in its original formatting keeps them for moving between threads.
+
+Review: real AppKit events posted into a test copy's event queue; the monitor took all 5
+arrows and the cursor moved (body "aabb" for a b ← ← a → ↑ ↓ b). The boxes themselves need
+an app in front, which a test copy never is: not reproduced, the path that makes them is
+closed. Keyboard suite 34/34.

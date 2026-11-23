@@ -27,6 +27,7 @@ mod theme;
 mod toast;
 mod tooltip;
 mod ui;
+mod webkeys;
 mod webview;
 
 use std::borrow::Cow;
@@ -167,6 +168,8 @@ fn main() {
             .expect("bundled fonts should load");
 
         input::bind_keys(cx);
+        // Arrows and the like go to a web view that has the keyboard, not through GPUI.
+        webkeys::install();
         cx.on_action(|_: &HideApp, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());

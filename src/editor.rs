@@ -232,6 +232,15 @@ mod platform {
                 .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
                 .build_as_child(window)
                 .ok()?;
+            #[cfg(target_os = "macos")]
+            {
+                use wry::WebViewExtMacOS as _;
+                let webview = view.webview();
+                // SAFETY: main thread, the WKWebView wry has just made.
+                unsafe {
+                    crate::webkeys::mark_editor(&*webview as *const _ as *mut objc::runtime::Object)
+                };
+            }
             Some(Self { view })
         }
 
