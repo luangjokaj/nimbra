@@ -1,20 +1,43 @@
 {
-  "fill": {
-    "linear-gradient": [
-      "srgb:0.10980,0.09020,0.16078,1.00000",
-      "srgb:0.02745,0.02353,0.04314,1.00000"
-    ],
-    "orientation": {
-      "start": {
-        "x": 0.5,
-        "y": 0
-      },
-      "stop": {
-        "x": 0.5,
-        "y": 1
+  "fill-specializations": [
+    {
+      "value": {
+        "linear-gradient": [
+          "srgb:0.10980,0.09020,0.16078,1.00000",
+          "srgb:0.02745,0.02353,0.04314,1.00000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 1
+          }
+        }
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "linear-gradient": [
+          "srgb:0.05490,0.04706,0.08235,1.00000",
+          "srgb:0.00784,0.00784,0.01569,1.00000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 1
+          }
+        }
       }
     }
-  },
+  ],
   "groups": [
     {
       "name": "Flap",
@@ -40,7 +63,12 @@
       "translucency": {
         "enabled": true,
         "value": 0.15
-      }
+      },
+      "specular-specializations": [
+        {
+          "value": true
+        }
+      ]
     },
     {
       "name": "Eclipse",
@@ -48,12 +76,12 @@
         {
           "name": "eclipse-rim",
           "image-name": "eclipse-rim.svg",
-          "glass": false,
+          "glass": true,
           "fill-specializations": [
             {
               "appearance": "tinted",
               "value": {
-                "solid": "extended-gray:0.85000,1.00000"
+                "solid": "extended-gray:0.90000,1.00000"
               }
             }
           ]
@@ -62,12 +90,10 @@
           "name": "eclipse-disc",
           "image-name": "eclipse-disc.svg",
           "glass": false,
-          "fill-specializations": [
+          "hidden-specializations": [
             {
               "appearance": "tinted",
-              "value": {
-                "solid": "extended-gray:0.12000,1.00000"
-              }
+              "value": true
             }
           ]
         }
@@ -79,7 +105,12 @@
       "translucency": {
         "enabled": false,
         "value": 0.5
-      }
+      },
+      "specular-specializations": [
+        {
+          "value": true
+        }
+      ]
     },
     {
       "name": "Light",
@@ -88,6 +119,12 @@
           "name": "corona",
           "image-name": "corona.svg",
           "glass": false,
+          "opacity-specializations": [
+            {
+              "appearance": "dark",
+              "value": 0.7
+            }
+          ],
           "hidden-specializations": [
             {
               "appearance": "tinted",
@@ -99,6 +136,12 @@
           "name": "glow",
           "image-name": "glow.svg",
           "glass": false,
+          "opacity-specializations": [
+            {
+              "appearance": "dark",
+              "value": 0.55
+            }
+          ],
           "hidden-specializations": [
             {
               "appearance": "tinted",
