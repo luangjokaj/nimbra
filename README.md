@@ -137,5 +137,14 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/rich.rs`: turns HTML or plain-text mail into styled blocks; fetches images on request
 - `src/data.rs`: the mail model, sample inbox and palette commands
 - `src/ui.rs`: icon, kbd, avatar, pill, buttons
-- `src/app.rs`: state, key actions, and the sidebar, list, reading pane, palette and Inbox Zero views
+- `src/app.rs`: the app's state, key actions, moving between mailboxes and threads, and the window's layout. The rest of the app is the same `Nimbra` type, continued in the files below
+- `src/accounts.rs`: signing in and out, connecting each account, profile photos
+- `src/mailbox.rs`: listing the open mailbox, checking for changes, loading more, watching for new mail
+- `src/threads.rs`: done, trash, star, unread, snooze, and undoing them
+- `src/labels.rs`: labelling and moving threads, and the sheet that edits labels
+- `src/finder.rs`: search and its suggestions
+- `src/composer.rs`: writing a message: its fields, editor, drafts and its views
+- `src/outgoing.rs`: Send, the undo delay, the offline queue and send later, as the app carries them out
+- `src/menus.rs`: menus, the Undo pill and notices, each in a small window of its own
+- `src/sidebar.rs`, `src/list.rs`, `src/reading.rs`, `src/palette.rs`: the sidebar, the thread list (with Inbox Zero), the reading pane and the command palette
 - `assets/`: bundled Geist and Instrument Serif fonts (OFL) and Lucide-style icons

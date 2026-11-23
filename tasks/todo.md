@@ -520,3 +520,23 @@ before; typing stays right (aabb, abb) over repeated runs; arrows still cross li
 
 Review: the pill's window captured on its own: 9% opacity at its edge before, 0 after;
 unit test ties the shadow to the margin.
+
+## app.rs in parts (2026-11-23)
+
+`src/app.rs` was 16,485 lines, over half the code, nearly all of it one `impl Nimbra`. Moved
+out by subject, each a child module of `app` (so private state stays private to the app),
+one commit per file, with no change to the code itself.
+
+- [x] `composer.rs`: the composer's state, fields, editor, drafts and views
+- [x] `outgoing.rs`: sending, the offline queue, send later, quitting with mail under way
+- [x] `menus.rs`: menus, the Undo pill, notices
+- [x] `accounts.rs`: sign-in, connecting, photos, sign-out
+- [x] `mailbox.rs`: listing, checking, loading more, watching for mail
+- [x] `finder.rs`, `labels.rs`, `threads.rs`: search, labels, actions on threads
+- [x] `sidebar.rs`, `list.rs`, `reading.rs`, `palette.rs`: the views
+- [x] README's file list
+
+Review: `app.rs` is 2,527 lines (state, `new`, navigation, layout and `render`). After each
+move: `cargo check`, the 102 tests, and a comparison of every line before and after (only
+`pub(super)`, the module lines and four section comments differ). Not checked by using the
+app: nothing but where the code lives was changed.
