@@ -550,6 +550,9 @@ pub struct Nimbra {
     label_for: Option<MeantFor>,
     /// The labels the open menu lists, as it lists them.
     menu_labels: Vec<gmail::Label>,
+    /// When Gmail was last asked for the label list, and for which connection
+    /// (`account_gen`): labels are made and renamed in other places too.
+    labels_asked: Option<(std::time::Instant, u64)>,
     /// The "Undo" pill shown after a thread is removed, in a window of its own so it
     /// floats above the email's web view; `undo_gen` restarts its timer.
     undo_window: Option<gpui::WindowHandle<UndoToast>>,
@@ -847,6 +850,7 @@ impl Nimbra {
             palette_for: None,
             label_for: None,
             menu_labels: Vec::new(),
+            labels_asked: None,
             menu_window: None,
             undo_window: None,
             undo_gen: 0,

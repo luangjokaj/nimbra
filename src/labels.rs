@@ -34,6 +34,8 @@ impl Nimbra {
         };
         change(&mut self.labels);
         self.labels.sort_by_key(|l| l.name.to_lowercase());
+        // A list being fetched now may be from before this change (`refresh_labels`).
+        self.labels_asked = None;
         // Label mailboxes in memory are kept by position, which may have moved.
         self.cache.retain(|view, _| !matches!(view, View::Label(_)));
         if let Some(id) = open {
@@ -50,6 +52,59 @@ impl Nimbra {
         if checking {
             self.refresh(cx);
         }
+    }
+
+    /// Asks Gmail for the account's labels again, unless it was asked a few minutes ago
+    /// (`now` asks whatever). The list is kept over a relaunch, so without this a label
+    /// made or renamed in Gmail itself, or on another device, never showed up here.
+    pub(super) fn refresh_labels(&mut self, now: bool, cx: &mut Context<Self>) {
+        const EVERY: Duration = Duration::from_secs(300);
+        let Some(client) = self.gmail.clone() else {
+            return;
+        };
+        let generation = self.account_gen;
+        if !now
+            && self
+                .labels_asked
+                .is_some_and(|(at, asked_of)| asked_of == generation && at.elapsed() < EVERY)
+        {
+            return;
+        }
+        let asked = (std::time::Instant::now(), generation);
+        self.labels_asked = Some(asked);
+        cx.spawn(async move |this, cx| {
+            let listed = cx
+                .background_executor()
+                .spawn(async move { client.labels() })
+                .await;
+            this.update(cx, |this, cx| {
+                // Labels are a nicety: one that fails is asked again next time.
+                let Ok(listed) = listed else {
+                    this.labels_asked = None;
+                    return;
+                };
+                // Another account by now, or a label made, renamed or deleted here since
+                // (or being so now), which this list may be from before: ask again.
+                if this.account_gen != generation
+                    || this.labels_asked != Some(asked)
+                    || this.writes.any()
+                {
+                    this.labels_asked = None;
+                    return;
+                }
+                if same_labels(&this.labels, &listed) {
+                    return;
+                }
+                this.change_labels(|labels| *labels = listed, cx);
+                this.labels_asked = Some(asked);
+                // Counts are asked for the labels listed: ask for the new ones'.
+                this.counted = None;
+                this.persist(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn rename_label(&mut self, id: String, name: String, cx: &mut Context<Self>) {
@@ -99,6 +154,12 @@ impl Nimbra {
                     client.delete_label(&label)
                 })
                 .await;
+            // Already gone from Gmail (deleted elsewhere, or here before this list was
+            // brought up to date): that is what was asked for, so it goes from the list too.
+            let result = match result {
+                Err(error) if gmail::is_gone(&error) => Ok(()),
+                other => other,
+            };
             this.update(cx, |this, cx| match result {
                 Ok(()) => {
                     let was_open = matches!(this.mailbox, View::Label(i) if this.labels.get(i).is_some_and(|l| l.id == id));
@@ -111,6 +172,7 @@ impl Nimbra {
                         this.select_mailbox(View::Inbox, cx);
                     }
                     this.notice = Some("Label deleted. The mail it was on is still there.".into());
+                    this.persist(cx);
                     cx.notify();
                 }
                 Err(error) => this.fail(error, cx),
@@ -484,5 +546,40 @@ impl Nimbra {
         })
         .detach();
         cx.notify();
+    }
+}
+
+/// The same labels under the same names, in any order.
+fn same_labels(a: &[gmail::Label], b: &[gmail::Label]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .all(|x| b.iter().any(|y| y.id == x.id && y.name == x.name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn label(id: &str, name: &str) -> gmail::Label {
+        gmail::Label {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn a_label_made_or_renamed_elsewhere_is_a_change() {
+        let here = [label("Label_1", "Blocked"), label("Label_2", "Later")];
+        let reordered = [label("Label_2", "Later"), label("Label_1", "Blocked")];
+        assert!(same_labels(&here, &reordered));
+        let more = [
+            label("Label_1", "Blocked"),
+            label("Label_2", "Later"),
+            label("Label_3", "Flights"),
+        ];
+        assert!(!same_labels(&here, &more));
+        let renamed = [label("Label_1", "Blocked"), label("Label_2", "Soon")];
+        assert!(!same_labels(&here, &renamed));
+        assert!(!same_labels(&here, &here[..1]));
     }
 }

@@ -554,3 +554,17 @@ app: nothing but where the code lives was changed.
 Review: `cargo check`, 105 tests (3 new, on taking the files over). Not tried against Gmail:
 forwarding a mail with attachments, and changing From on it, still need a real run.
 
+
+## Labels made outside the app (2026-11-23)
+
+- [x] The label list was asked of Gmail only while it was empty, and it is kept over a
+      relaunch: a label made or renamed in Gmail itself never showed up (menu, sidebar,
+      chips). It is asked again with the mail check, at most every 5 minutes, and on Reload.
+
+Review: `cargo check`, 106 tests (1 new). Not tried against Gmail. Still as before: the
+label and move menus list 12 labels at most, and in All inboxes they list the shown
+account's labels, not those of the thread's own account.
+- [x] A deleted label came back after switching accounts: the list kept on disk was not saved
+      after the delete, and was restored as it was. It is saved now, and Gmail is asked for
+      the list whenever an account's kept state is opened. Deleting a label Gmail no longer
+      has (404) takes it off the list instead of failing.

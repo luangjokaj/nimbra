@@ -564,6 +564,9 @@ impl Nimbra {
                     this.labels = saved.labels;
                     this.synced_to = saved.synced_to;
                 }
+                // The labels kept are as they were when last saved: ask Gmail how they
+                // are now (one deleted or made since, here or elsewhere).
+                this.refresh_labels(true, cx);
                 if let Some(mut mails) = mails {
                     for mail in &mut mails {
                         mail.refresh_time();
@@ -789,6 +792,9 @@ impl Nimbra {
                 let Some((client, generation)) = client else {
                     continue; // not signed in
                 };
+                // The label list too, now and then: Gmail's change feed does not carry it.
+                this.update(cx, |this, cx| this.refresh_labels(false, cx))
+                    .ok();
                 let from = this
                     .update(cx, |this, _| this.notify_from.clone())
                     .ok()
@@ -1679,6 +1685,7 @@ impl Nimbra {
         self.reload_gen += 1;
         if !self.is_demo() {
             self.counted = None;
+            self.refresh_labels(true, cx);
             self.refresh(cx);
             // One that was running quietly is what was asked for now.
             self.checks.show();
