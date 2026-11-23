@@ -36,6 +36,7 @@ actions!(
         Up,
         Down,
         Tab,
+        BackTab,
     ]
 );
 
@@ -47,6 +48,8 @@ pub enum InputEvent {
     Up,
     Down,
     Tab,
+    /// Shift-Tab: back to the field before.
+    BackTab,
     /// The text was edited by typing, pasting or deleting (not by `set`).
     Changed,
 }
@@ -80,6 +83,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", Up, context),
         KeyBinding::new("down", Down, context),
         KeyBinding::new("tab", Tab, context),
+        KeyBinding::new("shift-tab", BackTab, context),
     ]);
 }
 
@@ -204,6 +208,10 @@ impl TextInput {
 
     fn tab(&mut self, _: &Tab, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(InputEvent::Tab);
+    }
+
+    fn back_tab(&mut self, _: &BackTab, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(InputEvent::BackTab);
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -777,6 +785,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
             .on_action(cx.listener(Self::tab))
+            .on_action(cx.listener(Self::back_tab))
             .w_full()
             .line_height(px(24.))
             .child(

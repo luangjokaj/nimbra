@@ -19,6 +19,8 @@ pub(super) struct MessageWindow {
     /// Holds the keyboard so R, A, F, E and ⌫ work here.
     focus: FocusHandle,
     focused_once: bool,
+    /// The text blocks as last drawn here, for selecting (`selection.rs`).
+    layouts: super::selection::Layouts,
     _observe: gpui::Subscription,
 }
 
@@ -46,6 +48,7 @@ impl MessageWindow {
             html_shown: None,
             focus: cx.focus_handle(),
             focused_once: false,
+            layouts: Default::default(),
             _observe: observe,
         }
     }
@@ -311,6 +314,11 @@ impl Render for MessageWindow {
                 .into_any_element()
         } else {
             let column = width.min(860.);
+            self.layouts.borrow_mut().clear();
+            let selectable = super::selection::Selectable {
+                place: super::selection::Place::Window(self.key.clone()),
+                layouts: self.layouts.clone(),
+            };
             let content = self.owner.update(cx, |n, cx| {
                 let mut d = div()
                     .flex()
@@ -335,7 +343,7 @@ impl Render for MessageWindow {
                             .border_color(t.border)
                             .child(n.message_header(&t, &m, k + 1, false, cx))
                             .child(
-                                n.message_body(&t, &e.blocks, (k + 1) * 1000, cx)
+                                n.message_body(&t, &e.blocks, (k + 1) * 1000, &selectable, cx)
                                     .pl(px(40.)),
                             )
                             .when(!e.header.attachments.is_empty(), |d| {
@@ -361,7 +369,7 @@ impl Render for MessageWindow {
                         .border_t_1()
                         .border_color(t.border)
                         .child(n.message_header(&t, &m, 0, false, cx))
-                        .child(n.message_body(&t, &m.body, 0, cx).pl(px(40.)))
+                        .child(n.message_body(&t, &m.body, 0, &selectable, cx).pl(px(40.)))
                         .when(!m.header.attachments.is_empty(), |d| {
                             d.child(
                                 n.attachment_row(
@@ -389,11 +397,23 @@ impl Render for MessageWindow {
             self.focused_once = true;
             window.focus(&self.focus);
         }
+        // Dragging to select follows the pointer over the whole window.
+        let watch = self.owner.update(cx, |n, cx| {
+            n.selection_watch(self.layouts.clone(), cx)
+                .into_any_element()
+        });
         div()
             .relative()
             .flex()
             .flex_col()
             .size_full()
+            .child(watch)
+            .on_action(cx.listener(|this, _: &crate::input::Copy, _, cx| {
+                let place = super::selection::Place::Window(this.key.clone());
+                let mail = this.mail(cx);
+                this.owner
+                    .update(cx, |n, cx| n.copy_selection(&place, &mail, cx));
+            }))
             // The same single-letter keys as in the main window, unless a reply is open here.
             .key_context(if compose.is_some() {
                 "Composer"

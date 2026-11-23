@@ -1,13 +1,39 @@
 //! Accounts: signing in and out, connecting each one to its mail (Gmail with Google's
-//! sign-in, or IMAP and SMTP with a password: the keychain, its store, its connection),
-//! switching between them, and their profile photos.
+//! sign-in, or IMAP and SMTP with a password or Microsoft's sign-in: the keychain, its
+//! store, its connection), switching between them, and their profile photos.
 
 use super::*;
+use crate::imap_mail::Credential;
+
+/// How an account with its own servers signs in, read from the keychain (blocking): its
+/// Microsoft sign-in when `microsoft` is given, else its password. `None` when there is none.
+fn stored_credential(
+    id: &str,
+    microsoft: Option<&crate::microsoft::Config>,
+) -> anyhow::Result<Option<Credential>> {
+    Ok(match microsoft {
+        Some(config) => crate::microsoft::stored_refresh_token(id)?.map(|token| {
+            Credential::Microsoft(Arc::new(crate::microsoft::Tokens::new(
+                config.clone(),
+                token,
+                id.to_string(),
+            )))
+        }),
+        None => crate::servers::stored_password(id)?.map(Credential::Password),
+    })
+}
+
+/// Shown for a Microsoft account when Microsoft's sign-in is not set up on this Mac.
+const NO_MICROSOFT: &str = "This account signs in with Microsoft, which is not set up on this Mac (NIMBRA_MICROSOFT_CLIENT_ID).";
 
 impl Nimbra {
     /// Opens Google's consent page in the browser and waits for it in the background. For
     /// an account with its own servers, asks for its password again instead.
     pub(super) fn sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.is_microsoft(&self.account_id) {
+            self.sign_in_to_microsoft_again(cx);
+            return;
+        }
         if self.servers_of(&self.account_id).is_some() {
             let account = self.account_id.clone();
             self.open_account_sheet(Some(account), cx);
@@ -50,6 +76,64 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// Sign in again for a Microsoft account whose sign-in ended: Microsoft in the browser,
+    /// pointed at its address, which is the only one accepted. Nothing is saved until it
+    /// comes back.
+    fn sign_in_to_microsoft_again(&mut self, cx: &mut Context<Self>) {
+        let Some(config) = self.microsoft.clone() else {
+            self.status = Status::Failed(NO_MICROSOFT.into());
+            cx.notify();
+            return;
+        };
+        let account = self.account_id.clone();
+        let generation = self.account_gen;
+        let expected = self.email_of(&account);
+        match crate::microsoft::SignIn::start(&config, expected.as_deref()) {
+            Ok((pending, url)) => {
+                cx.open_url(&url);
+                self.status = Status::SigningIn;
+                self.notice = None;
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let (email, tokens) = pending.finish(&config)?;
+                            if let Some(expected) = &expected {
+                                crate::microsoft::check_same_account(expected, &email)?;
+                            }
+                            anyhow::Ok((email, tokens))
+                        })
+                        .await;
+                    this.update(cx, |this, cx| {
+                        // Another account was switched to meanwhile: nothing is kept.
+                        if this.account_gen != generation {
+                            return;
+                        }
+                        let kept = match result {
+                            Ok((email, tokens)) => this.keep_imap_account(
+                                Some(account),
+                                email.clone(),
+                                Credential::Microsoft(Arc::new(tokens)),
+                                crate::microsoft::servers(&email),
+                                cx,
+                            ),
+                            Err(error) => Err(error.to_string().into()),
+                        };
+                        if let Err(error) = kept {
+                            this.status = Status::SignedOut;
+                            this.notice = Some(error);
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            Err(error) => self.status = Status::Failed(error.to_string().into()),
+        }
+        cx.notify();
+    }
+
     /// The account shown has its own servers (IMAP and SMTP), not Gmail.
     pub(super) fn own_servers(&self) -> bool {
         self.servers_of(&self.account_id).is_some()
@@ -64,16 +148,38 @@ impl Nimbra {
             .and_then(|a| a.servers.clone())
     }
 
-    /// The connection to an account with its own servers, from its saved password: `None`
-    /// when there is no password (yet, or any more).
-    fn imap_connection(&self, id: &str, password: Option<String>) -> Option<Arc<mail::Client>> {
+    /// The account signs in with Microsoft (its servers are Microsoft's).
+    pub(super) fn is_microsoft(&self, id: &str) -> bool {
+        self.settings.accounts.iter().any(|a| {
+            a.id == id
+                && a.servers.is_some()
+                && a.oauth.as_deref() == Some(crate::microsoft::PROVIDER)
+        })
+    }
+
+    /// What reading an account's credential needs (see `stored_credential`): Microsoft's
+    /// setup for a Microsoft account. `Err` when it is one and that is not set up here.
+    fn credential_setup(&self, id: &str) -> Result<Option<crate::microsoft::Config>, ()> {
+        if !self.is_microsoft(id) {
+            return Ok(None);
+        }
+        self.microsoft.clone().map(Some).ok_or(())
+    }
+
+    /// The connection to an account with its own servers, from its saved password or
+    /// sign-in: `None` when there is none (yet, or any more).
+    fn imap_connection(
+        &self,
+        id: &str,
+        credential: Option<Credential>,
+    ) -> Option<Arc<mail::Client>> {
         let account = self.settings.accounts.iter().find(|a| a.id == id)?;
         let servers = account.servers.clone()?;
         Some(Arc::new(crate::imap_mail::Client::new(
             id.to_string(),
             account.email.clone(),
             servers,
-            password?,
+            credential?,
         )))
     }
 
@@ -180,18 +286,24 @@ impl Nimbra {
         .detach();
     }
 
-    /// `connect` for an account with its own servers: its password from the keychain.
+    /// `connect` for an account with its own servers: its password, or its Microsoft
+    /// sign-in, from the keychain.
     fn connect_imap(&mut self, sign_in: bool, cx: &mut Context<Self>) {
         let id = self.account_id.clone();
         let generation = self.account_gen;
+        let Ok(microsoft) = self.credential_setup(&id) else {
+            self.status = Status::Failed(NO_MICROSOFT.into());
+            cx.notify();
+            return;
+        };
         let reading = self.read_keychain(cx);
         cx.spawn(async move |this, cx| {
             let key = id.clone();
-            let password = cx
+            let credential = cx
                 .background_executor()
                 .spawn(async move {
                     let _reading = reading;
-                    crate::servers::stored_password(&key)
+                    stored_credential(&key, microsoft.as_ref())
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -201,13 +313,13 @@ impl Nimbra {
                 {
                     return;
                 }
-                match password {
-                    Ok(password) => match this.imap_connection(&id, password) {
+                match credential {
+                    Ok(credential) => match this.imap_connection(&id, credential) {
                         Some(connection) => {
                             this.connection = Some(connection);
                             this.open_store(cx);
                         }
-                        None if sign_in => this.open_account_sheet(Some(id), cx),
+                        None if sign_in => this.sign_in(cx),
                         None => this.status = Status::SignedOut,
                     },
                     Err(error) => {
@@ -277,27 +389,33 @@ impl Nimbra {
         if missing.is_empty() {
             return;
         }
-        // Accounts with their own servers sign in with a password; Gmail ones with Google.
+        // Accounts with their own servers sign in with a password or Microsoft; Gmail ones
+        // with Google.
         let (imap, missing): (Vec<String>, Vec<String>) = missing
             .into_iter()
             .partition(|id| self.servers_of(id).is_some());
+        // A Microsoft account without Microsoft's setup here waits until it is shown.
+        let imap: Vec<(String, Option<crate::microsoft::Config>)> = imap
+            .into_iter()
+            .filter_map(|id| Some((id.clone(), self.credential_setup(&id).ok()?)))
+            .collect();
         if !imap.is_empty() {
             cx.spawn(async move |this, cx| {
                 let found = cx
                     .background_executor()
                     .spawn(async move {
                         imap.into_iter()
-                            .filter_map(|id| {
-                                Some((crate::servers::stored_password(&id).ok()??, id))
+                            .filter_map(|(id, microsoft)| {
+                                Some((stored_credential(&id, microsoft.as_ref()).ok()??, id))
                             })
                             .collect::<Vec<_>>()
                     })
                     .await;
                 this.update(cx, |this, cx| {
-                    for (password, id) in found {
+                    for (credential, id) in found {
                         if id != this.account_id
                             && !this.others.contains_key(&id)
-                            && let Some(connection) = this.imap_connection(&id, Some(password))
+                            && let Some(connection) = this.imap_connection(&id, Some(credential))
                         {
                             this.others.insert(id.clone(), connection);
                             this.open_other_store(id, cx);
@@ -547,6 +665,7 @@ impl Nimbra {
             std::thread::spawn(move || {
                 gmail::forget_refresh_token(&duplicate);
                 crate::servers::forget_password(&duplicate);
+                crate::microsoft::forget_refresh_token(&duplicate);
                 crate::store::wipe(&duplicate);
             });
             self.notice = Some("That account is already in Nimbra.".into());
@@ -560,6 +679,7 @@ impl Nimbra {
                 id: id.clone(),
                 email: email.to_string(),
                 servers: None,
+                oauth: None,
             }),
         }
         self.settings.active = id;
@@ -870,7 +990,7 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Signs out: forgets the Google sign-in and removes the mail kept on this Mac and its
+    /// Signs out: forgets the sign-in (Google's, the password, or Microsoft's) and removes the mail kept on this Mac and its
     /// key. Settings (signature, theme) stay.
     pub(super) fn sign_out(&mut self, cx: &mut Context<Self>) {
         let account = self.account_id.clone();
@@ -892,6 +1012,7 @@ impl Nimbra {
         std::thread::spawn(move || {
             gmail::forget_refresh_token(&gone);
             crate::servers::forget_password(&gone);
+            crate::microsoft::forget_refresh_token(&gone);
             crate::store::wipe(&gone);
         });
         self.settings.accounts.retain(|a| a.id != account);

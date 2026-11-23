@@ -564,15 +564,18 @@ impl Nimbra {
                             None => avatar(crate::data::tone_for(&account.email), &initial, 18.)
                                 .into_any_element(),
                         })
+                        // Cut to fit with "…": GPUI's own truncation measures the text
+                        // before the row has its width, and crops it instead.
                         .child(
                             div()
                                 .flex_1()
                                 .min_w(px(0.))
-                                .truncate()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
                                 .text_color(if shown { t.text } else { t.text2 })
-                                .child(account.email.clone()),
+                                .child(fit(&account.email, label_room(count.as_deref(), cx), cx)),
                         )
-                        .children(count.map(|n| meta(n, if shown { t.text } else { t.text3 })))
+                        .children(count.map(|n| count_pill(t, n, shown)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if id == this.account_id {
                                 this.select_mailbox(View::Inbox, cx);
@@ -1238,4 +1241,46 @@ pub(super) fn reveal(
 /// What is behind the sidebar's open row.
 pub(super) fn active_pill(t: &Theme) -> impl IntoElement {
     crate::erase::glass(NAV_RADIUS, t.sidebar, t.glass, t.glass_opacity)
+}
+
+/// An account row's unread count, on a small pill.
+fn count_pill(t: &Theme, count: String, shown: bool) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(px(18.))
+        .px(px(COUNT_PAD))
+        .rounded_full()
+        .bg(if shown { t.selected } else { t.hover })
+        .child(meta(count, if shown { t.text } else { t.text2 }))
+}
+
+/// Space each side of a count on its pill.
+const COUNT_PAD: f32 = 6.;
+
+/// The room an account row has for its address: the sidebar, less its padding, the
+/// avatar, the gaps and the count's pill.
+fn label_room(count: Option<&str>, cx: &App) -> f32 {
+    let pill = count.map_or(0., |n| {
+        text_width(n, 12., crate::theme::SANS, cx) + 2. * COUNT_PAD + 10.
+    });
+    SIDEBAR_W - 2. * 12. - 2. * 10. - 18. - 10. - pill
+}
+
+/// The text, cut with "…" so that it fits `room` (13 pt, the sidebar's size).
+fn fit(text: &str, room: f32, cx: &App) -> String {
+    let width = |s: &str| text_width(s, 13., crate::theme::SANS, cx);
+    if width(text) <= room {
+        return text.to_string();
+    }
+    let mut cut: Vec<char> = text.chars().collect();
+    while !cut.is_empty() {
+        cut.pop();
+        let shown = format!("{}…", cut.iter().collect::<String>().trim_end());
+        if width(&shown) <= room {
+            return shown;
+        }
+    }
+    "…".to_string()
 }

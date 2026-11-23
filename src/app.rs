@@ -35,6 +35,10 @@ use message_window::MessageWindow;
 #[path = "skeleton.rs"]
 mod skeleton;
 
+#[path = "selection.rs"]
+mod selection;
+use selection::ReaderSelection;
+
 #[path = "add_account.rs"]
 mod add_account;
 use add_account::AccountSheet;
@@ -555,6 +559,11 @@ pub struct Nimbra {
     label_for: Option<MeantFor>,
     /// The Add account sheet (an address that is not Gmail), when it is open.
     account_sheet: Option<AccountSheet>,
+    /// Text selected in the reader.
+    reader_selection: Option<ReaderSelection>,
+    /// The reader's text blocks as last drawn, to find the one under the pointer while
+    /// selecting.
+    reader_layouts: std::rc::Rc<std::cell::RefCell<Vec<(usize, gpui::TextLayout)>>>,
     /// The labels the open menu lists, as it lists them.
     menu_labels: Vec<mail::Label>,
     /// When Gmail was last asked for the label list, and for which connection
@@ -593,6 +602,8 @@ pub struct Nimbra {
     /// What took each cleared thread out of the list, so undo can reverse it.
     removed_by: HashMap<String, mail::Change>,
     config: Option<gmail::Config>,
+    /// Microsoft's sign-in (Outlook.com, Microsoft 365), when it is set up on this Mac.
+    microsoft: Option<crate::microsoft::Config>,
     connection: Option<Arc<mail::Client>>,
     /// Shown in the sidebar footer.
     account: SharedString,
@@ -675,12 +686,23 @@ impl Nimbra {
         // NIMBRA_SCREEN=palette|zero and NIMBRA_THEME=light open the sample data in a given
         // state, which is handy for screenshots. NIMBRA_DEMO=1 forces the sample data.
         let screen = std::env::var("NIMBRA_SCREEN").unwrap_or_default();
-        let config = if !screen.is_empty() || std::env::var_os("NIMBRA_DEMO").is_some() {
+        let sample = !screen.is_empty() || std::env::var_os("NIMBRA_DEMO").is_some();
+        let config = if sample { None } else { gmail::Config::load() };
+        // The Add account screenshots show the Microsoft button when it is set up.
+        let account_screen = matches!(
+            screen.as_str(),
+            "account" | "account-servers" | "settings-account"
+        );
+        let microsoft = if sample && !account_screen {
             None
         } else {
-            gmail::Config::load()
+            crate::microsoft::Config::load()
         };
-        let demo = config.is_none();
+        let settings = crate::settings::load();
+        // Without Google's sign-in set up, an account with its own servers still opens: the
+        // sample mail is only for when there is nothing else to show.
+        let demo =
+            sample || (config.is_none() && !settings.accounts.iter().any(|a| a.servers.is_some()));
         let mails = if demo { inbox() } else { Vec::new() };
         let zero = screen == "zero";
         let search = cx
@@ -709,7 +731,6 @@ impl Nimbra {
             InputEvent::Enter => this.finder_open_selected(cx),
             _ => {}
         });
-        let settings = crate::settings::load();
         // As it was left. NIMBRA_SIDEBAR=closed or open overrides that (screenshots).
         let sidebar_open = match std::env::var("NIMBRA_SIDEBAR").as_deref() {
             Ok("closed") => false,
@@ -859,6 +880,8 @@ impl Nimbra {
             menu_labels: Vec::new(),
             labels_asked: None,
             account_sheet: None,
+            reader_selection: None,
+            reader_layouts: Default::default(),
             menu_window: None,
             undo_window: None,
             undo_gen: 0,
@@ -875,6 +898,7 @@ impl Nimbra {
             unread_only: false,
             removed_by: HashMap::new(),
             config,
+            microsoft,
             connection: None,
             account: if demo {
                 "Luan Gjokaj".into()
@@ -1029,7 +1053,20 @@ impl Nimbra {
         {
             this.account_id = active;
         }
-        if this.config.is_some() {
+        // No Google sign-in to use: show an account with its own servers instead.
+        if this.config.is_none()
+            && !this.is_demo()
+            && this.servers_of(&this.account_id).is_none()
+            && let Some(id) = this
+                .settings
+                .accounts
+                .iter()
+                .find(|a| a.servers.is_some())
+                .map(|a| a.id.clone())
+        {
+            this.account_id = id;
+        }
+        if this.config.is_some() || (!this.is_demo() && this.own_servers()) {
             this.status = Status::Loading;
             this.inbox_saved_empty =
                 crate::store::Store::saved_empty(&this.account_id, &record(View::Inbox));
@@ -1625,7 +1662,9 @@ impl Nimbra {
             self.selected = 0;
             self.palette = false;
             self.status = Status::SignedOut;
-            self.notice = Some(if self.servers_of(&self.account_id).is_some() {
+            self.notice = Some(if self.is_microsoft(&self.account_id) {
+                "Your Microsoft sign-in expired. Sign in again to continue.".into()
+            } else if self.servers_of(&self.account_id).is_some() {
                 "The server stopped taking this account’s password. Sign in again to continue."
                     .into()
             } else {
@@ -1939,7 +1978,20 @@ impl Nimbra {
     /// Shown in place of the mail panes while signed out, signing in, loading or failed.
     fn status_screen(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let own_servers = self.servers_of(&self.account_id).is_some();
+        let microsoft = self.is_microsoft(&self.account_id);
         let (title, message, action): (&str, SharedString, Option<&str>) = match &self.status {
+            Status::SignedOut if microsoft => (
+                "Sign in again",
+                "Microsoft ended this account’s sign-in. Nimbra opens Microsoft in your \
+                 browser to sign in again."
+                    .into(),
+                Some("Sign in"),
+            ),
+            Status::SigningIn if microsoft => (
+                "Waiting for Microsoft",
+                "Finish signing in in your browser, then come back here.".into(),
+                None,
+            ),
             Status::SignedOut if own_servers => (
                 "Sign in again",
                 "The mail server stopped taking this account’s password. Sign in again, or \
@@ -2194,6 +2246,9 @@ impl Render for Nimbra {
                 "Mail"
             })
             .track_focus(&self.focus)
+            .on_action(
+                cx.listener(|this, _: &crate::input::Copy, _, cx| this.copy_reader_selection(cx)),
+            )
             .on_action(cx.listener(|this, _: &Next, _, cx| this.step(1, cx)))
             .on_action(cx.listener(|this, _: &Prev, _, cx| this.step(-1, cx)))
             .on_action(cx.listener(|this, _: &First, _, cx| this.step_to_end(false, cx)))

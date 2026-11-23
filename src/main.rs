@@ -18,6 +18,7 @@ mod keyboard;
 mod leaving;
 mod listing;
 mod mail;
+mod microsoft;
 mod mime;
 mod notify;
 mod quitting;
@@ -221,6 +222,9 @@ fn main() {
             KeyBinding::new("e", MarkDone, mail),
             KeyBinding::new("z", Undo, mail),
             KeyBinding::new("cmd-z", Undo, Some("Mail")),
+            // Copies text selected in the reader.
+            KeyBinding::new("cmd-c", input::Copy, Some("Mail")),
+            KeyBinding::new("ctrl-c", input::Copy, Some("Mail")),
             KeyBinding::new("ctrl-z", Undo, Some("Mail")),
             KeyBinding::new("s", ToggleStar, mail),
             KeyBinding::new("u", MarkUnread, mail),

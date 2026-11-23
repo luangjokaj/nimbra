@@ -476,11 +476,13 @@ impl Nimbra {
 
     /// One message drawn natively from its blocks. `base` keeps element ids unique when
     /// several messages are on screen.
+    /// A message's text, selectable where it is drawn (`selectable`).
     pub(super) fn message_body(
         &self,
         t: &Theme,
         blocks: &[Block],
         base: usize,
+        selectable: &super::selection::Selectable,
         cx: &mut Context<Self>,
     ) -> Div {
         let sources = rich::image_sources(blocks);
@@ -524,11 +526,18 @@ impl Nimbra {
                 blocks
                     .iter()
                     .enumerate()
-                    .map(|(i, block)| self.block(t, block, base + i)),
+                    .map(|(i, block)| self.block(t, block, base + i, selectable, cx)),
             )
     }
 
-    fn block(&self, t: &Theme, block: &Block, id: usize) -> AnyElement {
+    fn block(
+        &self,
+        t: &Theme,
+        block: &Block,
+        id: usize,
+        selectable: &super::selection::Selectable,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let text = |color: Hsla| {
             let highlights: Vec<_> = block
                 .spans
@@ -553,19 +562,46 @@ impl Nimbra {
                     (span.range.clone(), style)
                 })
                 .collect();
+            // The selection (see `selection.rs`), over the spans.
+            let selected = self
+                .selection_in(&selectable.place)
+                .and_then(|s| s.in_block(id, block.text.len()));
+            let highlights =
+                super::selection::with_selection(highlights, selected, t.violet.opacity(0.3));
             let styled = StyledText::new(block.text.clone()).with_highlights(highlights);
+            let layout = styled.layout().clone();
             let links: Vec<(std::ops::Range<usize>, String)> = block
                 .spans
                 .iter()
                 .filter_map(|span| Some((span.range.clone(), span.link.clone()?)))
                 .collect();
-            if links.is_empty() {
-                return styled.into_any_element();
-            }
-            // Links open in the system browser; only http, https and mailto get this far.
-            let (ranges, urls): (Vec<_>, Vec<_>) = links.into_iter().unzip();
-            gpui::InteractiveText::new(("link-text", id), styled)
-                .on_click(ranges, move |index, _, cx| cx.open_url(&urls[index]))
+            let inner = if links.is_empty() {
+                styled.into_any_element()
+            } else {
+                // Links open in the system browser; only http, https and mailto get this far.
+                let (ranges, urls): (Vec<_>, Vec<_>) = links.into_iter().unzip();
+                gpui::InteractiveText::new(("link-text", id), styled)
+                    .on_click(ranges, move |index, _, cx| cx.open_url(&urls[index]))
+                    .into_any_element()
+            };
+            // Selecting: press on the text, drag (across blocks too, see `selection.rs`),
+            // Shift to extend.
+            selectable.layouts.borrow_mut().push((id, layout.clone()));
+            let pressed = layout;
+            let place = selectable.place.clone();
+            div()
+                .cursor(gpui::CursorStyle::IBeam)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        let offset = pressed
+                            .index_for_position(event.position)
+                            .unwrap_or_else(|nearest| nearest);
+                        let point = super::selection::Point { block: id, offset };
+                        this.select_from(place.clone(), point, event.modifiers.shift, cx);
+                    }),
+                )
+                .child(inner)
                 .into_any_element()
         };
 
@@ -798,6 +834,12 @@ impl Nimbra {
                 )
         };
 
+        // The text blocks drawn this time, for selecting (`selection.rs`).
+        self.reader_layouts.borrow_mut().clear();
+        let selectable = super::selection::Selectable {
+            place: super::selection::Place::Main(self.thread_key(m)),
+            layouts: self.reader_layouts.clone(),
+        };
         div()
             .flex()
             .flex_col()
@@ -806,6 +848,7 @@ impl Nimbra {
             .h_full()
             .bg(t.surface)
             .relative()
+            .child(self.selection_watch(self.reader_layouts.clone(), cx))
             // While a panel slides, the email keeps one width and the extra is cut off here.
             .overflow_hidden()
             // Toolbar
@@ -1178,6 +1221,7 @@ impl Nimbra {
                                                                     t,
                                                                     &e.blocks,
                                                                     (k + 1) * 1000,
+                                                                    &selectable,
                                                                     cx,
                                                                 )
                                                                 .pl(px(40.)),
@@ -1205,7 +1249,7 @@ impl Nimbra {
                                 .child(divider())
                                 .child(self.message_header(t, m, 0, true, cx))
                                 .child(
-                                    self.message_body(t, &m.body, 0, cx)
+                                    self.message_body(t, &m.body, 0, &selectable, cx)
                                         .pl(px(40.))
                                         .when(!m.loaded, |d| {
                                             d.child(self.loading_line(t, m, cx.entity()))
@@ -1380,14 +1424,29 @@ impl Nimbra {
                         div()
                             .flex_1()
                             .min_w(px(0.))
+                            // Name and address shrink (the address first) rather than run
+                            // under the buttons beside them.
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap(px(8.))
-                                    .child(div().font_weight(FontWeight::SEMIBOLD).child(sender))
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .max_w(relative(0.7))
+                                            .truncate()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(sender),
+                                    )
                                     .when(!header.from.address.is_empty(), |d| {
-                                        d.child(meta(header.from.address.clone(), t.text3))
+                                        d.child(
+                                            meta(header.from.address.clone(), t.text3)
+                                                .min_w(px(0.))
+                                                .truncate(),
+                                        )
                                     }),
                             )
                             .child(
@@ -1430,7 +1489,7 @@ impl Nimbra {
                             index * 3 + 2,
                         ))
                     })
-                    .child(mono(time, t.text3)),
+                    .child(mono(time, t.text3).flex_none()),
             )
             .when(open && !header.from.address.is_empty(), |d| {
                 d.child(self.details_card(t, header, &card_thread, index, &person, cx))

@@ -783,7 +783,43 @@ impl Nimbra {
                     })
                     .unwrap_or(EVERY)
                 };
-                cx.background_executor().timer(wait).await;
+                // Until the next look, unless the server says sooner that something changed
+                // (IMAP IDLE). Providers that cannot say return at once: the rest is waited.
+                // In slices of at most half a minute, so that after a switch of account
+                // it is the new account's server that is listened to, soon.
+                let began = std::time::Instant::now();
+                let start_gen = this.update(cx, |this, _| this.account_gen).ok();
+                loop {
+                    let left = wait.saturating_sub(began.elapsed());
+                    if left.is_zero() {
+                        break;
+                    }
+                    let slice = left.min(Duration::from_secs(30));
+                    let current = this
+                        .update(cx, |this, _| (this.account_gen, this.connection.clone()))
+                        .ok();
+                    let Some((generation, client)) = current else {
+                        break;
+                    };
+                    if Some(generation) != start_gen {
+                        break;
+                    }
+                    let sliced = std::time::Instant::now();
+                    let woke = match client {
+                        Some(client) => {
+                            cx.background_executor()
+                                .spawn(async move { client.wait_for_change(slice) })
+                                .await
+                        }
+                        None => false,
+                    };
+                    if woke {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(slice.saturating_sub(sliced.elapsed()))
+                        .await;
+                }
                 let Ok(client) = this.update(cx, |this, _| {
                     this.connection.clone().map(|c| (c, this.account_gen))
                 }) else {
