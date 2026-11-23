@@ -163,11 +163,8 @@ impl Nimbra {
                     .when(inbox_like && !self.is_demo(), |d| {
                         d.child(
                             action("bulk-snooze", "clock", "Snooze").on_click(cx.listener(
-                                |this, _, _, cx| {
-                                    this.snooze_choices = Self::snooze_choices();
-                                    this.open_palette();
-                                    this.palette_sel = 0;
-                                    cx.notify();
+                                |this, event: &gpui::ClickEvent, window, cx| {
+                                    this.open_snooze(Some(event.position()), window, cx)
                                 },
                             )),
                         )
@@ -579,15 +576,19 @@ impl Nimbra {
                                         .child(
                                             quick("quick-snooze", "clock")
                                                 .tooltip(tip(t.dark, "Snooze", "H"))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    cx.stop_propagation();
-                                                    this.selected = i;
-                                                    this.picked.clear();
-                                                    this.snooze_choices = Self::snooze_choices();
-                                                    this.palette_sel = 0;
-                                                    this.open_palette();
-                                                    cx.notify();
-                                                })),
+                                                .on_click(cx.listener(
+                                                    move |this, event: &gpui::ClickEvent, window, cx| {
+                                                        cx.stop_propagation();
+                                                        this.selected = i;
+                                                        this.picked.clear();
+                                                        this.open_selected(cx);
+                                                        this.open_snooze(
+                                                            Some(event.position()),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
                                         )
                                         .child(
                                             quick("quick-remind", "bell")

@@ -92,6 +92,10 @@ use reading::*;
 #[path = "palette.rs"]
 mod palette;
 
+#[path = "snooze_menu.rs"]
+mod snooze_menu;
+use snooze_menu::SnoozeMenu;
+
 actions!(
     nimbra,
     [
@@ -577,6 +581,17 @@ pub struct Nimbra {
     frame: Option<gpui::Bounds<gpui::Pixels>>,
     /// The toolbar menu's own window, while it is open.
     menu_window: Option<gpui::WindowHandle<MenuPopup>>,
+    /// The Snooze menu, while it is open (`snooze_menu.rs`).
+    snooze_window: Option<gpui::WindowHandle<SnoozeMenu>>,
+    /// Where the reader's Snooze button's menu drops from (its bottom-left), as last drawn.
+    snooze_anchor: std::rc::Rc<std::cell::Cell<Option<gpui::Point<gpui::Pixels>>>>,
+    /// The Snooze menu's "Only if nobody replies" switch, as it was last left.
+    snooze_alert: bool,
+    /// The time a day picked in the Snooze menu's calendar comes back at (hour, minute).
+    snooze_time: (u32, u32),
+    /// NIMBRA_SCREEN=snooze opens the Snooze menu once the window is drawn, and
+    /// snooze-time its calendar with the hours open (screenshots).
+    snooze_on_start: Option<bool>,
     /// The open toolbar menu, if any.
     menu: Option<Menu>,
     /// The menu a click outside just closed, and when. Lets a click on the menu's own
@@ -886,6 +901,15 @@ impl Nimbra {
             reader_selection: None,
             reader_layouts: Default::default(),
             menu_window: None,
+            snooze_window: None,
+            snooze_anchor: Default::default(),
+            snooze_alert: false,
+            snooze_time: (9, 0),
+            snooze_on_start: match screen.as_str() {
+                "snooze" => Some(false),
+                "snooze-time" => Some(true),
+                _ => None,
+            },
             undo_window: None,
             undo_gen: 0,
             frame: None,
@@ -2081,6 +2105,20 @@ impl Nimbra {
 
 impl Render for Nimbra {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(hours) = self.snooze_on_start.take() {
+            cx.defer_in(window, move |this, window, cx| {
+                let mode = if hours {
+                    let today = chrono::Local::now().date_naive();
+                    snooze_menu::Mode::Calendar(
+                        chrono::Datelike::with_day(&today, 1).unwrap_or(today),
+                        true,
+                    )
+                } else {
+                    snooze_menu::Mode::List
+                };
+                this.open_snooze_in(None, mode, window, cx)
+            });
+        }
         // The composer shown in another window: closing that window closes the composer
         // (keeping the draft), and a finished composer frees it.
         if let Some(host) = self.compose_host
@@ -2329,16 +2367,14 @@ impl Render for Nimbra {
                     this.trash(cx)
                 }
             }))
-            .on_action(cx.listener(|this, _: &TogglePalette, _, cx| {
+            .on_action(cx.listener(|this, _: &TogglePalette, window, cx| {
                 if this.palette {
                     this.palette = false;
+                    cx.notify();
                 } else if !this.visible().is_empty() {
                     this.leave_sidebar(cx);
-                    this.open_palette();
+                    this.open_snooze(None, window, cx);
                 }
-                this.palette_sel = 0;
-                this.snooze_choices = Self::snooze_choices();
-                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Print, _, cx| this.print_selected(cx)))
             .on_action(
@@ -2366,14 +2402,9 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &MenuToggleOriginal, _, cx| this.toggle_original(cx)))
             .on_action(cx.listener(|this, _: &MenuToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &MenuSearch, _, cx| this.focus_search(cx)))
-            .on_action(cx.listener(|this, _: &MenuSnooze, _, cx| {
-                if this.compose.is_none() && !this.visible().is_empty() {
-                    this.open_palette();
-                    this.palette_sel = 0;
-                    this.snooze_choices = Self::snooze_choices();
-                    cx.notify();
-                }
-            }))
+            .on_action(
+                cx.listener(|this, _: &MenuSnooze, window, cx| this.open_snooze(None, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &SelectAllThreads, _, cx| {
                 let visible = this.visible();
                 if visible.len() >= 2 {

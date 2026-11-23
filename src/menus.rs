@@ -55,6 +55,22 @@ pub(super) enum Menu {
 
 pub(super) const MENU_WIDTH: f32 = 220.;
 
+/// Closes one of the small pop-up windows (a menu, the Undo or notice pill). While that
+/// window is busy (its own button was clicked) it cannot be closed from here, so it is
+/// closed right after instead of being left on screen.
+pub(super) fn remove_popup<V: 'static>(handle: gpui::WindowHandle<V>, cx: &mut App) {
+    if handle
+        .update(cx, |_, window, _| window.remove_window())
+        .is_err()
+    {
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
+        });
+    }
+}
+
 /// What a menu row has beside its label: the card's border (1) and padding (6) and the row's
 /// padding (10) on each side, and the icon (16) with its gap (10).
 pub(super) const MENU_ROW_CHROME: f32 = 2. * (1. + 6. + 10.) + 16. + 10.;
@@ -153,7 +169,7 @@ impl Render for NoticeToast {
 /// The "Undo" pill shown after a thread is removed (see `Nimbra::offer_undo`).
 pub(super) struct UndoToast {
     pub(super) owner: gpui::WeakEntity<Nimbra>,
-    pub(super) label: &'static str,
+    pub(super) label: SharedString,
     pub(super) dark: bool,
 }
 
@@ -185,7 +201,14 @@ impl Render for UndoToast {
                     .border_1()
                     .border_color(t.border_strong)
                     .shadow(vec![popup_shadow(&t)])
-                    .child(div().flex_1().child(self.label))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .child(self.label.clone()),
+                    )
                     .child(
                         button(&t, ButtonKind::Ghost, "Undo", Some("⌘Z"))
                             .id("undo")
@@ -599,9 +622,7 @@ impl Nimbra {
 
     pub(super) fn close_menu_window(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.menu_window.take() {
-            handle
-                .update(cx, |_, window, _| window.remove_window())
-                .ok();
+            remove_popup(handle, cx);
         }
     }
 
@@ -750,16 +771,21 @@ impl Nimbra {
     }
 
     /// Shows the "Undo" pill at the bottom centre of the window for a few seconds.
-    pub(super) fn offer_undo(&mut self, label: &'static str, cx: &mut Context<Self>) {
+    pub(super) fn offer_undo(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
         const SHOWN: Duration = Duration::from_secs(6);
-        const SIZE: (f32, f32) = (300., 44.);
+        let label: SharedString = label.into();
+        // Wide enough for the label, the Undo button and the padding; 300 at least.
+        let width = (text_width(&label, 13., crate::theme::SANS, cx) + 150.)
+            .clamp(300., 460.)
+            .ceil();
+        let size = (width, 44.);
         self.close_undo(cx);
         let Some(frame) = self.frame else {
             return;
         };
         let origin = gpui::point(
-            frame.origin.x + (frame.size.width - px(SIZE.0)) / 2. - px(MENU_MARGIN),
-            frame.origin.y + frame.size.height - px(SIZE.1 + 24.) - px(MENU_MARGIN),
+            frame.origin.x + (frame.size.width - px(size.0)) / 2. - px(MENU_MARGIN),
+            frame.origin.y + frame.size.height - px(size.1 + 24.) - px(MENU_MARGIN),
         );
         let owner = cx.weak_entity();
         let dark = self.dark;
@@ -767,7 +793,7 @@ impl Nimbra {
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
                     origin,
-                    gpui::size(px(SIZE.0 + 2. * MENU_MARGIN), px(SIZE.1 + 2. * MENU_MARGIN)),
+                    gpui::size(px(size.0 + 2. * MENU_MARGIN), px(size.1 + 2. * MENU_MARGIN)),
                 ))),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
@@ -781,7 +807,15 @@ impl Nimbra {
             },
             |window, cx| {
                 crate::blur::no_window_shadow(window);
-                cx.new(|_| UndoToast { owner, label, dark })
+                cx.new(|cx| {
+                    // It goes away by itself too, so it can never be left behind.
+                    cx.spawn_in(window, async move |_, cx| {
+                        cx.background_executor().timer(SHOWN).await;
+                        cx.update(|window, _| window.remove_window()).ok();
+                    })
+                    .detach();
+                    UndoToast { owner, label, dark }
+                })
             },
         );
         let Ok(handle) = opened else {
@@ -807,9 +841,7 @@ impl Nimbra {
     /// itself after a few seconds, longer for longer messages.
     pub(super) fn sync_notice_window(&mut self, toast: Option<Toast>, cx: &mut Context<Self>) {
         if let Some(handle) = self.notice_window.take() {
-            handle
-                .update(cx, |_, window, _| window.remove_window())
-                .ok();
+            remove_popup(handle, cx);
         }
         let (Some(toast), Some(frame)) = (toast, self.frame) else {
             return;
@@ -868,9 +900,7 @@ impl Nimbra {
 
     pub(super) fn close_undo(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.undo_window.take() {
-            handle
-                .update(cx, |_, window, _| window.remove_window())
-                .ok();
+            remove_popup(handle, cx);
         }
     }
 

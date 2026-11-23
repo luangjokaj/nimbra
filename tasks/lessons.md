@@ -157,3 +157,6 @@
   only (From: the address and its chevron), as in the fields below.
 - A menu opened from the header is placed by fixed offsets in `toggle_menu`: moving
   or resizing its button means moving those too, in floating, full page and its own window.
+
+## Every way into a feature goes through one function
+- The reader's Snooze button opened the palette without loading its times, so it was empty, while H and the list buttons loaded them. When a feature has several openers (button, key, menu, row), give it one entry point (`open_snooze`) that prepares its state, and make every opener call it.

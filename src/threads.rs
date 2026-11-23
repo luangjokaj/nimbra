@@ -296,8 +296,18 @@ impl Nimbra {
             });
         }
         self.watch_schedule(cx);
+        let said = if choice.no_reply {
+            format!("I’ll bring it back on {} if nobody replies", choice.hint)
+        } else {
+            format!("Snoozed until {}", choice.hint)
+        };
         if inbox_like(self.mailbox) {
             self.remove_selected(mail::Change::Archive, cx);
+            // It left the inbox by being snoozed, not marked done: the Undo pill says so,
+            // and Undo cancels the snooze.
+            self.offer_undo(said, cx);
+            cx.notify();
+            return;
         } else {
             for &index in &targets {
                 // Snoozed from another mailbox: it still leaves the inbox, and stays listed here.
@@ -320,14 +330,7 @@ impl Nimbra {
                 self.open_selected(cx);
             }
         }
-        self.notice = Some(
-            if choice.no_reply {
-                format!("I’ll bring it back on {} if nobody replies.", choice.hint)
-            } else {
-                format!("Snoozed until {}.", choice.hint)
-            }
-            .into(),
-        );
+        self.notice = Some(format!("{said}.").into());
         cx.notify();
     }
 

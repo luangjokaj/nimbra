@@ -914,19 +914,34 @@ impl Nimbra {
                             .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
                     )
                     .child(div().w(px(6.)))
-                    .child(
+                    .child({
+                        // Where the Snooze menu drops from, also when opened with H.
+                        let anchor = self.snooze_anchor.clone();
                         icon_button(t, "clock")
                             .id("snooze")
+                            .relative()
                             .press(t)
                             .tooltip(tip(t.dark, "Snooze", "H"))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                                 this.set_hint(*hovered, "Snooze", "H", cx)
                             }))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_palette();
-                                cx.notify();
-                            })),
-                    )
+                            .child(
+                                gpui::canvas(
+                                    move |bounds, _, _| {
+                                        anchor.set(Some(gpui::point(
+                                            bounds.left(),
+                                            bounds.bottom() + px(6.),
+                                        )))
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_snooze(this.snooze_anchor.get(), window, cx)
+                            }))
+                    })
                     .child(
                         icon_button(t, "star")
                             .id("star")
