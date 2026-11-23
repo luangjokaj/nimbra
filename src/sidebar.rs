@@ -1118,8 +1118,10 @@ impl Nimbra {
     }
 }
 
-/// How narrow and how wide the sidebar can be dragged.
-pub(super) const SIDEBAR_MIN: f32 = 200.;
+/// How narrow and how wide the sidebar can be dragged. No narrower than its usual width:
+/// the window controls beside the traffic lights end 8pt before that edge (the reload
+/// button), and a narrower sidebar would cut them off.
+pub(super) const SIDEBAR_MIN: f32 = 236.;
 pub(super) const SIDEBAR_MAX: f32 = 380.;
 
 pub(super) const NAV_RADIUS: f32 = 8.;
