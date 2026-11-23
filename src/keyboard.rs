@@ -72,6 +72,7 @@ impl Sidebar<'_> {
                 &[
                     View::Starred,
                     View::Snoozed,
+                    View::Reminders,
                     View::Drafts,
                     View::Sent,
                     View::Done,
@@ -84,6 +85,7 @@ impl Sidebar<'_> {
                     View::Inbox,
                     View::Starred,
                     View::Snoozed,
+                    View::Reminders,
                     View::Drafts,
                     View::Sent,
                     View::Done,
@@ -109,6 +111,7 @@ impl Sidebar<'_> {
                     View::Starred,
                     View::Important,
                     View::Snoozed,
+                    View::Reminders,
                     View::Drafts,
                     View::Sent,
                     View::Done,
@@ -270,7 +273,7 @@ mod tests {
         assert!(!rows.contains(&Row::AllInboxes));
         assert_eq!(rows[rows.len() - 2], Row::Mailbox(View::Label(2)));
         assert_eq!(rows.last(), Some(&Row::Settings));
-        assert_eq!(rows.len(), 1 + 5 + 9 + 3 + 1);
+        assert_eq!(rows.len(), 1 + 5 + 10 + 3 + 1);
     }
 
     #[test]

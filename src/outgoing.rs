@@ -988,15 +988,14 @@ pub(super) fn carry_out_due(
             continue; // that account is not connected: later
         };
         let _working = writes.begin();
-        // A reminder comes back only if nobody wrote since; either way it is done.
-        let replied = snooze.no_reply
-            && client
-                .summary(&snooze.thread_id, false)
-                .is_ok_and(|s| s.timestamp_ms > snooze.since_ms);
-        let done = replied
-            || client
-                .relabel(&snooze.thread_id, &["INBOX", "UNREAD"], &[])
-                .is_ok();
+        // Brought back, or not needed any more: either way it is done.
+        let done = super::threads::wake(
+            &**client,
+            &snooze.thread_id,
+            snooze.since_ms,
+            snooze.no_reply,
+        )
+        .map_or_else(|error| mail::is_gone(&error), |_| true);
         // The list as it is by now: the account may have been opened and changed meanwhile.
         if done
             && store

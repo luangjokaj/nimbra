@@ -832,26 +832,18 @@ impl Nimbra {
     /// threads cleared in the meantime, then saves it.
     pub(super) fn install(&mut self, fresh: Vec<Mail>, cx: &mut Context<Self>) {
         let mut fresh = fresh;
-        // Snoozed lists Gmail's own snoozed threads and the ones snoozed here.
-        if self.mailbox == View::Snoozed {
-            for snooze in &self.snoozed {
-                if fresh
-                    .iter()
-                    .any(|m| m.id.as_deref() == Some(snooze.thread_id.as_str()))
-                {
-                    continue;
+        // Snoozed lists Gmail's own snoozed threads and the ones snoozed here; Reminders,
+        // only the ones here.
+        if matches!(self.mailbox, View::Snoozed | View::Reminders) {
+            for mail in self.snoozed_rows(self.mailbox == View::Reminders) {
+                if !fresh.iter().any(|m| m.id.is_some() && m.id == mail.id) {
+                    fresh.push(mail);
                 }
-                let mut mail = snooze.mail.clone();
-                mail.time = chrono::DateTime::from_timestamp_millis(snooze.until_ms)
-                    .map(|t| {
-                        t.with_timezone(&chrono::Local)
-                            .format("%a %H:%M")
-                            .to_string()
-                    })
-                    .unwrap_or_default()
-                    .into();
-                fresh.push(mail);
             }
+            fresh.sort_by_key(|m| std::cmp::Reverse(m.timestamp_ms));
+        }
+        if inbox_like(self.mailbox) {
+            self.unsnooze_answered(&fresh);
         }
         // Everything kept by position follows its thread into the new list.
         let relisted = crate::listing::relist(

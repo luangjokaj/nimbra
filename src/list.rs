@@ -123,7 +123,11 @@ impl Nimbra {
                         inbox_like
                             || matches!(
                                 self.mailbox,
-                                View::Done | View::Spam | View::Trash | View::Snoozed
+                                View::Done
+                                    | View::Spam
+                                    | View::Trash
+                                    | View::Snoozed
+                                    | View::Reminders
                             ),
                         |d| {
                             d.child(
@@ -555,6 +559,7 @@ impl Nimbra {
                                                                 | View::Spam
                                                                 | View::Trash
                                                                 | View::Snoozed
+                                                                | View::Reminders
                                                         ) {
                                                             "Move to inbox"
                                                         } else {
@@ -967,7 +972,14 @@ impl Nimbra {
         } else {
             (
                 format!("Nothing in {}", self.inbox_name()),
-                "Threads will show up here.".to_string(),
+                match self.mailbox {
+                    View::Snoozed => "Press H on a thread to put it away until later.",
+                    View::Reminders => {
+                        "Press H and pick “Remind me if no reply” to be told when nobody answers."
+                    }
+                    _ => "Threads will show up here.",
+                }
+                .to_string(),
             )
         };
         div()

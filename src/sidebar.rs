@@ -815,12 +815,7 @@ impl Nimbra {
                     d.children(mailbox(View::Important, "pulse", None))
                 })
                 .children(mailbox(View::Snoozed, "clock", fake("3")))
-                .children(self.fold_row(
-                    "mailbox",
-                    false,
-                    900,
-                    nav(t, "bell", "Reminders", fake("2"), false, None).into_any_element(),
-                ))
+                .children(mailbox(View::Reminders, "bell", fake("2")))
                 .children(mailbox(
                     View::Drafts,
                     "draft",

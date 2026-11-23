@@ -775,6 +775,7 @@ impl Nimbra {
             mailbox: match std::env::var("NIMBRA_MAILBOX").as_deref() {
                 Ok("starred") => View::Starred,
                 Ok("snoozed") => View::Snoozed,
+                Ok("reminders") => View::Reminders,
                 Ok("drafts") => View::Drafts,
                 Ok("sent") => View::Sent,
                 Ok("done") => View::Done,
@@ -1108,6 +1109,7 @@ impl Nimbra {
             View::Social => "Social".into(),
             View::Starred => "Starred".into(),
             View::Snoozed => "Snoozed".into(),
+            View::Reminders => "Reminders".into(),
             View::Drafts => "Drafts".into(),
             View::Sent => "Sent".into(),
             View::Done => "Done".into(),
@@ -1955,6 +1957,7 @@ fn view_key(view: View) -> usize {
         View::Social => 4,
         View::Starred => 5,
         View::Snoozed => 6,
+        View::Reminders => 15,
         View::Drafts => 7,
         View::Sent => 8,
         View::Done => 9,

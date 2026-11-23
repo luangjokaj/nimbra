@@ -256,6 +256,7 @@ impl Nimbra {
 
     /// Snoozes the open (or picked) threads: out of the inbox now, back at the chosen time,
     /// unread and with a notification. A reminder only comes back if nobody has replied.
+    /// Each is kept with its own account (a thread snoozed from All inboxes may be another's).
     pub(super) fn snooze(&mut self, choice: SnoozeChoice, cx: &mut Context<Self>) {
         if self.connection.is_some() && self.store.is_none() {
             // It would leave the Inbox with nothing to bring it back.
@@ -263,27 +264,61 @@ impl Nimbra {
             cx.notify();
             return;
         }
-        let mut new = Vec::new();
-        for index in self.targets() {
+        let targets = self.targets();
+        let mut new: Vec<(String, Snooze)> = Vec::new();
+        for &index in &targets {
             let mail = &self.mails[index];
             let Some(thread_id) = mail.id.clone() else {
                 continue;
             };
-            new.push(Snooze {
-                thread_id,
-                until_ms: choice.until_ms,
-                no_reply: choice.no_reply,
-                since_ms: mail.timestamp_ms,
-                mail: mail.clone(),
+            new.push((
+                self.account_of(mail).to_string(),
+                Snooze {
+                    thread_id,
+                    until_ms: choice.until_ms,
+                    no_reply: choice.no_reply,
+                    since_ms: mail.timestamp_ms,
+                    mail: mail.clone(),
+                },
+            ));
+        }
+        let owners: std::collections::BTreeSet<String> =
+            new.iter().map(|(owner, _)| owner.clone()).collect();
+        for owner in owners {
+            let theirs: Vec<Snooze> = new
+                .iter()
+                .filter(|(o, _)| *o == owner)
+                .map(|(_, snooze)| snooze.clone())
+                .collect();
+            self.change_snoozed_of(&owner, |list| {
+                list.retain(|kept| !theirs.iter().any(|s| s.thread_id == kept.thread_id));
+                list.extend(theirs.iter().cloned());
             });
         }
-        self.change_snoozed(|list| {
-            list.retain(|kept| !new.iter().any(|s| s.thread_id == kept.thread_id));
-            list.extend(new.iter().cloned());
-        });
         self.watch_schedule(cx);
         if inbox_like(self.mailbox) {
             self.remove_selected(mail::Change::Archive, cx);
+        } else {
+            for &index in &targets {
+                // Snoozed from another mailbox: it still leaves the inbox, and stays listed here.
+                if self.mails[index].labels.iter().any(|l| l == "INBOX") {
+                    self.mails[index].labels.retain(|l| l != "INBOX");
+                    self.sync(index, mail::Change::Archive, false, cx);
+                }
+                // Snoozed again from Snoozed or Reminders: the new time, or off to the other.
+                if matches!(self.mailbox, View::Snoozed | View::Reminders) {
+                    if (self.mailbox == View::Reminders) == choice.no_reply {
+                        self.mails[index].time = snooze_time(choice.until_ms);
+                    } else {
+                        self.done[index] = true;
+                    }
+                }
+            }
+            self.picked.clear();
+            if self.done.get(self.selected) == Some(&true) {
+                self.selected = self.visible().first().copied().unwrap_or(0);
+                self.open_selected(cx);
+            }
         }
         self.notice = Some(
             if choice.no_reply {
@@ -304,6 +339,94 @@ impl Nimbra {
             && store.update("snoozed", |kept| change(kept)).is_err()
         {
             eprintln!("nimbra: could not save the snoozed list");
+        }
+    }
+
+    /// The same for any account: the shown one's as above, another's in its own store (or,
+    /// with none open, the shown one's, which brings it back all the same).
+    fn change_snoozed_of(&mut self, account: &str, change: impl Fn(&mut Vec<Snooze>)) {
+        match self.other_stores.get(account) {
+            Some(store) if account != self.account_id => {
+                if store.update("snoozed", |kept| change(kept)).is_err() {
+                    eprintln!("nimbra: could not save the snoozed list");
+                }
+            }
+            _ => self.change_snoozed(change),
+        }
+    }
+
+    /// Forgets the snoozes of these threads, whichever account's list has them.
+    pub(super) fn forget_snoozes_of(&mut self, threads: &[(String, String)]) {
+        let accounts: std::collections::BTreeSet<&String> =
+            threads.iter().map(|(account, _)| account).collect();
+        for account in accounts {
+            let ids: Vec<&String> = threads
+                .iter()
+                .filter(|(a, _)| a == account)
+                .map(|(_, id)| id)
+                .collect();
+            let account = account.clone();
+            self.change_snoozed_of(&account, |list| {
+                list.retain(|s| !ids.contains(&&s.thread_id))
+            });
+            // One kept with the shown account from before (snoozed from All inboxes).
+            if account != self.account_id
+                && self.snoozed.iter().any(|s| ids.contains(&&s.thread_id))
+            {
+                self.change_snoozed(|list| list.retain(|s| !ids.contains(&&s.thread_id)));
+            }
+        }
+    }
+
+    /// The shown account's snoozes (or reminders) as rows of Snoozed (or Reminders), with
+    /// the time they come back where the time they arrived would be.
+    pub(super) fn snoozed_rows(&self, reminders: bool) -> Vec<Mail> {
+        self.snoozed
+            .iter()
+            .filter(|s| s.no_reply == reminders)
+            .filter(|s| {
+                s.mail
+                    .account
+                    .as_deref()
+                    .is_none_or(|a| a == self.account_id)
+            })
+            .map(|s| {
+                let mut mail = s.mail.clone();
+                mail.time = snooze_time(s.until_ms);
+                mail
+            })
+            .collect()
+    }
+
+    /// A reply came in while a thread was snoozed: it is back in the inbox by itself (as
+    /// Gmail does), so it is not brought back again later. `fresh` is an inbox's listing.
+    pub(super) fn unsnooze_answered(&mut self, fresh: &[Mail]) {
+        // Each account's list, read once (another account's from its store).
+        let mut lists: HashMap<String, Vec<Snooze>> = HashMap::new();
+        let mut answered = Vec::new();
+        for mail in fresh {
+            let Some(id) = &mail.id else {
+                continue;
+            };
+            let account = self.account_of(mail).to_string();
+            let list = lists.entry(account.clone()).or_insert_with(|| {
+                let mut list = self.snoozed.clone();
+                if account != self.account_id
+                    && let Some(store) = self.other_stores.get(&account)
+                {
+                    list.extend(store.load::<Vec<Snooze>>("snoozed").unwrap_or_default());
+                }
+                list
+            });
+            if list
+                .iter()
+                .any(|s| s.thread_id == *id && mail.timestamp_ms > s.since_ms)
+            {
+                answered.push((account, id.clone()));
+            }
+        }
+        if !answered.is_empty() {
+            self.forget_snoozes_of(&answered);
         }
     }
 
@@ -334,14 +457,7 @@ impl Nimbra {
                     .background_executor()
                     .spawn(async move {
                         let _working = working;
-                        let wake = || {
-                            if no_reply && client.summary(&id, false)?.timestamp_ms > since {
-                                return anyhow::Ok(false); // someone wrote: no reminder needed
-                            }
-                            client.relabel(&id, &["INBOX", "UNREAD"], &[])?;
-                            anyhow::Ok(true)
-                        };
-                        let woken = wake();
+                        let woken = wake(&*client, &id, since, no_reply);
                         // Out of its account's list here, whichever account is shown by now.
                         if woken.as_ref().map_or_else(mail::is_gone, |_| true)
                             && let Some(store) = &store
@@ -545,7 +661,7 @@ impl Nimbra {
         let Some(change) = self.done_change() else {
             return;
         };
-        if self.mailbox == View::Snoozed {
+        if matches!(self.mailbox, View::Snoozed | View::Reminders) {
             self.forget_snoozes(&self.targets());
         }
         self.remove_selected(change, cx);
@@ -558,7 +674,7 @@ impl Nimbra {
             cx.notify();
             return false;
         };
-        if self.mailbox == View::Snoozed {
+        if matches!(self.mailbox, View::Snoozed | View::Reminders) {
             self.forget_snoozes(&[index]);
         }
         self.remove_thread(index, change, cx);
@@ -573,19 +689,20 @@ impl Nimbra {
             View::Spam => mail::Change::NotSpam,
             View::Trash => mail::Change::Untrash,
             // Back to the inbox now, instead of at the snooze time.
-            View::Snoozed => mail::Change::Unarchive,
+            View::Snoozed | View::Reminders => mail::Change::Unarchive,
             _ => return None,
         })
     }
 
     fn forget_snoozes(&mut self, rows: &[usize]) {
-        let threads: Vec<String> = rows
+        let threads: Vec<(String, String)> = rows
             .iter()
-            .filter_map(|i| self.mails[*i].id.clone())
+            .filter_map(|i| {
+                let mail = &self.mails[*i];
+                Some((self.account_of(mail).to_string(), mail.id.clone()?))
+            })
             .collect();
-        if self.snoozed.iter().any(|s| threads.contains(&s.thread_id)) {
-            self.change_snoozed(|list| list.retain(|s| !threads.contains(&s.thread_id)));
-        }
+        self.forget_snoozes_of(&threads);
     }
 
     /// Trash from a message window (in Trash: asks before deleting forever). Whether it
@@ -758,11 +875,7 @@ impl Nimbra {
             self.adjust_counts(index, -Self::count_change(change));
         }
         // Undoing a snooze cancels it.
-        if let Some(thread) = self.mails[index].id.clone()
-            && self.snoozed.iter().any(|s| s.thread_id == thread)
-        {
-            self.change_snoozed(|list| list.retain(|s| s.thread_id != thread));
-        }
+        self.forget_snoozes(&[index]);
         if let Some(inverse) = change.inverse() {
             self.sync(index, inverse, false, cx);
         }
@@ -826,5 +939,51 @@ impl Nimbra {
         }
         self.load_selected(cx);
         cx.notify();
+    }
+}
+
+/// When a snoozed thread comes back, as its row shows it: the weekday and time within the
+/// week, the date after that.
+pub(super) fn snooze_time(until_ms: i64) -> SharedString {
+    let Some(when) = chrono::DateTime::from_timestamp_millis(until_ms) else {
+        return SharedString::default();
+    };
+    let when = when.with_timezone(&chrono::Local);
+    let soon = when - chrono::Local::now() < chrono::Duration::days(6);
+    when.format(if soon { "%a %H:%M" } else { "%-d %b" })
+        .to_string()
+        .into()
+}
+
+/// Brings a snoozed thread back if it is still away: into the inbox, unread. Whether it
+/// came back. A reminder is not needed once someone wrote, and a snooze is over by itself
+/// once a reply put the thread back in the inbox.
+pub(super) fn wake(
+    client: &mail::Client,
+    id: &str,
+    since_ms: i64,
+    no_reply: bool,
+) -> anyhow::Result<bool> {
+    let now = client.summary(id, false)?;
+    let answered = now.timestamp_ms > since_ms;
+    if answered && (no_reply || now.labels.iter().any(|l| l == "INBOX")) {
+        return Ok(false);
+    }
+    client.relabel(id, &["INBOX", "UNREAD"], &[])?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_snooze_shows_its_weekday_soon_and_its_date_later() {
+        let at =
+            |days: i64| (chrono::Local::now() + chrono::Duration::days(days)).timestamp_millis();
+        let soon = snooze_time(at(2));
+        assert!(soon.contains(':'), "{soon}");
+        let later = snooze_time(at(20));
+        assert!(!later.contains(':'), "{later}");
     }
 }
