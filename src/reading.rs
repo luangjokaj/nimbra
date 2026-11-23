@@ -852,8 +852,9 @@ impl Nimbra {
                         .child(div().w(px(8.)))
                     })
                     .child(div().w(px(6.)))
+                    // The key is part of the button: it lights up and clicks with it.
                     .child(
-                        icon_button(t, "done")
+                        done_button(t)
                             .id("mark-done")
                             .press(t)
                             .tooltip(tip(t.dark, "Mark done (archive)", "E"))
@@ -862,7 +863,6 @@ impl Nimbra {
                             }))
                             .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
                     )
-                    .child(kbd(t, "E"))
                     .child(div().w(px(6.)))
                     .child(
                         icon_button(t, "clock")
@@ -2047,4 +2047,14 @@ impl Nimbra {
             )
             .child(self.attachment_row(t, attachments, 0, account, cx))
     }
+}
+
+/// Done, with its key inside the button (the toolbar's and the loading screen's).
+pub(super) fn done_button(t: &Theme) -> Div {
+    icon_button(t, "done")
+        .w_auto()
+        .pl(px(7.))
+        .pr(px(6.))
+        .gap(px(6.))
+        .child(kbd(t, "E"))
 }

@@ -288,8 +288,7 @@ impl Nimbra {
             .child(icon_button(t, "list"))
             .child(gap(6.))
             .child(gap(6.))
-            .child(icon_button(t, "done"))
-            .child(kbd(t, "E"))
+            .child(super::reading::done_button(t))
             .child(gap(6.))
             .children(
                 ["clock", "star", "mail", "tag", "folder", "trash"]
