@@ -150,3 +150,10 @@
   now and then. Keep unhandled keys in the page (`preventDefault`) instead.
 - Repeat a key test a few times before believing it: WebKit handles keys in another process,
   and one passing run proved nothing either way.
+
+## Composer header
+
+- A label beside a control is not part of the control: the hover and click area is the value
+  only (From: the address and its chevron), as in the fields below.
+- A menu opened from the header is placed by fixed offsets in `toggle_menu`: moving
+  or resizing its button means moving those too, in floating, full page and its own window.
