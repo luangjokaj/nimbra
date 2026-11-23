@@ -1078,6 +1078,10 @@ pub struct Nimbra {
     keychain_slow: bool,
     /// Inbox Zero coming up, on a launch that opens on it.
     arrival: Option<Arrival>,
+    /// The night over Inbox Zero once it has come up: twinkling, and falling stars.
+    sky: Option<crate::sky::Sky>,
+    /// A slow frame for the twinkling is on its way.
+    sky_tick: bool,
     /// The message whose full header (all recipients, date) is expanded: thread id and
     /// message index (0 is the latest).
     details: Option<(String, usize)>,
@@ -1454,6 +1458,8 @@ impl Nimbra {
             keychain: Underway::default(),
             keychain_slow: false,
             arrival: None,
+            sky: None,
+            sky_tick: false,
             finder_open: false,
             finder,
             _finder_events: finder_events,
@@ -15019,6 +15025,47 @@ impl Nimbra {
             })
     }
 
+    /// The sky moves on while Inbox Zero is in front of you: a slow frame for the twinkling
+    /// (it changes little from one to the next), every frame while a star falls. Still with
+    /// Reduce Motion, while the window is in the background, and while it comes up.
+    fn move_sky(
+        &mut self,
+        zero_shown: bool,
+        since_last: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !zero_shown {
+            self.sky = None;
+            return;
+        }
+        if self.arrival.is_some() || crate::system::reduces_motion() {
+            return;
+        }
+        let sky = self.sky.get_or_insert_with(crate::sky::Sky::new);
+        if !window.is_window_active() {
+            sky.drop_fall();
+            return;
+        }
+        sky.advance(since_last);
+        if sky.falling() {
+            window.request_animation_frame();
+        } else if !self.sky_tick {
+            self.sky_tick = true;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.sky_tick = false;
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+    }
+
     fn zero(&self, t: &Theme) -> impl IntoElement {
         let ink = c(0xf5f3ef, 1.);
         let soft = c(0xffffff, 0.7);
@@ -15070,9 +15117,31 @@ impl Nimbra {
                     .top(relative(y))
                     .size(px(if a > 0.7 { 2.5 } else { 1.5 }))
                     .rounded_full()
-                    .bg(c(0xffffff, a * arrival.star(i)))
+                    .bg(c(
+                        0xffffff,
+                        a * arrival.star(i) * self.sky.as_ref().map_or(1., |sky| sky.twinkle(i)),
+                    ))
             })
             .collect();
+        let falling = self
+            .sky
+            .as_ref()
+            .and_then(|sky| sky.fall())
+            .map(|(fall, dots)| {
+                div()
+                    .absolute()
+                    .left(relative(fall.x))
+                    .top(relative(fall.y))
+                    .children(dots.into_iter().map(|dot| {
+                        div()
+                            .absolute()
+                            .left(px(dot.x - dot.size / 2.))
+                            .top(px(dot.y - dot.size / 2.))
+                            .size(px(dot.size))
+                            .rounded_full()
+                            .bg(c(0xfffaf0, dot.alpha))
+                    }))
+            });
         // The sample inbox keeps the day its mail is from.
         let today = if self.is_demo() {
             "THURSDAY, NOVEMBER 20".to_string()
@@ -15130,6 +15199,7 @@ impl Nimbra {
                 .child(layer(1, 0., 0xff4fa0, 0.55, 0.42))
                 .child(layer(3, 300., 0x3fa9ff, 0.22, 0.4))
                 .children(stars)
+                .children(falling)
                 // Two halves with the horizon between: each holds its content in its middle.
                 .child(
                     div()
@@ -15605,6 +15675,7 @@ impl Render for Nimbra {
         if self.arrival.is_some() {
             window.request_animation_frame();
         }
+        self.move_sky(zero_shown, since_last, window, cx);
         let list_shown =
             !empty && self.list_open && matches!(self.status, Status::Demo | Status::Ready);
 

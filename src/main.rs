@@ -20,6 +20,7 @@ mod rich;
 mod scheduled;
 mod sending;
 mod settings;
+mod sky;
 mod store;
 mod system;
 mod theme;

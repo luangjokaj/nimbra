@@ -452,3 +452,12 @@ account). Not checked: real Google, a real Workspace photo.
 Review: 34 real keystrokes through the keymap on a fake Gmail (both accounts, hidden
 sidebar, search box, Settings); walking the sidebar cost 0 Gmail units; the sheet and the
 cursor captured. Not checked: Space in the original (web) view on real mail, light theme.
+
+## A living night over Inbox Zero (2026-11-23)
+
+- [x] Stars twinkle (a third hold still), each at its own pace, easing in after the fade-up
+- [x] A star falls every 8 to 22 seconds (the first after 3.5), one at a time
+- [x] Still with Reduce Motion and while the window is in the background
+
+Review: unit tests for the twinkle range, the fall schedule and each fall's path; captured
+a fall on screen. Release build: 1.7% CPU still, about 4% twinkling at 10 frames a second.
