@@ -6027,7 +6027,6 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// The yes-or-no sheet for permanent actions.
     /// ?: every shortcut, grouped. Escape, ? or a click outside closes it.
     fn shortcuts_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let group = |(title, keys): &(&'static str, &'static [keyboard::Shortcut])| {
@@ -6124,6 +6123,7 @@ impl Nimbra {
             )
     }
 
+    /// The yes-or-no sheet for permanent actions.
     fn confirm_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, body, yes): (String, String, &str) = match &self.confirm {
             Some(Ask::DeleteForever(ids)) => (
