@@ -25,9 +25,15 @@
 /// with some margin, as mail clients show it, not the browser's bare serif page.
 ///
 /// `:where()` gives these rules zero specificity, so anything the email sets wins, and they
-/// only touch inherited text properties and the page margin, never table or image sizing.
+/// only touch inherited text properties, never table or image sizing.
+///
+/// The one rule that does win is the space around the email: 28pt on every side, as the
+/// subject and sender above it have, whatever margins the email sets (many set none, and
+/// their content would touch the edges). It is the page's padding, so the email's own
+/// background still fills the view (a body's background spreads to the whole page).
 const DEFAULTS: &str = ":where(html){font:14px/1.5 -apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif}\
-:where(body){margin:20px 28px}:where(pre,code,tt){font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.92em}";
+html{padding:28px!important}body{margin:0!important}\
+:where(pre,code,tt){font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.92em}";
 
 pub fn document(body: &str, images: bool) -> String {
     let img = if images { "data: https:" } else { "data:" };
@@ -783,12 +789,14 @@ mod tests {
         let policy = blocked.find("Content-Security-Policy").unwrap();
         assert!(policy < blocked.find("<p>Hi</p>").unwrap());
         assert!(!blocked.contains("<body>"));
-        // Our defaults can never outrank the email's own styles or touch layout.
+        // Our defaults never outrank the email's own styles or touch its layout, except for
+        // the space around it (the page's padding and the body's margin).
+        let space = ["html{padding:28px!important", "body{margin:0!important"];
         assert!(
             DEFAULTS
                 .split('}')
                 .filter(|rule| !rule.is_empty())
-                .all(|rule| rule.starts_with(":where("))
+                .all(|rule| rule.starts_with(":where(") || space.contains(&rule))
         );
         assert!(!DEFAULTS.contains("max-width") && !DEFAULTS.contains("overflow-wrap"));
     }
