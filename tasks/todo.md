@@ -540,3 +540,17 @@ Review: `app.rs` is 2,527 lines (state, `new`, navigation, layout and `render`).
 move: `cargo check`, the 102 tests, and a comparison of every line before and after (only
 `pub(super)`, the module lines and four section comments differ). Not checked by using the
 app: nothing but where the code lives was changed.
+
+## Forwards: attachments and From (2026-11-23)
+
+- [x] A forward takes the original's attachments (`Composer::kept`, as a draft's are: read
+      from Gmail when it is saved or sent; a chip each, with a button to leave it out).
+- [x] From can change on a forward (it could only on a new message). Files the message has
+      in Gmail belong to the account it is leaving, so they are read first and become the
+      message's own, and From changes then. Send and Send later wait for that. This also
+      mends a draft with attachments whose From was changed: its files were asked of the
+      new account, which does not have them.
+
+Review: `cargo check`, 105 tests (3 new, on taking the files over). Not tried against Gmail:
+forwarding a mail with attachments, and changing From on it, still need a real run.
+

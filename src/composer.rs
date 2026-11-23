@@ -20,8 +20,12 @@ pub(super) struct Composer {
     pub(super) suggest: Option<Suggest>,
     /// Files picked or dropped in.
     pub(super) files: Vec<gmail::OutgoingFile>,
-    /// Files already attached to the draft being edited.
+    /// Files already in Gmail: attached to the draft being edited, or to the message being
+    /// forwarded. Only the account they are in can read them.
     pub(super) kept: Vec<gmail::Attachment>,
+    /// The account From is changing to, while `kept` is read from the one it is leaving
+    /// (see `Nimbra::set_compose_account`).
+    pub(super) moving_to: Option<String>,
     /// Counts edits; the draft is saved a moment after the last one.
     pub(super) edits: u64,
     /// The edit count the saved draft has.
@@ -337,6 +341,7 @@ impl Nimbra {
             suggest: None,
             files: Vec::new(),
             kept: Vec::new(),
+            moving_to: None,
             edits: 0,
             saved_edits: 0,
             resave: false,
@@ -434,6 +439,9 @@ impl Nimbra {
                 quoted.push(String::new());
                 quoted.extend(body);
                 composer.quoted = Some(quoted.join("\n").trim_end().to_string());
+                // Its files go along: read from Gmail when it is saved or sent, and shown
+                // as chips, each with a button to leave it out.
+                composer.kept = header.attachments.clone();
             } else {
                 let address = if header.from.address.is_empty() {
                     source.fallback_to.clone()
@@ -1726,23 +1734,117 @@ impl Nimbra {
         )
     }
 
-    /// The composer's From can change: a new message (not an answer, which belongs to its
-    /// thread's account), with more than one account.
+    /// The composer's From can change: a new message or a forward (not a reply, which
+    /// belongs to its thread's account), with more than one account.
     fn can_change_from(&self) -> bool {
         !self.is_demo()
             && self.settings.accounts.len() >= 2
-            && self
-                .compose
-                .as_ref()
-                .is_some_and(|c| c.reply.is_none() && c.quoted.is_none())
+            && self.compose.as_ref().is_some_and(|c| c.reply.is_none())
     }
 
     /// The composer's From changes. A draft it already saved is deleted from the old
     /// account's Drafts and saved again in the new one's.
+    ///
+    /// Files it has from Gmail (a forward's, a draft's) are in the old account, which the
+    /// new one cannot read: they are read first, and From changes once the message holds
+    /// them itself.
     pub(super) fn set_compose_account(&mut self, id: String, cx: &mut Context<Self>) {
-        if !self.can_change_from() || self.compose_from().as_deref() == Some(id.as_str()) {
+        if !self.can_change_from() {
             return;
         }
+        let from = self.compose_from();
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        if from.as_deref() == Some(id.as_str()) {
+            // Back to the account it is in: a change under way is called off.
+            if composer.moving_to.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
+        if self.client_for(Some(&id)).is_none() {
+            self.notice = Some("That account is not connected yet. Try again in a moment.".into());
+            cx.notify();
+            return;
+        }
+        let old_client = self.client_for(from.as_deref());
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        if composer.kept.is_empty() {
+            self.switch_compose_account(id, cx);
+            return;
+        }
+        let Some(client) = old_client else {
+            return;
+        };
+        // Already reading them (another account was picked a moment ago): only the
+        // account to change to is new.
+        if composer.moving_to.replace(id).is_some() {
+            cx.notify();
+            return;
+        }
+        let (serial, kept) = (composer.serial, composer.kept.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_executor()
+                .spawn(async move {
+                    kept.into_iter()
+                        .map(|att| {
+                            let bytes = client.download(&att.message_id, &att.attachment_id)?;
+                            let file = gmail::OutgoingFile {
+                                name: att.name.clone(),
+                                mime: att.mime.clone(),
+                                bytes,
+                            };
+                            Ok((att, file))
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()
+                })
+                .await;
+            this.update(cx, |this, cx| this.attachments_read(serial, read, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// The files a composer had in Gmail were read (or not) so that its From can change.
+    fn attachments_read(
+        &mut self,
+        serial: u64,
+        read: anyhow::Result<Vec<(gmail::Attachment, gmail::OutgoingFile)>>,
+        cx: &mut Context<Self>,
+    ) {
+        // Closed or sent meanwhile: it stays in the account it was in.
+        let Some(composer) = self.compose.as_mut().filter(|c| c.serial == serial) else {
+            return;
+        };
+        match read {
+            Ok(read) => {
+                take_over(&mut composer.kept, &mut composer.files, read);
+                // Called off meanwhile: the files are the message's own now, which is as good.
+                if composer.kept.is_empty()
+                    && let Some(id) = composer.moving_to.take()
+                {
+                    self.switch_compose_account(id, cx);
+                }
+            }
+            Err(error) => {
+                composer.moving_to = None;
+                self.notice = Some(
+                    format!("From was not changed: the attachments could not be read ({error}).")
+                        .into(),
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    /// From changes to `id`, for a composer with nothing left in the old account but its
+    /// saved draft.
+    fn switch_compose_account(&mut self, id: String, cx: &mut Context<Self>) {
         if self.client_for(Some(&id)).is_none() {
             self.notice = Some("That account is not connected yet. Try again in a moment.".into());
             cx.notify();
@@ -2110,8 +2212,13 @@ impl Nimbra {
                             )
                             // A new message: who it is from, and a menu to change it.
                             .when(self.can_change_from(), |d| {
-                                let email = self
-                                    .compose_from()
+                                // The account it is changing to shows at once, with what
+                                // it is waiting for.
+                                let moving = composer.moving_to.is_some();
+                                let email = composer
+                                    .moving_to
+                                    .clone()
+                                    .or_else(|| self.compose_from())
                                     .and_then(|id| {
                                         self.settings.accounts.iter().find(|a| a.id == id)
                                     })
@@ -2164,6 +2271,9 @@ impl Nimbra {
                                             }),
                                         ),
                                 )
+                                .when(moving, |d| {
+                                    d.child(meta("Moving the attachments…".to_string(), t.text3))
+                                })
                             })
                             // An answer written from another account than the one shown
                             // (All inboxes).
@@ -2738,5 +2848,73 @@ impl Render for ComposeWindow {
                 });
             }))
             .children(content)
+    }
+}
+
+/// Files read from Gmail become the message's own: each one still in `kept` (not taken off
+/// while it was read) moves to `files`.
+fn take_over(
+    kept: &mut Vec<gmail::Attachment>,
+    files: &mut Vec<gmail::OutgoingFile>,
+    read: Vec<(gmail::Attachment, gmail::OutgoingFile)>,
+) {
+    for (attachment, file) in read {
+        if let Some(at) = kept.iter().position(|k| *k == attachment) {
+            kept.remove(at);
+            files.push(file);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attachment(name: &str) -> gmail::Attachment {
+        gmail::Attachment {
+            message_id: "m1".into(),
+            attachment_id: format!("a-{name}"),
+            name: name.into(),
+            mime: "text/plain".into(),
+            size: 3,
+        }
+    }
+
+    fn read(name: &str) -> (gmail::Attachment, gmail::OutgoingFile) {
+        let file = gmail::OutgoingFile {
+            name: name.into(),
+            mime: "text/plain".into(),
+            bytes: name.as_bytes().to_vec(),
+        };
+        (attachment(name), file)
+    }
+
+    #[test]
+    fn files_read_from_gmail_become_the_messages_own() {
+        let mut kept = vec![attachment("a"), attachment("b")];
+        let mut files = Vec::new();
+        take_over(&mut kept, &mut files, vec![read("a"), read("b")]);
+        assert!(kept.is_empty());
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn a_file_taken_off_while_it_was_read_stays_off() {
+        let mut kept = vec![attachment("b")];
+        let mut files = Vec::new();
+        take_over(&mut kept, &mut files, vec![read("a"), read("b")]);
+        assert!(kept.is_empty());
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "b");
+    }
+
+    #[test]
+    fn reading_them_twice_attaches_them_once() {
+        let mut kept = vec![attachment("a")];
+        let mut files = Vec::new();
+        take_over(&mut kept, &mut files, vec![read("a")]);
+        take_over(&mut kept, &mut files, vec![read("a")]);
+        assert_eq!(files.len(), 1);
     }
 }

@@ -46,6 +46,10 @@ pub(super) fn catch_up(
     Ok(done)
 }
 
+/// Send, while From is changing and the files are still being read from the old account.
+const MOVING_ATTACHMENTS: &str =
+    "The attachments are still moving to the account you picked. Try again in a moment.";
+
 impl Nimbra {
     /// The reconnect loop is no longer wanted: its account was left, or Gmail is back.
     pub(super) fn stop_retrying(&mut self) {
@@ -715,6 +719,11 @@ impl Nimbra {
             cx.notify();
             return;
         }
+        if composer.moving_to.is_some() {
+            composer.error = Some(MOVING_ATTACHMENTS.into());
+            cx.notify();
+            return;
+        }
         let outgoing = composer.outgoing(cx);
         if let Err(error) = outgoing.recipients() {
             composer.error = Some(error.to_string().into());
@@ -885,6 +894,11 @@ impl Nimbra {
             return;
         };
         if composer.sending {
+            return;
+        }
+        if composer.moving_to.is_some() {
+            composer.error = Some(MOVING_ATTACHMENTS.into());
+            cx.notify();
             return;
         }
         let outgoing = composer.outgoing(cx);
