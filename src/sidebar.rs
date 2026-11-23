@@ -108,6 +108,7 @@ impl Nimbra {
                 .collect(),
             shown: &self.account_id,
             mailbox: self.mailbox,
+            folders: self.own_servers(),
             demo: self.is_demo(),
             labels: self.labels.len(),
             collapsed: &self.settings.collapsed,
@@ -257,6 +258,7 @@ impl Nimbra {
         self.palette
             || self.finder_open
             || self.new_label.is_some()
+            || self.account_sheet.is_some()
             || self.confirm.is_some()
             || (self.compose.is_some() && self.compose_host.is_none())
     }
@@ -508,6 +510,8 @@ impl Nimbra {
             .filter(|n| *n > 0)
             .map(|n| n.to_string());
         let split_toggle = self.section_toggle(t, "split", "SPLIT INBOX", cx);
+        // An IMAP account: its inbox heads MAILBOX, and its labels are folders.
+        let folders = !demo && self.own_servers();
         // Several accounts: All inboxes, and each account on its own.
         let many = !demo && self.settings.accounts.len() >= 2;
         let unread_of = |id: &str| -> u32 {
@@ -593,10 +597,20 @@ impl Nimbra {
             Vec::new()
         };
         let mailbox_toggle = self.section_toggle(t, "mailbox", "MAILBOX", cx);
-        let labels_toggle = self.section_toggle(t, "labels", "LABELS", cx);
+        let labels_toggle = self.section_toggle(
+            t,
+            "labels",
+            if !demo && self.own_servers() {
+                "FOLDERS"
+            } else {
+                "LABELS"
+            },
+            cx,
+        );
         let mailbox = |view: View, icon_name: &'static str, count: Option<String>| {
             // A folded section still shows the mailbox that is open.
             let section = match view {
+                View::Inbox if !demo && self.own_servers() => "mailbox",
                 View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social => {
                     "split"
                 }
@@ -719,16 +733,17 @@ impl Nimbra {
                     .children(accounts_toggle)
                     .children(account_rows)
                 })
-                .child(split_toggle)
-                .children(mailbox(
-                    View::Inbox,
-                    "inbox",
-                    if demo {
-                        (unread > 0 && self.mailbox == View::Inbox).then(|| unread.to_string())
-                    } else {
-                        unread_in("INBOX")
-                    },
-                ))
+                .when(!folders, |d| {
+                    d.child(split_toggle).children(mailbox(
+                        View::Inbox,
+                        "inbox",
+                        if demo {
+                            (unread > 0 && self.mailbox == View::Inbox).then(|| unread.to_string())
+                        } else {
+                            unread_in("INBOX")
+                        },
+                    ))
+                })
                 .when(demo, |d| {
                     d.children(self.fold_row(
                         "split",
@@ -756,7 +771,7 @@ impl Nimbra {
                     ))
                 })
                 // With real mail the split inbox is Gmail's own categories.
-                .when(!demo, |d| {
+                .when(!demo && !folders, |d| {
                     d.children(mailbox(
                         View::Primary,
                         "users",
@@ -779,8 +794,11 @@ impl Nimbra {
                     ))
                 })
                 .child(mailbox_toggle)
+                .when(folders, |d| {
+                    d.children(mailbox(View::Inbox, "inbox", unread_in("INBOX")))
+                })
                 .children(mailbox(View::Starred, "star", None))
-                .when(!demo, |d| {
+                .when(!demo && !folders, |d| {
                     d.children(mailbox(View::Important, "pulse", None))
                 })
                 .children(mailbox(View::Snoozed, "clock", fake("3")))
@@ -811,7 +829,7 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .child(labels_toggle.flex_1())
-                        .when(!demo && self.gmail.is_some(), |d| {
+                        .when(!demo && self.connection.is_some(), |d| {
                             let hover = t.hover;
                             d.child(
                                 div()
@@ -1031,7 +1049,7 @@ impl Nimbra {
                                                 .settings
                                                 .default_email()
                                                 .map(|e| short(e, 22).to_string())
-                                                .unwrap_or_else(|| format!("Gmail · {n} accounts")),
+                                                .unwrap_or_else(|| format!("{n} accounts")),
                                         },
                                         t.text3,
                                     )),

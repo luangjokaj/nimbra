@@ -1,11 +1,18 @@
-//! Accounts: signing in and out, connecting each one to Gmail (the keychain, its store, its
-//! client), switching between them, and their profile photos.
+//! Accounts: signing in and out, connecting each one to its mail (Gmail with Google's
+//! sign-in, or IMAP and SMTP with a password: the keychain, its store, its connection),
+//! switching between them, and their profile photos.
 
 use super::*;
 
 impl Nimbra {
-    /// Opens Google's consent page in the browser and waits for it in the background.
+    /// Opens Google's consent page in the browser and waits for it in the background. For
+    /// an account with its own servers, asks for its password again instead.
     pub(super) fn sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.servers_of(&self.account_id).is_some() {
+            let account = self.account_id.clone();
+            self.open_account_sheet(Some(account), cx);
+            return;
+        }
         let Some(config) = self.config.clone() else {
             return;
         };
@@ -26,7 +33,7 @@ impl Nimbra {
                         // Saved for its account, which is not the one shown any more.
                         _ if this.account_gen != generation => {}
                         Ok(client) => {
-                            this.gmail = Some(Arc::new(client));
+                            this.connection = Some(Arc::new(client));
                             this.open_store(cx);
                         }
                         Err(error) => {
@@ -43,15 +50,48 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Add account: signs in to another Gmail account in the browser, then switches to it.
-    /// The account shown stays as it is until that sign-in finishes.
+    /// Add account: Google, or any other address (the sheet in `add_account.rs`).
     pub(super) fn add_account(&mut self, cx: &mut Context<Self>) {
+        self.open_account_sheet(None, cx);
+    }
+
+    /// The account shown has its own servers (IMAP and SMTP), not Gmail.
+    pub(super) fn own_servers(&self) -> bool {
+        self.servers_of(&self.account_id).is_some()
+    }
+
+    /// An account's servers, if it is not Gmail.
+    pub(super) fn servers_of(&self, id: &str) -> Option<crate::servers::Servers> {
+        self.settings
+            .accounts
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.servers.clone())
+    }
+
+    /// The connection to an account with its own servers, from its saved password: `None`
+    /// when there is no password (yet, or any more).
+    fn imap_connection(&self, id: &str, password: Option<String>) -> Option<Arc<mail::Client>> {
+        let account = self.settings.accounts.iter().find(|a| a.id == id)?;
+        let servers = account.servers.clone()?;
+        Some(Arc::new(crate::imap_mail::Client::new(
+            id.to_string(),
+            account.email.clone(),
+            servers,
+            password?,
+        )))
+    }
+
+    /// Signs in to another Gmail account in the browser, then switches to it. The account
+    /// shown stays as it is until that sign-in finishes.
+    pub(super) fn add_google_account(&mut self, cx: &mut Context<Self>) {
         let Some(config) = self.config.clone() else {
-            self.notice = Some("Connecting Gmail needs the Google sign-in set up first.".into());
+            self.notice =
+                Some("Adding a Gmail account needs the Google sign-in set up first.".into());
             cx.notify();
             return;
         };
-        let Ok(account) = gmail::new_account_id() else {
+        let Ok(account) = mail::new_account_id() else {
             return;
         };
         match gmail::SignIn::start(&config, false, None) {
@@ -67,7 +107,7 @@ impl Nimbra {
                     this.update(cx, |this, cx| match result {
                         Ok(client) => {
                             this.reset_account(account, cx);
-                            this.gmail = Some(Arc::new(client));
+                            this.connection = Some(Arc::new(client));
                             this.open_store(cx);
                         }
                         Err(error) => {
@@ -87,7 +127,8 @@ impl Nimbra {
     /// Shows another of the accounts signed in on this Mac.
     pub(super) fn switch_account(&mut self, id: String, cx: &mut Context<Self>) {
         self.leave_sidebar(cx);
-        if self.config.is_none() || id == self.account_id || !gmail::is_account_id(&id) {
+        let reachable = self.config.is_some() || self.servers_of(&id).is_some();
+        if !reachable || id == self.account_id || !mail::is_account_id(&id) {
             return;
         }
         self.reset_account(id, cx);
@@ -97,6 +138,10 @@ impl Nimbra {
     /// Connects the account shown with its saved sign-in. `sign_in` is for when there is
     /// none: whether to go on to Google, as the button that asked for it says.
     pub(super) fn connect(&mut self, sign_in: bool, cx: &mut Context<Self>) {
+        if self.servers_of(&self.account_id).is_some() {
+            self.connect_imap(sign_in, cx);
+            return;
+        }
         let Some(config) = self.config.clone() else {
             return;
         };
@@ -113,18 +158,63 @@ impl Nimbra {
                 })
                 .await;
             this.update(cx, |this, cx| {
-                if this.account_gen != generation || this.account_id != id || this.gmail.is_some() {
+                if this.account_gen != generation
+                    || this.account_id != id
+                    || this.connection.is_some()
+                {
                     return;
                 }
                 match token {
                     Ok(Some(token)) => {
-                        this.gmail = Some(Arc::new(gmail::Client::new(config, token, id)));
+                        this.connection = Some(Arc::new(gmail::Client::new(config, token, id)));
                         this.open_store(cx);
                     }
                     Ok(None) if sign_in => this.sign_in(cx),
                     Ok(None) => this.status = Status::SignedOut,
                     // Not signed out: signing in over it could wipe this account, or send
                     // its mail from another.
+                    Err(error) => {
+                        eprintln!("nimbra: {error:#}");
+                        this.status = Status::Failed(KEYCHAIN_REFUSED.into());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// `connect` for an account with its own servers: its password from the keychain.
+    fn connect_imap(&mut self, sign_in: bool, cx: &mut Context<Self>) {
+        let id = self.account_id.clone();
+        let generation = self.account_gen;
+        let reading = self.read_keychain(cx);
+        cx.spawn(async move |this, cx| {
+            let key = id.clone();
+            let password = cx
+                .background_executor()
+                .spawn(async move {
+                    let _reading = reading;
+                    crate::servers::stored_password(&key)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.account_gen != generation
+                    || this.account_id != id
+                    || this.connection.is_some()
+                {
+                    return;
+                }
+                match password {
+                    Ok(password) => match this.imap_connection(&id, password) {
+                        Some(connection) => {
+                            this.connection = Some(connection);
+                            this.open_store(cx);
+                        }
+                        None if sign_in => this.open_account_sheet(Some(id), cx),
+                        None => this.status = Status::SignedOut,
+                    },
                     Err(error) => {
                         eprintln!("nimbra: {error:#}");
                         this.status = Status::Failed(KEYCHAIN_REFUSED.into());
@@ -165,7 +255,7 @@ impl Nimbra {
 
     /// The status screen's Try again.
     pub(super) fn try_again(&mut self, cx: &mut Context<Self>) {
-        if self.gmail.is_none() {
+        if self.connection.is_none() {
             self.status = Status::Loading;
             self.connect(true, cx);
         } else if self.store.is_none() {
@@ -180,17 +270,53 @@ impl Nimbra {
     /// Opens a connection to every signed-in account that is not shown (their sign-ins are
     /// in the keychain). Accounts already connected are left as they are.
     pub(super) fn connect_others(&mut self, cx: &mut Context<Self>) {
-        let Some(config) = self.config.clone() else {
-            return;
-        };
+        let config = self.config.clone();
         let missing: Vec<String> = self
             .settings
             .accounts
             .iter()
             .map(|a| a.id.clone())
             .filter(|id| *id != self.account_id && !self.others.contains_key(id))
-            .filter(|id| gmail::is_account_id(id))
+            .filter(|id| mail::is_account_id(id))
             .collect();
+        if missing.is_empty() {
+            return;
+        }
+        // Accounts with their own servers sign in with a password; Gmail ones with Google.
+        let (imap, missing): (Vec<String>, Vec<String>) = missing
+            .into_iter()
+            .partition(|id| self.servers_of(id).is_some());
+        if !imap.is_empty() {
+            cx.spawn(async move |this, cx| {
+                let found = cx
+                    .background_executor()
+                    .spawn(async move {
+                        imap.into_iter()
+                            .filter_map(|id| {
+                                Some((crate::servers::stored_password(&id).ok()??, id))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+                this.update(cx, |this, cx| {
+                    for (password, id) in found {
+                        if id != this.account_id
+                            && !this.others.contains_key(&id)
+                            && let Some(connection) = this.imap_connection(&id, Some(password))
+                        {
+                            this.others.insert(id.clone(), connection);
+                            this.open_other_store(id, cx);
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+        let Some(config) = config else {
+            return;
+        };
         if missing.is_empty() {
             return;
         }
@@ -257,10 +383,10 @@ impl Nimbra {
     }
 
     /// The connection for an account: the shown one, or another signed-in one.
-    pub(super) fn client_for(&self, account: Option<&str>) -> Option<Arc<gmail::Client>> {
+    pub(super) fn client_for(&self, account: Option<&str>) -> Option<Arc<mail::Client>> {
         match account {
             Some(id) if id != self.account_id => self.others.get(id).cloned(),
-            _ => self.gmail.clone(),
+            _ => self.connection.clone(),
         }
     }
 
@@ -273,13 +399,13 @@ impl Nimbra {
     }
 
     /// The connection for the thread in row `index` (its own account in All inboxes).
-    pub(super) fn client_at(&self, index: usize) -> Option<Arc<gmail::Client>> {
+    pub(super) fn client_at(&self, index: usize) -> Option<Arc<mail::Client>> {
         let account = self.mails.get(index).and_then(|m| m.account.clone());
         self.client_for(account.as_deref())
     }
 
     /// Clears everything that belongs to the account shown, and makes `id` the account shown.
-    fn reset_account(&mut self, id: String, cx: &mut Context<Self>) {
+    pub(super) fn reset_account(&mut self, id: String, cx: &mut Context<Self>) {
         self.close_menu_window(cx);
         self.close_undo(cx);
         // What is being written is saved to its account's Drafts.
@@ -319,7 +445,7 @@ impl Nimbra {
         self.account_gen += 1;
         // The account shown so far stays connected (All inboxes, new-mail checks).
         // The first account's id is "": it is an account like the others.
-        if let Some(client) = self.gmail.take()
+        if let Some(client) = self.connection.take()
             && self
                 .settings
                 .accounts
@@ -343,7 +469,7 @@ impl Nimbra {
         self.account_id = id.clone();
         self.settings.active = id;
         self.save_settings(cx);
-        self.gmail = None;
+        self.connection = None;
         self.store = None;
         self.status = Status::Loading;
         self.checks.forget();
@@ -425,6 +551,7 @@ impl Nimbra {
             let duplicate = id.clone();
             std::thread::spawn(move || {
                 gmail::forget_refresh_token(&duplicate);
+                crate::servers::forget_password(&duplicate);
                 crate::store::wipe(&duplicate);
             });
             self.notice = Some("That account is already in Nimbra.".into());
@@ -437,6 +564,7 @@ impl Nimbra {
             None => self.settings.accounts.push(crate::settings::AccountRef {
                 id: id.clone(),
                 email: email.to_string(),
+                servers: None,
             }),
         }
         self.settings.active = id;
@@ -475,13 +603,13 @@ impl Nimbra {
                     let photo = client.profile_photo()?;
                     if let Some(store) = &store {
                         match &photo {
-                            gmail::Photo::Image(bytes) | gmail::Photo::Unchecked(bytes) => {
+                            mail::Photo::Image(bytes) | mail::Photo::Unchecked(bytes) => {
                                 if store.save(PHOTO, bytes).is_err() {
                                     eprintln!("nimbra: could not keep the profile photo");
                                 }
                             }
-                            gmail::Photo::NoPhoto => store.remove(PHOTO),
-                            gmail::Photo::NotAllowed => {}
+                            mail::Photo::NoPhoto => store.remove(PHOTO),
+                            mail::Photo::NotAllowed => {}
                         }
                     }
                     anyhow::Ok(photo)
@@ -502,10 +630,10 @@ impl Nimbra {
                     }
                 };
                 let (answer, bytes) = match photo {
-                    gmail::Photo::Image(bytes) => (PhotoAnswer::Theirs, Some(bytes)),
-                    gmail::Photo::Unchecked(bytes) => (PhotoAnswer::Unchecked, Some(bytes)),
-                    gmail::Photo::NoPhoto => (PhotoAnswer::None, None),
-                    gmail::Photo::NotAllowed => (PhotoAnswer::NotAllowed, None),
+                    mail::Photo::Image(bytes) => (PhotoAnswer::Theirs, Some(bytes)),
+                    mail::Photo::Unchecked(bytes) => (PhotoAnswer::Unchecked, Some(bytes)),
+                    mail::Photo::NoPhoto => (PhotoAnswer::None, None),
+                    mail::Photo::NotAllowed => (PhotoAnswer::NotAllowed, None),
                 };
                 if let Some(image) = bytes.and_then(photo_image) {
                     this.photos.insert(account.clone(), image);
@@ -567,7 +695,7 @@ impl Nimbra {
                         // Another account was switched to while the browser was open.
                         Ok(_) if this.account_gen != generation => {}
                         Ok(client) => {
-                            this.gmail = Some(Arc::new(client));
+                            this.connection = Some(Arc::new(client));
                             this.notice = None;
                             this.check_photo_again(cx);
                         }
@@ -700,7 +828,7 @@ impl Nimbra {
                         // Those threads are not the account's that is shown by now.
                         Ok(_) if this.account_gen != generation => {}
                         Ok(client) => {
-                            this.gmail = Some(Arc::new(client));
+                            this.connection = Some(Arc::new(client));
                             this.delete_forever(ids, cx);
                         }
                         Err(error) => {
@@ -738,7 +866,7 @@ impl Nimbra {
         self.synced_to.clear();
         self.notify_from = None;
         self.forget_checked();
-        for client in self.gmail.iter().chain(self.others.values()) {
+        for client in self.connection.iter().chain(self.others.values()) {
             client.forget_rows();
         }
         self.notice =
@@ -768,6 +896,7 @@ impl Nimbra {
         let gone = account.clone();
         std::thread::spawn(move || {
             gmail::forget_refresh_token(&gone);
+            crate::servers::forget_password(&gone);
             crate::store::wipe(&gone);
         });
         self.settings.accounts.retain(|a| a.id != account);
@@ -786,7 +915,7 @@ impl Nimbra {
         self.settings.active = String::new();
         self.account_id = String::new();
         self.save_settings(cx);
-        self.gmail = None;
+        self.connection = None;
         self.store = None;
         // An answer still on its way must not bring the removed mail back.
         self.checks.forget();
@@ -819,7 +948,7 @@ impl Nimbra {
     /// use too (All inboxes, message windows, requests from before a switch): theirs do not.
     pub(super) fn shown_signed_out(&self, error: &anyhow::Error) -> bool {
         error
-            .downcast_ref::<gmail::SignedOut>()
+            .downcast_ref::<mail::SignedOut>()
             .is_some_and(|e| e.account.is_empty() || e.account == self.account_id)
     }
 }

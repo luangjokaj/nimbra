@@ -4,7 +4,7 @@
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::Instant;
 
-use crate::gmail;
+use crate::mail;
 use crate::scheduled::{self, Scheduled};
 use crate::sending::{self, Job};
 use crate::store::Store;
@@ -60,7 +60,7 @@ pub enum End {
 pub struct Step {
     pub account: String,
     pub id: String,
-    pub change: gmail::Change,
+    pub change: mail::Change,
     before: Mutex<Option<Arc<Step>>>,
     end: Mutex<Option<End>>,
     ended: Condvar,
@@ -68,7 +68,7 @@ pub struct Step {
 
 impl Step {
     /// Waits for the thread's change before it, then makes this one. Blocking.
-    pub fn run(&self, client: &gmail::Client) -> anyhow::Result<()> {
+    pub fn run(&self, client: &mail::Client) -> anyhow::Result<()> {
         self.run_with(|| client.change(&self.id, self.change))
     }
 
@@ -76,12 +76,12 @@ impl Step {
         let before = locked(&self.before).take();
         // That one will be made again later, and this one has to follow it.
         let result = match before.map(|step| step.wait()) {
-            Some(End::Offline) => Err(gmail::Offline.into()),
+            Some(End::Offline) => Err(mail::Offline.into()),
             _ => make(),
         };
         *locked(&self.end) = Some(match &result {
             Ok(()) => End::Through,
-            Err(error) if error.is::<gmail::Offline>() => End::Offline,
+            Err(error) if error.is::<mail::Offline>() => End::Offline,
             Err(_) => End::Failed,
         });
         self.ended.notify_all();
@@ -106,7 +106,7 @@ impl Step {
 pub struct Steps(Vec<Arc<Step>>);
 
 impl Steps {
-    pub fn start(&mut self, account: String, id: String, change: gmail::Change) -> Arc<Step> {
+    pub fn start(&mut self, account: String, id: String, change: mail::Change) -> Arc<Step> {
         let before = self
             .0
             .iter()
@@ -170,7 +170,7 @@ pub struct Changes {
     pub account: String,
     pub store: Option<Arc<Store>>,
     /// Made offline before the store was open, so not on disk yet.
-    pub unsaved: Vec<(String, gmail::Change)>,
+    pub unsaved: Vec<(String, mail::Change)>,
     pub steps: Vec<Arc<Step>>,
 }
 
@@ -280,7 +280,7 @@ impl Unfinished {
 /// An account's offline queue as quitting leaves it.
 struct Queue {
     store: Arc<Store>,
-    before: Vec<(String, gmail::Change)>,
+    before: Vec<(String, mail::Change)>,
     steps: Vec<Arc<Step>>,
 }
 
@@ -332,14 +332,14 @@ mod tests {
     fn a_change_follows_the_one_before_it_into_the_offline_queue_in_order() {
         let mut steps = Steps::default();
         let new = |steps: &mut Steps, change| steps.start(String::new(), "t".into(), change);
-        let done = new(&mut steps, gmail::Change::Archive);
-        let undo = new(&mut steps, gmail::Change::Unarchive);
+        let done = new(&mut steps, mail::Change::Archive);
+        let undo = new(&mut steps, mail::Change::Unarchive);
         let after = std::thread::spawn({
             let undo = undo.clone();
             move || undo.run_with(|| panic!("must not be sent before the one it follows"))
         });
         assert!(steps.settle("", "t").is_empty());
-        assert!(done.run_with(|| Err(gmail::Offline.into())).is_err());
+        assert!(done.run_with(|| Err(mail::Offline.into())).is_err());
         assert!(after.join().unwrap().is_err());
         let settled = steps.settle("", "t");
         assert!(Arc::ptr_eq(&settled[0].0, &done) && Arc::ptr_eq(&settled[1].0, &undo));
@@ -349,9 +349,9 @@ mod tests {
     #[test]
     fn a_refused_change_does_not_hold_up_the_next() {
         let mut steps = Steps::default();
-        let first = steps.start(String::new(), "t".into(), gmail::Change::Star);
-        let next = steps.start(String::new(), "t".into(), gmail::Change::Unstar);
-        let other = steps.start(String::new(), "u".into(), gmail::Change::Star);
+        let first = steps.start(String::new(), "t".into(), mail::Change::Star);
+        let next = steps.start(String::new(), "t".into(), mail::Change::Unstar);
+        let other = steps.start(String::new(), "u".into(), mail::Change::Star);
         assert!(first.run_with(|| Err(anyhow::anyhow!("no"))).is_err());
         assert!(next.run_with(|| Ok(())).is_ok());
         assert_eq!(steps.settle("", "t").len(), 2);

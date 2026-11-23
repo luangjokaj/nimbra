@@ -301,11 +301,9 @@ impl Nimbra {
         let t = self.theme();
         let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
         let items: Vec<(&'static str, SharedString, Hsla)> = match menu {
-            Menu::Labels if self.is_demo() => vec![(
-                "tag",
-                "Labels need a connected Gmail account.".into(),
-                t.text3,
-            )],
+            Menu::Labels if self.is_demo() => {
+                vec![("tag", "Labels need a connected account.".into(), t.text3)]
+            }
             Menu::Labels => self
                 .labels
                 .iter()
@@ -388,6 +386,10 @@ impl Nimbra {
                     .collect()
             }
             Menu::More if self.is_demo() => vec![("inbox", "Mark as unread".into(), t.text2)],
+            Menu::More if self.own_servers() => vec![
+                ("inbox", "Mark as unread".into(), t.text2),
+                ("bell", "Report spam".into(), t.text2),
+            ],
             Menu::More => vec![
                 ("inbox", "Mark as unread".into(), t.text2),
                 ("link", "Open in Gmail".into(), t.text2),
@@ -424,7 +426,7 @@ impl Nimbra {
                 if !self.is_demo() && !matches!(self.mailbox, View::Spam | View::Trash) {
                     actions.push(RowAction::ReportSpam);
                 }
-                if !self.is_demo() {
+                if !self.is_demo() && !self.own_servers() {
                     actions.push(RowAction::OpenInGmail);
                 }
                 let items = actions
@@ -643,8 +645,8 @@ impl Nimbra {
                 }
             }
             (Menu::More, 0) => self.mark_unread(cx),
-            (Menu::More, 1) => self.open_in_gmail(cx),
-            (Menu::More, _) => self.remove_selected(gmail::Change::Spam, cx),
+            (Menu::More, 1) if !self.own_servers() => self.open_in_gmail(cx),
+            (Menu::More, _) => self.remove_selected(mail::Change::Spam, cx),
             (Menu::From, index) => {
                 if let Some(id) = self.settings.accounts.get(index).map(|a| a.id.clone()) {
                     self.set_compose_account(id, cx);
@@ -709,9 +711,9 @@ impl Nimbra {
                 let starred = action == RowAction::Star;
                 self.mails[row].starred = starred;
                 let change = if starred {
-                    gmail::Change::Star
+                    mail::Change::Star
                 } else {
-                    gmail::Change::Unstar
+                    mail::Change::Unstar
                 };
                 self.sync(row, change, false, cx);
             }
@@ -727,7 +729,7 @@ impl Nimbra {
                     RowAction::Trash | RowAction::DeleteForever => {
                         self.trash_thread(row, cx);
                     }
-                    RowAction::ReportSpam => self.remove_thread(row, gmail::Change::Spam, cx),
+                    RowAction::ReportSpam => self.remove_thread(row, mail::Change::Spam, cx),
                     _ => {
                         self.done_thread(row, cx);
                     }
@@ -923,9 +925,9 @@ impl Nimbra {
                     .when(self.labels.is_empty(), |d| {
                         d.child(div().px(px(10.)).py(px(7.)).text_color(t.text3).child(
                             if self.is_demo() {
-                                "Labels need a connected Gmail account."
+                                "Labels need a connected account."
                             } else {
-                                "You have no labels in Gmail yet."
+                                "You have no labels yet."
                             },
                         ))
                     })
@@ -953,7 +955,7 @@ impl Nimbra {
                     .child(item(0, "inbox", "Mark as unread".into(), t.text2).on_click(
                         cx.listener(|this, _, _, cx| this.menu_choice(Menu::More, 0, cx)),
                     ))
-                    .when(!self.is_demo(), |d| {
+                    .when(!self.is_demo() && !self.own_servers(), |d| {
                         d.child(item(1, "link", "Open in Gmail".into(), t.text2).on_click(
                             cx.listener(|this, _, _, cx| this.menu_choice(Menu::More, 1, cx)),
                         ))

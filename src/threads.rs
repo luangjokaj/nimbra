@@ -43,7 +43,7 @@ impl Nimbra {
     /// Deletes threads for good (after a yes). If the sign-in cannot do that yet, asks to
     /// give Nimbra that permission first.
     pub(super) fn delete_forever(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
-        let Some(client) = self.gmail.clone() else {
+        let Some(client) = self.connection.clone() else {
             return;
         };
         // Out of the list now; there is no undo for this.
@@ -154,7 +154,7 @@ impl Nimbra {
     }
 
     /// Takes every picked thread out of the list at once; one Undo brings them all back.
-    fn remove_picked(&mut self, change: gmail::Change, cx: &mut Context<Self>) {
+    fn remove_picked(&mut self, change: mail::Change, cx: &mut Context<Self>) {
         let targets = self.targets();
         if targets.is_empty() {
             return;
@@ -176,10 +176,10 @@ impl Nimbra {
         self.open_selected(cx);
         self.offer_undo(
             match change {
-                gmail::Change::Trash => "Moved to trash",
-                gmail::Change::Unarchive | gmail::Change::NotSpam => "Moved to inbox",
-                gmail::Change::Spam => "Reported as spam",
-                gmail::Change::Untrash => "Restored",
+                mail::Change::Trash => "Moved to trash",
+                mail::Change::Unarchive | mail::Change::NotSpam => "Moved to inbox",
+                mail::Change::Spam => "Reported as spam",
+                mail::Change::Untrash => "Restored",
                 _ => "Marked done",
             },
             cx,
@@ -257,7 +257,7 @@ impl Nimbra {
     /// Snoozes the open (or picked) threads: out of the inbox now, back at the chosen time,
     /// unread and with a notification. A reminder only comes back if nobody has replied.
     pub(super) fn snooze(&mut self, choice: SnoozeChoice, cx: &mut Context<Self>) {
-        if self.gmail.is_some() && self.store.is_none() {
+        if self.connection.is_some() && self.store.is_none() {
             // It would leave the Inbox with nothing to bring it back.
             self.notice = Some(STORE_UNAVAILABLE.into());
             cx.notify();
@@ -283,7 +283,7 @@ impl Nimbra {
         });
         self.watch_schedule(cx);
         if inbox_like(self.mailbox) {
-            self.remove_selected(gmail::Change::Archive, cx);
+            self.remove_selected(mail::Change::Archive, cx);
         }
         self.notice = Some(
             if choice.no_reply {
@@ -309,7 +309,7 @@ impl Nimbra {
 
     /// Brings back snoozed threads whose time has come (checked with the send-later list).
     pub(super) fn wake_due(&mut self, cx: &mut Context<Self>) {
-        if self.gmail.is_none() {
+        if self.connection.is_none() {
             return;
         }
         let now = chrono::Utc::now().timestamp_millis();
@@ -343,7 +343,7 @@ impl Nimbra {
                         };
                         let woken = wake();
                         // Out of its account's list here, whichever account is shown by now.
-                        if woken.as_ref().map_or_else(gmail::is_gone, |_| true)
+                        if woken.as_ref().map_or_else(mail::is_gone, |_| true)
                             && let Some(store) = &store
                             && store
                                 .update("snoozed", |list: &mut Vec<Snooze>| {
@@ -383,7 +383,7 @@ impl Nimbra {
                             }
                             true
                         }
-                        Err(error) => gmail::is_gone(error),
+                        Err(error) => mail::is_gone(error),
                     };
                     if done && this.account_id == owner {
                         this.snoozed.retain(|s| {
@@ -467,9 +467,9 @@ impl Nimbra {
     }
 
     /// How a change moves an unread thread's inbox counts: leaving the inbox takes it off.
-    fn count_change(change: gmail::Change) -> i32 {
+    fn count_change(change: mail::Change) -> i32 {
         match change {
-            gmail::Change::Archive | gmail::Change::Trash | gmail::Change::Spam => -1,
+            mail::Change::Archive | mail::Change::Trash | mail::Change::Spam => -1,
             _ => 0,
         }
     }
@@ -487,9 +487,9 @@ impl Nimbra {
             self.mails[index].unread = unread;
             self.adjust_counts(index, if unread { 1 } else { -1 });
             let change = if unread {
-                gmail::Change::MarkUnread
+                mail::Change::MarkUnread
             } else {
-                gmail::Change::MarkRead
+                mail::Change::MarkRead
             };
             self.sync(index, change, false, cx);
         }
@@ -566,14 +566,14 @@ impl Nimbra {
     }
 
     /// What Done does in the open mailbox.
-    pub(super) fn done_change(&self) -> Option<gmail::Change> {
+    pub(super) fn done_change(&self) -> Option<mail::Change> {
         Some(match self.mailbox {
-            view if inbox_like(view) => gmail::Change::Archive,
-            View::Done => gmail::Change::Unarchive,
-            View::Spam => gmail::Change::NotSpam,
-            View::Trash => gmail::Change::Untrash,
+            view if inbox_like(view) => mail::Change::Archive,
+            View::Done => mail::Change::Unarchive,
+            View::Spam => mail::Change::NotSpam,
+            View::Trash => mail::Change::Untrash,
             // Back to the inbox now, instead of at the snooze time.
-            View::Snoozed => gmail::Change::Unarchive,
+            View::Snoozed => mail::Change::Unarchive,
             _ => return None,
         })
     }
@@ -592,7 +592,7 @@ impl Nimbra {
     /// was taken on.
     pub(super) fn trash_thread(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
         if self.mailbox != View::Trash {
-            self.remove_thread(index, gmail::Change::Trash, cx);
+            self.remove_thread(index, mail::Change::Trash, cx);
             return true;
         }
         let Some(id) = self.mails[index].id.clone() else {
@@ -619,11 +619,11 @@ impl Nimbra {
             }
             return;
         }
-        self.remove_selected(gmail::Change::Trash, cx);
+        self.remove_selected(mail::Change::Trash, cx);
     }
 
     /// Takes the open thread out of the list and applies `change` to it in Gmail.
-    pub(super) fn remove_selected(&mut self, change: gmail::Change, cx: &mut Context<Self>) {
+    pub(super) fn remove_selected(&mut self, change: mail::Change, cx: &mut Context<Self>) {
         if self.picked.len() >= 2 {
             self.remove_picked(change, cx);
             return;
@@ -642,7 +642,7 @@ impl Nimbra {
     pub(super) fn remove_thread(
         &mut self,
         index: usize,
-        change: gmail::Change,
+        change: mail::Change,
         cx: &mut Context<Self>,
     ) {
         let shown = index == self.selected;
@@ -653,7 +653,7 @@ impl Nimbra {
     }
 
     /// Takes one thread off the list and sends the change. Opens nothing.
-    fn remove_row(&mut self, index: usize, change: gmail::Change, cx: &mut Context<Self>) {
+    fn remove_row(&mut self, index: usize, change: mail::Change, cx: &mut Context<Self>) {
         let visible = self.visible();
         if self.mails[index].unread {
             self.adjust_counts(index, Self::count_change(change));
@@ -679,10 +679,10 @@ impl Nimbra {
         self.sync(index, change, true, cx);
         self.offer_undo(
             match change {
-                gmail::Change::Trash => "Moved to trash",
-                gmail::Change::Unarchive | gmail::Change::NotSpam => "Moved to inbox",
-                gmail::Change::Spam => "Reported as spam",
-                gmail::Change::Untrash => "Restored",
+                mail::Change::Trash => "Moved to trash",
+                mail::Change::Unarchive | mail::Change::NotSpam => "Moved to inbox",
+                mail::Change::Spam => "Reported as spam",
+                mail::Change::Untrash => "Restored",
                 _ => "Marked done",
             },
             cx,
@@ -753,7 +753,7 @@ impl Nimbra {
             .id
             .as_ref()
             .and_then(|id| self.removed_by.remove(id))
-            .unwrap_or(gmail::Change::Archive);
+            .unwrap_or(mail::Change::Archive);
         if self.mails[index].unread {
             self.adjust_counts(index, -Self::count_change(change));
         }
@@ -770,7 +770,7 @@ impl Nimbra {
             && let Some(label) = self.moved.remove(&thread)
         {
             self.mails[index].labels.retain(|id| *id != label);
-            if let Some(client) = self.gmail.clone() {
+            if let Some(client) = self.connection.clone() {
                 let working = self.writes.begin();
                 cx.background_executor()
                     .spawn(async move {
@@ -790,9 +790,9 @@ impl Nimbra {
                 if self.mails[index].starred != starred {
                     self.mails[index].starred = starred;
                     let change = if starred {
-                        gmail::Change::Star
+                        mail::Change::Star
                     } else {
-                        gmail::Change::Unstar
+                        mail::Change::Unstar
                     };
                     self.sync(index, change, false, cx);
                 }
@@ -807,9 +807,9 @@ impl Nimbra {
         let starred = !self.mails[index].starred;
         self.mails[index].starred = starred;
         let change = if starred {
-            gmail::Change::Star
+            mail::Change::Star
         } else {
-            gmail::Change::Unstar
+            mail::Change::Unstar
         };
         self.sync(index, change, false, cx);
         cx.notify();

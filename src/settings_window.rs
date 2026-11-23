@@ -76,7 +76,7 @@ impl Tab {
     fn blurb(self) -> &'static str {
         match self {
             Tab::General => "How Nimbra starts, checks for mail and treats what you open.",
-            Tab::Accounts => "The Gmail accounts signed in on this Mac.",
+            Tab::Accounts => "The accounts signed in on this Mac: Gmail, and any other address.",
             Tab::Appearance => "Light or dark, and how mail reads.",
             Tab::Reading => "How messages are shown.",
             Tab::Composing => "What goes out with what you write.",
@@ -550,7 +550,7 @@ impl SettingsWindow {
         let every_row = row(
             t,
             "Check for new mail",
-            "Nimbra asks Gmail what changed this often while it runs.",
+            "Nimbra asks the mail server what changed this often while it runs.",
             self.choice(
                 t,
                 "every",
@@ -571,8 +571,9 @@ impl SettingsWindow {
         let n = self.owner.read(cx);
         let accounts = n.settings.accounts.clone();
         let active = n.account_id.clone();
-        let connected = n.gmail.is_some();
-        let can_add = n.config.is_some();
+        let connected = n.connection.is_some();
+        // Google's sign-in needs its setup; any other address does not.
+        let can_add = true;
         let active_email = n.account.to_string();
         let photos = n.photos.clone();
         let photo_answer = n.photo_answers.get(&active).copied().filter(|_| connected);
@@ -616,11 +617,18 @@ impl SettingsWindow {
                                     .child(account.email.clone()),
                             )
                             .child(meta(
-                                match (is_default, shown) {
-                                    (true, true) => "Default · Shown now",
-                                    (true, false) => "Default",
-                                    (false, true) => "Shown now",
-                                    (false, false) => "Gmail",
+                                {
+                                    // Gmail, or the IMAP server it reads from.
+                                    let provider = account
+                                        .servers
+                                        .as_ref()
+                                        .map_or("Gmail".to_string(), |s| s.imap.host.clone());
+                                    match (is_default, shown) {
+                                        (true, true) => format!("Default · Shown now · {provider}"),
+                                        (true, false) => format!("Default · {provider}"),
+                                        (false, true) => format!("Shown now · {provider}"),
+                                        (false, false) => provider,
+                                    }
                                 },
                                 if shown || is_default {
                                     t.violet
@@ -663,7 +671,7 @@ impl SettingsWindow {
             rows.push(row(
                 t,
                 "No account yet",
-                "Connect Gmail from the main window to start.",
+                "Connect an account from the main window to start.",
                 div(),
             ));
         }

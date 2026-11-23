@@ -132,6 +132,7 @@ impl Nimbra {
             || self.picked.len() >= 2
             || self.compose.is_some()
             || self.new_label.is_some()
+            || self.account_sheet.is_some()
             || self.confirm.is_some();
         if !self.original
             || !ready
@@ -231,7 +232,7 @@ impl Nimbra {
             return;
         }
         let h = &mail.header;
-        let person = |p: &gmail::Person| {
+        let person = |p: &mail::Person| {
             if p.name.is_empty() {
                 p.address.clone()
             } else {
@@ -239,7 +240,7 @@ impl Nimbra {
             }
         };
         let list =
-            |people: &[gmail::Person]| people.iter().map(person).collect::<Vec<_>>().join(", ");
+            |people: &[mail::Person]| people.iter().map(person).collect::<Vec<_>>().join(", ");
         let mut doc = format!(
             "<div style=\"font:13px/1.5 -apple-system,sans-serif;border-bottom:1px solid #ccc;padding-bottom:10px;margin-bottom:16px\"><div style=\"font-size:18px;font-weight:600;margin-bottom:6px\">{}</div>",
             esc(&mail.subject)
@@ -292,14 +293,14 @@ impl Nimbra {
     /// with another app automatically.
     fn fetch_attachment(
         &mut self,
-        att: gmail::Attachment,
+        att: mail::Attachment,
         account: Option<&str>,
         save: bool,
         cx: &mut Context<Self>,
     ) {
         // Through the account of the conversation it is in.
         let Some(client) = self.client_for(account) else {
-            self.notice = Some("Attachments need a connected Gmail account.".into());
+            self.notice = Some("Attachments need a connected account.".into());
             cx.notify();
             return;
         };
@@ -312,7 +313,7 @@ impl Nimbra {
         cx.spawn(async move |this, cx| {
             let result = within(cx.background_executor(), async move {
                 let bytes = client.download(&att.message_id, &att.attachment_id)?;
-                let name = gmail::safe_file_name(&att.name);
+                let name = mail::safe_file_name(&att.name);
                 let path = if save {
                     unique_download_path(&name)?
                 } else {
@@ -378,7 +379,7 @@ impl Nimbra {
             cx.open_url(link);
             return;
         }
-        let Some(mail) = gmail::unsubscribe_mail(link) else {
+        let Some(mail) = mail::unsubscribe_mail(link) else {
             self.notice = Some("This list’s unsubscribe address is not valid.".into());
             cx.notify();
             return;
@@ -1326,7 +1327,7 @@ impl Nimbra {
         let open = self.details.as_ref() == Some(&(thread.clone(), index));
         let card_thread = thread.clone();
         let me = self.account.to_string();
-        let label = |p: &gmail::Person| {
+        let label = |p: &mail::Person| {
             if p.address.eq_ignore_ascii_case(&me) {
                 "me".to_string()
             } else {
@@ -1340,7 +1341,7 @@ impl Nimbra {
             1..=3 => format!("to {}", recipients.join(", ")),
             n => format!("to {}, {} and {} more", recipients[0], recipients[1], n - 2),
         };
-        let person = |p: &gmail::Person| {
+        let person = |p: &mail::Person| {
             if p.name.is_empty() {
                 p.address.clone()
             } else {
@@ -1444,7 +1445,7 @@ impl Nimbra {
         header: &crate::data::Header,
         thread: &str,
         index: usize,
-        person: &dyn Fn(&gmail::Person) -> String,
+        person: &dyn Fn(&mail::Person) -> String,
         cx: &mut Context<Self>,
     ) -> Div {
         let me = self.account.to_string();
@@ -1455,7 +1456,7 @@ impl Nimbra {
         };
         let base = format!("{thread}/{index}");
         let mut serial = index * 1000;
-        let mut chip = |p: &gmail::Person, cx: &mut Context<Self>| {
+        let mut chip = |p: &mail::Person, cx: &mut Context<Self>| {
             serial += 1;
             let key = format!("{base}/{serial}");
             let done = copied(&key);
@@ -1528,8 +1529,8 @@ impl Nimbra {
                 )
                 .child(div().flex_1().min_w(px(0.)).child(value))
         };
-        let people = |list: &[gmail::Person],
-                      chip: &mut dyn FnMut(&gmail::Person, &mut Context<Self>) -> Stateful<Div>,
+        let people = |list: &[mail::Person],
+                      chip: &mut dyn FnMut(&mail::Person, &mut Context<Self>) -> Stateful<Div>,
                       cx: &mut Context<Self>| {
             div()
                 .flex()
@@ -1541,7 +1542,7 @@ impl Nimbra {
         };
         // The whole header as text, for "Copy all".
         let mut all = vec![format!("From: {}", person(&header.from))];
-        let join = |list: &[gmail::Person]| list.iter().map(person).collect::<Vec<_>>().join(", ");
+        let join = |list: &[mail::Person]| list.iter().map(person).collect::<Vec<_>>().join(", ");
         if !header.to.is_empty() {
             all.push(format!("To: {}", join(&header.to)));
         }
@@ -1665,7 +1666,7 @@ impl Nimbra {
     pub(super) fn attachment_row(
         &self,
         t: &Theme,
-        attachments: &[gmail::Attachment],
+        attachments: &[mail::Attachment],
         base: usize,
         account: Option<&str>,
         cx: &mut Context<Self>,
@@ -1846,11 +1847,11 @@ impl Nimbra {
                         .border_1()
                         .border_color(t.border)
                         .child(icon("trash", 15., t.text3))
-                        .child(
-                            div()
-                                .flex_1()
-                                .child("In Trash. Gmail deletes it for good after 30 days."),
-                        )
+                        .child(div().flex_1().child(if self.own_servers() {
+                            "In Trash. Your mail server may delete it after a while."
+                        } else {
+                            "In Trash. Gmail deletes it for good after 30 days."
+                        }))
                         .child(
                             button(t, ButtonKind::Secondary, "Restore", None)
                                 .id("restore")
@@ -1858,7 +1859,7 @@ impl Nimbra {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let (key, account) = &restore;
                                     if let Some(row) = this.row_to_act_on(key, account, cx) {
-                                        this.remove_thread(row, gmail::Change::Untrash, cx)
+                                        this.remove_thread(row, mail::Change::Untrash, cx)
                                     }
                                 })),
                         ),
@@ -1887,7 +1888,7 @@ impl Nimbra {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let (key, account) = &not_spam;
                                     if let Some(row) = this.row_to_act_on(key, account, cx) {
-                                        this.remove_thread(row, gmail::Change::NotSpam, cx)
+                                        this.remove_thread(row, mail::Change::NotSpam, cx)
                                     }
                                 })),
                         ),
@@ -2008,7 +2009,7 @@ impl Nimbra {
     pub(super) fn attachment_tray(
         &self,
         t: &Theme,
-        attachments: &[gmail::Attachment],
+        attachments: &[mail::Attachment],
         account: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Div {

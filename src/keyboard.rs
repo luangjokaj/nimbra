@@ -1,7 +1,7 @@
 //! The mail window without a mouse: which pane has the keys, the sidebar's rows in the
 //! order the arrows walk them, picking threads with Shift, and the shortcuts sheet.
 
-use crate::gmail::View;
+use crate::mail::View;
 
 /// Where Up, Down, Enter and Escape go.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -29,6 +29,9 @@ pub struct Sidebar<'a> {
     pub shown: &'a str,
     pub mailbox: View,
     pub demo: bool,
+    /// The account has its own servers (IMAP): folders, and none of Gmail's categories or
+    /// Important.
+    pub folders: bool,
     pub labels: usize,
     /// The folded sections ("accounts", "split", "mailbox", "labels").
     pub collapsed: &'a [String],
@@ -72,6 +75,21 @@ impl Sidebar<'_> {
                     View::Drafts,
                     View::Sent,
                     View::Done,
+                ],
+            );
+        } else if self.folders {
+            section(
+                "mailbox",
+                &[
+                    View::Inbox,
+                    View::Starred,
+                    View::Snoozed,
+                    View::Drafts,
+                    View::Sent,
+                    View::Done,
+                    View::AllMail,
+                    View::Spam,
+                    View::Trash,
                 ],
             );
         } else {
@@ -237,6 +255,7 @@ mod tests {
             shown: "",
             mailbox,
             demo: false,
+            folders: false,
             labels: 3,
             collapsed,
         }

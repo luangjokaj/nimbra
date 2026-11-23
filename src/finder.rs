@@ -80,7 +80,11 @@ impl Nimbra {
         let generation = self.finder_gen;
         self.finder_loading = false;
         cx.notify();
-        let Some(client) = self.gmail.clone().filter(|_| query.chars().count() >= 2) else {
+        let Some(client) = self
+            .connection
+            .clone()
+            .filter(|_| query.chars().count() >= 2)
+        else {
             return;
         };
         self.finder_loading = true;

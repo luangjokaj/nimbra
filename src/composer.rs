@@ -19,10 +19,10 @@ pub(super) struct Composer {
     /// Address suggestions under a recipient field.
     pub(super) suggest: Option<Suggest>,
     /// Files picked or dropped in.
-    pub(super) files: Vec<gmail::OutgoingFile>,
+    pub(super) files: Vec<mail::OutgoingFile>,
     /// Files already in Gmail: attached to the draft being edited, or to the message being
     /// forwarded. Only the account they are in can read them.
-    pub(super) kept: Vec<gmail::Attachment>,
+    pub(super) kept: Vec<mail::Attachment>,
     /// The account From is changing to, while `kept` is read from the one it is leaving
     /// (see `Nimbra::set_compose_account`).
     pub(super) moving_to: Option<String>,
@@ -47,7 +47,7 @@ pub(super) struct Composer {
     pub(super) focus_body: bool,
     pub(super) subject: Entity<TextInput>,
     pub(super) lines: Vec<Entity<TextInput>>,
-    pub(super) reply: Option<gmail::ReplyTo>,
+    pub(super) reply: Option<mail::ReplyTo>,
     /// The Gmail draft being edited, if this message was saved or opened from Drafts.
     pub(super) draft_id: Option<String>,
     /// The account it is written from, when not the one shown (a reply in All inboxes).
@@ -96,7 +96,7 @@ pub(super) const COMPOSER_MIN: (f32, f32) = (460., 320.);
 /// Address suggestions for one recipient field.
 pub(super) struct Suggest {
     pub(super) field: Field,
-    pub(super) people: Vec<gmail::Person>,
+    pub(super) people: Vec<mail::Person>,
     pub(super) selected: usize,
 }
 
@@ -171,7 +171,7 @@ impl Composer {
             if part.is_empty() {
                 continue;
             }
-            match gmail::addresses(part) {
+            match mail::addresses(part) {
                 Ok(found) if !found.is_empty() => {
                     for address in found {
                         if !self.chips[slot]
@@ -211,11 +211,11 @@ impl Composer {
     }
 
     /// The message as it would be saved or sent.
-    pub(super) fn outgoing(&self, cx: &App) -> gmail::Outgoing {
+    pub(super) fn outgoing(&self, cx: &App) -> mail::Outgoing {
         let html = self
             .rich
             .then(|| crate::editor::message_html(&self.html, self.quoted.as_deref()));
-        gmail::Outgoing {
+        mail::Outgoing {
             to: self.recipients(Field::To, cx),
             cc: self.recipients(Field::Cc, cx),
             bcc: self.recipients(Field::Bcc, cx),
@@ -887,7 +887,7 @@ impl Nimbra {
     /// Opens the draft behind a row of the Drafts mailbox in the composer.
     pub(super) fn open_draft(&mut self, index: usize, cx: &mut Context<Self>) {
         let (Some(client), Some(thread_id)) = (
-            self.gmail.clone(),
+            self.connection.clone(),
             self.mails.get(index).and_then(|m| m.id.clone()),
         ) else {
             return;
@@ -910,7 +910,7 @@ impl Nimbra {
         .detach();
     }
 
-    pub(super) fn edit_draft(&mut self, draft: gmail::Draft, cx: &mut Context<Self>) {
+    pub(super) fn edit_draft(&mut self, draft: mail::Draft, cx: &mut Context<Self>) {
         self.open_compose(ComposeKind::New, cx);
         let Some(mut composer) = self.compose.take() else {
             return;
@@ -1098,7 +1098,7 @@ impl Nimbra {
         edits: u64,
         explicit: bool,
         result: anyhow::Result<String>,
-        (saved_in, saved_with): (String, Arc<gmail::Client>),
+        (saved_in, saved_with): (String, Arc<mail::Client>),
         cx: &mut Context<Self>,
     ) {
         let result = match result {
@@ -1129,7 +1129,7 @@ impl Nimbra {
             Ok(id) if now_from != saved_in => {
                 std::thread::spawn(move || {
                     if let Err(error) = saved_with.delete_draft(&id)
-                        && !gmail::is_gone(&error)
+                        && !mail::is_gone(&error)
                     {
                         eprintln!("nimbra: a draft left in the account it was moved from");
                     }
@@ -1284,7 +1284,7 @@ impl Nimbra {
         };
         composer.suggest = None;
         let unsaved = composer.saving || (composer.dirty() && composer.has_content(cx));
-        if self.gmail.is_some() && unsaved {
+        if self.connection.is_some() && unsaved {
             let serial = composer.serial;
             self.parked.push((Parked::Closing, composer));
             self.save_composer(serial, false, cx);
@@ -1425,10 +1425,10 @@ impl Nimbra {
 
     /// People from the mail on this Mac whose name or address starts with `token`, most
     /// often seen first.
-    fn match_contacts(&self, token: &str, present: &[String]) -> Vec<gmail::Person> {
+    fn match_contacts(&self, token: &str, present: &[String]) -> Vec<mail::Person> {
         let me = self.account.to_lowercase();
-        let mut seen: HashMap<String, (gmail::Person, u32)> = HashMap::new();
-        let mut add = |p: &gmail::Person| {
+        let mut seen: HashMap<String, (mail::Person, u32)> = HashMap::new();
+        let mut add = |p: &mail::Person| {
             let key = p.address.to_lowercase();
             if key.is_empty() || key == me {
                 return;
@@ -1448,7 +1448,7 @@ impl Nimbra {
                 header.cc.iter().for_each(&mut add);
             }
         }
-        let mut found: Vec<(gmail::Person, u32)> = seen
+        let mut found: Vec<(mail::Person, u32)> = seen
             .into_values()
             .filter(|(p, _)| {
                 let address = p.address.to_lowercase();
@@ -1546,7 +1546,7 @@ impl Nimbra {
                             anyhow::bail!("Folders can’t be attached. Zip them first.");
                         }
                         total += meta.len();
-                        if total > gmail::ATTACHMENT_LIMIT {
+                        if total > mail::ATTACHMENT_LIMIT {
                             anyhow::bail!("Attachments can be 25 MB in total.");
                         }
                         let name = path
@@ -1554,9 +1554,9 @@ impl Nimbra {
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_default();
                         let bytes = std::fs::read(&path)?;
-                        files.push(gmail::OutgoingFile {
-                            mime: gmail::mime_for(&name).into(),
-                            name: gmail::safe_file_name(&name),
+                        files.push(mail::OutgoingFile {
+                            mime: mail::mime_for(&name).into(),
+                            name: mail::safe_file_name(&name),
                             bytes,
                         });
                     }
@@ -1794,7 +1794,7 @@ impl Nimbra {
                     kept.into_iter()
                         .map(|att| {
                             let bytes = client.download(&att.message_id, &att.attachment_id)?;
-                            let file = gmail::OutgoingFile {
+                            let file = mail::OutgoingFile {
                                 name: att.name.clone(),
                                 mime: att.mime.clone(),
                                 bytes,
@@ -1814,7 +1814,7 @@ impl Nimbra {
     fn attachments_read(
         &mut self,
         serial: u64,
-        read: anyhow::Result<Vec<(gmail::Attachment, gmail::OutgoingFile)>>,
+        read: anyhow::Result<Vec<(mail::Attachment, mail::OutgoingFile)>>,
         cx: &mut Context<Self>,
     ) {
         // Closed or sent meanwhile: it stays in the account it was in.
@@ -1863,7 +1863,7 @@ impl Nimbra {
         if let (Some(draft), Some(client)) = (moved.clone(), old_client) {
             std::thread::spawn(move || {
                 if let Err(error) = client.delete_draft(&draft)
-                    && !gmail::is_gone(&error)
+                    && !mail::is_gone(&error)
                 {
                     eprintln!("nimbra: a draft left in the account it was moved from");
                 }
@@ -2623,7 +2623,7 @@ impl Nimbra {
                                         None if composer.sending => "Sending…".into(),
                                         None if composer.saving => "Saving…".into(),
                                         None if composer.saved => "Saved to Drafts".into(),
-                                        None if self.gmail.is_none() => {
+                                        None if self.connection.is_none() => {
                                             "Sample mode: nothing is sent.".into()
                                         }
                                         None => "Drop files here to attach them.".into(),
@@ -2854,9 +2854,9 @@ impl Render for ComposeWindow {
 /// Files read from Gmail become the message's own: each one still in `kept` (not taken off
 /// while it was read) moves to `files`.
 fn take_over(
-    kept: &mut Vec<gmail::Attachment>,
-    files: &mut Vec<gmail::OutgoingFile>,
-    read: Vec<(gmail::Attachment, gmail::OutgoingFile)>,
+    kept: &mut Vec<mail::Attachment>,
+    files: &mut Vec<mail::OutgoingFile>,
+    read: Vec<(mail::Attachment, mail::OutgoingFile)>,
 ) {
     for (attachment, file) in read {
         if let Some(at) = kept.iter().position(|k| *k == attachment) {
@@ -2870,8 +2870,8 @@ fn take_over(
 mod tests {
     use super::*;
 
-    fn attachment(name: &str) -> gmail::Attachment {
-        gmail::Attachment {
+    fn attachment(name: &str) -> mail::Attachment {
+        mail::Attachment {
             message_id: "m1".into(),
             attachment_id: format!("a-{name}"),
             name: name.into(),
@@ -2880,8 +2880,8 @@ mod tests {
         }
     }
 
-    fn read(name: &str) -> (gmail::Attachment, gmail::OutgoingFile) {
-        let file = gmail::OutgoingFile {
+    fn read(name: &str) -> (mail::Attachment, mail::OutgoingFile) {
+        let file = mail::OutgoingFile {
             name: name.into(),
             mime: "text/plain".into(),
             bytes: name.as_bytes().to_vec(),

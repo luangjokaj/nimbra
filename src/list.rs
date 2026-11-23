@@ -170,7 +170,7 @@ impl Nimbra {
                     })
                     .when(self.mailbox != View::Spam && !self.is_demo(), |d| {
                         d.child(action("bulk-spam", "ban", "Spam").on_click(cx.listener(
-                            |this, _, _, cx| this.remove_selected(gmail::Change::Spam, cx),
+                            |this, _, _, cx| this.remove_selected(mail::Change::Spam, cx),
                         )))
                     })
                     .child(

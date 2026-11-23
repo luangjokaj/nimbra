@@ -24,7 +24,7 @@ impl Nimbra {
     /// Changes the label list, keeping the open label mailbox pointing at the same label.
     fn change_labels(
         &mut self,
-        change: impl FnOnce(&mut Vec<gmail::Label>),
+        change: impl FnOnce(&mut Vec<mail::Label>),
         cx: &mut Context<Self>,
     ) {
         let checking = self.fetching();
@@ -59,7 +59,7 @@ impl Nimbra {
     /// made or renamed in Gmail itself, or on another device, never showed up here.
     pub(super) fn refresh_labels(&mut self, now: bool, cx: &mut Context<Self>) {
         const EVERY: Duration = Duration::from_secs(300);
-        let Some(client) = self.gmail.clone() else {
+        let Some(client) = self.connection.clone() else {
             return;
         };
         let generation = self.account_gen;
@@ -108,7 +108,7 @@ impl Nimbra {
     }
 
     fn rename_label(&mut self, id: String, name: String, cx: &mut Context<Self>) {
-        let Some(client) = self.gmail.clone() else {
+        let Some(client) = self.connection.clone() else {
             return;
         };
         let working = self.writes.begin();
@@ -141,7 +141,7 @@ impl Nimbra {
     }
 
     pub(super) fn delete_label(&mut self, id: String, cx: &mut Context<Self>) {
-        let Some(client) = self.gmail.clone() else {
+        let Some(client) = self.connection.clone() else {
             return;
         };
         let working = self.writes.begin();
@@ -157,7 +157,7 @@ impl Nimbra {
             // Already gone from Gmail (deleted elsewhere, or here before this list was
             // brought up to date): that is what was asked for, so it goes from the list too.
             let result = match result {
-                Err(error) if gmail::is_gone(&error) => Ok(()),
+                Err(error) if mail::is_gone(&error) => Ok(()),
                 other => other,
             };
             this.update(cx, |this, cx| match result {
@@ -199,7 +199,7 @@ impl Nimbra {
     }
 
     /// The user labels on a thread, with their position in the label list (for a tint).
-    pub(super) fn thread_labels(&self, mail: &Mail) -> Vec<(usize, gmail::Label)> {
+    pub(super) fn thread_labels(&self, mail: &Mail) -> Vec<(usize, mail::Label)> {
         self.labels
             .iter()
             .enumerate()
@@ -207,7 +207,7 @@ impl Nimbra {
             .map(|(index, label)| {
                 (
                     index,
-                    gmail::Label {
+                    mail::Label {
                         id: label.id.clone(),
                         name: label.name.clone(),
                     },
@@ -225,7 +225,7 @@ impl Nimbra {
             return;
         };
         mail.labels.retain(|id| *id != label_id);
-        let (Some(client), Some(id)) = (self.gmail.clone(), mail.id.clone()) else {
+        let (Some(client), Some(id)) = (self.connection.clone(), mail.id.clone()) else {
             cx.notify();
             return;
         };
@@ -265,8 +265,8 @@ impl Nimbra {
 
     pub(super) fn open_label_sheet(&mut self, sheet: LabelSheet, cx: &mut Context<Self>) {
         self.label_sheet = sheet;
-        if self.gmail.is_none() {
-            self.notice = Some("Labels need a connected Gmail account.".into());
+        if self.connection.is_none() {
+            self.notice = Some("Labels need a connected account.".into());
             cx.notify();
             return;
         }
@@ -295,7 +295,7 @@ impl Nimbra {
 
     /// Creates the label typed in the sheet and puts it on the open thread.
     fn create_label(&mut self, cx: &mut Context<Self>) {
-        let (Some(input), Some(client)) = (self.new_label.clone(), self.gmail.clone()) else {
+        let (Some(input), Some(client)) = (self.new_label.clone(), self.connection.clone()) else {
             return;
         };
         let name = input.read(cx).text().trim().to_string();
@@ -413,6 +413,7 @@ impl Nimbra {
                     )
                     .child(meta(
                         match self.label_sheet {
+                            _ if self.own_servers() => "Labels are folders on your mail server: it is made (or renamed) there too.",
                             LabelSheet::Rename(_) => "Renamed in Gmail too. Use “Parent/Child” to put it inside another label.",
                             LabelSheet::New { apply: true } => "It is added to this conversation and to Gmail’s label list. Use “Parent/Child” to nest it.",
                             LabelSheet::New { apply: false } => "It is added to Gmail’s label list. Use “Parent/Child” to put it inside another label.",
@@ -449,11 +450,11 @@ impl Nimbra {
     pub(super) fn move_selected(&mut self, target: MoveTarget, cx: &mut Context<Self>) {
         let leaves = inbox_like(self.mailbox);
         match target {
-            MoveTarget::Spam => self.remove_selected(gmail::Change::Spam, cx),
+            MoveTarget::Spam => self.remove_selected(mail::Change::Spam, cx),
             MoveTarget::Inbox => match self.mailbox {
-                View::Spam => self.remove_selected(gmail::Change::NotSpam, cx),
-                View::Trash => self.remove_selected(gmail::Change::Untrash, cx),
-                _ => self.remove_selected(gmail::Change::Unarchive, cx),
+                View::Spam => self.remove_selected(mail::Change::NotSpam, cx),
+                View::Trash => self.remove_selected(mail::Change::Untrash, cx),
+                _ => self.remove_selected(mail::Change::Unarchive, cx),
             },
             MoveTarget::Label(label_id) => {
                 let Some(index) = self.labels.iter().position(|l| l.id == label_id) else {
@@ -478,7 +479,7 @@ impl Nimbra {
                     for thread in threads {
                         self.moved.insert(thread, label_id.clone());
                     }
-                    self.remove_selected(gmail::Change::Archive, cx);
+                    self.remove_selected(mail::Change::Archive, cx);
                 }
             }
         }
@@ -522,7 +523,7 @@ impl Nimbra {
             cx.notify();
             return;
         }
-        let (Some(client), Some(id)) = (self.gmail.clone(), mail.id.clone()) else {
+        let (Some(client), Some(id)) = (self.connection.clone(), mail.id.clone()) else {
             return;
         };
         let name = label.name.clone();
@@ -550,7 +551,7 @@ impl Nimbra {
 }
 
 /// The same labels under the same names, in any order.
-fn same_labels(a: &[gmail::Label], b: &[gmail::Label]) -> bool {
+fn same_labels(a: &[mail::Label], b: &[mail::Label]) -> bool {
     a.len() == b.len()
         && a.iter()
             .all(|x| b.iter().any(|y| y.id == x.id && y.name == x.name))
@@ -560,8 +561,8 @@ fn same_labels(a: &[gmail::Label], b: &[gmail::Label]) -> bool {
 mod tests {
     use super::*;
 
-    fn label(id: &str, name: &str) -> gmail::Label {
-        gmail::Label {
+    fn label(id: &str, name: &str) -> mail::Label {
+        mail::Label {
             id: id.into(),
             name: name.into(),
         }

@@ -1,7 +1,7 @@
 //! Waiting for Gmail: a check belongs to the mailbox it was started for, and nothing that
 //! shows as loading waits for ever.
 
-use crate::gmail::View;
+use crate::mail::View;
 use anyhow::Result;
 use gpui::{BackgroundExecutor, FutureExt as _};
 use std::future::Future;
@@ -43,7 +43,7 @@ pub struct TooSlow;
 
 impl std::fmt::Display for TooSlow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Gmail took too long to answer. Reload to try again.")
+        f.write_str("The mail server took too long to answer. Reload to try again.")
     }
 }
 

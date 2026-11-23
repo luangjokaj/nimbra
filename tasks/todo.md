@@ -568,3 +568,64 @@ account's labels, not those of the thread's own account.
       after the delete, and was restored as it was. It is saved now, and Gmail is asked for
       the list whenever an account's kept state is opened. Deleting a label Gmail no longer
       has (404) takes it off the list instead of failing.
+
+## Other providers: Zoho, IMAP/SMTP, custom domains (2026-11-23)
+
+Gmail's REST API is the only way in today (`gmail.rs`, ~260 call sites in 18 files). The plan
+keeps the app's model (threads, label ids, a change feed) and gives it a second backend that
+speaks IMAP and SMTP, so the views and actions do not change.
+
+### 1. A model that is not Gmail's (pure refactor)
+- [x] `mail.rs`: the shared model (Summary, Message, Person, Attachment, Label, Change, View,
+      Changes, Draft, Outgoing, errors, MIME building) moved out of `gmail.rs`.
+- [x] `mail::Client`: one connection type, Gmail today, that the app calls; `gmail::Client`
+      behind it.
+- [x] Accounts record which provider they use (settings, default Gmail: old files still load).
+- [x] Check: build, tests, a line comparison like the app.rs split.
+
+### 2. IMAP and SMTP
+- [x] Dependencies: an IMAP client, a MIME parser, an SMTP client, all over TLS (rustls).
+- [x] `imap.rs`: folders as label ids (INBOX, Sent → SENT, Drafts → DRAFT, Trash, Junk →
+      SPAM, Archive, other folders → labels), \Seen and \Flagged as UNREAD and STARRED, a
+      message in two folders as one message with two labels (as Gmail is over IMAP).
+- [x] Threads built here from Message-ID / In-Reply-To / References.
+- [x] A local index per account (in its encrypted store) and a change feed over it: UIDs,
+      UIDVALIDITY, flags (CONDSTORE where the server has it).
+- [x] Actions: archive, trash, spam, star, read, labels (copy / remove from folder), delete.
+- [x] Drafts (APPEND to Drafts), sending (SMTP, then APPEND to Sent unless the server does).
+- [x] Search: IMAP SEARCH for words, from:, to:, subject:.
+- [x] Tests against a local IMAP/SMTP server (GreenMail in Docker).
+
+### 3. Adding an account that is not Google
+- [x] Add account: Google, or another address (email and password).
+- [x] Servers found by themselves: presets (Zoho by region, iCloud, Fastmail, Yahoo,
+      Outlook), Thunderbird's provider database, the domain's autoconfig, MX records;
+      host and port by hand as the last step.
+- [x] Password in the keychain; TLS only, certificates checked, no plain-text fallback.
+
+### 4. What only Gmail has
+- [x] Hidden for IMAP accounts: categories, Important, Gmail's snooze, profile photo.
+- [x] Settings › Accounts shows the provider and its servers.
+
+### 5. Sign-in with OAuth (Microsoft, Zoho)
+- [ ] Needs an app registered with each (client ids the user owns): plumbing for XOAUTH2,
+      to be finished once those exist.
+
+Review: the IMAP engine is `imap_mail.rs` (not `imap.rs`: that name is the library's).
+`cargo check`, 149 tests, and two live tests against local servers, both passing:
+- `imap_mail::live`: sign-in and a wrong password, listing and threads, the change feed,
+  read, star, archive into Done and back, labels as folders (non-ASCII names), trash and
+  back, drafts, sending over STARTTLS with a copy in Sent without its Bcc, search.
+- `add_account::live`: the sheet's check takes a working account and refuses a wrong
+  password and an unreachable server.
+The sheet seen in screenshots (both states). Not tried: a real Zoho account, and adding an
+account by clicking through the app. Found on the way: the imap library leaves folder names
+unquoted in COPY (a space cut the name short), so COPY is sent by hand, quoted.
+
+To run the live tests (OrbStack or Docker):
+- certificates: a CA and a `localhost` certificate signed by it (`openssl`), in `certs/`
+- IMAP: `docker run -d --name nimbra-dovecot -p 127.0.0.1:10993:993 -v $PWD/dovecot.conf:/etc/dovecot/dovecot.conf:ro -v $PWD/certs:/certs:ro alpine:3.20 sh -c 'apk add --no-cache dovecot && adduser -D -u 1000 vmail && mkdir -p /srv/mail && chown 1000:1000 /srv/mail && exec dovecot -F'`
+  (any user, password "pass"; special-use Drafts, Sent, Trash, Junk, Archive)
+- SMTP: `docker run -d --name nimbra-mailpit -p 127.0.0.1:10587:1025 -v $PWD/certs:/certs:ro axllent/mailpit --smtp-tls-cert /certs/server.pem --smtp-tls-key /certs/server.key --smtp-auth-accept-any --smtp-require-starttls`
+- `NIMBRA_TEST_CA=certs/ca.pem cargo test live -- --ignored` (debug builds only read it)
+

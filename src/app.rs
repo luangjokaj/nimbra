@@ -12,10 +12,11 @@ use gpui::{
 use crate::arrival::{Arrival, drop_for};
 use crate::checking::{Asked, Checks, within};
 use crate::data::{COMMANDS, Mail, inbox};
-use crate::gmail::{self, View};
+use crate::gmail;
 use crate::input::{InputEvent, TextInput};
 use crate::keyboard::{self, Pane, Row as SidebarRow};
 use crate::leaving::{self, End, Leaving, SavedAs, Steps, Underway};
+use crate::mail::{self, View};
 use crate::rich::{self, Block, Kind};
 use crate::scheduled::{self, Outcome, Scheduled};
 use crate::sending::{Job, QueuedMail, Stage};
@@ -33,6 +34,10 @@ use message_window::MessageWindow;
 
 #[path = "skeleton.rs"]
 mod skeleton;
+
+#[path = "add_account.rs"]
+mod add_account;
+use add_account::AccountSheet;
 
 #[path = "settings_window.rs"]
 mod settings_window;
@@ -187,7 +192,7 @@ enum Ask {
 /// Changes and messages made while offline, sent once Gmail can be reached again.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Outbox {
-    pub(crate) changes: Vec<(String, gmail::Change)>,
+    pub(crate) changes: Vec<(String, mail::Change)>,
     /// Only as earlier versions saved it: waiting mail has records of its own now (see
     /// `sending`), and these become such records when the store opens.
     #[serde(default)]
@@ -220,7 +225,7 @@ struct Saved {
     account: String,
     initials: String,
     counts: HashMap<String, (u32, u32)>,
-    labels: Vec<gmail::Label>,
+    labels: Vec<mail::Label>,
     #[serde(default)]
     synced_to: HashMap<String, String>,
 }
@@ -246,7 +251,7 @@ struct Source {
     sender: String,
     header: crate::data::Header,
     body: Vec<Block>,
-    reply_to: Option<gmail::ReplyTo>,
+    reply_to: Option<mail::ReplyTo>,
     /// For sample data, which has no real headers.
     fallback_to: Option<String>,
     fallback_all: Vec<String>,
@@ -275,7 +280,7 @@ impl Source {
             .id
             .clone()
             .filter(|_| !earlier.header.message_id.is_empty())
-            .map(|thread_id| gmail::ReplyTo {
+            .map(|thread_id| mail::ReplyTo {
                 thread_id,
                 message_id: earlier.header.message_id.clone(),
             });
@@ -381,7 +386,7 @@ pub struct Nimbra {
     /// The window the editor web view was made in (it is native, so it lives in one window).
     editor_window: Option<gpui::AnyWindowHandle>,
     /// Connections to the signed-in accounts that are not the one shown (by account id).
-    others: HashMap<String, Arc<gmail::Client>>,
+    others: HashMap<String, Arc<mail::Client>>,
     /// Unread inbox conversations per account (for All inboxes and the Accounts list).
     account_unread: HashMap<String, u32>,
     /// Conversations open in windows of their own.
@@ -398,7 +403,7 @@ pub struct Nimbra {
     schedule_watch: bool,
     /// The times offered by the open Send later menu.
     send_later_times: Vec<i64>,
-    /// The account shown: "" for the first one, else its id (see `gmail::is_account_id`).
+    /// The account shown: "" for the first one, else its id (see `mail::is_account_id`).
     account_id: String,
     /// Bumped on every account switch, so answers for the previous account are dropped.
     account_gen: u64,
@@ -419,7 +424,7 @@ pub struct Nimbra {
     /// Not sent, and neither Drafts nor this Mac has them: quitting would lose them.
     stranded: Vec<Arc<Job>>,
     /// The offline changes of accounts switched away from that had no store to keep them.
-    homeless: HashMap<String, Vec<(String, gmail::Change)>>,
+    homeless: HashMap<String, Vec<(String, mail::Change)>>,
     /// Changes to threads, until they are settled.
     steps: Steps,
     /// The last notice about mail that was or was not kept or sent: a list arriving does
@@ -529,7 +534,7 @@ pub struct Nimbra {
     /// Sidebar counts per label id: (unread threads still in the inbox, total threads for Drafts).
     counts: HashMap<String, (u32, u32)>,
     /// The user's own Gmail labels, shown in the sidebar.
-    labels: Vec<gmail::Label>,
+    labels: Vec<mail::Label>,
     /// The check for mail that is running, and what it is for (see `fetching`).
     checks: Checks,
     /// The search field in the sidebar, and the query the results are for.
@@ -548,8 +553,10 @@ pub struct Nimbra {
     menu_for: Option<MeantFor>,
     palette_for: Option<MeantFor>,
     label_for: Option<MeantFor>,
+    /// The Add account sheet (an address that is not Gmail), when it is open.
+    account_sheet: Option<AccountSheet>,
     /// The labels the open menu lists, as it lists them.
-    menu_labels: Vec<gmail::Label>,
+    menu_labels: Vec<mail::Label>,
     /// When Gmail was last asked for the label list, and for which connection
     /// (`account_gen`): labels are made and renamed in other places too.
     labels_asked: Option<(std::time::Instant, u64)>,
@@ -584,9 +591,9 @@ pub struct Nimbra {
     /// The list's Unread filter.
     unread_only: bool,
     /// What took each cleared thread out of the list, so undo can reverse it.
-    removed_by: HashMap<String, gmail::Change>,
+    removed_by: HashMap<String, mail::Change>,
     config: Option<gmail::Config>,
-    gmail: Option<Arc<gmail::Client>>,
+    connection: Option<Arc<mail::Client>>,
     /// Shown in the sidebar footer.
     account: SharedString,
     me_initials: SharedString,
@@ -851,6 +858,7 @@ impl Nimbra {
             label_for: None,
             menu_labels: Vec::new(),
             labels_asked: None,
+            account_sheet: None,
             menu_window: None,
             undo_window: None,
             undo_gen: 0,
@@ -867,7 +875,7 @@ impl Nimbra {
             unread_only: false,
             removed_by: HashMap::new(),
             config,
-            gmail: None,
+            connection: None,
             account: if demo {
                 "Luan Gjokaj".into()
             } else {
@@ -945,7 +953,7 @@ impl Nimbra {
         // NIMBRA_SCREEN=draft opens a sample draft in the composer (screenshots).
         if screen == "draft" {
             this.edit_draft(
-                gmail::Draft {
+                mail::Draft {
                     id: "sample".into(),
                     to: "mira@example.com".into(),
                     cc: String::new(),
@@ -975,6 +983,21 @@ impl Nimbra {
             })
             .detach();
         }
+        // NIMBRA_SCREEN=account (and account-servers, with the server fields) opens the
+        // Add account sheet (screenshots).
+        if screen == "account" || screen == "account-servers" {
+            let servers = screen == "account-servers";
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |this, cx| {
+                    this.open_account_sheet(None, cx);
+                    if servers {
+                        this.show_account_servers(cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
         // NIMBRA_SCREEN=loading holds the loading skeleton on screen (screenshots).
         if screen == "loading" {
             this.status = Status::Loading;
@@ -993,7 +1016,7 @@ impl Nimbra {
         // read off the main thread because macOS may show a permission prompt for it, and
         // the window should not freeze (or fail to appear) while that is open.
         let active = this.settings.active.clone();
-        if gmail::is_account_id(&active)
+        if mail::is_account_id(&active)
             && (active.is_empty() || this.settings.accounts.iter().any(|a| a.id == active))
         {
             this.account_id = active;
@@ -1195,7 +1218,7 @@ impl Nimbra {
                 } else {
                     format!("Delete {} forever?", ids.len())
                 },
-                "They are removed from Gmail completely. This can’t be undone.".into(),
+                "They are deleted from the server for good. This can’t be undone.".into(),
                 "Delete forever",
             ),
             Some(Ask::GrantFullAccess(_)) => (
@@ -1540,7 +1563,7 @@ impl Nimbra {
 
     fn fail(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
         // Offline is a state, not an error: keep showing what is here, and catch up later.
-        if error.is::<gmail::Offline>() {
+        if error.is::<mail::Offline>() {
             if self.mails.is_empty() && !matches!(self.status, Status::Ready) {
                 self.status = Status::Failed(error.to_string().into());
             }
@@ -1549,7 +1572,7 @@ impl Nimbra {
             return;
         }
         eprintln!("nimbra: {error}");
-        if let Some(out) = error.downcast_ref::<gmail::SignedOut>()
+        if let Some(out) = error.downcast_ref::<mail::SignedOut>()
             && !self.shown_signed_out(&error)
         {
             // Another account's: the mail, snoozes and sign-in of the one shown are not its.
@@ -1566,7 +1589,7 @@ impl Nimbra {
             return;
         }
         if self.shown_signed_out(&error) {
-            self.gmail = None;
+            self.connection = None;
             // The stored mail belongs to that sign-in: remove it, and its key.
             self.store = None;
             self.checks.forget();
@@ -1594,7 +1617,12 @@ impl Nimbra {
             self.selected = 0;
             self.palette = false;
             self.status = Status::SignedOut;
-            self.notice = Some("Your Google sign-in expired. Connect again to continue.".into());
+            self.notice = Some(if self.servers_of(&self.account_id).is_some() {
+                "The server stopped taking this account’s password. Sign in again to continue."
+                    .into()
+            } else {
+                "Your Google sign-in expired. Connect again to continue.".into()
+            });
         // An error is no reason to hide a mailbox known to be empty.
         } else if self.mails.is_empty() && self.status != Status::Ready {
             self.status = Status::Failed(error.to_string().into());
@@ -1902,7 +1930,15 @@ fn card(t: &Theme) -> Div {
 impl Nimbra {
     /// Shown in place of the mail panes while signed out, signing in, loading or failed.
     fn status_screen(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let own_servers = self.servers_of(&self.account_id).is_some();
         let (title, message, action): (&str, SharedString, Option<&str>) = match &self.status {
+            Status::SignedOut if own_servers => (
+                "Sign in again",
+                "The mail server stopped taking this account’s password. Sign in again, or \
+                 use an app password if the account has two-step sign-in."
+                    .into(),
+                Some("Sign in"),
+            ),
             Status::SignedOut => (
                 "Connect your inbox",
                 "Nimbra opens Google in your browser to sign in. It can read and archive \
@@ -1946,18 +1982,33 @@ impl Nimbra {
                     .child(message),
             )
             .children(action.map(|label| {
-                div().pt(px(10.)).child(
-                    button(t, ButtonKind::Primary, label, None)
-                        .id("status-action")
-                        .press_soft()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if matches!(this.status, Status::Failed(_)) {
-                                this.try_again(cx);
-                            } else {
-                                this.sign_in(cx);
-                            }
-                        })),
-                )
+                div()
+                    .pt(px(10.))
+                    .flex()
+                    .gap(px(8.))
+                    .child(
+                        button(t, ButtonKind::Primary, label, None)
+                            .id("status-action")
+                            .press_soft()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if matches!(this.status, Status::Failed(_)) {
+                                    this.try_again(cx);
+                                } else {
+                                    this.sign_in(cx);
+                                }
+                            })),
+                    )
+                    // Signed out of Gmail (or never in): any other address works too.
+                    .when(self.status == Status::SignedOut && !own_servers, |d| {
+                        d.child(
+                            button(t, ButtonKind::Secondary, "Use another address", None)
+                                .id("status-other")
+                                .press_soft()
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.open_account_sheet(None, cx)),
+                                ),
+                        )
+                    })
             }))
     }
 }
@@ -2064,7 +2115,7 @@ impl Render for Nimbra {
             self.bar_fade = None;
         }
         // The inbox's unread count on the Dock icon.
-        let unread = if self.gmail.is_some() && self.settings.dock_badge {
+        let unread = if self.connection.is_some() && self.settings.dock_badge {
             // Every signed-in account's inbox.
             self.counts.get("INBOX").map_or(0, |(unread, _)| *unread)
                 + self
@@ -2270,6 +2321,8 @@ impl Render for Nimbra {
                     cx.notify();
                 } else if this.new_label.is_some() {
                     this.close_new_label(cx);
+                } else if this.account_sheet.is_some() {
+                    this.close_account_sheet(cx);
                 } else if this.shortcuts {
                     this.shortcuts = false;
                     cx.notify();
@@ -2445,6 +2498,9 @@ impl Render for Nimbra {
             })
             .when(self.new_label.is_some(), |d| {
                 d.child(self.new_label_view(&t, cx))
+            })
+            .when(self.account_sheet.is_some(), |d| {
+                d.child(self.account_sheet_view(&t, cx))
             })
             .when(self.confirm.is_some(), |d| {
                 d.child(self.confirm_view(&t, cx))

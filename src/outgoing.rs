@@ -16,8 +16,8 @@ pub(super) struct CaughtUp {
 
 /// Sends what waited for the connection, in order. Blocking.
 pub(super) fn catch_up(
-    client: &gmail::Client,
-    changes: &[(String, gmail::Change)],
+    client: &mail::Client,
+    changes: &[(String, mail::Change)],
     queue: &[Arc<Job>],
 ) -> anyhow::Result<CaughtUp> {
     // Is Gmail reachable again?
@@ -25,7 +25,7 @@ pub(super) fn catch_up(
     let mut done = CaughtUp::default();
     for (id, change) in changes {
         match client.change(id, *change) {
-            Err(error) if error.is::<gmail::Offline>() => return Ok(done),
+            Err(error) if error.is::<mail::Offline>() => return Ok(done),
             // Anything else (the thread is gone, say) is dropped.
             _ => done.changes += 1,
         }
@@ -69,7 +69,7 @@ impl Nimbra {
     pub(super) fn queue_away(
         &mut self,
         account: &str,
-        changes: Vec<(String, gmail::Change)>,
+        changes: Vec<(String, mail::Change)>,
     ) -> bool {
         let kept = self.other_stores.get(account).is_some_and(|store| {
             store
@@ -89,7 +89,7 @@ impl Nimbra {
         this: &gpui::WeakEntity<Self>,
         cx: &mut gpui::AsyncApp,
         account: &str,
-        client: &Arc<gmail::Client>,
+        client: &Arc<mail::Client>,
     ) {
         let claimed = this.update(cx, |this, _| {
             if !this.away_waiting.contains(account) {
@@ -109,7 +109,7 @@ impl Nimbra {
             .background_executor()
             .spawn(async move {
                 let changes = kept_in.load::<Outbox>("outbox").unwrap_or_default().changes;
-                catch_up(&client, &changes, &[]).map_or(0, |done| done.changes)
+                catch_up(&*client, &changes, &[]).map_or(0, |done| done.changes)
             })
             .await;
         this.update(cx, |this, cx| {
@@ -154,7 +154,7 @@ impl Nimbra {
 
     /// Gmail could not be reached: keep checking, then send what is waiting.
     pub(super) fn went_offline(&mut self, cx: &mut Context<Self>) {
-        if self.gmail.is_none() {
+        if self.connection.is_none() {
             // No connection to check with: opening the account starts this again.
             return;
         }
@@ -174,7 +174,7 @@ impl Nimbra {
                     if this.retry_gen != attempt {
                         return Err(()); // another loop's turn, or none's
                     }
-                    let Some(client) = this.gmail.clone() else {
+                    let Some(client) = this.connection.clone() else {
                         this.stop_retrying();
                         return Err(());
                     };
@@ -194,7 +194,7 @@ impl Nimbra {
                 };
                 let result = cx
                     .background_executor()
-                    .spawn(async move { catch_up(&client, &changes, &queue) })
+                    .spawn(async move { catch_up(&*client, &changes, &queue) })
                     .await;
                 let done = this.update(cx, |this, cx| {
                     // First, and whoever is shown by now.
@@ -231,7 +231,7 @@ impl Nimbra {
                                 return true;
                             }
                         }
-                        Err(error) if error.is::<gmail::SignedOut>() => {
+                        Err(error) if error.is::<mail::SignedOut>() => {
                             this.stop_retrying();
                             this.fail(error, cx);
                             return true;
@@ -320,8 +320,8 @@ impl Nimbra {
             }
             Err(error) => error,
         };
-        let offline = error.is::<gmail::Offline>();
-        let unsure = error.is::<gmail::MayHaveArrived>();
+        let offline = error.is::<mail::Offline>();
+        let unsure = error.is::<mail::MayHaveArrived>();
         let room = parked.is_some() && self.compose.is_none();
         if self.shown_signed_out(&error) {
             self.compose = None;
@@ -479,7 +479,7 @@ impl Nimbra {
     /// not, as its store was deleted.
     pub(super) fn keeps(&self, account: &str) -> bool {
         self.settings.accounts.iter().any(|a| a.id == account)
-            || (self.gmail.is_some() && account == self.account_id)
+            || (self.connection.is_some() && account == self.account_id)
     }
 
     /// Whether quitting would lose mail or changes that could not be written down.
@@ -704,7 +704,7 @@ impl Nimbra {
 
     /// Send later: saves the draft, then sends it from this Mac at `at`.
     pub(super) fn schedule_send(&mut self, at: i64, cx: &mut Context<Self>) {
-        let demo = self.gmail.is_none();
+        let demo = self.connection.is_none();
         let nowhere_to_keep = self.store.is_none();
         let Some(composer) = &mut self.compose else {
             return;
@@ -827,7 +827,7 @@ impl Nimbra {
     }
 
     fn send_due(&mut self, cx: &mut Context<Self>) {
-        let (Some(store), Some(_)) = (self.store.clone(), &self.gmail) else {
+        let (Some(store), Some(_)) = (self.store.clone(), &self.connection) else {
             return;
         };
         let now = chrono::Utc::now().timestamp_millis();
@@ -851,7 +851,7 @@ impl Nimbra {
                     .background_executor()
                     .spawn(async move {
                         let _working = working;
-                        scheduled::send(&store, &client, &id)
+                        scheduled::send(&store, &*client, &id)
                     })
                     .await;
                 this.update(cx, |this, cx| {
@@ -915,7 +915,7 @@ impl Nimbra {
             cx.notify();
             return;
         }
-        if outgoing.attachment_size() > gmail::ATTACHMENT_LIMIT {
+        if outgoing.attachment_size() > mail::ATTACHMENT_LIMIT {
             composer.error = Some("Attachments can be 25 MB in total.".into());
             cx.notify();
             return;
@@ -975,7 +975,7 @@ impl Nimbra {
 pub(super) fn carry_out_due(
     account: &str,
     store: &crate::store::Store,
-    connected: &HashMap<String, Arc<gmail::Client>>,
+    connected: &HashMap<String, Arc<mail::Client>>,
     writes: &Underway,
 ) {
     let now = chrono::Utc::now().timestamp_millis();
@@ -1016,7 +1016,7 @@ pub(super) fn carry_out_due(
         }
         if let Some(client) = client_of(item.account.as_deref()) {
             let _working = writes.begin();
-            scheduled::send(store, client, &item.draft_id);
+            scheduled::send(store, &**client, &item.draft_id);
         }
     }
 }

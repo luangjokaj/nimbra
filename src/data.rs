@@ -1,6 +1,6 @@
 use gpui::SharedString;
 
-use crate::gmail;
+use crate::mail;
 use crate::rich::{self, Block};
 use crate::theme::{Accent, Tone};
 
@@ -31,7 +31,7 @@ pub struct Mail {
     /// Whether `body` and `earlier` have been fetched.
     pub loaded: bool,
     /// Who and what a reply answers (the latest message), once the thread is loaded.
-    pub reply: Option<(String, gmail::ReplyTo)>,
+    pub reply: Option<(String, mail::ReplyTo)>,
     /// The other recipients of the latest message, for reply-all.
     pub reply_all: Vec<String>,
     /// The latest message's original HTML, for "Show original".
@@ -54,19 +54,19 @@ pub struct Mail {
 /// What a message says about itself, for the header block in the reading pane.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Header {
-    pub from: gmail::Person,
-    pub to: Vec<gmail::Person>,
-    pub cc: Vec<gmail::Person>,
-    pub reply_to: Option<gmail::Person>,
+    pub from: mail::Person,
+    pub to: Vec<mail::Person>,
+    pub cc: Vec<mail::Person>,
+    pub reply_to: Option<mail::Person>,
     pub date_ms: i64,
-    pub attachments: Vec<gmail::Attachment>,
+    pub attachments: Vec<mail::Attachment>,
     pub unsubscribe: Option<String>,
     /// The RFC 5322 Message-ID, to reply to this message specifically.
     pub message_id: String,
 }
 
 impl Header {
-    fn from_message(message: &gmail::Message) -> Self {
+    fn from_message(message: &mail::Message) -> Self {
         Header {
             from: message.from.clone(),
             to: message.to.clone(),
@@ -112,7 +112,7 @@ pub struct Earlier {
 
 impl Mail {
     /// A list row for a real Gmail thread. The messages are filled in by [`Mail::fill`].
-    pub fn from_summary(summary: gmail::Summary) -> Self {
+    pub fn from_summary(summary: mail::Summary) -> Self {
         let (time, earlier) = format_time(summary.timestamp_ms);
         Mail {
             account: None,
@@ -153,7 +153,7 @@ impl Mail {
     }
 
     /// Fills in the thread once its messages (oldest first) have been fetched.
-    pub fn fill(&mut self, mut messages: Vec<gmail::Message>) {
+    pub fn fill(&mut self, mut messages: Vec<mail::Message>) {
         let count = messages.len();
         let mut senders: Vec<&str> = Vec::new();
         for message in &messages {
@@ -172,7 +172,7 @@ impl Mail {
             self.reply = self.id.clone().map(|thread_id| {
                 (
                     latest.address.clone(),
-                    gmail::ReplyTo {
+                    mail::ReplyTo {
                         thread_id,
                         message_id: latest.message_id.clone(),
                     },
@@ -309,8 +309,8 @@ fn mail(
     }
 }
 
-fn person(name: &str, address: &str) -> gmail::Person {
-    gmail::Person {
+fn person(name: &str, address: &str) -> mail::Person {
+    mail::Person {
         name: name.into(),
         address: address.into(),
     }

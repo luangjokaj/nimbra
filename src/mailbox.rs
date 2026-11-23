@@ -177,7 +177,7 @@ impl Nimbra {
 
     /// How much has been seen to change. It only grows while an account is shown.
     fn changes_seen(&self) -> u64 {
-        let connected = self.gmail.iter().chain(self.others.values());
+        let connected = self.connection.iter().chain(self.others.values());
         self.feed_changes + connected.map(|client| client.writes()).sum::<u64>()
     }
 
@@ -224,7 +224,7 @@ impl Nimbra {
     /// Applies Gmail's change feed to the open mailbox. Returns false when it cannot (no
     /// starting point, nothing on screen, or a search-based mailbox) so the caller fetches.
     fn sync_view(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(client) = self.gmail.clone() else {
+        let Some(client) = self.connection.clone() else {
             return false;
         };
         let view = self.mailbox;
@@ -267,7 +267,7 @@ impl Nimbra {
             let result = within(cx.background_executor(), async move {
                 let changes = client.history(&start)?;
                 if changes.threads.len() > 40 {
-                    return Err(gmail::HistoryExpired.into());
+                    return Err(mail::HistoryExpired.into());
                 }
                 // Fresh details for each changed thread; `None` when it is gone.
                 let mut updates = Vec::new();
@@ -336,7 +336,7 @@ impl Nimbra {
                         list.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
                         this.install(list, cx);
                     }
-                    Err(error) if error.is::<gmail::HistoryExpired>() => this.fetch_inbox(cx),
+                    Err(error) if error.is::<mail::HistoryExpired>() => this.fetch_inbox(cx),
                     Err(error) => this.fail(error, cx),
                 }
             })
@@ -352,7 +352,7 @@ impl Nimbra {
         // A thread in full is 120 units of the 6,000 a minute: not the whole screen.
         const AHEAD: usize = 3;
         const WORKERS: usize = 4;
-        if self.gmail.is_none() {
+        if self.connection.is_none() {
             return;
         }
         if self.prefetching || self.mailbox == View::Search || self.status != Status::Ready {
@@ -383,7 +383,7 @@ impl Nimbra {
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let fetched = within(cx.background_executor(), async move {
-                let mut results: Vec<Option<anyhow::Result<Vec<gmail::Message>>>> =
+                let mut results: Vec<Option<anyhow::Result<Vec<mail::Message>>>> =
                     (0..ids.len()).map(|_| None).collect();
                 let chunk = ids.len().div_ceil(WORKERS).max(1);
                 std::thread::scope(|scope| {
@@ -424,7 +424,7 @@ impl Nimbra {
                                 filled += 1;
                             }
                         }
-                        Err(error) if error.is::<gmail::SignedOut>() => {
+                        Err(error) if error.is::<mail::SignedOut>() => {
                             this.fail(error, cx);
                             return;
                         }
@@ -468,7 +468,7 @@ impl Nimbra {
         let view_record = self.record_for(view);
         let account = self.account_id.clone();
         let generation = self.account_gen;
-        let client = self.gmail.clone();
+        let client = self.connection.clone();
         let reading = self.read_keychain(cx);
         cx.spawn(async move |this, cx| {
             let opened = cx
@@ -768,7 +768,7 @@ impl Nimbra {
             let mut failed = false;
             loop {
                 let ready = this
-                    .update(cx, |this, _| this.gmail.is_some())
+                    .update(cx, |this, _| this.connection.is_some())
                     .unwrap_or(false);
                 let wait = if first && !ready {
                     Duration::from_secs(3)
@@ -785,7 +785,7 @@ impl Nimbra {
                 };
                 cx.background_executor().timer(wait).await;
                 let Ok(client) = this.update(cx, |this, _| {
-                    this.gmail.clone().map(|c| (c, this.account_gen))
+                    this.connection.clone().map(|c| (c, this.account_gen))
                 }) else {
                     break; // the window is gone
                 };
@@ -808,7 +808,7 @@ impl Nimbra {
                                 None => client.profile().map(|(_, at)| (at, None)),
                                 Some(from) => match client.history(&from) {
                                     Ok(changes) => Ok((changes.latest.clone(), Some(changes))),
-                                    Err(error) if error.is::<gmail::HistoryExpired>() => {
+                                    Err(error) if error.is::<mail::HistoryExpired>() => {
                                         client.profile().map(|(_, at)| (at, None))
                                     }
                                     Err(error) => Err(error),
@@ -921,7 +921,7 @@ impl Nimbra {
                         .collect::<Vec<_>>();
                     // With the shown one's: a store can hold another account's threads.
                     let mut connected = this.others.clone();
-                    if let Some(client) = &this.gmail {
+                    if let Some(client) = &this.connection {
                         connected.insert(this.account_id.clone(), client.clone());
                     }
                     (others, connected, this.writes.clone())
@@ -953,7 +953,7 @@ impl Nimbra {
                                         changes.new_unread_inbox.clone(),
                                         !changes.threads.is_empty(),
                                     ),
-                                    Err(error) if error.is::<gmail::HistoryExpired>() => {
+                                    Err(error) if error.is::<mail::HistoryExpired>() => {
                                         (client.profile()?.1, Vec::new(), true)
                                     }
                                     Err(error) => return Err(error),
@@ -963,7 +963,7 @@ impl Nimbra {
                                 .counts(&["INBOX".to_string()])
                                 .get("INBOX")
                                 .map_or(0, |(unread, _)| *unread);
-                            let summaries: Vec<gmail::Summary> = fresh
+                            let summaries: Vec<mail::Summary> = fresh
                                 .iter()
                                 .take(3)
                                 .filter_map(|thread| client.summary(thread, false).ok())
@@ -1028,7 +1028,7 @@ impl Nimbra {
             self.fetch_all_inboxes(cx);
             return;
         }
-        let Some(client) = self.gmail.clone() else {
+        let Some(client) = self.connection.clone() else {
             return;
         };
         // The loading screen is only for a mailbox never listed before; one known to be
@@ -1132,11 +1132,10 @@ impl Nimbra {
     /// merged newest first, each row marked with its account. Also every account's unread
     /// count. An account that fails is left out (with a note); all failing is an error.
     fn fetch_all_inboxes(&mut self, cx: &mut Context<Self>) {
-        let Some(shown) = self.gmail.clone() else {
+        let Some(shown) = self.connection.clone() else {
             return;
         };
-        let mut accounts: Vec<(String, Arc<gmail::Client>)> =
-            vec![(self.account_id.clone(), shown)];
+        let mut accounts: Vec<(String, Arc<mail::Client>)> = vec![(self.account_id.clone(), shown)];
         for account in &self.settings.accounts {
             if let Some(client) = self.others.get(&account.id) {
                 accounts.push((account.id.clone(), client.clone()));
@@ -1144,7 +1143,7 @@ impl Nimbra {
         }
         // As far as it was scrolled: listing again must not drop the pages below the first.
         // Cleared rows do not count, or each listing after a Done would reach further.
-        let accounts: Vec<(String, Arc<gmail::Client>, usize)> = accounts
+        let accounts: Vec<(String, Arc<mail::Client>, usize)> = accounts
             .into_iter()
             .map(|(id, client)| {
                 let listed = self
@@ -1246,7 +1245,7 @@ impl Nimbra {
 
     /// Shows a freshly fetched listing, reusing thread contents already in memory and
     /// keeping the open thread and any just-cleared threads as they were.
-    fn show_inbox(&mut self, email: String, threads: Vec<gmail::Summary>, cx: &mut Context<Self>) {
+    fn show_inbox(&mut self, email: String, threads: Vec<mail::Summary>, cx: &mut Context<Self>) {
         // A different Google account than the one the store was saved for: start clean.
         if self.account.contains('@') && self.account.as_ref() != email.as_str() {
             if let Some(store) = &self.store {
@@ -1257,7 +1256,7 @@ impl Nimbra {
             self.counts.clear();
             self.labels.clear();
             self.forget_checked();
-            if let Some(client) = &self.gmail {
+            if let Some(client) = &self.connection {
                 client.forget_rows();
             }
         }
@@ -1326,7 +1325,7 @@ impl Nimbra {
         let key: ThreadKey = (id.clone(), account.clone());
         let Some(client) = self.client_for(Some(&account)) else {
             // Another account's, which is not connected: nothing is on its way.
-            if self.gmail.is_some() {
+            if self.connection.is_some() {
                 self.body_failed.insert(key);
                 cx.notify();
             }
@@ -1377,7 +1376,7 @@ impl Nimbra {
     pub(super) fn sync(
         &mut self,
         index: usize,
-        change: gmail::Change,
+        change: mail::Change,
         removed: bool,
         cx: &mut Context<Self>,
     ) {
@@ -1416,7 +1415,7 @@ impl Nimbra {
                 .background_executor()
                 .spawn(async move {
                     let _working = working;
-                    step.run(&client)
+                    step.run(&*client)
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1449,7 +1448,7 @@ impl Nimbra {
                 let Err(error) = result else {
                     return;
                 };
-                if kept && error.is::<gmail::Offline>() {
+                if kept && error.is::<mail::Offline>() {
                     return;
                 }
                 // Put back wherever the thread is by now.
@@ -1607,7 +1606,7 @@ impl Nimbra {
             return;
         }
         let count = if from_top { self.mails.len() + 30 } else { 30 };
-        let (Some(client), Some(page)) = (self.gmail.clone(), self.more().cloned()) else {
+        let (Some(client), Some(page)) = (self.connection.clone(), self.more().cloned()) else {
             return;
         };
         if self.loading_more {
