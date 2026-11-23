@@ -635,6 +635,9 @@ const CLOSE_SECONDS: f32 = 0.22;
 const SETTLE_SECONDS: f32 = 0.7;
 
 const MENU_WIDTH: f32 = 220.;
+/// What a menu row has beside its label: the card's border (1) and padding (6) and the row's
+/// padding (10) on each side, and the icon (16) with its gap (10).
+const MENU_ROW_CHROME: f32 = 2. * (1. + 6. + 10.) + 16. + 10.;
 /// Transparent space around the menu inside its window, so its shadow is not cut off.
 const MENU_MARGIN: f32 = 28.;
 
@@ -5362,7 +5365,18 @@ impl Nimbra {
         let viewport = window.viewport_size();
         let pane_left = if self.sidebar_open { 236. } else { 0. }
             + if self.list_open { self.list_width } else { 0. };
-        let (width, height) = (MENU_WIDTH, items.len() as f32 * 32. + 14.);
+        // Addresses can be longer than the usual menu: From grows to fit its longest one,
+        // so it keeps the same space on its right as on its left.
+        let width = if menu == Menu::From {
+            let longest = items
+                .iter()
+                .map(|(_, label, _)| text_width(label, 13., crate::theme::SANS, cx))
+                .fold(0., f32::max);
+            MENU_WIDTH.max((longest + MENU_ROW_CHROME).ceil())
+        } else {
+            MENU_WIDTH
+        };
+        let height = items.len() as f32 * 32. + 14.;
         let (left, top) = match menu {
             Menu::Labels => (pane_left + 150., 50.),
             Menu::MoveTo => (pane_left + 186., 50.),
