@@ -1511,6 +1511,15 @@ impl Nimbra {
                             index * 3 + 2,
                         ))
                     })
+                    // The latest message of a snoozed thread says when it comes back.
+                    .children(
+                        (index == 0)
+                            .then(|| super::threads::snooze_of(&self.snoozed, mail.id.as_deref()))
+                            .flatten()
+                            .map(|(name, when)| {
+                                super::threads::snooze_chip(t, name, format!("Until {when}").into())
+                            }),
+                    )
                     .child(mono(time, t.text3).flex_none()),
             )
             .when(open && !header.from.address.is_empty(), |d| {

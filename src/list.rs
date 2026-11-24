@@ -391,6 +391,8 @@ impl Nimbra {
 
     fn row(&self, t: &Theme, i: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let m = &self.mails[i];
+        // Snoozed here: a clock (a bell for a reminder) and the day it comes back.
+        let snoozed = super::threads::snooze_of(&self.snoozed, m.id.as_deref());
         let picked = self.picked.contains(&i);
         let selected = i == self.selected && self.picked.len() < 2;
         let hover = t.hover;
@@ -517,7 +519,14 @@ impl Nimbra {
                             .when(m.starred, |d| d.child(icon("star", 13., t.amber)))
                             .children(tag.map(|(label, a)| pill(t, &label, t.accent(a))))
                             .child(div().flex_1())
-                            .when(!selected, |d| d.child(mono(m.time.clone(), t.text3)))
+                            // Snoozed: when it comes back, in place of when it came (and
+                            // beside the quick actions on the open row).
+                            .children(snoozed.as_ref().map(|(name, when)| {
+                                super::threads::snooze_chip(t, name, when.clone())
+                            }))
+                            .when(!selected && snoozed.is_none(), |d| {
+                                d.child(mono(m.time.clone(), t.text3))
+                            })
                             // Quick actions on the open row: done, snooze, remind me.
                             .when(selected, |d| {
                                 let quick = |id: &'static str, name: &'static str| {

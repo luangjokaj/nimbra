@@ -958,6 +958,45 @@ pub(super) fn snooze_time(until_ms: i64) -> SharedString {
         .into()
 }
 
+/// A snoozed thread's chip: a clock (a bell for a reminder) and when it comes back, in amber.
+pub(super) fn snooze_chip(t: &Theme, name: &'static str, when: SharedString) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(4.))
+        .px(px(6.))
+        .h(px(18.))
+        .rounded(px(5.))
+        .bg(t.amber.opacity(0.14))
+        .child(icon(name, 11., t.amber))
+        .child(mono(when, t.amber))
+}
+
+/// The snooze of the thread with this id, if one is kept here: its chip's icon and text.
+pub(super) fn snooze_of(list: &[Snooze], id: Option<&str>) -> Option<(&'static str, SharedString)> {
+    let id = id?;
+    list.iter().find(|s| s.thread_id == id).map(|s| {
+        (
+            if s.no_reply { "bell" } else { "clock" },
+            snooze_day(s.until_ms),
+        )
+    })
+}
+
+/// The day a snoozed thread comes back, for its row's chip: the time if that is today,
+/// else the date ("Nov 26").
+pub(super) fn snooze_day(until_ms: i64) -> SharedString {
+    let Some(when) = chrono::DateTime::from_timestamp_millis(until_ms) else {
+        return SharedString::default();
+    };
+    let when = when.with_timezone(&chrono::Local);
+    let today = when.date_naive() == chrono::Local::now().date_naive();
+    when.format(if today { "%-I:%M %p" } else { "%b %-d" })
+        .to_string()
+        .into()
+}
+
 /// Brings a snoozed thread back if it is still away: into the inbox, unread. Whether it
 /// came back. A reminder is not needed once someone wrote, and a snooze is over by itself
 /// once a reply put the thread back in the inbox.
@@ -979,6 +1018,24 @@ pub(super) fn wake(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_snooze_chip_shows_the_day_or_todays_time() {
+        let at =
+            |days: i64| (chrono::Local::now() + chrono::Duration::days(days)).timestamp_millis();
+        let later = snooze_day(at(3));
+        assert!(
+            !later.contains(':') && later.split(' ').count() == 2,
+            "{later}"
+        );
+        let soon = (chrono::Local::now() + chrono::Duration::minutes(1)).timestamp_millis();
+        // Today (unless that minute is already tomorrow): a time.
+        let today = snooze_day(soon);
+        assert!(
+            today.contains(':') || today.split(' ').count() == 2,
+            "{today}"
+        );
+    }
 
     #[test]
     fn a_snooze_shows_its_weekday_soon_and_its_date_later() {
