@@ -3,6 +3,7 @@
 mod app;
 mod arrival;
 mod autohide;
+mod blocking;
 mod blur;
 mod checking;
 mod data;

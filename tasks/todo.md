@@ -703,3 +703,17 @@ service imap-login {
 }
 ```
 
+
+## Blocked senders (2026-11-24)
+
+- [x] Per-account list of blocked addresses in the store (`blocking.rs`), learned the first
+      time from the senders already in the Blocked label (Spark's)
+- [x] New mail from a blocked sender is moved to Blocked, read, before any notification
+      (the shown account's feed and the other accounts')
+- [x] Inbox swept once per account per session, for mail that came while Nimbra was closed
+- [x] Block sender / Unblock sender in the ⋯ menu; Undo of a block unblocks
+- [x] `Summary.senders` (each message's address); kept Gmail rows without it are read again
+
+Review: 186 tests; live `live_blocked_senders` against Dovecot passes (and fails with
+blocking turned off); all 5 live tests pass. Not seen on screen: the demo has no ⋯ Block,
+and trying it on a real account would move real mail.

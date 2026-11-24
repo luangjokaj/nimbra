@@ -485,6 +485,185 @@ impl Nimbra {
         }
     }
 
+    /// The account's Blocked label, if it has one.
+    fn blocked_label(&self) -> Option<String> {
+        self.labels
+            .iter()
+            .find(|l| crate::blocking::is_label(&l.name))
+            .map(|l| l.id.clone())
+    }
+
+    /// Whether the thread in row `index` is in the Blocked label.
+    pub(super) fn sender_blocked(&self, index: usize) -> bool {
+        let (Some(label), Some(mail)) = (self.blocked_label(), self.mails.get(index)) else {
+            return false;
+        };
+        mail.labels.contains(&label)
+    }
+
+    /// Blocks the open thread's sender, or unblocks it when the thread is in Blocked.
+    pub(super) fn toggle_block(&mut self, cx: &mut Context<Self>) {
+        self.menu = None;
+        let index = self.selected;
+        let refuse = |this: &mut Self, why: &str, cx: &mut Context<Self>| {
+            this.notice = Some(why.to_string().into());
+            cx.notify();
+        };
+        if self.picked.len() >= 2 {
+            return refuse(self, "Block one sender at a time.", cx);
+        }
+        if self.is_foreign(index) {
+            return refuse(
+                self,
+                "Blocked senders belong to each account: open this conversation's account to block its sender.",
+                cx,
+            );
+        }
+        let Some(mail) = self
+            .mails
+            .get(index)
+            .filter(|_| self.visible().contains(&index))
+        else {
+            return;
+        };
+        let address = mail.header.from.address.trim().to_lowercase();
+        if !mail::is_address(&address) {
+            return refuse(self, "Open the conversation to block its sender.", cx);
+        }
+        let name = short(mail.header.from.label(), 40);
+        let (Some(client), Some(store)) = (self.connection.clone(), self.store.clone()) else {
+            return;
+        };
+        let unblock = self.sender_blocked(index);
+        if unblock {
+            if let Some(label) = self.blocked_label() {
+                self.remove_label(index, label, cx);
+            }
+            self.move_selected(MoveTarget::Inbox, cx);
+            self.notice = Some(format!("Unblocked {name}").into());
+        } else if let Some(label) = self.blocked_label() {
+            self.block_moved(label, &name, cx);
+        }
+        let meant = Some(self.meant_for(&[index]));
+        let had_label = self.blocked_label().is_some();
+        let generation = self.account_gen;
+        let working = self.writes.begin();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let _working = working;
+                    if !crate::blocking::set(&store, &address, !unblock)? {
+                        anyhow::bail!("That sender has no address to block.");
+                    }
+                    if unblock {
+                        return Ok(None);
+                    }
+                    // Their other threads in the inbox go too.
+                    let label = crate::blocking::label_id(&*client)?;
+                    let moved = crate::blocking::sweep(&*client, &store);
+                    Ok(Some((label, moved)))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.account_gen != generation {
+                    return;
+                }
+                match result {
+                    Err(error) => this.fail(error, cx),
+                    Ok(None) => {}
+                    Ok(Some((label, moved))) => {
+                        if !had_label {
+                            // Made just now: list it, then move the thread there.
+                            if !this.labels.iter().any(|l| l.id == label) {
+                                let made = mail::Label {
+                                    id: label.clone(),
+                                    name: crate::blocking::LABEL.into(),
+                                };
+                                this.change_labels(|labels| labels.push(made), cx);
+                            }
+                            if this.still_meant(&meant, cx) {
+                                this.block_moved(label, &name, cx);
+                            }
+                        }
+                        if moved > 0 && inbox_like(this.mailbox) && !this.fetching() {
+                            this.refresh(cx);
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Moves the open thread to Blocked. Its Undo also unblocks the sender
+    /// (`Nimbra::undo_block`); out of the inbox nothing leaves the list, so nothing to undo.
+    fn block_moved(&mut self, label: String, name: &str, cx: &mut Context<Self>) {
+        let leaves = inbox_like(self.mailbox);
+        self.move_selected(MoveTarget::Label(label), cx);
+        if leaves {
+            self.offer_undo(format!("Blocked {name}"), cx);
+        } else {
+            self.notice = Some(format!("Blocked {name}").into());
+        }
+    }
+
+    /// Undoing a move to Blocked takes the sender off the list again.
+    pub(super) fn undo_block(&mut self, index: usize, label: &str, cx: &mut Context<Self>) {
+        if self.blocked_label().as_deref() != Some(label) {
+            return;
+        }
+        let (Some(mail), Some(store)) = (self.mails.get(index), self.store.clone()) else {
+            return;
+        };
+        let address = mail.header.from.address.clone();
+        let working = self.writes.begin();
+        cx.background_executor()
+            .spawn(async move {
+                let _working = working;
+                if crate::blocking::set(&store, &address, false).is_err() {
+                    eprintln!("nimbra: could not save the blocked senders");
+                }
+            })
+            .detach();
+    }
+
+    /// Moves what blocked senders left in an account's inbox (while Nimbra was closed),
+    /// learning the senders already in its Blocked label the first time.
+    pub(super) fn sweep_blocked(&mut self, account: String, cx: &mut Context<Self>) {
+        let (Some(client), Some(store)) =
+            (self.client_for(Some(&account)), self.store_of(&account))
+        else {
+            return;
+        };
+        let generation = self.account_gen;
+        let working = self.writes.begin();
+        cx.spawn(async move |this, cx| {
+            let moved = cx
+                .background_executor()
+                .spawn(async move {
+                    let _working = working;
+                    crate::blocking::sweep(&*client, &store)
+                })
+                .await;
+            if moved > 0 {
+                this.update(cx, |this, cx| {
+                    if this.account_gen == generation
+                        && inbox_like(this.mailbox)
+                        && !this.fetching()
+                    {
+                        this.refresh(cx);
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
     /// Adds one of the user's labels to the open thread.
     pub(super) fn apply_label(&mut self, label: usize, cx: &mut Context<Self>) {
         self.menu = None;

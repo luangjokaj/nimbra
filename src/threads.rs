@@ -885,6 +885,7 @@ impl Nimbra {
         if let Some(thread) = self.mails[index].id.clone()
             && let Some(label) = self.moved.remove(&thread)
         {
+            self.undo_block(index, &label, cx);
             self.mails[index].labels.retain(|id| *id != label);
             if let Some(client) = self.connection.clone() {
                 let working = self.writes.begin();

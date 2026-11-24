@@ -409,15 +409,20 @@ impl Nimbra {
                     .collect()
             }
             Menu::More if self.is_demo() => vec![("inbox", "Mark as unread".into(), t.text2)],
-            Menu::More if self.own_servers() => vec![
-                ("inbox", "Mark as unread".into(), t.text2),
-                ("bell", "Report spam".into(), t.text2),
-            ],
-            Menu::More => vec![
-                ("inbox", "Mark as unread".into(), t.text2),
-                ("link", "Open in Gmail".into(), t.text2),
-                ("bell", "Report spam".into(), t.text2),
-            ],
+            Menu::More => {
+                let mut items = vec![("inbox", "Mark as unread".into(), t.text2)];
+                if !self.own_servers() {
+                    items.push(("link", "Open in Gmail".into(), t.text2));
+                }
+                items.push(("bell", "Report spam".into(), t.text2));
+                let block = if self.sender_blocked(self.selected) {
+                    "Unblock sender"
+                } else {
+                    "Block sender"
+                };
+                items.push(("ban", block.into(), t.text2));
+                items
+            }
             Menu::Row(index) => {
                 let Some(mail) = self.mails.get(index) else {
                     return;
@@ -667,6 +672,10 @@ impl Nimbra {
             }
             (Menu::More, 0) => self.mark_unread(cx),
             (Menu::More, 1) if !self.own_servers() => self.open_in_gmail(cx),
+            // The last one.
+            (Menu::More, index) if index == if self.own_servers() { 2 } else { 3 } => {
+                self.toggle_block(cx)
+            }
             (Menu::More, _) => self.remove_selected(mail::Change::Spam, cx),
             (Menu::From, index) => {
                 if let Some(id) = self.settings.accounts.get(index).map(|a| a.id.clone()) {

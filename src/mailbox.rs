@@ -858,15 +858,18 @@ impl Nimbra {
                     continue; // offline or signed out: try again next time
                 };
                 first = false;
-                let fresh = this
+                let (fresh, store) = this
                     .update(cx, |this, cx| {
+                        let store = this.store.clone();
                         // Switched accounts meanwhile: this feed belongs to the other one.
                         if this.account_gen != generation {
-                            return Vec::new();
+                            return (Vec::new(), store);
                         }
                         this.notify_from = Some(at);
                         let Some(changes) = changes else {
-                            return Vec::new();
+                            // First look: what blocked senders left in the inbox meanwhile.
+                            this.sweep_blocked(this.account_id.clone(), cx);
+                            return (Vec::new(), store);
                         };
                         if !changes.threads.is_empty() {
                             this.feed_changes += 1;
@@ -884,23 +887,32 @@ impl Nimbra {
                                 this.checks.quiet();
                             }
                         }
-                        changes.new_unread_inbox
+                        (changes.new_unread_inbox, store)
                     })
                     .unwrap_or_default();
                 if fresh.is_empty() {
                     continue;
                 }
-                // Sender and subject for the first few; the rest are summed up.
-                let shown: Vec<String> = fresh.iter().take(3).cloned().collect();
-                let summaries = cx
+                // Blocked senders' mail is moved away first, and never notifies.
+                let (fresh, summaries) = cx
                     .background_executor()
                     .spawn(async move {
-                        shown
+                        let fresh = match &store {
+                            Some(store) => crate::blocking::screen(&*client, store, fresh),
+                            None => fresh,
+                        };
+                        // Sender and subject for the first few; the rest are summed up.
+                        let summaries = fresh
                             .iter()
+                            .take(3)
                             .filter_map(|id| client.summary(id, false).ok())
-                            .collect::<Vec<_>>()
+                            .collect::<Vec<_>>();
+                        (fresh, summaries)
                     })
                     .await;
+                if fresh.is_empty() {
+                    continue;
+                }
                 let extra = fresh.len().saturating_sub(summaries.len());
                 this.update(cx, |this, _| {
                     if !this.settings.notifications {
@@ -981,6 +993,7 @@ impl Nimbra {
                     let checked = cx
                         .background_executor()
                         .spawn(async move {
+                            let swept = from.is_none();
                             let (at, fresh, changed) = match from {
                                 None => (client.profile()?.1, Vec::new(), false),
                                 Some(from) => match client.history(&from) {
@@ -994,6 +1007,16 @@ impl Nimbra {
                                     }
                                     Err(error) => return Err(error),
                                 },
+                            };
+                            // Blocked senders: moved away, and no notification.
+                            let fresh = match &store {
+                                Some(store) => {
+                                    if swept {
+                                        crate::blocking::sweep(&*client, store);
+                                    }
+                                    crate::blocking::screen(&*client, store, fresh)
+                                }
+                                None => fresh,
                             };
                             let unread = client
                                 .counts(&["INBOX".to_string()])
