@@ -972,13 +972,15 @@ impl Nimbra {
 /// For an account that is not shown: wakes its due snoozes (back to the inbox, unread) and
 /// sends its due scheduled messages, as kept in its own store. One set from All inboxes can
 /// be another account's: it goes through that account's connection. Runs off the main thread.
+/// Gives back the snoozes it brought back, to notify about.
 pub(super) fn carry_out_due(
     account: &str,
     store: &crate::store::Store,
     connected: &HashMap<String, Arc<mail::Client>>,
     writes: &Underway,
-) {
+) -> Vec<Snooze> {
     let now = chrono::Utc::now().timestamp_millis();
+    let mut back = Vec::new();
     let client_of = |whose: Option<&str>| connected.get(whose.unwrap_or(account));
     for snooze in store.load::<Vec<Snooze>>("snoozed").unwrap_or_default() {
         if snooze.until_ms > now {
@@ -989,13 +991,15 @@ pub(super) fn carry_out_due(
         };
         let _working = writes.begin();
         // Brought back, or not needed any more: either way it is done.
-        let done = super::threads::wake(
+        let woken = super::threads::wake(
             &**client,
             &snooze.thread_id,
             snooze.since_ms,
             snooze.no_reply,
-        )
-        .map_or_else(|error| mail::is_gone(&error), |_| true);
+        );
+        let done = woken
+            .as_ref()
+            .map_or_else(|error| mail::is_gone(error), |_| true);
         // The list as it is by now: the account may have been opened and changed meanwhile.
         if done
             && store
@@ -1008,6 +1012,9 @@ pub(super) fn carry_out_due(
         {
             eprintln!("nimbra: could not save the snoozed list");
         }
+        if matches!(woken, Ok(true)) {
+            back.push(snooze);
+        }
     }
     for item in scheduled::list(store) {
         if item.at_ms > now {
@@ -1018,4 +1025,5 @@ pub(super) fn carry_out_due(
             scheduled::send(store, &**client, &item.draft_id);
         }
     }
+    back
 }

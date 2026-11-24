@@ -1006,13 +1006,13 @@ impl Nimbra {
                                 .collect();
                             let extra = fresh.len().saturating_sub(summaries.len());
                             // Snoozes and scheduled sends kept with this account.
-                            if let Some(store) = &store {
-                                carry_out_due(&account, store, &connected, &writes);
-                            }
-                            anyhow::Ok((at, summaries, extra, changed, unread))
+                            let woken = store.as_ref().map_or_else(Vec::new, |store| {
+                                carry_out_due(&account, store, &connected, &writes)
+                            });
+                            anyhow::Ok((at, summaries, extra, changed, unread, woken))
                         })
                         .await;
-                    let Ok((at, summaries, extra, changed, unread)) = checked else {
+                    let Ok((at, summaries, extra, changed, unread, woken)) = checked else {
                         continue; // offline or signed out: next time
                     };
                     feeds.insert(id.clone(), at);
@@ -1030,6 +1030,20 @@ impl Nimbra {
                                     &format!("acct:{id}:{}", mail.id),
                                     &mail.sender,
                                     &mail.subject,
+                                    this.settings.notify_sound,
+                                );
+                            }
+                            // Back from a snooze, as when the account is the one shown.
+                            for item in &woken {
+                                let whose = item.mail.account.as_deref().unwrap_or(&id);
+                                crate::notify::show(
+                                    &format!("acct:{whose}:{}", item.thread_id),
+                                    if item.no_reply {
+                                        "No reply yet"
+                                    } else {
+                                        "Back from snooze"
+                                    },
+                                    &item.mail.subject,
                                     this.settings.notify_sound,
                                 );
                             }
