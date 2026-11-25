@@ -832,6 +832,8 @@ impl Nimbra {
     /// threads cleared in the meantime, then saves it.
     pub(super) fn install(&mut self, fresh: Vec<Mail>, cx: &mut Context<Self>) {
         let mut fresh = fresh;
+        // For the chips of other accounts' snoozed threads (All inboxes), and Snoozed.
+        self.read_snoozed_elsewhere();
         // Snoozed lists Gmail's own snoozed threads and the ones snoozed here; Reminders,
         // only the ones here.
         if matches!(self.mailbox, View::Snoozed | View::Reminders) {

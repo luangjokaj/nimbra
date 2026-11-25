@@ -392,7 +392,10 @@ impl Nimbra {
     fn row(&self, t: &Theme, i: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let m = &self.mails[i];
         // Snoozed here: a clock (a bell for a reminder) and the day it comes back.
-        let snoozed = super::threads::snooze_of(&self.snoozed, m.id.as_deref());
+        let snoozed = super::threads::snooze_of(
+            self.snoozed.iter().chain(&self.snoozed_elsewhere),
+            m.id.as_deref(),
+        );
         let picked = self.picked.contains(&i);
         let selected = i == self.selected && self.picked.len() < 2;
         let hover = t.hover;

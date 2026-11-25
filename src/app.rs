@@ -503,6 +503,9 @@ pub struct Nimbra {
     history_groups: Vec<usize>,
     /// Threads snoozed or waiting for a reply, kept on this Mac.
     snoozed: Vec<Snooze>,
+    /// The other signed-in accounts' snoozes (each with its account), for Snoozed,
+    /// Reminders and the rows' chips. Read from their stores (`read_snoozed_elsewhere`).
+    snoozed_elsewhere: Vec<Snooze>,
     /// Snoozed threads being brought back right now.
     waking: HashSet<String>,
     /// The choices in the open snooze palette.
@@ -844,6 +847,7 @@ impl Nimbra {
             picked: Default::default(),
             history_groups: Vec::new(),
             snoozed: Vec::new(),
+            snoozed_elsewhere: Vec::new(),
             waking: HashSet::new(),
             snooze_choices: Vec::new(),
             next_pages: HashMap::new(),

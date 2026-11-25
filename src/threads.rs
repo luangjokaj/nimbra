@@ -353,6 +353,7 @@ impl Nimbra {
                 if store.update("snoozed", |kept| change(kept)).is_err() {
                     eprintln!("nimbra: could not save the snoozed list");
                 }
+                self.read_snoozed_elsewhere();
             }
             _ => self.change_snoozed(change),
         }
@@ -383,22 +384,46 @@ impl Nimbra {
 
     /// The shown account's snoozes (or reminders) as rows of Snoozed (or Reminders), with
     /// the time they come back where the time they arrived would be.
-    pub(super) fn snoozed_rows(&self, reminders: bool) -> Vec<Mail> {
+    pub(super) fn snoozed_rows(&mut self, reminders: bool) -> Vec<Mail> {
+        self.read_snoozed_elsewhere();
         self.snoozed
             .iter()
-            .filter(|s| s.no_reply == reminders)
             .filter(|s| {
                 s.mail
                     .account
                     .as_deref()
                     .is_none_or(|a| a == self.account_id)
             })
+            // Every account's: one snoozed from All inboxes is kept with its own account.
+            .chain(&self.snoozed_elsewhere)
+            .filter(|s| s.no_reply == reminders)
             .map(|s| {
                 let mut mail = s.mail.clone();
                 mail.time = snooze_time(s.until_ms);
                 mail
             })
             .collect()
+    }
+
+    /// Reads the other signed-in accounts' snoozes from their stores, each marked with
+    /// its account so its row acts there.
+    pub(super) fn read_snoozed_elsewhere(&mut self) {
+        let mut found = Vec::new();
+        for (account, store) in &self.other_stores {
+            if *account == self.account_id || !self.others.contains_key(account) {
+                continue;
+            }
+            for mut snooze in store.load::<Vec<Snooze>>("snoozed").unwrap_or_default() {
+                // Kept with its own account, or with this one from All inboxes (shown here).
+                match snooze.mail.account.as_deref() {
+                    Some(owner) if owner == self.account_id => continue,
+                    Some(_) => {}
+                    None => snooze.mail.account = Some(account.clone()),
+                }
+                found.push(snooze);
+            }
+        }
+        self.snoozed_elsewhere = found;
     }
 
     /// A reply came in while a thread was snoozed: it is back in the inbox by itself (as
@@ -975,9 +1000,12 @@ pub(super) fn snooze_chip(t: &Theme, name: &'static str, when: SharedString) -> 
 }
 
 /// The snooze of the thread with this id, if one is kept here: its chip's icon and text.
-pub(super) fn snooze_of(list: &[Snooze], id: Option<&str>) -> Option<(&'static str, SharedString)> {
+pub(super) fn snooze_of<'a>(
+    list: impl IntoIterator<Item = &'a Snooze>,
+    id: Option<&str>,
+) -> Option<(&'static str, SharedString)> {
     let id = id?;
-    list.iter().find(|s| s.thread_id == id).map(|s| {
+    list.into_iter().find(|s| s.thread_id == id).map(|s| {
         (
             if s.no_reply { "bell" } else { "clock" },
             snooze_day(s.until_ms),
