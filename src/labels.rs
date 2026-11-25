@@ -432,7 +432,8 @@ impl Nimbra {
                                         cx.listener(|this, _, _, cx| this.close_new_label(cx)),
                                     ),
                             )
-                            .child(
+                            .child(crate::ui::glow(
+
                                 button(
                                     t,
                                     ButtonKind::Primary,
@@ -440,8 +441,7 @@ impl Nimbra {
                                     Some("↵"),
                                 )
                                     .id("label-create").press_soft()
-                                    .on_click(cx.listener(|this, _, _, cx| this.create_label(cx))),
-                            ),
+                                    .on_click(cx.listener(|this, _, _, cx| this.create_label(cx))), "label-create", true)),
                     ),
             )
     }

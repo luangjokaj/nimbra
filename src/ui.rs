@@ -1,7 +1,8 @@
 //! Small stateless building blocks shared by every pane.
 
 use gpui::{
-    BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point, prelude::*, px, svg,
+    AnimationExt, BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point,
+    prelude::*, px, svg,
 };
 
 use crate::theme::{MONO, Theme, Tone, c, gradient};
@@ -164,9 +165,8 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
     match kind {
         ButtonKind::Primary => base
             .bg(gradient(90., c(0x8b7cff, 1.), c(0xff7ab6, 1.)))
-            .shadow(vec![shadow(c(0x8b7cff, 0.35), 6., 18., -4.)])
-            // A brighter glow on hover.
-            .hover(|s| s.shadow(vec![shadow(c(0x8b7cff, 0.6), 8., 24., -2.)]))
+            // Brighter on hover, eased in and out by `glow`.
+            .shadow(vec![glow_shadow(0.)])
             .text_color(gpui::white())
             .child(label.to_string())
             .children(key.map(|k| {
@@ -191,6 +191,96 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
             .child(label.to_string())
             .children(key.map(|k| kbd(t, k))),
     }
+}
+
+/// The primary button's glow, from at rest (0) to hovered (1).
+fn glow_shadow(level: f32) -> BoxShadow {
+    let mix = |a: f32, b: f32| a + (b - a) * level;
+    shadow(
+        c(0x8b7cff, mix(0.35, 0.6)),
+        mix(6., 8.),
+        mix(18., 24.),
+        mix(-4., -2.),
+    )
+}
+
+/// Each primary button's glow, by key: (hovered, times it changed, level shown last).
+#[derive(Clone, Copy, Default)]
+struct Glow {
+    hovered: bool,
+    turns: usize,
+    level: f32,
+}
+
+thread_local! {
+    static GLOWS: std::cell::RefCell<std::collections::HashMap<&'static str, Glow>> =
+        Default::default();
+}
+
+const GLOW_TIME: std::time::Duration = std::time::Duration::from_millis(220);
+
+/// Tells a primary button's glow whether the pointer is on it. For a button that has its
+/// own hover listener (one per element); others use `glow`, which listens itself.
+pub fn glow_hovered(key: &'static str, hovered: bool, window: &mut gpui::Window) {
+    GLOWS.with_borrow_mut(|glows| {
+        let glow = glows.entry(key).or_default();
+        if glow.hovered != hovered {
+            glow.hovered = hovered;
+            glow.turns += 1;
+        }
+    });
+    window.refresh();
+}
+
+/// A primary button whose glow brightens and fades over a moment instead of jumping, from
+/// wherever it is when the pointer comes or goes. `key` names it for its whole life.
+pub fn glow(
+    button: Stateful<Div>,
+    key: &'static str,
+    listen: bool,
+) -> gpui::AnimationElement<Stateful<Div>> {
+    let now = GLOWS.with_borrow(|glows| glows.get(key).copied().unwrap_or_default());
+    let to = if now.hovered { 1. } else { 0. };
+    let from = now.level;
+    let button = if listen {
+        button.on_hover(move |hovered, window, _| glow_hovered(key, *hovered, window))
+    } else {
+        button
+    };
+    // A button gone while hovered (Send closes the message) is not hovered when it is back:
+    // whenever it is drawn, where the pointer really is wins.
+    let button = button.relative().child(
+        gpui::canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let hovered = now.hovered;
+                if hovered && !bounds.contains(&window.mouse_position()) {
+                    GLOWS.with_borrow_mut(|glows| {
+                        let glow = glows.entry(key).or_default();
+                        // At rest at once: nobody saw it leave.
+                        *glow = Glow {
+                            turns: glow.turns + 1,
+                            ..Glow::default()
+                        };
+                    });
+                    window.refresh();
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full(),
+    );
+    button.with_animation(
+        (key, now.turns),
+        gpui::Animation::new(GLOW_TIME).with_easing(|t| 1. - (1. - t).powi(3)),
+        move |button, delta| {
+            let level = from + (to - from) * delta;
+            GLOWS.with_borrow_mut(|glows| glows.entry(key).or_default().level = level);
+            button.shadow(vec![glow_shadow(level)])
+        },
+    )
 }
 
 /// Builds the tooltip for a button. Pass an empty `key` when there is no shortcut.

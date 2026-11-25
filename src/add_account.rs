@@ -865,7 +865,8 @@ impl Nimbra {
                                         cx.listener(|this, _, _, cx| this.close_account_sheet(cx)),
                                     ),
                             )
-                            .child(
+                            .child(crate::ui::glow(
+
                                 button(
                                     t,
                                     ButtonKind::Primary,
@@ -876,8 +877,7 @@ impl Nimbra {
                                 .press_soft()
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.account_sheet_continue(cx)),
-                                ),
-                            ),
+                                ), "account-continue", true)),
                     )
     }
 }

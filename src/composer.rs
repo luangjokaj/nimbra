@@ -2651,13 +2651,15 @@ impl Nimbra {
                                         this.toggle_menu(Menu::SendLater, window, cx)
                                     })),
                             )
-                            .child(
+                            .child(crate::ui::glow(
                                 button(t, ButtonKind::Primary, "Send", Some("⌘↵"))
                                     .id("send")
                                     .press_soft()
                                     .when(composer.sending, |d| d.opacity(0.5))
                                     .on_click(cx.listener(|this, _, _, cx| this.send_mail(cx))),
-                            ),
+                                "send",
+                                true,
+                            )),
                     ),
             )
             // Every edge and corner resizes the floating card (no visible grip).
@@ -2762,14 +2764,16 @@ impl Nimbra {
                                                     this.request_close_compose(cx)
                                                 })),
                                         )
-                                        .child(
+                                        .child(crate::ui::glow(
                                             button(t, ButtonKind::Primary, "Save draft", None)
                                                 .id("ask-save")
                                                 .press_soft()
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.answer_close_compose(true, cx)
                                                 })),
-                                        ),
+                                            "ask-save",
+                                            true,
+                                        )),
                                 ),
                         ),
                 )

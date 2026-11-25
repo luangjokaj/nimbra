@@ -2076,7 +2076,7 @@ impl Nimbra {
                     .pt(px(10.))
                     .flex()
                     .gap(px(8.))
-                    .child(
+                    .child(crate::ui::glow(
                         button(t, ButtonKind::Primary, label, None)
                             .id("status-action")
                             .press_soft()
@@ -2087,7 +2087,9 @@ impl Nimbra {
                                     this.sign_in(cx);
                                 }
                             })),
-                    )
+                        "status-action",
+                        true,
+                    ))
                     // Signed out of Gmail (or never in): any other address works too.
                     .when(self.status == Status::SignedOut && !own_servers, |d| {
                         d.child(

@@ -885,12 +885,13 @@ impl Nimbra {
                     )
                     .child(div().w(px(6.)))
                     .when(is_draft, |d| {
-                        d.child(
+                        d.child(crate::ui::glow(
                             button(t, ButtonKind::Primary, "Edit draft", None)
                                 .id("edit-draft")
                                 .press_soft()
                                 .tooltip(tip(t.dark, "Open this draft in the editor", ""))
-                                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                                    crate::ui::glow_hovered("edit-draft", *hovered, window);
                                     this.set_hint(*hovered, "Open this draft in the editor", "", cx)
                                 }))
                                 .on_click(
@@ -898,7 +899,9 @@ impl Nimbra {
                                         this.open_draft(this.selected, cx)
                                     }),
                                 ),
-                        )
+                            "edit-draft",
+                            false,
+                        ))
                         .child(div().w(px(8.)))
                     })
                     .child(div().w(px(6.)))
