@@ -10,12 +10,20 @@ use crate::settings::{MarkRead, TextSize, ThemeChoice};
 /// The app's icon on About, in points.
 const ABOUT_ICON: f32 = 96.;
 
-/// The app's icon, rendered from `assets/AppIcon.icon` (README: how to render it again).
+/// The app's icon in its light (Default) and Dark appearances, rendered from
+/// `assets/AppIcon.icon` (README: how to render them again).
 static APP_ICON: std::sync::LazyLock<std::sync::Arc<gpui::Image>> =
     std::sync::LazyLock::new(|| {
         std::sync::Arc::new(gpui::Image::from_bytes(
             gpui::ImageFormat::Png,
             include_bytes!("../assets/app-icon.png").to_vec(),
+        ))
+    });
+static APP_ICON_DARK: std::sync::LazyLock<std::sync::Arc<gpui::Image>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            include_bytes!("../assets/app-icon-dark.png").to_vec(),
         ))
     });
 
@@ -1281,7 +1289,15 @@ impl SettingsWindow {
                         // The glow follows the icon's own shape, which the image brings.
                         .rounded(px(ABOUT_ICON / 4.))
                         .shadow(vec![shadow(c(0x8b7cff, 0.45), 14., 40., -6.)])
-                        .child(gpui::img(APP_ICON.clone()).size_full()),
+                        // The icon as macOS shows it in the same appearance.
+                        .child(
+                            gpui::img(if t.dark {
+                                APP_ICON_DARK.clone()
+                            } else {
+                                APP_ICON.clone()
+                            })
+                            .size_full(),
+                        ),
                 )
                 .child(serif("Nimbra", 44., t.text))
                 .child(meta(format!("Version {}", env!("CARGO_PKG_VERSION")), t.text3))

@@ -75,7 +75,7 @@ This builds the release binary and wraps it in `Nimbra.app` with the app icon. T
   --platform macOS --rendition Default --width 512 --height 512 --scale 1
 ```
 
-Settings › About shows `assets/app-icon.png`, a render of the same file. After changing the icon, render it again with the command above, using `--output-file assets/app-icon.png --width 192 --height 192`.
+Settings › About shows `assets/app-icon.png` in light mode and `assets/app-icon-dark.png` in dark mode, renders of the same file. After changing the icon, render both again with the command above, using `--width 192 --height 192` and `--output-file assets/app-icon.png --rendition Default`, then `--output-file assets/app-icon-dark.png --rendition Dark`.
 
 Needs Xcode 26 or newer. The script signs the app with your Developer ID or Apple Development certificate if one is in the keychain (override with `NIMBRA_SIGN_IDENTITY`). Signing matters for day-to-day use: macOS ties Keychain permission to the app's signature, so an unsigned build asks for the Keychain after every rebuild. For development, `./scripts/run-dev.sh` builds, signs and runs the debug binary the same way.
 
