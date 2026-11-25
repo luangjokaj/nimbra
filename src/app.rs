@@ -592,6 +592,8 @@ pub struct Nimbra {
     snooze_alert: bool,
     /// The time a day picked in the Snooze menu's calendar comes back at (hour, minute).
     snooze_time: (u32, u32),
+    /// The day last picked in the snooze calendar, while the menu is open.
+    snooze_day: Option<chrono::NaiveDate>,
     /// NIMBRA_SCREEN=snooze opens the Snooze menu once the window is drawn, and
     /// snooze-time its calendar with the hours open (screenshots).
     snooze_on_start: Option<bool>,
@@ -909,6 +911,7 @@ impl Nimbra {
             snooze_anchor: Default::default(),
             snooze_alert: false,
             snooze_time: (9, 0),
+            snooze_day: None,
             snooze_on_start: match screen.as_str() {
                 "snooze" => Some(false),
                 "snooze-time" => Some(true),

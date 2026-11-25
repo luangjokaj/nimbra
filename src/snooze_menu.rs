@@ -15,7 +15,10 @@ const CHROME: f32 = 2. * 6. + 2.;
 const CELL: f32 = (WIDTH - 2. * 6. - 2.) / 7.;
 const CAL_HEAD: f32 = 36.;
 const CAL_DAYS: f32 = 22.;
-const CAL_FOOT: f32 = 30.;
+/// The footer with Quick times and the Snooze button.
+const CAL_FOOT: f32 = 44.;
+/// The field to type any time in, above the hours.
+const FIELD: f32 = 30.;
 /// The Time row under the calendar, and the hours it opens to.
 const TIME_ROW: f32 = 34.;
 const CHIP: f32 = 28.;
@@ -44,7 +47,11 @@ impl Mode {
                     + 6. * CELL
                     + DIVIDER
                     + TIME_ROW
-                    + if hours { TIME_GRID } else { 0. }
+                    + if hours {
+                        FIELD + CHIP_GAP + TIME_GRID
+                    } else {
+                        0.
+                    }
                     + CAL_FOOT
             }
         }
@@ -120,6 +127,61 @@ fn day_time(date: NaiveDate, (hour, minute): (u32, u32)) -> Option<chrono::DateT
     (when > Local::now()).then_some(when)
 }
 
+/// A time typed in: "4:30 PM", "4:30pm", "16:30", "430p", "4", "noon". Without AM or PM,
+/// 1 to 7 is the afternoon (nobody snoozes to 5 in the morning by typing "5"), unless it is
+/// written with a leading zero ("07:00").
+fn parse_time(text: &str) -> Option<(u32, u32)> {
+    let s: String = text
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '.')
+        .collect();
+    match s.as_str() {
+        "noon" => return Some((12, 0)),
+        "midnight" => return Some((0, 0)),
+        _ => {}
+    }
+    let (body, half) = if let Some(b) = s.strip_suffix("am").or_else(|| s.strip_suffix('a')) {
+        (b, Some(false))
+    } else if let Some(b) = s.strip_suffix("pm").or_else(|| s.strip_suffix('p')) {
+        (b, Some(true))
+    } else {
+        (s.as_str(), None)
+    };
+    if body.is_empty() || !body.chars().all(|c| c.is_ascii_digit() || c == ':') {
+        return None;
+    }
+    let (hour, minute): (&str, &str) = match body.split_once(':') {
+        Some(split) => split,
+        None if body.len() <= 2 => (body, "0"),
+        None if body.len() <= 4 => body.split_at(body.len() - 2),
+        None => return None,
+    };
+    let (h, m): (u32, u32) = (hour.parse().ok()?, minute.parse().ok()?);
+    if m > 59 || hour.is_empty() {
+        return None;
+    }
+    let h = match half {
+        Some(pm) if (1..=12).contains(&h) => h % 12 + if pm { 12 } else { 0 },
+        Some(_) => return None,
+        None if (1..=7).contains(&h) && !hour.starts_with('0') => h + 12,
+        None if h <= 23 => h,
+        None => return None,
+    };
+    Some((h, m))
+}
+
+/// The day the calendar starts on: today if the time is still ahead today, else tomorrow.
+fn first_open_day(time: (u32, u32)) -> NaiveDate {
+    let today = Local::now().date_naive();
+    if day_time(today, time).is_some() {
+        today
+    } else {
+        today + Days::days(1)
+    }
+}
+
 /// "9:00 AM".
 fn time_text((hour, minute): (u32, u32)) -> String {
     chrono::NaiveTime::from_hms_opt(hour, minute, 0)
@@ -135,6 +197,13 @@ pub(super) struct SnoozeMenu {
     alert: bool,
     /// The time a day picked in the calendar comes back at (hour, minute).
     time: (u32, u32),
+    /// The day picked in the calendar; the Snooze button under it confirms.
+    day: NaiveDate,
+    /// Where any time can be typed (while the hours are open).
+    typed: gpui::Entity<crate::input::TextInput>,
+    /// What is typed there is not a time.
+    typed_bad: bool,
+    _typing: gpui::Subscription,
     /// The row lit for the keyboard: the times, then Pick a date, then the switch.
     sel: usize,
     dark: bool,
@@ -171,6 +240,52 @@ impl SnoozeMenu {
                 owner.open_snooze_window(origin, Mode::Calendar(month, hours), cx)
             })
             .ok();
+    }
+
+    /// The moment the calendar's day and time make, if it is still ahead.
+    fn chosen(&self) -> Option<chrono::DateTime<Local>> {
+        day_time(self.day, self.time)
+    }
+
+    /// Snoozes until the day and time picked in the calendar.
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(when) = self.chosen() else {
+            return;
+        };
+        let picked = SnoozeChoice {
+            icon: "calendar",
+            label: self.day.format("%A, %B %-d").to_string(),
+            hint: when_text(when),
+            header: None,
+            until_ms: when.timestamp_millis(),
+            no_reply: false,
+        };
+        self.pick(picked, window, cx);
+    }
+
+    /// A day clicked in the calendar: picked, not yet snoozed.
+    fn set_day(&mut self, day: NaiveDate, cx: &mut Context<Self>) {
+        self.day = day;
+        self.owner
+            .update(cx, |owner, _| owner.snooze_day = Some(day))
+            .ok();
+        cx.notify();
+    }
+
+    /// Something typed in the time field: the time follows it while it reads as one.
+    fn typed_time(&mut self, cx: &mut Context<Self>) {
+        let text = self.typed.read(cx).text();
+        match parse_time(&text) {
+            Some(time) => {
+                self.time = time;
+                self.typed_bad = false;
+                self.owner
+                    .update(cx, |owner, _| owner.snooze_time = time)
+                    .ok();
+            }
+            None => self.typed_bad = !text.trim().is_empty(),
+        }
+        cx.notify();
     }
 
     /// A time picked under the calendar: kept for next time, and the hours fold away.
@@ -237,7 +352,12 @@ impl SnoozeMenu {
                 cx.notify();
             }
             (Mode::List, "enter" | "space") => self.activate(self.sel, window, cx),
-            (Mode::Calendar(..), "backspace") => self.back(window, cx),
+            (Mode::Calendar(..), "backspace")
+                if !self.typed.focus_handle(cx).is_focused(window) =>
+            {
+                self.back(window, cx)
+            }
+            (Mode::Calendar(..), "enter") => self.confirm(window, cx),
             _ => {}
         }
     }
@@ -366,9 +486,9 @@ impl SnoozeMenu {
         let cells = (0..42).map(|i| {
             let date = start + Days::days(i);
             let inside = date.month() == first.month();
-            let when = day_time(date, time);
-            let open = when.is_some();
+            let open = date >= today;
             let is_today = date == today;
+            let picked_day = date == self.day;
             let mut cell = div()
                 .id(("snooze-day", i as usize))
                 .flex()
@@ -383,8 +503,13 @@ impl SnoozeMenu {
                         .justify_center()
                         .size(px(30.))
                         .rounded(px(15.))
-                        .when(is_today, |d| d.border_1().border_color(t.violet))
-                        .text_color(if !open {
+                        .when(is_today && !picked_day, |d| {
+                            d.border_1().border_color(t.violet)
+                        })
+                        .when(picked_day, |d| d.bg(t.violet))
+                        .text_color(if picked_day {
+                            gpui::white()
+                        } else if !open {
                             t.faint
                         } else if inside {
                             t.text
@@ -393,22 +518,13 @@ impl SnoozeMenu {
                         })
                         .child(date.day().to_string()),
                 );
-            if let Some(when) = when {
-                let label = date.format("%A, %B %-d").to_string();
-                let picked = SnoozeChoice {
-                    icon: "calendar",
-                    label,
-                    hint: when_text(when),
-                    header: None,
-                    until_ms: when.timestamp_millis(),
-                    no_reply: false,
-                };
+            if open {
                 cell = cell
                     .cursor_pointer()
-                    .hover(move |s| s.bg(hover).rounded(px(8.)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.pick(picked.clone(), window, cx)
-                    }));
+                    .when(!picked_day, |d| {
+                        d.hover(move |s| s.bg(hover).rounded(px(8.)))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_day(date, cx)));
             }
             cell
         });
@@ -487,6 +603,26 @@ impl SnoozeMenu {
                 d.child(
                     div()
                         .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(8.))
+                        .h(px(FIELD))
+                        .mt(px(CHIP_GAP))
+                        .mx(px(CHIP_INSET))
+                        .px(px(10.))
+                        .rounded(px(7.))
+                        .border_1()
+                        .border_color(if self.typed_bad {
+                            t.rose
+                        } else {
+                            t.border_strong
+                        })
+                        .child(div().flex_1().child(self.typed.clone()))
+                        .when(self.typed_bad, |d| d.child(meta("Not a time", t.rose))),
+                )
+                .child(
+                    div()
+                        .flex()
                         .flex_wrap()
                         .flex_none()
                         .gap(px(CHIP_GAP))
@@ -545,8 +681,20 @@ impl SnoozeMenu {
                             .child(meta("Quick times", t.text2))
                             .on_click(cx.listener(|this, _, window, cx| this.back(window, cx))),
                     )
-                    .when(self.alert, |d| {
-                        d.child(meta("Only if nobody replies", t.text3))
+                    .child({
+                        let ready = self.chosen().is_some();
+                        let label = if ready { "Snooze" } else { "Pick a later time" };
+                        let button = button(t, ButtonKind::Primary, label, Some("↵"))
+                            .text_size(px(12.))
+                            .id("snooze-confirm")
+                            .press_soft()
+                            .when(!ready, |d| d.opacity(0.5).cursor_default())
+                            .when(ready, |d| {
+                                d.on_click(
+                                    cx.listener(|this, _, window, cx| this.confirm(window, cx)),
+                                )
+                            });
+                        crate::ui::glow(button, "snooze-confirm", true)
                     }),
             )
     }
@@ -619,6 +767,8 @@ impl Nimbra {
             return;
         }
         self.palette_for = Some(self.meant_for(&self.targets()));
+        // A fresh menu starts from the first open day again.
+        self.snooze_day = None;
         let viewport = window.viewport_size();
         let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
         let height = Mode::List.height(quick_times().len());
@@ -661,6 +811,24 @@ impl Nimbra {
             self.snooze_alert,
             self.snooze_time,
         );
+        let day = self
+            .snooze_day
+            .filter(|d| *d >= Local::now().date_naive())
+            .unwrap_or_else(|| first_open_day(time));
+        // Kept on screen as it grows (the hours open downwards).
+        let origin = match cx
+            .displays()
+            .into_iter()
+            .map(|d| d.bounds())
+            .find(|b| b.contains(&origin))
+        {
+            Some(screen) => {
+                let bottom = screen.bottom() - bounds.size.height - px(8.);
+                gpui::point(origin.x, origin.y.min(bottom).max(screen.top()))
+            }
+            None => origin,
+        };
+        let bounds = gpui::Bounds::new(origin, bounds.size);
         let opened = cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
@@ -706,13 +874,42 @@ impl Nimbra {
                     })
                     .detach();
                     let focus = cx.focus_handle();
-                    window.focus(&focus);
+                    let t = if dark { Theme::dark() } else { Theme::light() };
+                    let typed = cx.new(|cx| {
+                        crate::input::TextInput::new(
+                            cx,
+                            "Any time, like 4:45 PM",
+                            t.faint,
+                            t.violet,
+                        )
+                    });
+                    let _typing = cx.subscribe_in(
+                        &typed,
+                        window,
+                        |this: &mut SnoozeMenu, _, event: &crate::input::InputEvent, window, cx| {
+                            match event {
+                                crate::input::InputEvent::Changed => this.typed_time(cx),
+                                crate::input::InputEvent::Enter => this.confirm(window, cx),
+                                _ => {}
+                            }
+                        },
+                    );
+                    // With the hours open, typing goes straight to the time.
+                    if matches!(mode, Mode::Calendar(_, true)) {
+                        window.focus(&typed.focus_handle(cx));
+                    } else {
+                        window.focus(&focus);
+                    }
                     SnoozeMenu {
                         owner,
                         mode,
                         choices,
                         alert,
                         time,
+                        day,
+                        typed,
+                        typed_bad: false,
+                        _typing,
                         sel: 0,
                         dark,
                         focus,
@@ -782,5 +979,25 @@ mod tests {
         // Today at a time already gone.
         assert!(day_time(today, (0, 0)).is_none());
         assert_eq!(time_text((21, 0)), "9:00 PM");
+    }
+
+    #[test]
+    fn any_time_can_be_typed() {
+        assert_eq!(parse_time("4:30 PM"), Some((16, 30)));
+        assert_eq!(parse_time("4:30pm"), Some((16, 30)));
+        assert_eq!(parse_time(" 9:15 a.m. "), Some((9, 15)));
+        assert_eq!(parse_time("16:45"), Some((16, 45)));
+        assert_eq!(parse_time("430p"), Some((16, 30)));
+        assert_eq!(parse_time("1015"), Some((10, 15)));
+        assert_eq!(parse_time("12am"), Some((0, 0)));
+        assert_eq!(parse_time("12 pm"), Some((12, 0)));
+        assert_eq!(parse_time("noon"), Some((12, 0)));
+        // Without AM or PM, 1 to 7 is the afternoon; a leading zero is the morning.
+        assert_eq!(parse_time("5"), Some((17, 0)));
+        assert_eq!(parse_time("07:00"), Some((7, 0)));
+        assert_eq!(parse_time("8:20"), Some((8, 20)));
+        for bad in ["", "25:00", "4:60", "13pm", "soon", "4:3:0", "12345"] {
+            assert_eq!(parse_time(bad), None, "{bad}");
+        }
     }
 }
