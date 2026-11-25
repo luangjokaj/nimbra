@@ -4,7 +4,7 @@ A mail client concept built with [GPUI](https://www.gpui.rs). It runs on built-i
 
 ## Design
 
-The design reference is the Figma file: [Mail Client, Nimbra concept](https://www.figma.com/design/s6tsR2l2X4MKmoA1dNlm4I/Mail-Client?node-id=7313-2). It holds the screens (inbox in dark and light, command palette, Inbox Zero), the colour variables and text styles, and the component kit the app's look is based on.
+The design reference is the Figma file: [Mail Client, Nimbra concept](https://www.figma.com/design/s6tsR2l2X4MKmoA1dNlm4I/Mail-Client?node-id=7313-2). Its “Nimbra — App UI” page holds the screens as built (the inbox in dark and light, the Snooze menu, Compose, Inbox zero), the colour variables and text styles, and the component kit; “Brand · App icon” holds the icon.
 
 ## Connect Gmail
 
@@ -67,7 +67,7 @@ GPUI is built with the `runtime_shaders` feature, so Xcode's Metal toolchain is 
 open target/bundle/Nimbra.app
 ```
 
-This builds the release binary and wraps it in `Nimbra.app` with the app icon. The icon source is `assets/AppIcon.icon`, an Icon Composer document (SVG layers plus `icon.json`); the same file works for iOS. Its layers are designed in the “Mail Client” Figma file, on the Thumbnail page beside the covers (one 1024×1024 frame per layer, inside the Light, Eclipse and Flap groups) and exported from there as SVG into `assets/AppIcon.icon/Assets`. `icon.json` gives it all of macOS's appearances: Default, Dark (a deeper background, dimmer glow), and Clear and Tinted (the glow and the dark disc hidden, so the mark is a ring over an envelope flap). Layers that use glass must be filled shapes: outline strokes in Figma before exporting, because an open stroke is filled as a closed shape. To check every appearance, use `--rendition` with `Default`, `Dark`, `ClearLight`, `ClearDark`, `TintedLight` or `TintedDark`. Open it in Icon Composer to tune it, or render a preview from the command line:
+This builds the release binary and wraps it in `Nimbra.app` with the app icon. The icon source is `assets/AppIcon.icon`, an Icon Composer document (SVG layers plus `icon.json`); the same file works for iOS. Its layers are designed in the “Mail Client” Figma file, on the “Brand · App icon” page, in the “Icon Composer layers · 1024” board (one 1024×1024 frame per layer, inside the Light, Eclipse and Flap groups; the AppIcon components below it are the same art for mock-ups) and exported from there as SVG into `assets/AppIcon.icon/Assets`. `icon.json` gives it all of macOS's appearances: Default is the light icon (a cream-to-lavender background, the flap and disc in ink, a softer glow), Dark is the violet-to-black one with the paper-white flap, and Clear and Tinted (the glow and the dark disc hidden, so the mark is a ring over an envelope flap). Layers that use glass must be filled shapes: outline strokes in Figma before exporting, because an open stroke is filled as a closed shape. To check every appearance, use `--rendition` with `Default`, `Dark`, `ClearLight`, `ClearDark`, `TintedLight` or `TintedDark`. Open it in Icon Composer to tune it, or render a preview from the command line:
 
 ```sh
 "/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool" \
