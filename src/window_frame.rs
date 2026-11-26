@@ -187,6 +187,70 @@ mod tests {
         );
     }
 
+    /// AppKit's frames: bottom-left origin at the primary display's bottom-left, y upwards.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Cocoa {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    }
+
+    /// What GPUI 0.2.2 reports for a window (`MacWindow::bounds`, platform/mac/window.rs).
+    fn gpui_bounds(window: Cocoa, screen: Cocoa) -> Frame {
+        let flipped = screen.height - window.y - window.height;
+        frame(
+            window.x - screen.x,
+            flipped + screen.y,
+            window.width,
+            window.height,
+        )
+    }
+
+    /// Where GPUI 0.2.2 opens a window it is given `bounds` and a display for
+    /// (`MacWindow::open`, then `setFrameTopLeftPoint`).
+    fn gpui_open(bounds: Frame, screen: Cocoa) -> Cocoa {
+        let top = screen.y + (screen.height - bounds.y);
+        Cocoa {
+            x: screen.x + bounds.x,
+            y: top - bounds.height,
+            width: bounds.width,
+            height: bounds.height,
+        }
+    }
+
+    #[test]
+    fn a_frame_on_a_display_above_or_below_the_main_one_opens_where_it_was() {
+        for screen in [
+            Cocoa {
+                x: 0.,
+                y: 1080.,
+                width: 2560.,
+                height: 1440.,
+            },
+            Cocoa {
+                x: -400.,
+                y: -900.,
+                width: 1920.,
+                height: 900.,
+            },
+        ] {
+            let window = Cocoa {
+                x: screen.x + 300.,
+                y: screen.y + 200.,
+                width: 1200.,
+                height: 600.,
+            };
+            let saved = gpui_bounds(window, screen);
+            assert_eq!((saved.x, saved.y), (300., screen.height - 200. - 600.));
+            // Clamped against the display as `main` does: its size, at (0, 0).
+            let whole = frame(0., 0., screen.width, screen.height);
+            let placed = clamp(saved, &[whole], (400., 300.)).unwrap();
+            assert_eq!(placed, saved);
+            assert_eq!(gpui_open(placed, screen), window);
+        }
+    }
+
     #[test]
     fn being_maximized_is_kept() {
         let display = frame(0., 0., 1920., 1080.);

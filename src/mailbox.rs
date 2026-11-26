@@ -81,6 +81,7 @@ impl Nimbra {
                 .inboxes_saved_empty
                 .get(&account)
                 .copied()
+                .or_else(|| (account == self.account_id).then_some(self.inbox_saved_empty))
                 .unwrap_or(!empty);
             let Some(store) = self.store_of(&account).filter(|_| saved != empty) else {
                 self.inboxes_saved_empty.insert(account, saved);
@@ -652,7 +653,11 @@ impl Nimbra {
                                 !Job::queued(&account, &client, &store, mail.clone())
                                     .is_ok_and(|job| job.keep())
                             });
-                            if store.save("outbox", &older).is_err() {
+                            // Only the mail: the changes may have moved on meanwhile.
+                            let left = older.mail;
+                            let moved =
+                                store.update("outbox", |outbox: &mut Outbox| outbox.mail = left);
+                            if moved.is_err() {
                                 eprintln!("nimbra: could not move the offline queue over");
                             }
                         }
@@ -1448,6 +1453,7 @@ impl Nimbra {
             if let Some(store) = &self.store {
                 store.clear_soon();
             }
+            self.inboxes_saved_empty.remove(&self.account_id);
             self.cache.clear();
             self.outbox = Outbox::default();
             self.outbox_pending = None;
@@ -1613,6 +1619,25 @@ impl Nimbra {
                 self.outbox.changes.push((id, change));
                 self.save_outbox();
                 self.went_offline(cx);
+                return;
+            }
+            // What waits in its store is not known until that is read (`outbox_read`).
+            if self.outbox_pending.is_some()
+                && let Some(store) = &self.store
+            {
+                let read = store.read_soon::<Outbox>("outbox");
+                cx.spawn(async move |this, cx| {
+                    read.await.ok();
+                    this.update(cx, |this, cx| {
+                        if this.outbox_pending.is_some() {
+                            this.start_step(client, account, id, change, removed, cx);
+                        } else {
+                            this.sync_thread(client, account, id, change, removed, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
                 return;
             }
         } else if self.away_waiting.contains(&account)

@@ -1103,7 +1103,10 @@ impl Nimbra {
             this.status = Status::Loading;
             this.checks.start(View::Inbox, "");
         }
-        cx.background_spawn(async { forget_previews() }).detach();
+        // Listed before a preview can be made, so that none made since is removed.
+        let previews = previews_now();
+        cx.background_spawn(async move { remove_previews(previews) })
+            .detach();
         this.watch_for_mail(cx);
         this.watch_other_accounts(cx);
         this.watch_system(cx);
@@ -1718,6 +1721,7 @@ impl Nimbra {
             // Whoever signs in next must not send this account's mail.
             self.outbox = Outbox::default();
             self.outbox_pending = None;
+            self.inboxes_saved_empty.remove(&self.account_id);
             let shown = self.account_id.clone();
             self.forget_photo(&shown);
             self.abandon_sends(&shown);
@@ -1728,7 +1732,7 @@ impl Nimbra {
             let account = self.account_id.clone();
             std::thread::spawn(move || {
                 crate::store::wipe(&account);
-                forget_previews();
+                forget_previews(&account);
             });
             self.cache.clear();
             self.mails.clear();

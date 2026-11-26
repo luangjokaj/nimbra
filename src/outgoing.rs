@@ -710,7 +710,9 @@ impl Nimbra {
             .filter(|step| self.keeps(&step.account))
             .map(|step| (of(&step.account), step))
             .collect();
-        let queued = (self.store.is_none()
+        // Not in the store yet: it has none, or what is here waits for its queue to be read
+        // (`outbox_read`), and goes after that.
+        let queued = ((self.store.is_none() || self.outbox_pending.is_some())
             && !self.outbox.changes.is_empty()
             && self.keeps(&self.account_id))
         .then(|| of(&self.account_id));

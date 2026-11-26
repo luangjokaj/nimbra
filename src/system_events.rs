@@ -155,7 +155,10 @@ impl Nimbra {
         cx.spawn(async move |this, cx| {
             while let Some(event) = events.next().await {
                 let shows = match &event {
-                    Event::OpenUrls(_) | Event::Mailto { .. } | Event::QuitPutOff => true,
+                    Event::OpenUrls(_) | Event::QuitPutOff => true,
+                    Event::Mailto { window, .. } => this
+                        .read_with(cx, |this, cx| this.message_window_of(*window, cx).is_none())
+                        .unwrap_or(true),
                     Event::Notification { action, .. } => *action == NoteAction::Open,
                     _ => false,
                 };
@@ -179,16 +182,24 @@ impl Nimbra {
             Event::OpenUrls(urls) => {
                 // One composer at a time: the first link is the one opened.
                 if let Some(link) = urls.into_iter().find(|url| crate::mailto::is_mailto(url)) {
-                    self.open_mailto(&link, None, cx);
+                    self.open_mailto(&link, None, None, cx);
                 }
             }
-            Event::Mailto { link, account } => {
-                // Unsaid, it is the open message's account.
-                let account = account.or_else(|| {
-                    let open = self.mails.get(self.selected)?;
-                    Some(self.account_of(open).to_string())
-                });
-                self.open_mailto(&link, account, cx)
+            Event::Mailto {
+                link,
+                account,
+                window,
+            } => {
+                // Written in the message window it was clicked in, if it was.
+                let hosted = self.message_window_of(window, cx);
+                // Unsaid, it is that window's account, or the open message's.
+                let account = account
+                    .or_else(|| hosted.as_ref().map(|(_, account)| account.clone()))
+                    .or_else(|| {
+                        let open = self.mails.get(self.selected)?;
+                        Some(self.account_of(open).to_string())
+                    });
+                self.open_mailto(&link, account, hosted.map(|(host, _)| host), cx)
             }
             Event::Notification {
                 account,
@@ -202,16 +213,37 @@ impl Nimbra {
             Event::Woke | Event::Online => self.check_when_settled(cx),
             Event::DisplayOptions => cx.refresh_windows(),
             Event::Appearance => self.apply_theme(cx),
-            Event::BadgeSetting => self.update_badge(),
+            // Settings says when macOS has turned these off.
+            Event::BadgeSetting => {
+                self.update_badge();
+                cx.notify();
+            }
         }
     }
 
+    /// The open message window `window` is, and its account.
+    fn message_window_of(
+        &self,
+        window: Option<gpui::AnyWindowHandle>,
+        cx: &App,
+    ) -> Option<(gpui::AnyWindowHandle, String)> {
+        let window = window?;
+        let handle = self
+            .message_windows
+            .iter()
+            .find(|handle| gpui::AnyWindowHandle::from(**handle) == window)?;
+        let account = handle.read(cx).ok()?.account().to_string();
+        Some((window, account))
+    }
+
     /// A `mailto:` link: a new message, filled in as it asks, never sent by itself. From
-    /// mail, it is written from the account the mail is in; from elsewhere, the default.
+    /// mail, it is written from the account the mail is in, in the window it was clicked in
+    /// (`host`; `None` is the main window); from elsewhere, the default.
     pub(super) fn open_mailto(
         &mut self,
         link: &str,
         account: Option<String>,
+        host: Option<gpui::AnyWindowHandle>,
         cx: &mut Context<Self>,
     ) {
         let Some(mail) = crate::mailto::parse(link) else {
@@ -227,8 +259,19 @@ impl Nimbra {
             cx.notify();
             return;
         }
-        self.leave_sidebar(cx);
+        if host.is_none() {
+            self.leave_sidebar(cx);
+        }
         self.open_compose_from(ComposeKind::New, None, cx);
+        if let Some(composer) = &mut self.compose
+            && host.is_some()
+        {
+            // Floating over the message, as a reply there is.
+            composer.full = false;
+            composer.position = None;
+            self.compose_host = host;
+            self.compose_detached = false;
+        }
         let account = account.filter(|a| self.client_for(Some(a)).is_some());
         let editor_focus = self.editor_focus.clone();
         let Some(composer) = &mut self.compose else {
