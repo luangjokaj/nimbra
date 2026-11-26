@@ -1,5 +1,15 @@
 # Nimbra changelog
 
+## [Unreleased]
+
+### New
+- **Check for Updates.** In the Nimbra menu, and in Settings › About with the update's status and a Restart button once one is ready.
+- **A clearer reading toolbar.** Done, Snooze, Reply and Forward as words on the left; star, label, move, trash and more on the right. Reply all and Show original are in the more menu (and A and V). A message in its own window has the same look.
+- **A new thought every day.** Inbox Zero has 365 lines now, one for each day of the year: some quiet, some silly, and some famous quotes, with their authors set apart under a small "For today" label.
+
+### Changed
+- **About is simpler.** Check for updates and nimbra.me; the shortcuts are in Settings › Shortcuts and on ?.
+
 ## [0.1.1] - 2026-11-26
 
 Still an alpha. Thanks for trying it.

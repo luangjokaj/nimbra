@@ -7,7 +7,8 @@
 #
 # In order, stopping at the first problem:
 #   1. checks: on an up-to-date, clean main, CI green, the version new, gh and the notary ready
-#   2. CHANGELOG.md: uses its section for <version>, or drafts one from the commits since
+#   2. CHANGELOG.md: uses its section for <version>, or turns its Unreleased section into
+#      one, or drafts one from the commits since
 #      the last release (feat → New, fix/perf → Fixed) for you to review
 #   3. sets the version in Cargo.toml and Cargo.lock
 #   4. builds Nimbra.app, signs it for distribution, notarizes and staples it
@@ -84,6 +85,18 @@ echo "Releasing $TAG (last release: ${LAST_TAG:-none})"
 
 # 2. The changelog.
 say "Changelog"
+# What was written under Unreleased as it landed becomes this version's notes.
+if ! grep -q "^## \[$VERSION\]" CHANGELOG.md && grep -q "^## \[Unreleased\]" CHANGELOG.md; then
+  python3 - "$VERSION" <<'PY'
+import datetime, sys
+text = open("CHANGELOG.md").read()
+today = datetime.date.today().isoformat()
+open("CHANGELOG.md", "w").write(
+    text.replace("## [Unreleased]", f"## [{sys.argv[1]}] - {today}", 1)
+)
+PY
+  echo "Turned Unreleased into the $VERSION section of CHANGELOG.md."
+fi
 if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
   python3 - "$VERSION" "$LAST_TAG" <<'PY'
 import datetime, re, subprocess, sys

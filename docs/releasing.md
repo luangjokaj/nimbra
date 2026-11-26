@@ -67,6 +67,12 @@ Notarizing takes a minute or two per upload, so a whole release takes about five
 does steps 1 to 5 and stops: you get the notarized disk image in `dist/` to open and test, and nothing is committed,
 tagged or published. `--skip-ci` skips the CI check, for when CI is down and you've run the checks yourself.
 
+### The changelog
+
+Write each user-facing change under `## [Unreleased]` at the top of `CHANGELOG.md` as it lands. The release turns
+that section into `## [<version>] - <date>` and uses it as the release notes; without one it drafts the notes from the
+`feat`, `fix` and `perf` commits since the last release, for you to review.
+
 ### Alpha and beta
 
 ```sh
