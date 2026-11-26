@@ -125,6 +125,13 @@ pub fn badges_allowed() -> bool {
     BADGES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Whether macOS lets Nimbra show notifications, as last read; like `BADGES`.
+static ALERTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn alerts_allowed() -> bool {
+    ALERTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Logs (to stderr) whether macOS currently allows this app to notify. Diagnostic only:
 /// prints a status number, never any mail content.
 pub fn log_permission() {
@@ -165,7 +172,10 @@ fn read_settings(log: bool) {
             eprintln!("nimbra: notification permission status={status} alerts={alert}");
         }
         let allowed = badge != 1;
-        if BADGES.swap(allowed, std::sync::atomic::Ordering::Relaxed) != allowed {
+        let alerts = status != 1 && alert != 1;
+        let badges_changed = BADGES.swap(allowed, std::sync::atomic::Ordering::Relaxed) != allowed;
+        let alerts_changed = ALERTS.swap(alerts, std::sync::atomic::Ordering::Relaxed) != alerts;
+        if badges_changed || alerts_changed {
             crate::integration::post(crate::integration::Event::BadgeSetting);
         }
     })
