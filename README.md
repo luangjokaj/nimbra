@@ -1,12 +1,76 @@
-# Nimbra
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/icon-dark.png" />
+    <img src=".github/assets/icon-light.png" alt="Nimbra" width="128" height="128" />
+  </picture>
 
-A mail client concept built with [GPUI](https://www.gpui.rs). It runs on built-in sample data, or on a real Gmail inbox once you add an OAuth client.
+  <h1>Nimbra</h1>
 
-## Design
+  <p><strong>Blazing fast mail. No bloat.</strong></p>
 
-The design reference is the Figma file: [Mail Client, Nimbra concept](https://www.figma.com/design/s6tsR2l2X4MKmoA1dNlm4I/Mail-Client?node-id=7313-2). Its “Nimbra — App UI” page holds the screens as built (the inbox in dark and light, the Snooze menu, Compose, Inbox zero), the colour variables and text styles, and the component kit; “Brand · App icon” holds the icon.
+  <p>
+    A native email client for macOS, written in Rust and drawn on the GPU with <a href="https://www.gpui.rs">GPUI</a>.<br />
+    Every action is one key, your mail stays on your Mac, and there is nothing in it you didn’t ask for.
+  </p>
 
-## Connect Gmail
+  <p>
+    <img src="https://img.shields.io/badge/macOS-26%2B-black?style=flat&logo=apple" alt="macOS 26 or newer" />
+    <img src="https://img.shields.io/badge/Rust-2024-b7410e?style=flat&logo=rust" alt="Rust" />
+    <img src="https://img.shields.io/badge/UI-GPUI-8b7cff?style=flat" alt="GPUI" />
+    <img src="https://img.shields.io/badge/mail-Gmail%20%C2%B7%20IMAP-555?style=flat" alt="Gmail and IMAP" />
+  </p>
+
+  <p>
+    <a href="#features">Features</a> ·
+    <a href="#get-started">Get started</a> ·
+    <a href="#connect-your-mail">Connect your mail</a> ·
+    <a href="#keys">Keys</a> ·
+    <a href="#privacy-and-security">Privacy</a> ·
+    <a href="#development">Development</a>
+  </p>
+</div>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/showcase-dark.png" />
+    <img src=".github/assets/showcase-light.png" alt="Nimbra's inbox: the sidebar with the split inbox, mailboxes and labels, the thread list, and an open email." width="100%" />
+  </picture>
+</p>
+
+## Features
+
+- **Fast by nature.** Native Rust, drawn on the GPU, no Electron. Mailboxes open from an encrypted local store and refresh in the background, so the app opens straight into your mail.
+- **One key for everything.** `E` done, `H` snooze, `R` reply, `S` star, `/` search, `Z` undo. Hints show the key only while it would do something, and `?` lists them all.
+- **Split inbox.** Important, Team, Calendar, Newsletters and Other, plus Starred, Snoozed, Reminders, Drafts, Sent, Done and your labels.
+- **Snooze and reminders.** Quick times, or any day and time from the calendar; “Only if nobody replies” turns a snooze into a reminder. Works for Gmail and IMAP.
+- **Block senders.** Their mail goes straight to a Blocked label and never notifies. It uses the same label as Spark, so a list kept there carries on.
+- **Every account in one place.** Several Gmail and IMAP accounts, All inboxes merged newest first, and replies that go out from the right address.
+- **Writing that gets out of the way.** A formatted editor, address suggestions, attachments by drag and drop, drafts that save themselves, undo send and send later.
+- **Works offline.** Archive, star, read and send while offline; Nimbra sends it all once it can.
+- **Light and dark,** with emails darkened to match in dark mode, and an app icon with every macOS appearance (light, dark, clear and tinted).
+
+## Get started
+
+```sh
+cargo run
+```
+
+Without an account set up, or with `NIMBRA_DEMO=1`, Nimbra runs on built-in sample data and never touches the network.
+
+To build the Mac app:
+
+```sh
+./scripts/bundle-macos.sh
+open target/bundle/Nimbra.app
+```
+
+This builds the release binary and wraps it in `Nimbra.app` with the app icon. It needs Xcode 26 or newer. The script signs the app with your Developer ID or Apple Development certificate if one is in the keychain (override with `NIMBRA_SIGN_IDENTITY`). Signing matters for day-to-day use: macOS ties Keychain permission to the app's signature, so an unsigned build asks for the Keychain after every rebuild. For development, `./scripts/run-dev.sh` builds, signs and runs the debug binary the same way.
+
+GPUI is built with the `runtime_shaders` feature, so Xcode's Metal toolchain is not required.
+
+## Connect your mail
+
+### Gmail
 
 1. In Google Cloud Console, create a project, enable the Gmail API, and create an OAuth client of type "Desktop app". Keep the consent screen in Testing mode and add yourself as a test user.
 2. Put the client in `~/.config/nimbra/oauth.env` (mode 600), never in the repo:
@@ -18,73 +82,30 @@ The design reference is the Figma file: [Mail Client, Nimbra concept](https://ww
 
 3. `cargo run`, then click **Connect Gmail**. Google opens in your browser.
 
-What it does with your mailbox:
+Nimbra asks for the `gmail.modify` scope only. It covers reading, archiving, labelling and sending; it does not allow permanent deletion (the first permanent delete in Trash asks Google for that permission, and every one asks for confirmation). Nimbra sends only when you press Send. Signing in again takes only that same Google account: another one picked in the browser is refused before anything is saved.
 
-- Asks for the `gmail.modify` scope only. That scope covers reading, archiving, labelling and sending; it does not allow permanent deletion. Nimbra sends only when you press Send.
-- Lists the 30 newest inbox threads and draws each message natively: headings, bold, links, lists, quotes and code. Scripts, styles and forms are dropped.
-- HTML mail opens in its **original formatting** by default; `V` switches to the native reader view and back. The original view displays the email's own HTML in a system web view with the sender's scripts off, navigation blocked, and remote scripts, frames, fonts and forms blocked by a content security policy. Remote images are shown by default in this view (senders can then tell the mail was opened); **Block images** turns them off for the open thread. Links open in your browser, and only when you click them: mail that tries to send you somewhere by itself (a meta refresh) is stopped. In dark theme, light emails get a dark page and light text, with pictures and brand colours kept; Nimbra's own script does this in an isolated WebKit world, and **Settings › Reading › Darken emails in dark theme** turns it off (on by default). Printing is always light. macOS and Windows only for now; on Windows emails are not darkened, and there is no Windows build yet: its click check compiles but has never run.
-- Remote images stay hidden until you click **Load images** on a message. Tracking pixels are never loaded.
-- Links open in your browser, and only `http`, `https` and `mailto` links are clickable.
-- The sidebar switches between Inbox, Gmail's categories (Primary, Updates, Promotions, Social), Starred, Snoozed, Drafts, Sent, Done (Gmail's archive) and your own labels, 30 newest threads each.
-- Opening a thread marks it read. `S` stars, `⌘⌫` moves to Gmail's trash (kept 30 days), and `E` in Done moves a thread back to the inbox. `Z` undoes the last removal; Inbox Zero says so while there is something to undo, and shows a line for the day when there is not.
-- While the app is open it reads Gmail's change feed every 30 seconds (or 1 or 5 minutes, set in Settings › General): only what changed since the last look is fetched, the open mailbox is updated in place, and a macOS notification (sender and subject) is shown for each thread with a new unread inbox message. Clicking a mailbox shows what is kept at once and asks Gmail only if something changed since it was last checked or that was over a minute ago, without the loading bar; Reload and pulling the list down always ask. The content of the first 3 threads of the open mailbox is fetched ahead and stored, so opening those is instant (more would run into Gmail's limit of 6,000 units a minute, as each costs 120). Opening the app works the same way; a full fetch only happens when there is no starting point yet, the point is older than Gmail keeps (about a week), or the mailbox is a search (Snoozed, search results; Done and All Mail follow the change feed), and then only threads that changed since they were last listed are read again (their rows are kept, encrypted, with the account's mail). Clicking a notification opens that email. Notifications need the bundled `Nimbra.app` and your permission, and only arrive while Nimbra is running.
-- Mailboxes, opened threads and sidebar counts are saved in an encrypted local store (`~/Library/Application Support/Nimbra/store`), so the app opens straight into your mail (or into Inbox Zero, which fades up; its stars then twinkle and now and then one falls, while the window is in front, unless the Mac is set to reduce motion) and refreshes in the background. Each record is encrypted with ChaCha20-Poly1305 using a key kept only in the system keychain (`nimbra` / `store-key`); the files alone, or a backup of them, are unreadable. When the Google sign-in ends (Google refuses to renew it; an access token that merely ran out is renewed), the store and its key are deleted. A keychain that cannot be read (denied, locked) deletes nothing and is not taken for signed out; if that means unsent mail cannot be kept, quitting is put off once to say so. Search results are never stored.
-- `/` or ⌘F opens the search panel: matches from the mail on this Mac appear as you type, Gmail’s own results join a moment later, ↑↓ pick one and Return opens it (or “All results”). With an empty box it shows recent searches and Gmail search tips.
-- Double-click a thread to open it in a window of its own (reply, forward, done, trash, and original or reader view). Return reads it in full view, without the sidebar and list; Esc or Return brings them back.
-- Each message shows its sender and recipients; click the recipients line for From, To, Cc, Reply-To and the full date. Earlier messages in a thread have their own Reply, Reply all and Forward. Attachments can be previewed with Quick Look or saved to Downloads; images embedded in an email are shown in the original view; mailing lists get an Unsubscribe button beside the subject (it opens the list’s page in your browser, or prepares the email the list asks for, for you to send from the account it came to); spam is flagged with a Not spam button, and Report spam is in the ••• and right-click menus.
-- Replies and forwards include the original message, folded behind •••. A forward also takes the original's attachments, each shown as a chip you can take off. With several accounts, a new message or a forward can be sent from any of them (the From menu); a reply goes out from the account its thread is in.
-- Mailboxes include Important, All Mail, Spam and Trash; lists keep loading older threads as you scroll to the end. Threads show their labels (click × to remove one), the tag button adds a label or creates a new one, and the folder button moves a thread to the inbox, a label or Spam. Trash has Restore, Spam has Not spam. The + next to Labels creates a label (“Parent/Child” nests it), and right-clicking a label renames or deletes it. In Trash, right-click (or ⌫) offers Move to inbox and Delete permanently; the first permanent delete asks Google for the extra permission it needs, and every one asks for confirmation.
-- ⌘-click and Shift-click pick several threads (⌘A picks all); the reading pane then offers Mark done, Read or unread, Star, Label, Move to, Snooze, Spam and Trash for all of them, and one Undo brings a batch back.
-- `H` (or ⌘K, or the clock in the toolbar or on a row) opens the Snooze menu: later today, tomorrow, tomorrow evening, this weekend or next week, each with the time it comes back, or Pick a date for a calendar: click a day (the first open one is picked already) and press Snooze (or Return). Its Time row opens a field to type any time in (“4:45 PM”, “16:45”, “430p”; a bare 1 to 7 is the afternoon) and the hours from 6 AM to 9 PM as shortcuts (9 AM unless you pick another, kept for next time). Its “Only if nobody replies” switch makes any of them a reminder. Arrow keys and Return work in it, Esc closes it. It works the same for Gmail and IMAP accounts and from All inboxes. Snoozed threads leave the inbox (from any mailbox) and come back unread with a notification; a reply that arrives first brings the thread back by itself and ends the snooze, as in Gmail, and a reminder only comes back if nobody replied. Snoozed lists the account's snoozed threads (Gmail's own too) with the time each comes back; Reminders lists the reminders. Each snooze is kept on this Mac with its own account, because Gmail’s API has no snooze and IMAP has none at all, and happens while Nimbra is running (anything due while it was closed comes back when it opens). `E` in Snoozed or Reminders brings a thread back now; `H` there picks a new time.
-- Block sender (in the reading pane's ⋯ menu) moves the open thread to a Blocked label, made if the account has none, which is where Spark files blocked mail, and blocks the sender's address for that account. Their new mail goes straight to Blocked, marked read, and never notifies; what they left in the inbox goes too. The first time each account is opened, the senders already in its Blocked label are blocked as well, so a list kept by Spark carries on. Undo takes the sender off the list again, and Unblock sender (on a thread in Blocked) moves it back to the inbox. The list is kept on this Mac, so mail that arrives while Nimbra is closed is moved when it opens (and other apps and phones still see it arrive). It works for Gmail and IMAP accounts.
-- Messages are written in a formatted editor: bold (⌘B), italic (⌘I), underline (⌘U), links (⌘K), bulleted and numbered lists, quotes. They are sent with both an HTML and a plain-text version. Pasted text keeps simple formatting only; scripts, styles and images are removed.
-- Other providers: Add account takes Google, or any address with a password (Zoho, iCloud, Fastmail, Yahoo, a company's own server). Nimbra finds the servers from the address (or you type them), checks that both take the password, and keeps the password in the keychain. Such an account's folders are its labels, archiving moves to its Archive folder, and Gmail's categories, Important and Open in Gmail are not shown. New mail on such an account arrives at once where the server can say so (IMAP IDLE), and only what changed is asked for (CONDSTORE). A custom domain hosted at Google, Microsoft or Zoho is recognised from its mail (MX) records. Outlook.com, Hotmail and Microsoft 365 sign in with Microsoft in the browser (Continue with Microsoft), which needs `NIMBRA_MICROSOFT_CLIENT_ID` (an app registered with Microsoft) in `~/.config/nimbra/oauth.env`; the sign-in is kept in the keychain, and IMAP and SMTP use it (XOAUTH2).
-- Several Gmail accounts: switch from the Accounts list in the sidebar or in Settings › Accounts, where Add account is too. Each account has its own sign-in in the keychain and its own encrypted store and key; Sign out removes only that account. One account is the default (Settings › Accounts › Make default; the first one until you choose): its profile is at the bottom of the sidebar and new messages are from it. A new message's From can be changed in the composer, under its title; a draft it already saved moves with it. With two or more accounts the sidebar adds **All inboxes** (every account's inbox merged, newest first; Inbox Zero when all of them are empty; it loads further as you scroll, and what you do there to an account that is offline is done when it is back) and an Accounts list to see one account on its own. Every account is checked for new mail and notifies; snoozes and scheduled sends run for all of them; the Dock badge counts them all. In All inboxes, actions and replies go to the message's own account (replies say which address they go out from); labels stay per account.
-- Offline, archive, star, read and the like still work: changes are kept (encrypted, on this Mac) and sent once Gmail can be reached, and messages sent while offline go out then too. An Offline pill left of Compose (just its dot when the list is narrow) shows how many changes are waiting; when the list is not showing, the reload button (or, with the sidebar hidden too, the window's top-left corner) gets an amber dot and says the same in its tooltip.
-- The menu bar has File (New Message ⌘N, Check for Mail ⌘R, Print ⌘P), Edit, View and Message menus; the Dock icon shows the inbox’s unread count. The mail store keeps the newest 300 threads per mailbox, with full text for the newest 100.
-- Settings (⌘, or click Settings at the bottom of the sidebar): signature, light, dark or system appearance, original formatting and remote images, notifications, open at login, and Sign out (which removes the mail kept on this Mac).
-- The composer has Cc and Bcc (click “Cc Bcc”), suggests addresses from your mail as you type (Tab or Enter picks one), and takes attachments from the paperclip or by dropping files on it (25 MB in total). Drafts save themselves a moment after you stop typing. Sending waits six seconds so you can undo it (⌘Z), and Discard can be undone the same way. From Send until Gmail has it a message is kept encrypted on this Mac: quitting sends it first (waiting up to 30 seconds), switching accounts leaves it with its own account, and one that could not leave is sent when that account next connects. One that may have arrived is never sent again by itself: it goes to Drafts, with a note to check Sent, as does one Gmail failed on (a 5xx). Quitting also waits for changes on their way (those that do not get through are made on the next launch) and saves what you are writing to Drafts. Send later sends the saved draft from this Mac at the chosen time while Nimbra is running.
-- `⌫` (or ⌘⌫) moves the open thread to the trash; `Z` undoes it.
-- `E` archives the thread in Gmail (removes it from the inbox) and `Z` puts it back. Both only work in the Inbox. 
-- Your Google profile photo shows for each account, in the sidebar and in Settings › Accounts. It comes from the People API (turn it on in your Cloud project), which tells your own photo from the letter Google draws; without it you get the picture Google gives every app, which can be that letter. It is kept encrypted with the account's mail.
-- Signing in to an account again takes only that same Google account: another one picked in the browser is refused before anything is saved.
-- The sign-in is stored in the system keychain under `nimbra`. Delete that entry to sign out.
+Your Google profile photo comes from the People API (turn it on in your Cloud project), which tells your own photo from the letter Google draws.
 
-Without the file, or with `NIMBRA_DEMO=1`, the app uses sample data and never touches the network. Messages are written in a plain-text composer (`C`, or `R` to reply in the thread). A thread in Drafts previews first; **Edit draft** in the toolbar, or a click on its text, opens it in the composer; the quoted or forwarded message stays folded behind a `•••` toggle and is kept when you save (`⌘S`) or send. The floating composer can be dragged by its header and resized from its bottom-right corner. The toolbar also offers reply all, forward, adding a label, mark as unread and Open in Gmail. Search uses Gmail's own syntax (`from:ana has:attachment newer_than:7d`). Not connected yet: snooze, reminders, attachments, Cc/Bcc, and the AI brief.
+### Other providers
 
-## Run
+**Add account** takes Google, or any address with a password (Zoho, iCloud, Fastmail, Yahoo, a company's own server). Nimbra finds the servers from the address (or you type them), checks that both take the password, and keeps the password in the keychain. A custom domain hosted at Google, Microsoft or Zoho is recognised from its mail (MX) records.
 
-```sh
-cargo run
-```
+Such an account's folders are its labels and archiving moves to its Archive folder. New mail arrives at once where the server can say so (IMAP IDLE), and only what changed is asked for (CONDSTORE).
 
-GPUI is built with the `runtime_shaders` feature, so Xcode's Metal toolchain is not required.
+Outlook.com, Hotmail and Microsoft 365 sign in with Microsoft in the browser (**Continue with Microsoft**). That needs `NIMBRA_MICROSOFT_CLIENT_ID` (an app registered with Microsoft) in `~/.config/nimbra/oauth.env`; the sign-in is kept in the keychain, and IMAP and SMTP use it (XOAUTH2).
 
-## Build the Mac app
+### Several accounts
 
-```sh
-./scripts/bundle-macos.sh
-open target/bundle/Nimbra.app
-```
+Switch from the Accounts list in the sidebar or in Settings › Accounts. Each account has its own sign-in in the keychain and its own encrypted store and key; Sign out removes only that account. One account is the default (Settings › Accounts › Make default): its profile is at the bottom of the sidebar and new messages are from it.
 
-This builds the release binary and wraps it in `Nimbra.app` with the app icon. The icon source is `assets/AppIcon.icon`, an Icon Composer document (SVG layers plus `icon.json`); the same file works for iOS. Its layers are designed in the “Mail Client” Figma file, on the “Brand · App icon” page, in the “Icon Composer layers · 1024” board (one 1024×1024 frame per layer, inside the Light, Eclipse and Flap groups; the AppIcon components below it are the same art for mock-ups) and exported from there as SVG into `assets/AppIcon.icon/Assets`. `icon.json` gives it all of macOS's appearances: Default is the light icon (a cream-to-lavender background, the flap and disc in ink, a softer glow), Dark is the violet-to-black one with the paper-white flap, and Clear and Tinted (the glow and the dark disc hidden, so the mark is a ring over an envelope flap). Layers that use glass must be filled shapes: outline strokes in Figma before exporting, because an open stroke is filled as a closed shape. To check every appearance, use `--rendition` with `Default`, `Dark`, `ClearLight`, `ClearDark`, `TintedLight` or `TintedDark`. Open it in Icon Composer to tune it, or render a preview from the command line:
-
-```sh
-"/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool" \
-  assets/AppIcon.icon --export-image --output-file icon.png \
-  --platform macOS --rendition Default --width 512 --height 512 --scale 1
-```
-
-Settings › About shows `assets/app-icon.png` in light mode and `assets/app-icon-dark.png` in dark mode, renders of the same file. After changing the icon, render both again with the command above, using `--width 192 --height 192` and `--output-file assets/app-icon.png --rendition Default`, then `--output-file assets/app-icon-dark.png --rendition Dark`.
-
-Needs Xcode 26 or newer. The script signs the app with your Developer ID or Apple Development certificate if one is in the keychain (override with `NIMBRA_SIGN_IDENTITY`). Signing matters for day-to-day use: macOS ties Keychain permission to the app's signature, so an unsigned build asks for the Keychain after every rebuild. For development, `./scripts/run-dev.sh` builds, signs and runs the debug binary the same way.
+With two or more accounts the sidebar adds **All inboxes**: every account's inbox merged, newest first, loading further as you scroll. Every account is checked for new mail and notifies, snoozes and scheduled sends run for all of them, and the Dock badge counts them all. In All inboxes, actions and replies go to the message's own account; labels stay per account.
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
 | `J` / `K` or arrows | Next / previous thread |
-| `←` | Move the keys to the sidebar (a hidden sidebar comes in until you leave it); `↑` `↓` or `J` `K` walk its rows, `→` or `↵` opens one, `esc` goes back to the list. Walking fetches nothing until you open a row |
+| `←` | Move the keys to the sidebar (a hidden sidebar comes in until you leave it); `↑` `↓` or `J` `K` walk its rows, `→` or `↵` opens one, `esc` goes back to the list |
 | `Home` / `End` (or `⌘↑` / `⌘↓`) | First / last thread, or sidebar row |
 | `X` | Pick or unpick the open thread |
 | `⇧↑` / `⇧↓` (or `⇧K` / `⇧J`) | Pick more threads from the open one |
@@ -97,64 +118,143 @@ Needs Xcode 26 or newer. The script signs the app with your Developer ID or Appl
 | `Z`, `⌘Z` or `Ctrl+Z` | Undo the last archive, move or trash (an Undo pill also appears for a few seconds) |
 | `/` or `⌘F` | Search (Enter runs it, `esc` clears it) |
 | `S` | Star or unstar |
-| `U` | Mark the open thread as unread, or read again (also a toolbar button) |
-| Right-click a thread | Menu: mark read or unread, star, mark done, trash, open in Gmail |
+| `U` | Mark the open thread as unread, or read again |
+| `H` or `⌘K` | Snooze menu |
 | `V` | Switch between the reader view and the email's original formatting |
 | `C` / `R` | Compose a new message / reply to the open thread |
 | `⌘↵` | Send (in the composer) |
 | `⌘⇧F` | Full-page composer on or off |
-| `⌘⌫` | Move to trash |
-| `⌘K` or `H` | Snooze menu |
-| `↵` / `esc` | Run command / close palette |
+| `⌫` or `⌘⌫` | Move to trash |
 | `⌘⇧L` | Toggle light and dark |
-| `⌘B` | Show the sidebar, or hide it: hidden, it floats in, with the same blurred material, when the pointer reaches the window’s left edge. Nimbra starts the way you left it |
-| `⌘W` | Close the window; Nimbra keeps running and checking mail (click the Dock icon to bring it back, `⌘Q` to quit) |
-| `⌘⇧B` | Show or hide the message list (also the first toolbar button; drag the list's right edge to resize it) |
+| `⌘B` | Show or hide the sidebar (hidden, it floats in when the pointer reaches the window's left edge) |
+| `⌘⇧B` | Show or hide the message list (drag its right edge to resize it) |
 | `⌘[` / `⌘]` | Back / forward through opened threads |
-| `⌘R` | Reload (mock mail check: restores the inbox) |
-| Pull the list down and let go | Refresh (trackpad, when the list is at the top) |
+| `⌘W` | Close the window; Nimbra keeps running and checking mail (`⌘Q` quits) |
+| `⌘R` or pull the list down | Check for mail |
+| Right-click a thread | Mark read or unread, star, mark done, trash, report spam, open in Gmail |
 
-## Screenshot states
+## Privacy and security
 
-`NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose` or `compose-full` opens that screen directly on the sample data. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden (auto-hide) or docked, whatever was saved. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
+- **Your mail stays on your Mac.** Nimbra talks straight to Gmail or your IMAP and SMTP servers; there is no server of its own in between.
+- **Encrypted at rest.** Mailboxes, opened threads, counts, the offline queue and snoozes are kept in `~/Library/Application Support/Nimbra/store`. Each record is encrypted with ChaCha20-Poly1305 using a key kept only in the system keychain (`nimbra` / `store-key`); the files alone, or a backup of them, are unreadable. Search results are never stored. When a Google sign-in ends, that account's store and its key are deleted; a keychain that cannot be read deletes nothing.
+- **Secrets in the Keychain.** Sign-ins, refresh tokens and passwords live only in the system keychain. OAuth client files stay in `~/.config/nimbra`, never in the repo.
+- **Locked-down email.** Mail is drawn natively by default, with scripts, styles and forms dropped. **Show original** (`V`) renders the email's own HTML in a system web view with scripts off, navigation blocked, and remote scripts, frames, fonts and forms blocked by a content security policy; mail that tries to send you somewhere by itself (a meta refresh) is stopped. Only `http`, `https` and `mailto` links are clickable, and they open in your browser when you click them.
+- **Remote images.** In the reader view they stay hidden until you click **Load images**, and tracking pixels are never loaded. The original view shows them by default (senders can then tell the mail was opened); **Block images** turns them off for the open thread.
+- **TLS everywhere.** IMAP and SMTP use rustls with certificates always checked.
 
-## Sidebar blur
+## How it works
 
-The sidebar is translucent and blurs whatever is behind the window. GPUI's own blurred window mode did not blur on macOS 27, so `src/blur.rs` asks the macOS window server directly through a private API. That is fine for a prototype but is a risk for App Store review. Windows and Linux fall back to GPUI's built-in behaviour.
+<details>
+<summary><strong>Checking for mail</strong></summary>
 
-## Layout
+While the app is open it reads Gmail's change feed every 30 seconds (or 1 or 5 minutes, set in Settings › General): only what changed since the last look is fetched, the open mailbox is updated in place, and a macOS notification (sender and subject) is shown for each thread with a new unread inbox message. Clicking a notification opens that email. Notifications need the bundled `Nimbra.app` and your permission, and only arrive while Nimbra is running.
+
+Clicking a mailbox shows what is kept at once and asks Gmail only if something changed since it was last checked or that was over a minute ago. The content of the first 3 threads of the open mailbox is fetched ahead and stored, so opening those is instant (more would run into Gmail's limit of 6,000 units a minute). A full fetch only happens when there is no starting point yet, the point is older than Gmail keeps (about a week), or the mailbox is a search, and then only threads that changed since they were last listed are read again. The mail store keeps the newest 300 threads per mailbox, with full text for the newest 100.
+
+</details>
+
+<details>
+<summary><strong>Reading</strong></summary>
+
+HTML mail opens in its original formatting by default; `V` switches to the native reader view and back. In dark theme, light emails get a dark page and light text, with pictures and brand colours kept; Nimbra's own script does this in an isolated WebKit world, and **Settings › Reading › Darken emails in dark theme** turns it off. Printing is always light.
+
+Each message shows its sender and recipients; click the recipients line for From, To, Cc, Reply-To and the full date. Earlier messages in a thread have their own Reply, Reply all and Forward. Attachments can be previewed with Quick Look or saved to Downloads. Mailing lists get an Unsubscribe button beside the subject; spam is flagged with a Not spam button. Double-click a thread to open it in a window of its own; Return reads it in full view.
+
+</details>
+
+<details>
+<summary><strong>Organising</strong></summary>
+
+Opening a thread marks it read. `E` archives it (in Done, `E` moves it back to the inbox), `⌫` moves it to the trash, and `Z` undoes either. Threads show their labels (click × to remove one), the tag button adds a label or creates one, and the folder button moves a thread to the inbox, a label or Spam. The + next to Labels creates a label (“Parent/Child” nests it), and right-clicking a label renames or deletes it. ⌘-click and Shift-click pick several threads (⌘A picks all), and one Undo brings a batch back.
+
+`/` or ⌘F opens search: matches from the mail on this Mac appear as you type, and the server's own results join a moment later. Search uses Gmail's syntax (`from:ana has:attachment newer_than:7d`).
+
+</details>
+
+<details>
+<summary><strong>Snooze and reminders</strong></summary>
+
+`H` (or ⌘K, or the clock in the toolbar or on a row) opens the Snooze menu: later today, tomorrow, tomorrow evening, this weekend or next week, each with the time it comes back, or **Pick a date** for a calendar: click a day and press Snooze (or Return). Its Time row opens a field to type any time in (“4:45 PM”, “16:45”, “430p”; a bare 1 to 7 is the afternoon) and the hours from 6 AM to 9 PM as shortcuts. The **Only if nobody replies** switch makes any of them a reminder.
+
+Snoozed threads leave the inbox and come back unread with a notification; a reply that arrives first brings the thread back by itself and ends the snooze, as in Gmail, and a reminder only comes back if nobody replied. Snoozed and Reminders list every account's snoozes with the time each comes back. Each snooze is kept on this Mac with its own account, because Gmail's API has no snooze and IMAP has none at all, and happens while Nimbra is running (anything due while it was closed comes back when it opens).
+
+</details>
+
+<details>
+<summary><strong>Blocking senders</strong></summary>
+
+**Block sender** (in the reading pane's ⋯ menu) moves the open thread to a Blocked label, made if the account has none, which is where Spark files blocked mail, and blocks the sender's address for that account. Their new mail goes straight to Blocked, marked read, and never notifies; what they left in the inbox goes too. The first time each account is opened, the senders already in its Blocked label are blocked as well. Undo takes the sender off the list again, and **Unblock sender** (on a thread in Blocked) moves it back to the inbox. The list is kept on this Mac, so mail that arrives while Nimbra is closed is moved when it opens.
+
+</details>
+
+<details>
+<summary><strong>Writing and sending</strong></summary>
+
+Messages are written in a formatted editor: bold (⌘B), italic (⌘I), underline (⌘U), links (⌘K), bulleted and numbered lists, quotes. They are sent with both an HTML and a plain-text version, and pasted text keeps simple formatting only. Replies and forwards include the original message, folded behind •••; a forward also takes the original's attachments. With several accounts, a new message or a forward can be sent from any of them.
+
+The composer has Cc and Bcc, suggests addresses from your mail as you type, and takes attachments from the paperclip or by dropping files on it (25 MB in total). Drafts save themselves a moment after you stop typing. Sending waits six seconds so you can undo it (⌘Z). From Send until the server has it, a message is kept encrypted on this Mac: quitting sends it first, and one that could not leave is sent when its account next connects. **Send later** sends the saved draft at the chosen time while Nimbra is running.
+
+Offline, archive, star, read and the like still work: changes are kept (encrypted, on this Mac) and sent once the server can be reached, and an Offline pill shows how many are waiting.
+
+</details>
+
+## Design
+
+The design lives in the [Mail Client Figma file](https://www.figma.com/design/s6tsR2l2X4MKmoA1dNlm4I/Mail-Client?node-id=7313-2):
+
+- **Nimbra — App UI:** the screens as built (the inbox in dark and light, the Snooze menu, Compose, Inbox zero), the colour variables and text styles, and the component kit.
+- **Landing:** the landing page.
+- **Brand · App icon:** the icon and its Icon Composer layers.
+
+### App icon
+
+The icon source is `assets/AppIcon.icon`, an Icon Composer document (SVG layers plus `icon.json`); the same file works for iOS. Its layers are designed in the Figma file's “Icon Composer layers · 1024” board (one 1024×1024 frame per layer, inside the Light, Eclipse and Flap groups) and exported from there as SVG into `assets/AppIcon.icon/Assets`.
+
+`icon.json` gives it all of macOS's appearances: Default is the light icon (a cream-to-lavender background, the flap and disc in ink, a softer glow), Dark is the violet-to-black one with the paper-white flap, and Clear and Tinted hide the glow and the dark disc, so the mark is a ring over an envelope flap. Layers that use glass must be filled shapes: outline strokes in Figma before exporting, because an open stroke is filled as a closed shape.
+
+Render a preview from the command line (`--rendition` takes `Default`, `Dark`, `ClearLight`, `ClearDark`, `TintedLight` or `TintedDark`):
+
+```sh
+"/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool" \
+  assets/AppIcon.icon --export-image --output-file icon.png \
+  --platform macOS --rendition Default --width 512 --height 512 --scale 1
+```
+
+Settings › About shows `assets/app-icon.png` in light mode and `assets/app-icon-dark.png` in dark mode, and this README shows `.github/assets/icon-light.png` and `icon-dark.png`. After changing the icon, render them again with the command above (`--rendition Default` for the light ones, `--rendition Dark` for the dark ones; 192 px for the app, 256 px for the README).
+
+## Development
+
+### Screenshot states
+
+`NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose`, `compose-full`, `snooze` or `snooze-time` opens that screen directly on the sample data. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
+
+### Live tests
+
+The IMAP and SMTP code has live tests against local Dovecot and Mailpit servers (OrbStack or Docker); see `tasks/todo.md` for the setup. Run them with `NIMBRA_TEST_CA=certs/ca.pem cargo test live -- --ignored`.
+
+### Sidebar blur
+
+The sidebar is translucent and blurs whatever is behind the window. GPUI's own blurred window mode did not blur on macOS 27, so `src/blur.rs` asks the macOS window server directly through a private API. That is fine for now but is a risk for App Store review. Windows and Linux fall back to GPUI's built-in behaviour.
+
+### Layout
 
 - `src/theme.rs`: colours for dark and light, fonts, gradients
-- `src/gmail.rs`: OAuth sign-in (PKCE, loopback redirect), keychain storage, Gmail REST calls
 - `src/mail.rs`: the mail model every provider gives the app (threads, messages, labels, changes, errors, building a message to send), and the `Provider` interface the app calls
+- `src/gmail.rs`: OAuth sign-in (PKCE, loopback redirect), keychain storage, Gmail REST calls
 - `src/imap_mail.rs`: accounts that are not Gmail: IMAP folders as labels, threads from reply headers, a local index as the change feed, SMTP for sending
 - `src/smtp.rs`, `src/tls.rs`, `src/mime.rs`: SMTP sending, TLS for both (rustls, certificates always checked), and turning raw mail into the model
-- `src/dns.rs`: a small MX lookup (to the system's resolvers), for finding where a domain's mail is hosted
 - `src/microsoft.rs`: Microsoft sign-in (OAuth with PKCE, no secret) and its tokens
-- `src/selection.rs`: selecting and copying text in the reader and in message windows
-- `src/servers.rs`, `src/discover.rs`: an account's IMAP and SMTP servers and its password in the keychain; finding the servers from an address (presets, the domain's autoconfig, Thunderbird's database)
-- `src/add_account.rs`: the Add account sheet (Google, or any address with a password)
-- `src/input.rs`: the text field (adapted from GPUI's example) used by the composer
-- `src/webview.rs`: the locked-down web view behind Show original
+- `src/servers.rs`, `src/discover.rs`, `src/dns.rs`: an account's servers and its password in the keychain; finding the servers from an address (presets, autoconfig, MX records)
 - `src/store.rs`: the encrypted on-disk mail store
-- `src/checking.rs`: which check for mail is running, and how long loading may wait (60 seconds)
-- `src/arrival.rs`: the timing of Inbox Zero coming up at launch
-- `src/quitting.rs`: putting quitting off once when it would lose what could not be kept
-- `src/leaving.rs`: what is on its way to Gmail, and what quitting does about it
-- `src/scheduled.rs`: each account's send-later list, and sending from it once
-- `src/sending.rs`: a message from Send until Gmail has it, across quitting and switching accounts
-- `src/inspiration.rs`: the lines Inbox Zero shows when there is nothing to undo
-- `src/rich.rs`: turns HTML or plain-text mail into styled blocks; fetches images on request
-- `src/data.rs`: the mail model, sample inbox and palette commands
-- `src/ui.rs`: icon, kbd, avatar, pill, buttons
-- `src/app.rs`: the app's state, key actions, moving between mailboxes and threads, and the window's layout. The rest of the app is the same `Nimbra` type, continued in the files below
-- `src/accounts.rs`: signing in and out, connecting each account, profile photos
-- `src/mailbox.rs`: listing the open mailbox, checking for changes, loading more, watching for new mail
-- `src/threads.rs`: done, trash, star, unread, snooze, and undoing them
-- `src/labels.rs`: labelling and moving threads, and the sheet that edits labels
-- `src/finder.rs`: search and its suggestions
-- `src/composer.rs`: writing a message: its fields, editor, drafts and its views
-- `src/outgoing.rs`: Send, the undo delay, the offline queue and send later, as the app carries them out
-- `src/menus.rs`: menus, the Undo pill and notices, each in a small window of its own
-- `src/sidebar.rs`, `src/list.rs`, `src/reading.rs`, `src/palette.rs`: the sidebar, the thread list (with Inbox Zero), the reading pane and the command palette
-- `assets/`: bundled Geist and Instrument Serif fonts (OFL) and Lucide-style icons
+- `src/blocking.rs`: blocked senders and the Blocked label
+- `src/scheduled.rs`, `src/sending.rs`: send later, and a message from Send until the server has it
+- `src/checking.rs`, `src/arrival.rs`, `src/quitting.rs`, `src/leaving.rs`: checks for mail, Inbox Zero at launch, and what quitting has to finish
+- `src/rich.rs`, `src/webview.rs`: HTML or plain-text mail as styled blocks, and the locked-down web view behind Show original
+- `src/app.rs`: the app's state, key actions and the window's layout; the rest of the `Nimbra` type continues in `accounts.rs`, `mailbox.rs`, `threads.rs`, `labels.rs`, `finder.rs`, `composer.rs`, `outgoing.rs` and `menus.rs`
+- `src/sidebar.rs`, `src/list.rs`, `src/reading.rs`, `src/snooze_menu.rs`, `src/palette.rs`: the sidebar, the thread list (with Inbox Zero), the reading pane, the Snooze menu and the command palette
+- `src/ui.rs`, `src/input.rs`: shared building blocks and the text field
+- `assets/`: the app icon, bundled Geist and Instrument Serif fonts (OFL) and Lucide-style icons
+
+## License
+
+Nimbra will be open source. A license will be added before the first public release.
