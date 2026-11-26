@@ -972,7 +972,6 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Settings › Accounts › Make default.
     /// Settings › Accounts: moves an account to another place in the list (by dragging).
     /// The order is the sidebar's, All inboxes' and From's.
     pub(super) fn move_account(&mut self, id: &str, to: usize, cx: &mut Context<Self>) {
@@ -982,6 +981,7 @@ impl Nimbra {
         }
     }
 
+    /// Settings › Accounts › Make default.
     pub(super) fn set_default_account(&mut self, id: String, cx: &mut Context<Self>) {
         if !self.settings.accounts.iter().any(|a| a.id == id) {
             return;

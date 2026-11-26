@@ -1070,7 +1070,7 @@ impl Nimbra {
                 composer.full = screen == "compose-full";
             }
         }
-        // NIMBRA_SCREEN=compose-suggest: a new message with "a" typed in To, so the address
+        // NIMBRA_SCREEN=compose-suggest: a new message with "j" typed in To, so the address
         // suggestions show (screenshots).
         if screen == "compose-suggest" {
             this.open_compose(ComposeKind::New, cx);
