@@ -18,7 +18,7 @@ if [ -f "$BUILD_ENV" ]; then
 fi
 
 # A release build carries the Google and Microsoft sign-in clients, so that anyone can add
-# those accounts (see `built_in` in src/gmail.rs). They are read from oauth.env, line by
+# those accounts (see `built_in` in nimbra-core's gmail.rs). They are read from oauth.env, line by
 # line and never run as a script; other builds read that file at run time instead.
 OAUTH_ENV="${HOME}/.config/nimbra/oauth.env"
 if [ "${NIMBRA_RELEASE:-}" = "1" ] && [ -f "$OAUTH_ENV" ]; then

@@ -52,6 +52,10 @@ given screen directly, which is how screenshots for issues and pull requests are
 
 Where things live is in [Layout](README.md#layout).
 
+The mail engine is its own repo, [nimbra-core](https://github.com/nimbra-mail/core), shared with the iOS app. Clone
+it next to this one (`../core`); Cargo builds it from there. A change to the engine is made, tested and reviewed
+there first (it has its own CONTRIBUTING.md), then this app takes it up.
+
 ## What a good change looks like
 
 ### It matches the design
@@ -84,7 +88,7 @@ change; delete it and it's gone.
 ### It's private and safe
 
 - Secrets (sign-ins, tokens, passwords) live in the Keychain only. Mail on disk goes through the encrypted store
-  (`src/store.rs`), never a plain file.
+  (nimbra-core's `store.rs`), never a plain file.
 - Email HTML is untrusted. Don't loosen the reader's sanitising or the original view's content security policy
   (`src/webview.rs`) without a strong reason in the pull request.
 - TLS certificates are always checked.
@@ -111,12 +115,9 @@ Tests run the real code; a copy of the logic inside a test proves nothing about 
 cargo test
 ```
 
-The IMAP and SMTP code also has live tests against local Dovecot and Mailpit servers. If you touch `imap_mail.rs`,
-`smtp.rs` or `mime.rs`, run them (setup in [docs/testing.md](docs/testing.md)):
-
-```sh
-NIMBRA_TEST_CA=certs/ca.pem cargo test live -- --ignored
-```
+The IMAP and SMTP code, with its live tests against local Dovecot and Mailpit servers, is in
+[nimbra-core](https://github.com/nimbra-mail/core); run them there when you change it (its `docs/testing.md` has the
+setup).
 
 Never use a real mailbox in a test. Build fixtures with `example.com` addresses. Screenshots for issues, pull requests
 and the README use the sample data, never someone's real mail.

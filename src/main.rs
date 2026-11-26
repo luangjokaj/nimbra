@@ -4,43 +4,23 @@ mod about;
 mod app;
 mod arrival;
 mod autohide;
-mod blocking;
 mod blur;
 mod checking;
-mod contacts;
 mod data;
-mod discover;
-mod dns;
 mod editor;
 mod erase;
-mod gmail;
-mod imap_mail;
 mod input;
 mod inspiration;
 mod integration;
 mod keyboard;
 mod leaving;
 mod listing;
-mod mail;
-mod mailto;
-mod microsoft;
-mod mime;
 mod notify;
 mod quitting;
-mod rich;
-mod scheduled;
-mod sending;
-mod servers;
-mod settings;
-mod signature;
 mod signature_images;
-mod signin_page;
 mod sky;
-mod smtp;
-mod store;
 mod system;
 mod theme;
-mod tls;
 mod toast;
 mod tooltip;
 mod ui;
@@ -49,6 +29,12 @@ mod usage;
 mod webkeys;
 mod webview;
 mod window_frame;
+
+// The engine, as it was before it moved to its own crate: `crate::mail` and the like.
+use nimbra_core::{
+    blocking, contacts, discover, gmail, imap_mail, mail, mailto, microsoft, rich, scheduled,
+    sending, servers, settings, signature, smtp, store,
+};
 
 use std::borrow::Cow;
 
