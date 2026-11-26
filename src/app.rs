@@ -5,8 +5,8 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Context, Div, Entity, FocusHandle,
     Focusable as _, FontStyle, FontWeight, HighlightStyle, Hsla, MouseButton, SharedString,
-    Stateful, StyledText, Transformation, Window, actions, div, ease_out_quint, percentage,
-    prelude::*, px, relative,
+    Stateful, StyledText, Transformation, Window, actions, div, percentage, prelude::*, px,
+    relative,
 };
 
 use crate::arrival::{Arrival, drop_for};

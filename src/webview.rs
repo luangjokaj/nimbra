@@ -31,10 +31,12 @@
 /// subject and sender above it have, whatever margins the email sets (many set none, and
 /// their content would touch the edges). It is the page's padding, so the email's own
 /// background still fills the view (a body's background spreads to the whole page).
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const DEFAULTS: &str = ":where(html){font:14px/1.5 -apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif}\
 html{padding:28px!important}body{margin:0!important}\
 :where(pre,code,tt){font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.92em}";
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub fn document(body: &str, images: bool) -> String {
     let img = if images { "data: https:" } else { "data:" };
     format!(
@@ -50,6 +52,7 @@ pub fn document(body: &str, images: bool) -> String {
 /// in the head, and ignores `rel` and `href`. Nothing is lost, as the policy blocks all a
 /// link could load. No parser is needed: a tag's name can only be written out literally
 /// (entities and NULs cannot spell one), in any letter case.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn without_links(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut done = 0;
@@ -72,6 +75,7 @@ fn without_links(html: &str) -> String {
 }
 
 /// Only web and mail links may leave the app.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn is_external_link(link: &str) -> bool {
     url::Url::parse(link).is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
 }
@@ -81,6 +85,7 @@ fn is_external_link(link: &str) -> bool {
 const DARK_MAIL: &str = include_str!("dark_mail.js");
 
 /// A navigation is handed to the system only for a followed link to the web or mail.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn leaves_app(link: &str, followed: bool) -> bool {
     followed && is_external_link(link)
 }

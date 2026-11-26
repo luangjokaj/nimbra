@@ -54,17 +54,6 @@ pub fn meta(text: impl Into<SharedString>, color: Hsla) -> Div {
         .child(text.into())
 }
 
-/// Body text at semibold: an unread sender, a label that leads its row.
-#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
-pub fn strong(text: impl Into<SharedString>, color: Hsla) -> Div {
-    div()
-        .text_size(px(13.))
-        .line_height(px(18.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(color)
-        .child(text.into())
-}
-
 /// The weight a display title takes at `size`: lighter as it grows, so large type reads as
 /// light rather than as bulk.
 pub fn display_weight(size: f32) -> FontWeight {
@@ -185,7 +174,6 @@ pub trait Press {
     /// Buttons, icon buttons, rows and menu items: `pressed` while held.
     fn press(self, t: &Theme) -> Self;
     /// A selected or picked row: its selection stays visible under the press.
-    #[allow(dead_code, reason = "part of the shared kit the screens adopt")]
     fn press_selected(self, t: &Theme) -> Self;
 }
 
@@ -203,7 +191,6 @@ impl Press for Stateful<Div> {
 
 /// Keyboard focus as a 1pt ring laid over its element (which needs `.relative()`), so
 /// gaining or losing focus never moves anything.
-#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
 pub fn focus_ring(t: &Theme, corner: f32) -> Div {
     div()
         .absolute()
@@ -227,7 +214,6 @@ pub fn shadow(color: Hsla, y: f32, blur: f32, spread: f32) -> BoxShadow {
 /// Depth as soft light: a shadow for lift, plus accent light where the eye should go.
 /// Pair a raised surface with a `t.edge` hairline border.
 #[derive(Clone, Copy)]
-#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
 pub enum Elevation {
     /// Menus, tooltips, toasts.
     Pop,
@@ -382,11 +368,9 @@ pub fn tip(
 /// where it is) or GPUI's `with_animation` keyed by a generation number. Either way frames
 /// are asked for only while something moves, and progress comes from real elapsed time.
 /// Under Reduce Motion, travel (position, size, rotation) is instant; fades keep their time.
-#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
 pub mod motion {
     use std::time::{Duration, Instant};
 
-    pub const PRESS: Duration = Duration::from_millis(120);
     pub const TIP: Duration = Duration::from_millis(150);
     /// A tooltip that opens this soon after another closed shows at once.
     pub const TIP_SKIP: Duration = Duration::from_millis(300);
@@ -402,19 +386,9 @@ pub mod motion {
     /// A crossfade between two states of the same thing.
     pub const FADE: Duration = Duration::from_millis(180);
 
-    /// A CSS-style `cubic-bezier(x1, y1, x2, y2)` easing.
-    pub fn bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 + Copy {
-        move |t| cubic(x1, y1, x2, y2, t)
-    }
-
     /// Enter and exit: `cubic-bezier(0.23, 1, 0.32, 1)`.
     pub fn ease_out(t: f32) -> f32 {
         cubic(0.23, 1., 0.32, 1., t)
-    }
-
-    /// Something moving from one place on screen to another: `cubic-bezier(0.77, 0, 0.175, 1)`.
-    pub fn ease_in_out(t: f32) -> f32 {
-        cubic(0.77, 0., 0.175, 1., t)
     }
 
     /// Panels and drawers: `cubic-bezier(0.32, 0.72, 0, 1)`.
@@ -508,16 +482,8 @@ pub mod motion {
             }
         }
 
-        pub fn target(&self) -> f32 {
-            self.to
-        }
-
         pub fn value(&self) -> f32 {
             self.value_at(Instant::now())
-        }
-
-        pub fn moving(&self) -> bool {
-            self.moving_at(Instant::now())
         }
 
         /// Heads for `to` from the current value. Asking again for the same target changes
@@ -577,7 +543,7 @@ pub mod motion {
 
         #[test]
         fn curves_start_at_zero_and_end_at_one() {
-            for curve in [ease_out, ease_in_out, drawer] {
+            for curve in [ease_out, drawer] {
                 assert_eq!(curve(0.), 0.);
                 assert_eq!(curve(1.), 1.);
             }
@@ -585,7 +551,7 @@ pub mod motion {
 
         #[test]
         fn curves_never_step_back() {
-            for curve in [ease_out, ease_in_out, drawer] {
+            for curve in [ease_out, drawer] {
                 let mut last = 0.;
                 for i in 1..=200 {
                     let y = curve(i as f32 / 200.);
@@ -602,17 +568,10 @@ pub mod motion {
 
         #[test]
         fn linear_bezier_is_the_identity() {
-            let linear = bezier(0.25, 0.25, 0.75, 0.75);
             for i in 0..=10 {
                 let t = i as f32 / 10.;
-                assert!((linear(t) - t).abs() < 1e-4);
+                assert!((cubic(0.25, 0.25, 0.75, 0.75, t) - t).abs() < 1e-4);
             }
-        }
-
-        #[test]
-        fn ease_in_out_eases_at_both_ends() {
-            assert!(ease_in_out(0.1) < 0.1);
-            assert!(ease_in_out(0.9) > 0.9);
         }
 
         fn linear(t: f32) -> f32 {

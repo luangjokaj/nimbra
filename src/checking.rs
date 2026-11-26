@@ -103,6 +103,7 @@ impl Bell {
         }
     }
 
+    #[cfg(any(target_os = "macos", test))]
     pub fn ring(&self) {
         self.rings.fetch_add(1, Ordering::SeqCst);
         if let Some(waker) = self
@@ -343,7 +344,7 @@ mod tests {
         assert!(pace.at_once(start));
         let held = (1..20).map(|n| start + Duration::from_millis(33 * n));
         assert!(held.clone().all(|at| !pace.at_once(at)));
-        let after = held.last().unwrap() + Pace::GAP;
+        let after = start + Duration::from_millis(33 * 19) + Pace::GAP;
         assert!(pace.at_once(after));
     }
 

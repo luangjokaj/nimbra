@@ -6,14 +6,18 @@
 //! is put off.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "macos")]
 use std::sync::{Mutex, PoisonError};
+#[cfg(any(target_os = "macos", test))]
 use std::time::{Duration, Instant};
 
 /// How long after being put off quitting is meant.
+#[cfg(any(target_os = "macos", test))]
 const MEANT: Duration = Duration::from_secs(20);
 
 static WOULD_LOSE: AtomicBool = AtomicBool::new(false);
 static PUT_OFF: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
 static ASKED: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Whether quitting now would lose something.
@@ -26,6 +30,7 @@ pub fn take_put_off() -> bool {
     PUT_OFF.swap(false, Ordering::Relaxed)
 }
 
+#[cfg(target_os = "macos")]
 fn may_quit() -> bool {
     let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
     let quit = allowed(WOULD_LOSE.load(Ordering::Relaxed), *asked, Instant::now());
@@ -37,6 +42,7 @@ fn may_quit() -> bool {
     quit
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn allowed(would_lose: bool, put_off_at: Option<Instant>, now: Instant) -> bool {
     !would_lose || put_off_at.is_some_and(|at| now.duration_since(at) < MEANT)
 }

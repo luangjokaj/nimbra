@@ -10,10 +10,15 @@
 use std::path::PathBuf;
 
 use futures::channel::mpsc::UnboundedSender;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 use serde::Deserialize;
 
 /// What the editor page tells the app.
 #[derive(Debug)]
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    expect(dead_code, reason = "only the web view editor sends these")
+)]
 pub enum EditorEvent {
     /// The page has loaded and can take content.
     Ready,
@@ -45,8 +50,10 @@ pub enum EditorEvent {
 }
 
 /// The largest message the page may send back (HTML of what the user wrote).
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const MAX_MESSAGE: usize = 4 * 1024 * 1024;
 
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 enum Raw {
@@ -76,6 +83,7 @@ enum Raw {
 }
 
 /// Turns a message from the page into an event; anything unexpected is dropped.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn parse(body: &str) -> Option<EditorEvent> {
     if body.len() > MAX_MESSAGE {
         return None;
@@ -111,6 +119,7 @@ fn parse(body: &str) -> Option<EditorEvent> {
 }
 
 /// The editor page with a fresh nonce and the bundled fonts.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn page(nonce: &str) -> String {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;

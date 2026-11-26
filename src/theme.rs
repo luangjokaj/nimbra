@@ -69,7 +69,6 @@ pub const GRADIENT_GLOW: Ramp = Ramp {
 };
 
 /// Spacing, on a 4pt grid.
-#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
 pub mod space {
     pub const XS: f32 = 4.;
     pub const S: f32 = 8.;
@@ -80,7 +79,6 @@ pub mod space {
 }
 
 /// Corner radii, by what is rounded.
-#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
 pub mod radius {
     /// Key chips, count pills, snooze chips, a segmented control's inner pill.
     pub const CHIP: f32 = 6.;
@@ -124,7 +122,6 @@ pub struct Theme {
     pub rose: Hsla,
     pub amber: Hsla,
     /// Amber that text can be set in (light amber is for icons and dots).
-    #[allow(dead_code, reason = "part of the shared kit the screens adopt")]
     pub amber_text: Hsla,
     pub mint: Hsla,
     pub sky: Hsla,
@@ -221,9 +218,7 @@ impl Theme {
 pub enum Accent {
     Violet,
     Rose,
-    #[allow(dead_code)]
     Amber,
-    #[allow(dead_code)]
     Mint,
     Sky,
 }
@@ -232,9 +227,7 @@ pub enum Accent {
 pub enum Tone {
     Violet,
     Rose,
-    #[allow(dead_code)]
     Amber,
-    #[allow(dead_code)]
     Mint,
     Sky,
     Graphite,

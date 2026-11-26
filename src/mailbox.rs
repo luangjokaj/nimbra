@@ -433,7 +433,7 @@ impl Nimbra {
                                 list.push(Mail::from_summary(summary));
                             }
                         }
-                        list.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+                        list.sort_by_key(|mail| std::cmp::Reverse(mail.timestamp_ms));
                         this.install(list, cx);
                     }
                     Err(error) if error.is::<mail::HistoryExpired>() => this.fetch_inbox(cx),
@@ -1384,7 +1384,7 @@ impl Nimbra {
                     this.fail(error, cx);
                     return;
                 }
-                fresh.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+                fresh.sort_by_key(|mail| std::cmp::Reverse(mail.timestamp_ms));
                 this.install(fresh, cx);
                 if failed == 0 {
                     this.checked.insert(this.record_for(View::AllInboxes), seen);
