@@ -10,11 +10,13 @@ use crate::discover::Found;
 use crate::imap_mail::Credential;
 use crate::servers::{Secret, Security, Server, Servers};
 
-/// Google's "G", in its colours, for the Continue with Google button.
+/// Google's "G", in its colours, for the Continue with Google button. A PNG made from
+/// `assets/google.svg` (`rsvg-convert -h 64 assets/google.svg -o assets/google.png`): GPUI
+/// draws an SVG image with its red and blue swapped.
 static GOOGLE_LOGO: std::sync::LazyLock<Arc<gpui::Image>> = std::sync::LazyLock::new(|| {
     Arc::new(gpui::Image::from_bytes(
-        gpui::ImageFormat::Svg,
-        include_bytes!("../assets/google.svg").to_vec(),
+        gpui::ImageFormat::Png,
+        include_bytes!("../assets/google.png").to_vec(),
     ))
 });
 
