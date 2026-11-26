@@ -656,6 +656,8 @@ pub struct Nimbra {
     snooze_on_start: Option<bool>,
     /// NIMBRA_SCREEN=shortcuts opens the shortcuts sheet once the window is drawn.
     shortcuts_on_start: bool,
+    /// NIMBRA_SCREEN=more: the reading pane's ⋯ menu opens once the window is up.
+    more_on_start: bool,
     /// The open toolbar menu, if any.
     menu: Option<Menu>,
     /// The menu a click outside just closed, and when. Lets a click on the menu's own
@@ -995,6 +997,7 @@ impl Nimbra {
             snooze_time: (9, 0),
             snooze_day: None,
             shortcuts_on_start: screen == "shortcuts",
+            more_on_start: screen == "more",
             snooze_on_start: match screen.as_str() {
                 "snooze" => Some(false),
                 "snooze-time" => Some(true),
@@ -1089,6 +1092,10 @@ impl Nimbra {
             if let Some(composer) = &mut this.compose {
                 composer.full = screen == "compose-full";
             }
+        }
+        // NIMBRA_SCREEN=offline: as if the network were gone (screenshots).
+        if screen == "offline" {
+            this.offline = true;
         }
         // NIMBRA_SCREEN=window: the open thread in a window of its own (screenshots).
         if screen == "window" {
@@ -2263,6 +2270,11 @@ fn welcome_icon(t: &Theme, motion: bool) -> AnyElement {
 
 impl Render for Nimbra {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.more_on_start) {
+            cx.defer_in(window, |this, window, cx| {
+                this.toggle_menu(Menu::More, window, cx)
+            });
+        }
         if std::mem::take(&mut self.shortcuts_on_start) {
             cx.defer_in(window, |this, window, cx| this.toggle_shortcuts(window, cx));
         }
