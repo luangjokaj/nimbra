@@ -158,6 +158,9 @@ pub(super) struct SettingsWindow {
     sig_editor: Option<std::rc::Rc<crate::editor::EditorView>>,
     sig_editor_failed: bool,
     sig_editor_ready: bool,
+    /// The signature editor's page has drawn since it was made (hidden until then, so its
+    /// blank first frames never flash).
+    sig_painted: bool,
     sig_editor_dark: Option<bool>,
     /// What the editor shows (signature id, mode), and the session it was loaded as.
     sig_loaded: Option<(String, SigMode)>,
@@ -230,6 +233,7 @@ impl SettingsWindow {
             sig_editor: None,
             sig_editor_failed: false,
             sig_editor_ready: false,
+            sig_painted: false,
             sig_editor_dark: None,
             sig_loaded: None,
             sig_session: 0,
@@ -2137,6 +2141,7 @@ impl SettingsWindow {
             }
             self.sig_loaded = Some(wanted);
         }
+        editor.set_opaque(self.sig_painted);
         if !self.sig_shown {
             editor.set_visible(true);
             self.sig_shown = true;
@@ -2159,6 +2164,13 @@ impl SettingsWindow {
                 self.sig_loaded = None;
                 self.sig_editor_dark = None;
                 self.sig_shown = false;
+                self.sig_painted = false;
+            }
+            EditorEvent::Painted => {
+                if !self.sig_painted {
+                    self.sig_painted = true;
+                    cx.notify();
+                }
             }
             // What was typed is kept, cleaned (only what the text editor keeps, from there).
             EditorEvent::Content {

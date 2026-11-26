@@ -556,6 +556,7 @@ impl Nimbra {
                 editor.set_visible(false);
             }
             self.editor_ready = false;
+            self.editor_painted = false;
             self.editor_shown = None;
             self.editor_theme = None;
             self.editor_keys = false;
@@ -668,6 +669,7 @@ impl Nimbra {
                 .ok();
             });
         }
+        editor.set_opaque(self.editor_painted);
         editor.set_visible(true);
     }
 
@@ -676,8 +678,15 @@ impl Nimbra {
         match event {
             EditorEvent::Ready => {
                 self.editor_ready = true;
+                self.editor_painted = false;
                 self.editor_shown = None;
                 self.editor_theme = None;
+            }
+            EditorEvent::Painted => {
+                if !self.editor_painted {
+                    self.editor_painted = true;
+                    cx.notify();
+                }
             }
             EditorEvent::Content {
                 session,

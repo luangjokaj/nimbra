@@ -30,6 +30,8 @@ pub enum EditorEvent {
         session: u64,
         state: [bool; 5],
     },
+    /// The loaded content has been drawn: the view can be shown without a blank frame.
+    Painted,
     /// The editor got keyboard focus.
     Focused,
     /// Arrow up at the very start (or Shift-Tab): go to the Subject field.
@@ -80,6 +82,7 @@ enum Raw {
         ul: bool,
         ol: bool,
     },
+    Painted,
     Focus,
     Key {
         k: String,
@@ -118,6 +121,7 @@ fn parse(body: &str) -> Option<EditorEvent> {
             session: s,
             state: [b, i, u, ul, ol],
         },
+        Raw::Painted => EditorEvent::Painted,
         Raw::Focus => EditorEvent::Focused,
         Raw::Key { k } => match k.as_str() {
             "up" => EditorEvent::Up,
@@ -380,6 +384,26 @@ mod platform {
         pub fn set_visible(&self, visible: bool) {
             let _ = self.view.set_visible(visible);
         }
+
+        /// See-through (`false`) or not: the view stays on screen and keeps running (a
+        /// hidden one stops drawing), but shows nothing until its page has drawn.
+        #[allow(unexpected_cfgs)]
+        pub fn set_opaque(&self, opaque: bool) {
+            #[cfg(target_os = "macos")]
+            {
+                use objc::{msg_send, sel, sel_impl};
+                use wry::WebViewExtMacOS as _;
+                let webview = self.view.webview();
+                let alpha: f64 = if opaque { 1. } else { 0. };
+                // SAFETY: main thread, the live WKWebView wry made (an NSView).
+                unsafe {
+                    let _: () = msg_send![&*webview as *const _ as *mut objc::runtime::Object,
+                        setAlphaValue: alpha];
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = opaque;
+        }
     }
 }
 
@@ -404,6 +428,7 @@ mod platform {
         pub fn blur(&self) {}
         pub fn set_bounds(&self, _: f32, _: f32, _: f32, _: f32) {}
         pub fn set_visible(&self, _: bool) {}
+        pub fn set_opaque(&self, _: bool) {}
     }
 }
 

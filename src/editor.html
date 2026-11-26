@@ -276,6 +276,9 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
       more.style.display = quoted ? 'inline-block' : 'none';
       window.scrollTo(0, 0);
       post({ t: 'loaded', s: session, html: editor.innerHTML, text: editor.innerText });
+      // Drawn once the next frame is: only then does the app show the view, so its blank
+      // first frames never flash over the composer.
+      requestAnimationFrame(() => requestAnimationFrame(() => post({ t: 'painted' })));
       if (focus) {
         editor.focus();
         const range = document.createRange();
@@ -299,6 +302,7 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
       source.style.display = 'block';
       source.textContent = text || '';
       window.scrollTo(0, 0);
+      requestAnimationFrame(() => requestAnimationFrame(() => post({ t: 'painted' })));
     },
     placeholder(text) { editor.dataset.placeholder = String(text); },
     theme(vars) {

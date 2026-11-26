@@ -387,6 +387,9 @@ pub struct Nimbra {
     editor_failed: bool,
     /// The editor's page has loaded.
     editor_ready: bool,
+    /// The editor page has drawn content since it was made: until then it stays hidden
+    /// (its blank first frames would flash over the composer).
+    editor_painted: bool,
     /// Which composer the editor shows.
     editor_shown: Option<u64>,
     /// The colours and layout last given to the editor.
@@ -955,6 +958,7 @@ impl Nimbra {
             editor: None,
             editor_failed: false,
             editor_ready: false,
+            editor_painted: false,
             editor_shown: None,
             editor_theme: None,
             editor_focus: cx.focus_handle(),
