@@ -1650,6 +1650,16 @@ impl Nimbra {
         self.set_theme(system_events::flipped(self.dark, mac_dark), cx);
     }
 
+    /// The first screen's hello: played once, and remembered so it never plays again.
+    fn play_welcome(&mut self, cx: &mut Context<Self>) {
+        if self.settings.welcomed {
+            return;
+        }
+        self.settings.welcomed = true;
+        crate::notify::welcome_sound();
+        self.save_settings(cx);
+    }
+
     fn save_settings(&self, _cx: &mut Context<Self>) {
         // Written on the settings thread, newest last; quitting waits for it.
         if crate::settings::save(&self.settings).is_err() {
@@ -2227,6 +2237,13 @@ impl Nimbra {
         // screen coming in one part after another.
         let welcome = self.status == Status::SignedOut && self.settings.accounts.is_empty();
         let motion = welcome && !crate::system::reduces_motion();
+        // A new user's very first look: a hello with the animation (once, ever).
+        if welcome && !self.settings.welcomed {
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |this, cx| this.play_welcome(cx)).ok();
+            })
+            .detach();
+        }
         let enter = |part: usize, element: AnyElement| -> AnyElement {
             if motion {
                 welcome_entrance(part, element)

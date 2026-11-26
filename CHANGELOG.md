@@ -9,6 +9,7 @@
 - **A new thought every day.** Inbox Zero has 365 lines now, one for each day of the year: some quiet, some silly, and some famous quotes, with their authors set apart below them.
 - **A sound of its own.** New mail, snoozes coming back and reminders now play Nimbra's own chime instead of the system's (it is kept in your Sounds folder, where macOS looks for notification sounds).
 - **Arrange the sidebar.** Drag accounts, Split Inbox, Mailbox and labels into the order you like, each within its own section; right-click a mailbox to hide it, or to reset its section. A "hidden" row shows them again.
+- **A hello on the first launch.** The welcome screen says hello as it comes in, once, the very first time Nimbra opens.
 - **Hear the notification sound.** A play button next to "Play a sound" in Settings › Notifications.
 
 ### Changed
