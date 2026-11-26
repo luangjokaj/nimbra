@@ -62,6 +62,7 @@ impl Nimbra {
                             this.connection = Some(Arc::new(client));
                             this.open_store(cx);
                         }
+                        Err(error) if error.is::<mail::Replaced>() => {}
                         Err(error) => {
                             this.status = Status::Failed(error.to_string().into());
                             cx.notify();
@@ -105,8 +106,11 @@ impl Nimbra {
                         })
                         .await;
                     this.update(cx, |this, cx| {
-                        // Another account was switched to meanwhile: nothing is kept.
-                        if this.account_gen != generation {
+                        // Another account was switched to meanwhile, or another sign-in
+                        // started: nothing is kept.
+                        if this.account_gen != generation
+                            || result.as_ref().is_err_and(|e| e.is::<mail::Replaced>())
+                        {
                             return;
                         }
                         let kept = match result {
@@ -211,6 +215,7 @@ impl Nimbra {
                             this.connection = Some(Arc::new(client));
                             this.open_store(cx);
                         }
+                        Err(error) if error.is::<mail::Replaced>() => {}
                         Err(error) => {
                             this.notice = Some(format!("No account was added: {error}").into());
                             cx.notify();
@@ -812,6 +817,7 @@ impl Nimbra {
                             this.notice = None;
                             this.check_photo_again(cx);
                         }
+                        Err(error) if error.is::<mail::Replaced>() => {}
                         Err(error) => {
                             this.notice = Some(format!("The photo was not added: {error}").into());
                             cx.notify();
@@ -938,6 +944,7 @@ impl Nimbra {
                             this.connection = Some(Arc::new(client));
                             this.delete_forever(ids, cx);
                         }
+                        Err(error) if error.is::<mail::Replaced>() => {}
                         Err(error) => {
                             this.notice = Some(format!("Nothing was deleted: {error}").into());
                             cx.notify();

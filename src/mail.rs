@@ -113,6 +113,31 @@ impl std::fmt::Display for Offline {
 
 impl std::error::Error for Offline {}
 
+/// A browser sign-in that stopped waiting because a newer one took its place: nothing to
+/// tell anyone, the newer one is on screen.
+#[derive(Debug)]
+pub struct Replaced;
+
+impl std::fmt::Display for Replaced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("A newer sign-in took this one’s place.")
+    }
+}
+
+impl std::error::Error for Replaced {}
+
+static SIGN_INS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A browser sign-in starts waiting: any that still waits stops (`Replaced`).
+pub fn newest_sign_in() -> u64 {
+    SIGN_INS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+/// Whether the sign-in with this ticket is still the newest.
+pub fn still_newest(ticket: u64) -> bool {
+    SIGN_INS.load(std::sync::atomic::Ordering::SeqCst) == ticket
+}
+
 /// The connection failed once a request may already have reached Gmail, so it may have
 /// been carried out: a send like this is never made again by itself.
 #[derive(Debug)]

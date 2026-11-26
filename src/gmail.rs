@@ -267,6 +267,8 @@ pub struct SignIn {
     state: String,
     /// The address it has to be, when it is a sign-in to an account Nimbra already has.
     expected: Option<String>,
+    /// Stops waiting once a newer sign-in starts (`mail::newest_sign_in`).
+    ticket: u64,
 }
 
 impl SignIn {
@@ -307,6 +309,7 @@ impl SignIn {
                 verifier,
                 state,
                 expected: expected.map(String::from),
+                ticket: newest_sign_in(),
             },
             url.into(),
         ))
@@ -347,6 +350,9 @@ impl SignIn {
         loop {
             if Instant::now() > deadline {
                 bail!("Sign-in timed out. Please try again.");
+            }
+            if !crate::mail::still_newest(self.ticket) {
+                bail!(crate::mail::Replaced);
             }
             let stream = match self.listener.accept() {
                 Ok((stream, _)) => stream,

@@ -399,6 +399,8 @@ impl Nimbra {
                 sheet.busy = false;
                 sheet.microsoft = false;
                 let kept = match outcome {
+                    // Another sign-in started meanwhile: this one just stops.
+                    Err(MicrosoftStep::SignIn(error)) if error.is::<mail::Replaced>() => Ok(()),
                     Ok((email, tokens, servers)) => {
                         let for_account = sheet.for_account.clone();
                         let credential = Credential::Microsoft(tokens);
@@ -909,13 +911,14 @@ fn find_and_check(email: &str, password: &str, typed: Option<Servers>) -> Checke
 
 /// A readable reason a server refused: what happened and what to do, never the raw error.
 fn explain(error: &anyhow::Error, which: &str) -> SharedString {
+    // The server's own words, when it gave a reason ("enable IMAP first", "too many
+    // connections"), already cleaned to one short line.
+    let said = error
+        .downcast_ref::<crate::imap_mail::ServerSaid>()
+        .map(|said| said.0.trim().to_string())
+        .filter(|said| !said.is_empty());
     if error.is::<mail::SignedOut>() || error.is::<crate::smtp::AuthFailed>() {
-        // The server's own words, when it gave a reason ("enable IMAP first"), already
-        // cleaned to one short line.
-        let reason = error
-            .downcast_ref::<crate::imap_mail::ServerSaid>()
-            .map(|said| said.0.trim().to_string())
-            .filter(|said| !said.is_empty())
+        let reason = said
             .map(|said| format!(" It said: “{said}”."))
             .unwrap_or_default();
         format!(
@@ -923,7 +926,15 @@ fn explain(error: &anyhow::Error, which: &str) -> SharedString {
         )
         .into()
     } else if error.is::<mail::Offline>() {
-        format!("The {which} server couldn’t be reached. Check its name and port.").into()
+        match said {
+            Some(said) => {
+                format!("The {which} server can’t sign in now. It said: “{said}”. Try again later.")
+                    .into()
+            }
+            None => {
+                format!("The {which} server couldn’t be reached. Check its name and port.").into()
+            }
+        }
     } else {
         eprintln!("nimbra: the {which} server refused: {error:#}");
         format!("The {which} server refused the connection. Check its name, port and security.")
