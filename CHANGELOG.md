@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.2] - 2026-11-26
 
 ### New
 - **Signatures for each account.** Make as many as you like in Settings › Composing, as formatted text or HTML with links and images, and pick one (or none) from the handle above it while you write. Images in a signature (a logo, say) show while you write and in the Preview: Nimbra downloads each one once, over https only, and keeps it on your Mac.
