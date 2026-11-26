@@ -25,6 +25,23 @@ fn forget_body(mail: &mut Mail) {
     }
 }
 
+/// An account's own lists in its store, read together when the store opens.
+struct Kept {
+    outbox: Outbox,
+    scheduled: Vec<scheduled::Scheduled>,
+    snoozed: Vec<Snooze>,
+}
+
+impl Kept {
+    fn read(store: &crate::store::Store) -> Self {
+        Self {
+            outbox: store.load("outbox").unwrap_or_default(),
+            scheduled: scheduled::list(store),
+            snoozed: store.load("snoozed").unwrap_or_default(),
+        }
+    }
+}
+
 /// Mailbox work on its way. A task kept here is dropped, and so stopped, when newer work
 /// takes its place.
 #[derive(Default)]
@@ -565,10 +582,11 @@ impl Nimbra {
                         }
                         Job::left_behind(&account, &client, &store)
                     });
-                    anyhow::Ok((store, saved, mails, unsent))
+                    let kept = Kept::read(&store);
+                    anyhow::Ok((store, saved, mails, unsent, kept))
                 })
                 .await;
-            let Ok((store, saved, mails, unsent)) = opened else {
+            let Ok((store, saved, mails, unsent, kept)) = opened else {
                 eprintln!("nimbra: mail store unavailable; continuing without it");
                 this.update(cx, |this, cx| {
                     if this.account_gen != generation {
@@ -588,11 +606,17 @@ impl Nimbra {
                 if this.account_gen != generation {
                     return;
                 }
-                // Read here, not above: a catch-up from before a switch may just have
-                // taken what it sent out of it.
-                let mut outbox: Outbox = store.load("outbox").unwrap_or_default();
-                this.scheduled = scheduled::list(&store);
-                this.snoozed = store.load("snoozed").unwrap_or_default();
+                // A catch-up from before a switch may be taking what it sent out of them
+                // right now: then they are read again, after it.
+                let kept = if crate::store::writing() || this.catching_up.contains(&this.account_id)
+                {
+                    Kept::read(&store)
+                } else {
+                    kept
+                };
+                let mut outbox = kept.outbox;
+                this.scheduled = kept.scheduled;
+                this.snoozed = kept.snoozed;
                 let queued_meanwhile = !this.outbox.changes.is_empty();
                 outbox.changes.append(&mut this.outbox.changes);
                 this.outbox = outbox;
@@ -1555,16 +1579,44 @@ impl Nimbra {
                 self.went_offline(cx);
                 return;
             }
-        } else if self.away_waiting.contains(&account) {
-            let waiting = self
-                .other_stores
-                .get(&account)
-                .and_then(|store| store.load::<Outbox>("outbox"))
-                .is_some_and(|outbox| outbox.changes.iter().any(|(queued, _)| *queued == id));
-            if waiting && self.queue_away(&account, vec![(id.clone(), change)]) {
-                return;
-            }
+        } else if self.away_waiting.contains(&account)
+            && let Some(store) = self.other_stores.get(&account).cloned()
+        {
+            // Read and queued on the store's own thread, in order with its other writes.
+            let queued = store.update_later("outbox", {
+                let id = id.clone();
+                move |outbox: &mut Outbox| {
+                    let waiting = outbox.changes.iter().any(|(queued, _)| *queued == id);
+                    if waiting {
+                        outbox.changes.push((id, change));
+                    }
+                    waiting
+                }
+            });
+            cx.spawn(async move |this, cx| {
+                if queued.await != Some(true) {
+                    this.update(cx, |this, cx| {
+                        this.make_change(client, account, id, change, removed, cx)
+                    })
+                    .ok();
+                }
+            })
+            .detach();
+            return;
         }
+        self.make_change(client, account, id, change, removed, cx);
+    }
+
+    /// Makes a change to a thread on the server, keeping it for later when offline.
+    fn make_change(
+        &mut self,
+        client: Arc<mail::Client>,
+        account: String,
+        id: String,
+        change: mail::Change,
+        removed: bool,
+        cx: &mut Context<Self>,
+    ) {
         if removed {
             self.shifted.insert(self.mailbox);
         }

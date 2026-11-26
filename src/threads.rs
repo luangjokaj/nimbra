@@ -28,31 +28,6 @@ pub(super) struct SnoozeChoice {
     pub(super) no_reply: bool,
 }
 
-/// Runs store changes one after another on a thread of their own, in the order they were
-/// asked for: a snooze undone at once must not be written before the snooze.
-fn in_order(change: Box<dyn FnOnce() + Send>) {
-    type Change = Box<dyn FnOnce() + Send>;
-    static QUEUE: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Change>>> =
-        std::sync::OnceLock::new();
-    let queue = QUEUE.get_or_init(|| {
-        let (queue, changes) = std::sync::mpsc::channel::<Change>();
-        std::thread::Builder::new()
-            .name("nimbra-snoozed".into())
-            .spawn(move || changes.into_iter().for_each(|change| change()))
-            .ok()
-            .map(|_| queue)
-    });
-    // No thread to be had: here, rather than not at all.
-    match queue {
-        Some(queue) => {
-            if let Err(refused) = queue.send(change) {
-                (refused.0)();
-            }
-        }
-        None => change(),
-    }
-}
-
 impl Nimbra {
     /// The thread left the undo history by itself (back with a newer message, or Gmail
     /// refused the change).
@@ -338,13 +313,7 @@ impl Nimbra {
         store: Arc<crate::store::Store>,
         change: impl FnOnce(&mut Vec<Snooze>) + Send + 'static,
     ) {
-        let working = self.writes.begin();
-        in_order(Box::new(move || {
-            let _working = working;
-            if store.update("snoozed", change).is_err() {
-                eprintln!("nimbra: could not save the snoozed list");
-            }
-        }));
+        drop(store.update_later("snoozed", change));
     }
 
     /// Forgets the snoozes of these threads, whichever account's list has them. Nothing is
@@ -409,22 +378,20 @@ impl Nimbra {
     }
 
     /// The other signed-in accounts' snoozes, each marked with its account so its row acts
-    /// there. From memory: each account's list is read from its store once, and kept up to
-    /// date by the checks that change it there.
+    /// there. From memory: each list is read off the main thread when its store opens, and
+    /// kept up to date by the checks that change it there.
     pub(super) fn read_snoozed_elsewhere(&mut self) {
         // The shown account's list is `snoozed`; a copy from before it was shown is old.
         self.flow.other_snoozed.remove(&self.account_id);
         let mut found = Vec::new();
-        for (account, store) in &self.other_stores {
+        for account in self.other_stores.keys() {
             if *account == self.account_id || !self.others.contains_key(account) {
                 continue;
             }
-            let list = self
-                .flow
-                .other_snoozed
-                .entry(account.clone())
-                .or_insert_with(|| store.load::<Vec<Snooze>>("snoozed").unwrap_or_default());
-            for snooze in list.iter() {
+            let Some(list) = self.flow.other_snoozed.get(account) else {
+                continue;
+            };
+            for snooze in list {
                 // Kept with its own account, or with this one from All inboxes (shown here).
                 let mut snooze = match snooze.mail.account.as_deref() {
                     Some(owner) if owner == self.account_id => continue,

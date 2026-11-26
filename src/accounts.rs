@@ -474,10 +474,11 @@ impl Nimbra {
                     let waiting = store
                         .load::<Outbox>("outbox")
                         .is_some_and(|outbox| !outbox.changes.is_empty());
-                    anyhow::Ok((store, waiting))
+                    let snoozed = store.load::<Vec<Snooze>>("snoozed").unwrap_or_default();
+                    anyhow::Ok((store, waiting, snoozed))
                 })
                 .await;
-            let Ok((store, waiting)) = opened else {
+            let Ok((store, waiting, snoozed)) = opened else {
                 return;
             };
             this.update(cx, |this, cx| {
@@ -487,6 +488,7 @@ impl Nimbra {
                         this.away_waiting.insert(account.clone());
                     }
                     this.other_stores.insert(account.clone(), store);
+                    this.took_snoozed(account.clone(), snoozed);
                     this.load_photo(account, cx);
                 }
             })
@@ -571,6 +573,9 @@ impl Nimbra {
                     self.away_waiting.insert(self.account_id.clone());
                 }
                 self.other_stores.insert(self.account_id.clone(), store);
+                self.flow
+                    .other_snoozed
+                    .insert(self.account_id.clone(), self.snoozed.clone());
             }
         }
         self.others.remove(&id);
