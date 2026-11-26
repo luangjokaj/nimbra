@@ -1199,7 +1199,7 @@ impl Client {
                 Ok(OutgoingFile {
                     name: att.name.clone(),
                     mime: att.mime.clone(),
-                    bytes: Provider::download(self, &att.message_id, &att.attachment_id)?,
+                    bytes: Provider::download(self, &att.message_id, &att.attachment_id)?.into(),
                 })
             })
             .collect()

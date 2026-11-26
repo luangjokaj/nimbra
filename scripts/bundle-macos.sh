@@ -9,7 +9,11 @@ VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 
 cargo build --release
 
-rm -rf "$APP"
+# Moved aside, never deleted in place: a running copy whose bundle is deleted fails its
+# signature check, and the keychain may then refuse it.
+if [ -e "$APP" ]; then
+  mv "$APP" "target/bundle/Nimbra-$(date +%Y%m%d%H%M%S)-$$.app.old"
+fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/nimbra "$APP/Contents/MacOS/nimbra"
 
@@ -40,6 +44,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
+  <!-- Attachments saved from mail are marked as downloaded, so Gatekeeper checks them. -->
+  <key>LSFileQuarantineEnabled</key><true/>
 </dict>
 </plist>
 PLIST

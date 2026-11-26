@@ -229,12 +229,59 @@ pub struct Outgoing {
     pub reply: Option<ReplyTo>,
 }
 
-/// A file to attach, read into memory.
+/// A file to attach, read into memory. Its bytes are shared: the composer, its autosaves
+/// and a message on its way out all hold the same copy.
 #[derive(Clone, serde::Serialize, Deserialize)]
 pub struct OutgoingFile {
     pub name: String,
     pub mime: String,
-    pub bytes: Vec<u8>,
+    #[serde(with = "file_bytes")]
+    pub bytes: std::sync::Arc<[u8]>,
+}
+
+/// File bytes in a stored record: base64, a third larger than the file. Records written
+/// before kept them as a list of numbers, up to four times larger; those still read.
+mod file_bytes {
+    use std::sync::Arc;
+
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::de::{Error, SeqAccess, Visitor};
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<[u8]>, D::Error> {
+        deserializer.deserialize_any(Bytes)
+    }
+
+    struct Bytes;
+
+    impl<'de> Visitor<'de> for Bytes {
+        type Value = Arc<[u8]>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("base64 text or a list of bytes")
+        }
+
+        fn visit_str<E: Error>(self, text: &str) -> Result<Self::Value, E> {
+            STANDARD.decode(text).map(Arc::from).map_err(E::custom)
+        }
+
+        fn visit_bytes<E: Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+            Ok(Arc::from(bytes))
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(1 << 20));
+            while let Some(byte) = seq.next_element::<u8>()? {
+                bytes.push(byte);
+            }
+            Ok(Arc::from(bytes))
+        }
+    }
 }
 
 /// Every address in a To, Cc or Bcc field, each validated.
@@ -300,6 +347,89 @@ pub(crate) fn push_base64(message: &mut String, data: &[u8]) {
         message.push_str(std::str::from_utf8(line).unwrap_or_default());
         message.push_str("\r\n");
     }
+}
+
+/// How long a header line is kept, folded where it would pass this (RFC 5322 asks for 78
+/// characters and allows no more than 998).
+const LINE: usize = 76;
+/// Bytes of the subject in one encoded word: 64 characters once encoded, so that each fits
+/// on a line.
+const SUBJECT_WORD: usize = 39;
+/// The longest Message-ID that is still referred to: one cannot be folded.
+const LONGEST_REFERENCE: usize = 900;
+
+/// Appends `Name: item, item, …`, folding before an item that would pass `LINE`.
+fn push_folded<'a>(
+    message: &mut String,
+    name: &str,
+    items: impl Iterator<Item = &'a str>,
+    separator: &str,
+) {
+    message.push_str(name);
+    message.push(':');
+    let mut line = name.len() + 1;
+    for (n, item) in items.enumerate() {
+        if n > 0 {
+            message.push_str(separator);
+            line += separator.len();
+        }
+        if n > 0 && line + 1 + item.len() > LINE {
+            message.push_str("\r\n");
+            line = 0;
+        }
+        message.push(' ');
+        message.push_str(item);
+        line += 1 + item.len();
+    }
+    message.push_str("\r\n");
+}
+
+/// `text` in pieces of at most `most` bytes, never splitting a character.
+fn utf8_pieces(text: &str, most: usize) -> impl Iterator<Item = &str> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let mut end = rest.len().min(most);
+        while !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        let end = if end == 0 {
+            rest.chars().next().map_or(rest.len(), char::len_utf8)
+        } else {
+            end
+        };
+        let (piece, after) = rest.split_at(end);
+        rest = after;
+        Some(piece)
+    })
+}
+
+/// Ends a header line with `; key*=UTF-8''value`, split into numbered RFC 2231
+/// continuations on lines of their own when it is long. `value` is percent-encoded.
+fn push_parameter(message: &mut String, key: &str, value: &str) {
+    if key.len() + value.len() + 12 <= LINE - "Content-Disposition: attachment;".len() {
+        message.push_str(&format!(" {key}*=UTF-8''{value}\r\n"));
+        return;
+    }
+    let mut pieces = Vec::new();
+    let mut rest = value;
+    while !rest.is_empty() {
+        let mut end = rest.len().min(LINE - 24);
+        // Never inside a `%XX`.
+        while end < rest.len() && rest[..end].rfind('%').is_some_and(|at| at + 3 > end) {
+            end -= 1;
+        }
+        pieces.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    for (n, piece) in pieces.iter().enumerate() {
+        let charset = if n == 0 { "UTF-8''" } else { "" };
+        let end = if n + 1 == pieces.len() { "" } else { ";" };
+        message.push_str(&format!("\r\n {key}*{n}*={charset}{piece}{end}"));
+    }
+    message.push_str("\r\n");
 }
 
 /// RFC 2231 file name parameter value: percent-encoded UTF-8.
@@ -369,16 +499,23 @@ impl Outgoing {
         let mut message = String::new();
         for (name, list) in [("To", &to), ("Cc", &cc), ("Bcc", &bcc)] {
             if !list.is_empty() {
-                message.push_str(&format!("{name}: {}\r\n", list.join(", ")));
+                push_folded(&mut message, name, list.iter().map(String::as_str), ",");
             }
         }
-        // Encoded-word form keeps the header ASCII and free of line breaks whatever was typed.
-        message.push_str(&format!(
-            "Subject: =?UTF-8?B?{}?=\r\n",
-            STANDARD.encode(clean_header(&self.subject))
-        ));
+        // Encoded words keep the header ASCII and free of line breaks whatever was typed.
+        let subject = clean_header(&self.subject);
+        let words: Vec<String> = utf8_pieces(&subject, SUBJECT_WORD)
+            .map(|piece| format!("=?UTF-8?B?{}?=", STANDARD.encode(piece)))
+            .collect();
+        push_folded(
+            &mut message,
+            "Subject",
+            words.iter().map(String::as_str),
+            "",
+        );
         if let Some(reply) = &self.reply
             && is_message_id(&reply.message_id)
+            && reply.message_id.len() <= LONGEST_REFERENCE
         {
             message.push_str(&format!("In-Reply-To: {}\r\n", reply.message_id));
             message.push_str(&format!("References: {}\r\n", reply.message_id));
@@ -435,10 +572,10 @@ impl Outgoing {
                 };
                 let encoded = encode_filename(&name);
                 message.push_str(&format!("--{boundary}\r\n"));
-                message.push_str(&format!("Content-Type: {mime}; name*=UTF-8''{encoded}\r\n"));
-                message.push_str(&format!(
-                    "Content-Disposition: attachment; filename*=UTF-8''{encoded}\r\n"
-                ));
+                message.push_str(&format!("Content-Type: {mime};"));
+                push_parameter(&mut message, "name", &encoded);
+                message.push_str("Content-Disposition: attachment;");
+                push_parameter(&mut message, "filename", &encoded);
                 message.push_str("Content-Transfer-Encoding: base64\r\n\r\n");
                 push_base64(&mut message, &file.bytes);
             }
@@ -587,10 +724,12 @@ pub(crate) fn people(list: &str) -> Vec<Person> {
 }
 
 /// A file name that is safe to create in a folder: no path separators, no leading dots,
-/// no control characters, and not too long.
+/// no control characters, no marks that turn text around (which make `fdp.command` read
+/// as `dnammoc.pdf`), and not too long.
 pub fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
+        .filter(|c| !is_direction_mark(*c))
         .map(|c| {
             if c.is_control() || "/\\:".contains(c) {
                 '_'
@@ -606,6 +745,13 @@ pub fn safe_file_name(name: &str) -> String {
     } else {
         cleaned
     }
+}
+
+fn is_direction_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// The message a `mailto:` unsubscribe link asks for.
@@ -1019,6 +1165,73 @@ mod tests {
         )
         .unwrap();
         assert!(draft.contains("Bcc: hidden@example.com\r\n"));
+    }
+
+    #[test]
+    fn long_headers_are_folded_and_read_back_whole() {
+        use mail_parser::{MessageParser, MimeHeaders};
+        let to: Vec<String> = (0..60).map(|n| format!("person.{n}@example.com")).collect();
+        let subject = "Résumé ✉ ".repeat(80);
+        let name = "Quarterly résumé of everything we shipped this year ✓ final final.pdf";
+        let mail = Outgoing {
+            to: to.join(", "),
+            subject: subject.clone(),
+            body: "Hello".into(),
+            files: vec![OutgoingFile {
+                name: name.into(),
+                mime: "application/pdf".into(),
+                bytes: b"%PDF".as_slice().into(),
+            }],
+            reply: Some(ReplyTo {
+                thread_id: "t".into(),
+                message_id: format!("<{}@example.com>", "x".repeat(950)),
+            }),
+            ..Default::default()
+        };
+        let raw = mail.to_rfc822(false, &[]).unwrap();
+        let text = String::from_utf8(raw.clone()).unwrap();
+        let head = &text[..text.find("\r\n\r\n").unwrap()];
+        for line in text.split("\r\n") {
+            assert!(line.len() <= 998, "{} octets", line.len());
+        }
+        for line in head.split("\r\n") {
+            assert!(line.len() <= 78, "header line of {}: {line}", line.len());
+        }
+        assert!(
+            !head.contains("In-Reply-To"),
+            "an id that cannot be folded is left out"
+        );
+
+        let parsed = MessageParser::default().parse(&raw).unwrap();
+        assert_eq!(parsed.subject(), Some(subject.trim_end()));
+        let read: Vec<&str> = parsed
+            .to()
+            .unwrap()
+            .iter()
+            .filter_map(|a| a.address())
+            .collect();
+        assert_eq!(read, to);
+        let file = parsed.attachments().next().unwrap();
+        assert_eq!(file.attachment_name(), Some(name));
+    }
+
+    #[test]
+    fn file_names_lose_the_marks_that_turn_text_around() {
+        assert_eq!(
+            safe_file_name("invoice\u{202e}fdp.command"),
+            "invoicefdp.command"
+        );
+        assert_eq!(
+            safe_file_name("\u{2067}photo\u{2069}\u{200f}.jpg\u{061c}"),
+            "photo.jpg"
+        );
+        assert_eq!(safe_file_name("\u{202e}"), "attachment");
+        assert_eq!(safe_file_name("../../etc/passwd"), "_.._etc_passwd");
+        assert_eq!(
+            safe_file_name("رسالة.pdf"),
+            "رسالة.pdf",
+            "right-to-left text itself stays"
+        );
     }
 
     #[test]

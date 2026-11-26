@@ -17,5 +17,13 @@ if [ -z "$IDENTITY" ]; then
   echo "No signing certificate found; leaving $TARGET unsigned (Keychain will ask on every rebuild)." >&2
   exit 0
 fi
-codesign --force --sign "$IDENTITY" --identifier com.riangle.nimbra "$TARGET"
+# The hardened runtime stops other programs from loading code into Nimbra, which would
+# then read its keychain items as Nimbra. A secure timestamp (which needs the network) is
+# what notarization asks of a Developer ID signature.
+case "$IDENTITY" in
+  "Developer ID Application:"*) TIMESTAMP="--timestamp" ;;
+  *) TIMESTAMP="--timestamp=none" ;;
+esac
+codesign --force --options runtime "$TIMESTAMP" --sign "$IDENTITY" \
+  --identifier com.riangle.nimbra "$TARGET"
 echo "Signed $TARGET as: $IDENTITY"

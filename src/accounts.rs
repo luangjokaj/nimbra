@@ -700,9 +700,9 @@ impl Nimbra {
             if let Some(store) = store.clone() {
                 let kept = cx
                     .background_executor()
-                    .spawn(async move { store.load::<Vec<u8>>(PHOTO) })
+                    .spawn(async move { store.load::<Vec<u8>>(PHOTO).and_then(photo_image) })
                     .await;
-                if let Some(image) = kept.and_then(photo_image) {
+                if let Some(image) = kept {
                     this.update(cx, |this, cx| {
                         if this.keeps(&account) {
                             this.photos.insert(account.clone(), image);
@@ -727,7 +727,15 @@ impl Nimbra {
                             mail::Photo::NotAllowed => {}
                         }
                     }
-                    anyhow::Ok(photo)
+                    let (answer, image) = match photo {
+                        mail::Photo::Image(bytes) => (PhotoAnswer::Theirs, photo_image(bytes)),
+                        mail::Photo::Unchecked(bytes) => {
+                            (PhotoAnswer::Unchecked, photo_image(bytes))
+                        }
+                        mail::Photo::NoPhoto => (PhotoAnswer::None, None),
+                        mail::Photo::NotAllowed => (PhotoAnswer::NotAllowed, None),
+                    };
+                    anyhow::Ok((answer, image))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -735,8 +743,8 @@ impl Nimbra {
                 if !this.keeps(&account) {
                     return;
                 }
-                let photo = match fetched {
-                    Ok(photo) => photo,
+                let (answer, image) = match fetched {
+                    Ok(fetched) => fetched,
                     Err(error) => {
                         // Never the address or the photo's link.
                         eprintln!("nimbra: profile photo not loaded ({error})");
@@ -744,13 +752,7 @@ impl Nimbra {
                         return;
                     }
                 };
-                let (answer, bytes) = match photo {
-                    mail::Photo::Image(bytes) => (PhotoAnswer::Theirs, Some(bytes)),
-                    mail::Photo::Unchecked(bytes) => (PhotoAnswer::Unchecked, Some(bytes)),
-                    mail::Photo::NoPhoto => (PhotoAnswer::None, None),
-                    mail::Photo::NotAllowed => (PhotoAnswer::NotAllowed, None),
-                };
-                if let Some(image) = bytes.and_then(photo_image) {
+                if let Some(image) = image {
                     this.photos.insert(account.clone(), image);
                 } else if answer == PhotoAnswer::None {
                     this.photos.remove(&account);
@@ -968,8 +970,9 @@ impl Nimbra {
     /// Settings › Privacy: forgets the mail kept on this Mac (Gmail is untouched) and loads
     /// the open mailbox again.
     pub(super) fn clear_local_mail(&mut self, cx: &mut Context<Self>) {
+        // Not what is waiting to be sent, scheduled or snoozed: that is nowhere else.
         if let Some(store) = &self.store {
-            store.clear();
+            drop(store.clear_mail_later());
         }
         self.cache.clear();
         self.synced_to.clear();
@@ -984,8 +987,9 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Signs out: forgets the sign-in (Google's, the password, or Microsoft's) and removes the mail kept on this Mac and its
-    /// key. Settings (signature, theme) stay.
+    /// Signs out: ends the sign-in (Google's, the password, or Microsoft's) and removes the
+    /// mail kept on this Mac and its key. Settings (signature, theme) stay. Messages that
+    /// wait for the connection go with it: ask first when `waiting_to_send` has any.
     pub(super) fn sign_out(&mut self, cx: &mut Context<Self>) {
         let account = self.account_id.clone();
         // Signing out deletes what is kept of it.
@@ -1001,9 +1005,13 @@ impl Nimbra {
             cx.notify();
             return;
         }
+        let dropped = self.waiting_to_send(&account);
         self.abandon_sends(&account);
         let gone = account.clone();
         std::thread::spawn(move || {
+            if let Ok(Some(token)) = gmail::stored_refresh_token(&gone) {
+                revoke_google_sign_in(&token);
+            }
             gmail::forget_refresh_token(&gone);
             crate::servers::forget_password(&gone);
             crate::microsoft::forget_refresh_token(&gone);
@@ -1020,6 +1028,7 @@ impl Nimbra {
             self.switch_account(next, cx);
             self.notice =
                 Some("Signed out of that account. Its mail was removed from this Mac.".into());
+            self.tell_unsent_dropped(dropped);
             return;
         }
         self.settings.active = String::new();
@@ -1051,7 +1060,18 @@ impl Nimbra {
         self.account = "".into();
         self.status = Status::SignedOut;
         self.notice = Some("Signed out. The mail kept on this Mac was removed.".into());
+        self.tell_unsent_dropped(dropped);
         cx.notify();
+    }
+
+    fn tell_unsent_dropped(&mut self, dropped: usize) {
+        match dropped {
+            0 => {}
+            1 => self.tell("Signed out. A message waiting to be sent was deleted."),
+            n => self.tell(format!(
+                "Signed out. {n} messages waiting to be sent were deleted."
+            )),
+        }
     }
 
     /// Whether an error ends the shown account's sign-in. Other accounts' connections are in
@@ -1060,5 +1080,17 @@ impl Nimbra {
         error
             .downcast_ref::<mail::SignedOut>()
             .is_some_and(|e| e.account.is_empty() || e.account == self.account_id)
+    }
+}
+
+/// Ends a Google sign-in at Google too, so that it does not stay valid (and listed in the
+/// account's third-party access) after signing out. Best effort: it is forgotten here
+/// whatever Google answers. Microsoft has no such endpoint for apps like this one.
+fn revoke_google_sign_in(refresh_token: &str) {
+    let revoked = ureq::post("https://oauth2.googleapis.com/revoke")
+        .timeout(Duration::from_secs(10))
+        .send_form(&[("token", refresh_token)]);
+    if revoked.is_err() {
+        eprintln!("nimbra: Google did not confirm the end of the sign-in");
     }
 }

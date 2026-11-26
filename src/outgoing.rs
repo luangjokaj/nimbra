@@ -64,24 +64,21 @@ impl Nimbra {
             .filter(|job| job.account == self.account_id)
     }
 
-    /// Adds to the queue of an account that is not shown, in its store. At once, as
-    /// `drop_caught_up` takes from it the same way. Whether that worked.
+    /// Adds to the queue of an account that is not shown, in its store, in order with
+    /// `drop_caught_up`, which takes from it the same way. Whether it has a store to go in.
     pub(super) fn queue_away(
         &mut self,
         account: &str,
         changes: Vec<(String, mail::Change)>,
     ) -> bool {
-        let kept = self.other_stores.get(account).is_some_and(|store| {
-            store
-                .update("outbox", |outbox: &mut Outbox| {
-                    outbox.changes.extend(changes)
-                })
-                .is_ok()
-        });
-        if kept {
-            self.away_waiting.insert(account.to_string());
-        }
-        kept
+        let Some(store) = self.other_stores.get(account) else {
+            return false;
+        };
+        drop(store.update_later("outbox", move |outbox: &mut Outbox| {
+            outbox.changes.extend(changes)
+        }));
+        self.away_waiting.insert(account.to_string());
+        true
     }
 
     /// Makes the changes that wait for an account that is not shown.
@@ -112,44 +109,45 @@ impl Nimbra {
                 catch_up(&*client, &changes, &[]).map_or(0, |done| done.changes)
             })
             .await;
-        this.update(cx, |this, cx| {
+        let dropped = this.update(cx, |this, cx| {
             this.catching_up.remove(account);
-            this.drop_caught_up(account, Some(&store), made);
-            let left = store
-                .load::<Outbox>("outbox")
-                .is_some_and(|outbox| !outbox.changes.is_empty());
-            if !left {
-                this.away_waiting.remove(account);
-            }
             cx.notify();
-        })
-        .ok();
+            this.drop_caught_up(account, Some(&store), made)
+        });
+        // Shown by now, its queue is the one in memory; a failed write leaves it waiting.
+        let Ok(Some(dropped)) = dropped else {
+            return;
+        };
+        if dropped.await == Some(false) {
+            this.update(cx, |this, cx| {
+                this.away_waiting.remove(account);
+                cx.notify();
+            })
+            .ok();
+        }
     }
 
     /// Takes the changes a catch-up got through out of its account's queue, whichever is
-    /// shown by now.
+    /// shown by now. For one kept in a store, whether any are left once that is written.
     fn drop_caught_up(
         &mut self,
         account: &str,
         store: Option<&Arc<crate::store::Store>>,
         changes: usize,
-    ) {
-        if changes == 0 {
-            return;
-        }
+    ) -> Option<crate::store::Later<bool>> {
         if account == self.account_id && (self.store.is_some() || store.is_none()) {
-            self.outbox
-                .changes
-                .drain(..changes.min(self.outbox.changes.len()));
-            self.save_outbox();
-        } else if let Some(store) = store
-            && let Some(mut outbox) = store.load::<Outbox>("outbox")
-        {
-            outbox.changes.drain(..changes.min(outbox.changes.len()));
-            if store.save("outbox", &outbox).is_err() {
-                eprintln!("nimbra: could not save the offline queue");
+            if changes > 0 {
+                self.outbox
+                    .changes
+                    .drain(..changes.min(self.outbox.changes.len()));
+                self.save_outbox();
             }
+            return None;
         }
+        Some(store?.update_later("outbox", move |outbox: &mut Outbox| {
+            outbox.changes.drain(..changes.min(outbox.changes.len()));
+            !outbox.changes.is_empty()
+        }))
     }
 
     /// Gmail could not be reached: keep checking, then send what is waiting.
@@ -200,7 +198,9 @@ impl Nimbra {
                     // First, and whoever is shown by now.
                     this.catching_up.remove(&account);
                     let changed = result.as_ref().map_or(0, |done| done.changes);
-                    this.drop_caught_up(&account, store.as_ref(), changed);
+                    if changed > 0 {
+                        drop(this.drop_caught_up(&account, store.as_ref(), changed));
+                    }
                     let left = |job: &Arc<Job>| matches!(job.stage(), Stage::Held | Stage::Out);
                     let through: Vec<_> =
                         this.queue.iter().filter(|job| !left(job)).cloned().collect();
@@ -249,13 +249,11 @@ impl Nimbra {
         .detach();
     }
 
-    /// Saves the offline queue at once: saved in the background, an older copy could land
-    /// last, or not before the app quits.
+    /// Saves the offline queue on the store's writer, in order with the saves before it;
+    /// quitting waits for it.
     pub(super) fn save_outbox(&self) {
-        if let Some(store) = &self.store
-            && store.save("outbox", &self.outbox).is_err()
-        {
-            eprintln!("nimbra: could not save the offline queue");
+        if let Some(store) = &self.store {
+            drop(store.save_later("outbox", self.outbox.clone()));
         }
     }
 
@@ -380,7 +378,39 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Forgets an account's unsent mail: whoever signs in next must not send it.
+    /// Messages of an account that wait for the connection, for asking before signing out
+    /// drops them.
+    pub(super) fn waiting_to_send(&self, account: &str) -> usize {
+        self.queue
+            .iter()
+            .filter(|job| job.account == account)
+            .count()
+    }
+
+    /// The account stopped taking its sign-in: nothing of it is sent meanwhile, and what
+    /// waited stays on disk (`Job::left_behind`) for when it is signed in again. What could
+    /// not be kept stays in memory, for quitting to warn about.
+    pub(super) fn hold_sends(&mut self, account: &str) {
+        self.steps.forget(account);
+        let held = |job: &Arc<Job>| job.account == account;
+        let unkept: Vec<_> = self
+            .sends
+            .iter()
+            .chain(&self.queue)
+            .filter(|job| held(job) && !job.kept() && job.stage() == Stage::Held)
+            .cloned()
+            .collect();
+        self.queue.retain(|job| !held(job));
+        self.sends.retain(|job| !held(job));
+        for job in unkept {
+            if !self.stranded.iter().any(|known| Arc::ptr_eq(known, &job)) {
+                self.stranded.push(job);
+            }
+        }
+    }
+
+    /// Forgets an account's unsent mail when the user signs out of it: whoever signs in
+    /// next must not send it.
     pub(super) fn abandon_sends(&mut self, account: &str) {
         self.queue.retain(|job| job.account != account);
         self.stranded.retain(|job| job.account != account);
@@ -563,6 +593,7 @@ impl Nimbra {
                     at_ms,
                     subject: outgoing.subject.clone(),
                     account: composer.account.clone(),
+                    out: false,
                 };
                 (self.account_id.clone(), self.store.clone(), item)
             });
@@ -748,24 +779,21 @@ impl Nimbra {
     pub(super) fn add_scheduled(&mut self, item: Scheduled, cx: &mut Context<Self>) {
         let (owner, store) = (self.account_id.clone(), self.store.clone());
         let (at, subject) = (item.at_ms, short(&item.subject, 40));
-        if let Some(store) = store {
-            let added = scheduled::add(&store, item).is_ok();
-            self.scheduled_added(&owner, at, &subject, added, cx);
-            return;
-        }
-        // Just switched to, and its store is still opening.
         cx.spawn(async move |this, cx| {
             let key = owner.clone();
             let added = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::store::Store::open_quietly(&key)
-                        .and_then(|store| scheduled::add(&store, item))
-                        .is_ok()
+                    // Just switched to, its store may still be opening.
+                    let store = match store {
+                        Some(store) => store,
+                        None => Arc::new(crate::store::Store::open_quietly(&key)?),
+                    };
+                    scheduled::add(&store, item)
                 })
                 .await;
             this.update(cx, |this, cx| {
-                this.scheduled_added(&owner, at, &subject, added, cx)
+                this.scheduled_added(&owner, at, &subject, added.ok(), cx)
             })
             .ok();
         })
@@ -777,29 +805,24 @@ impl Nimbra {
         owner: &str,
         at: i64,
         subject: &str,
-        added: bool,
+        list: Option<Vec<Scheduled>>,
         cx: &mut Context<Self>,
     ) {
-        if added {
-            self.notice = Some(format!("Scheduled for {}.", long_date(at)).into());
-        } else {
+        let Some(list) = list else {
             self.tell(format!("“{subject}” was not scheduled. It is in Drafts."));
-        }
-        if added && self.account_id == owner {
-            self.read_scheduled();
+            cx.notify();
+            return;
+        };
+        self.notice = Some(format!("Scheduled for {}.", long_date(at)).into());
+        if self.account_id == owner {
+            self.scheduled = list;
             self.watch_schedule(cx);
         }
         cx.notify();
     }
 
-    /// Takes the send-later list as it now is in the store.
-    fn read_scheduled(&mut self) {
-        if let Some(store) = &self.store {
-            self.scheduled = scheduled::list(store);
-        }
-    }
-
-    /// Checks for scheduled messages that are due, every 20 seconds while Nimbra runs.
+    /// Checks for scheduled messages and snoozes that are due: when the next one is, at
+    /// least every 20 seconds (the clock can be changed), for as long as there are any.
     pub(super) fn watch_schedule(&mut self, cx: &mut Context<Self>) {
         self.send_due(cx);
         self.wake_due(cx);
@@ -808,10 +831,8 @@ impl Nimbra {
         }
         self.schedule_watch = true;
         cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_secs(20))
-                    .await;
+            while let Ok(Some(wait)) = this.update(cx, |this, _| this.next_due_in()) {
+                cx.background_executor().timer(wait).await;
                 if this
                     .update(cx, |this, cx| {
                         this.send_due(cx);
@@ -824,6 +845,28 @@ impl Nimbra {
             }
         })
         .detach();
+    }
+
+    /// How long until the next scheduled message or snooze is due; `None`, and the watch
+    /// ends, once there are none.
+    fn next_due_in(&mut self) -> Option<Duration> {
+        const AT_MOST: Duration = Duration::from_secs(20);
+        let next = self
+            .scheduled
+            .iter()
+            .map(|item| item.at_ms)
+            .chain(self.snoozed.iter().map(|snooze| snooze.until_ms))
+            .min();
+        let Some(next) = next else {
+            self.schedule_watch = false;
+            return None;
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        // One already due waits for its connection, or is on its way: checked again later.
+        Some(match u64::try_from(next - now) {
+            Ok(ms) if ms > 0 => Duration::from_millis(ms).min(AT_MOST),
+            _ => AT_MOST,
+        })
     }
 
     fn send_due(&mut self, cx: &mut Context<Self>) {
@@ -847,18 +890,19 @@ impl Nimbra {
             let working = self.writes.begin();
             cx.spawn(async move |this, cx| {
                 let id = item.draft_id.clone();
-                let outcome = cx
+                let (outcome, list) = cx
                     .background_executor()
                     .spawn(async move {
                         let _working = working;
-                        scheduled::send(&store, &*client, &id)
+                        let outcome = scheduled::send(&store, &*client, &id, true);
+                        (outcome, scheduled::list(&store))
                     })
                     .await;
                 this.update(cx, |this, cx| {
                     this.sending_scheduled.remove(&item.draft_id);
                     // Whose list it was may no longer be the one shown.
                     if this.account_id == owner {
-                        this.read_scheduled();
+                        this.scheduled = list;
                     }
                     let subject = short(&item.subject, 40);
                     match &outcome {
@@ -867,6 +911,9 @@ impl Nimbra {
                         }
                         Some(Outcome::Gone) => this.tell(format!(
                             "“{subject}” is no longer in Drafts: check Sent to see if it went out."
+                        )),
+                        Some(Outcome::Unsure) => this.tell(format!(
+                            "“{subject}” may already be sent: check Sent before sending it again."
                         )),
                         // Offline and the like: tried again on the next check.
                         None => {}
@@ -999,7 +1046,7 @@ pub(super) fn carry_out_due(
         );
         let done = woken
             .as_ref()
-            .map_or_else(|error| mail::is_gone(error), |_| true);
+            .map_or_else(mail::is_gone, |_| true);
         // The list as it is by now: the account may have been opened and changed meanwhile.
         if done
             && store
@@ -1022,7 +1069,8 @@ pub(super) fn carry_out_due(
         }
         if let Some(client) = client_of(item.account.as_deref()) {
             let _working = writes.begin();
-            scheduled::send(store, &**client, &item.draft_id);
+            // One that may have gone out waits to be told about when its account is shown.
+            scheduled::send(store, &**client, &item.draft_id, false);
         }
     }
     back
