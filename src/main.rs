@@ -31,6 +31,7 @@ mod scheduled;
 mod sending;
 mod servers;
 mod settings;
+mod signin_page;
 mod sky;
 mod smtp;
 mod store;
