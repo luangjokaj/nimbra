@@ -71,6 +71,10 @@ pub(super) struct Composer {
     pub(super) grab: Option<(Grab, (f32, f32), (f32, f32), (f32, f32))>,
     pub(super) sending: bool,
     pub(super) error: Option<SharedString>,
+    /// A draft opened from Drafts, still on its way: shown at once, filled when it lands.
+    pub(super) loading: bool,
+    /// The draft save that follows a pause in typing; each edit replaces it.
+    pub(super) autosave: Option<gpui::Task<()>>,
     pub(super) _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -235,8 +239,8 @@ impl Composer {
             || !self.files.is_empty()
             || !self.kept.is_empty()
             || [&self.to, &self.cc, &self.bcc, &self.subject]
-                .iter()
-                .chain(self.lines.iter().collect::<Vec<_>>().iter())
+                .into_iter()
+                .chain(&self.lines)
                 .any(|input| !input.read(cx).text().trim().is_empty())
     }
 
@@ -310,7 +314,7 @@ impl Nimbra {
             .mails
             .get(self.selected)
             .filter(|_| !self.visible().is_empty())
-            .map(|mail| Source::latest(mail));
+            .map(Source::latest);
         self.open_compose_from(kind, source, cx);
     }
 
@@ -373,6 +377,8 @@ impl Nimbra {
             saved: false,
             sending: false,
             error: None,
+            loading: false,
+            autosave: None,
             _subscriptions: vec![s1, s2, s3, s4, s5],
         };
         let mut focus = composer.to.read(cx).focus_handle(cx);
@@ -518,7 +524,12 @@ impl Nimbra {
             }
             return;
         }
-        let Some(serial) = self.compose.as_ref().filter(|c| c.rich).map(|c| c.serial) else {
+        let Some(serial) = self
+            .compose
+            .as_ref()
+            .filter(|c| c.rich && !c.loading)
+            .map(|c| c.serial)
+        else {
             if self.editor_shown.take().is_some()
                 && let Some(editor) = &self.editor
             {
@@ -592,10 +603,18 @@ impl Nimbra {
             };
             editor.theme(serde_json::json!({
                 "--bg": css(if full { t.surface } else { t.raised }),
+                "--raised": css(t.raised),
                 "--text": css(t.text),
                 "--dim": css(t.text3),
+                "--faint": css(t.faint),
                 "--accent": css(t.violet),
                 "--line": css(t.border_strong),
+                "--hairline": css(t.border),
+                "--edge": css(t.edge),
+                "--hover": css(t.hover),
+                "--pressed": css(t.pressed),
+                "--selection": css(t.selected),
+                "--shadow": css(t.shadow),
                 "--max": if full { "860px" } else { "none" },
                 "--pad": if full { "24px" } else { "14px" },
             }));
@@ -779,7 +798,11 @@ impl Nimbra {
                 .absolute()
                 .inset_0()
                 .key_context("Composer")
-                .on_action(cx.listener(|this, _: &SendMail, _, cx| this.send_mail(cx)))
+                .on_action(cx.listener(|this, _: &SendMail, _, cx| {
+                    if this.compose_ready() {
+                        this.send_mail(cx)
+                    }
+                }))
                 .on_action(cx.listener(|this, _: &SaveDraft, _, cx| this.save_draft(cx)))
                 .on_action(
                     cx.listener(|this, _: &ToggleFullCompose, _, cx| this.toggle_full_compose(cx)),
@@ -812,7 +835,7 @@ impl Nimbra {
                 gpui::WindowOptions {
                     window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("New message".into()),
+                        title: Some("New Message".into()),
                         appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(18.), px(18.))),
                     }),
@@ -884,37 +907,111 @@ impl Nimbra {
         }
     }
 
-    /// Opens the draft behind a row of the Drafts mailbox in the composer.
+    /// The composer can take Send and Save: it is open and holds its message.
+    fn compose_ready(&self) -> bool {
+        self.compose.as_ref().is_some_and(|c| !c.loading)
+    }
+
+    /// Opens the draft behind a row of the Drafts mailbox: the composer shows at once and
+    /// the draft fills it when it arrives from the row's own account.
     pub(super) fn open_draft(&mut self, index: usize, cx: &mut Context<Self>) {
-        let (Some(client), Some(thread_id)) = (
-            self.connection.clone(),
-            self.mails.get(index).and_then(|m| m.id.clone()),
-        ) else {
-            return;
-        };
         if self.compose.is_some() {
             return;
         }
+        let Some(mail) = self.mails.get(index) else {
+            return;
+        };
+        let Some(thread_id) = mail.id.clone() else {
+            return;
+        };
+        let account = mail
+            .account
+            .clone()
+            .unwrap_or_else(|| self.account_id.clone());
+        let Some(client) = self.client_for(Some(&account)) else {
+            return;
+        };
         self.notice = None;
+        let Some(serial) = self.begin_draft(Some(account), cx) else {
+            return;
+        };
+        let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { client.draft_for_thread(&thread_id) })
                 .await;
-            this.update(cx, |this, cx| match result {
-                Ok(draft) => this.edit_draft(draft, cx),
-                Err(error) => this.fail(error, cx),
+            this.update(cx, |this, cx| {
+                this.draft_arrived(serial, generation, result, cx)
             })
             .ok();
         })
         .detach();
     }
 
+    fn draft_arrived(
+        &mut self,
+        serial: u64,
+        generation: u64,
+        result: anyhow::Result<mail::Draft>,
+        cx: &mut Context<Self>,
+    ) {
+        let waiting = self
+            .compose
+            .as_ref()
+            .is_some_and(|c| c.serial == serial && c.loading);
+        if !waiting {
+            return;
+        }
+        match result {
+            Ok(draft) if self.account_gen == generation => self.fill_draft(draft, cx),
+            outcome => {
+                self.compose = None;
+                self.pending_focus = Some(self.focus.clone());
+                match outcome {
+                    Err(error) if self.shown_signed_out(&error) => self.fail(error, cx),
+                    Err(error) => {
+                        eprintln!("nimbra: a draft did not open: {error}");
+                        self.notice = Some(if error.is::<mail::Offline>() {
+                            "Couldn’t open the draft while offline.".into()
+                        } else {
+                            "Couldn’t open the draft. Try again.".into()
+                        });
+                    }
+                    // The account changed while it loaded.
+                    Ok(_) => {}
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// A draft in the composer at once (the sample's, or one already read).
     pub(super) fn edit_draft(&mut self, draft: mail::Draft, cx: &mut Context<Self>) {
-        self.open_compose(ComposeKind::New, cx);
+        if self.begin_draft(None, cx).is_some() {
+            self.fill_draft(draft, cx);
+        }
+    }
+
+    /// The full page composer for a draft, waiting for its content. `account` is the one
+    /// the draft is in (`None`: the one shown).
+    fn begin_draft(&mut self, account: Option<String>, cx: &mut Context<Self>) -> Option<u64> {
+        self.leave_sidebar(cx);
+        self.open_compose_from(ComposeKind::New, None, cx);
+        let composer = self.compose.as_mut()?;
+        composer.loading = true;
+        composer.full = true;
+        composer.account = account;
+        composer.load = None;
+        cx.notify();
+        Some(composer.serial)
+    }
+
+    fn fill_draft(&mut self, draft: mail::Draft, cx: &mut Context<Self>) {
         let Some(mut composer) = self.compose.take() else {
             return;
         };
+        composer.loading = false;
         composer
             .to
             .update(cx, |input, cx| input.set(draft.to, usize::MAX, cx));
@@ -961,7 +1058,6 @@ impl Nimbra {
         composer.draft_id = Some(draft.id);
         composer.quoted = draft.quoted;
         composer.reply = draft.reply;
-        composer.full = true;
         self.pending_focus = Some(if composer.rich {
             self.editor_focus.clone()
         } else {
@@ -1004,7 +1100,7 @@ impl Nimbra {
         } else {
             10_000
         };
-        cx.spawn(async move |this, cx| {
+        composer.autosave = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(pause))
                 .await;
@@ -1018,8 +1114,7 @@ impl Nimbra {
                 }
             })
             .ok();
-        })
-        .detach();
+        }));
     }
 
     /// Saves a composer's message as a Gmail draft (new, or over the one it has).
@@ -1030,7 +1125,7 @@ impl Nimbra {
         let client = self.client_for(from.as_deref());
         let Some(client) = client else {
             if explicit && let Some(composer) = self.composer_mut(serial) {
-                composer.error = Some("Sample mode: drafts are not saved.".into());
+                composer.error = Some("Drafts aren’t saved in sample mode.".into());
                 cx.notify();
             }
             return;
@@ -1038,7 +1133,7 @@ impl Nimbra {
         let Some(composer) = self.composer_mut(serial) else {
             return;
         };
-        if composer.sending {
+        if composer.sending || composer.loading {
             return;
         }
         if composer.saving {
@@ -1127,14 +1222,8 @@ impl Nimbra {
             // Its From changed while this was saving: that draft is in the wrong account's
             // Drafts. Delete it there and save again from the account chosen.
             Ok(id) if now_from != saved_in => {
-                std::thread::spawn(move || {
-                    if let Err(error) = saved_with.delete_draft(&id)
-                        && !mail::is_gone(&error)
-                    {
-                        eprintln!("nimbra: a draft left in the account it was moved from");
-                    }
-                });
                 composer.resave = true;
+                self.forget_moved_draft(saved_with, id, cx);
                 true
             }
             Ok(id) => {
@@ -1144,10 +1233,18 @@ impl Nimbra {
                 true
             }
             Err(error) => {
-                composer.error = Some(format!("The draft was not saved: {error}").into());
+                eprintln!("nimbra: a draft was not saved: {error}");
+                composer.error = Some(if error.is::<mail::Offline>() {
+                    "Couldn’t save the draft while offline.".into()
+                } else {
+                    "Couldn’t save the draft. Try ⌘S again.".into()
+                });
                 composer.after_save = None;
                 false
             }
+        };
+        let Some(composer) = self.composer_mut(serial) else {
+            return;
         };
         let again = ok && (composer.dirty() || std::mem::take(&mut composer.resave));
         let after = if ok && !again {
@@ -1357,9 +1454,12 @@ impl Nimbra {
                             })
                             .await;
                         this.update(cx, |this, cx| {
-                            if let Err(error) = result {
+                            if let Err(error) = result
+                                && !mail::is_gone(&error)
+                            {
+                                eprintln!("nimbra: a discarded draft was not deleted: {error}");
                                 this.notice =
-                                    Some(format!("The draft was not deleted: {error}").into());
+                                    Some("Couldn’t delete the draft. It’s still in Drafts.".into());
                             }
                             if this.mailbox == View::Drafts {
                                 this.refresh(cx);
@@ -1541,27 +1641,28 @@ impl Nimbra {
                 .spawn(async move {
                     let mut files = Vec::new();
                     let mut total = used;
+                    const UNREADABLE: &str = "Couldn’t read that file.";
                     for path in paths.into_iter().take(20) {
-                        let meta = std::fs::metadata(&path)?;
+                        let meta = std::fs::metadata(&path).map_err(|_| UNREADABLE)?;
                         if !meta.is_file() {
-                            anyhow::bail!("Folders can’t be attached. Zip them first.");
+                            return Err("Folders can’t be attached. Zip them first.");
                         }
                         total += meta.len();
                         if total > mail::ATTACHMENT_LIMIT {
-                            anyhow::bail!("Attachments can be 25 MB in total.");
+                            return Err("Attachments can be 25 MB in total.");
                         }
                         let name = path
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        let bytes = std::fs::read(&path)?;
+                        let bytes = std::fs::read(&path).map_err(|_| UNREADABLE)?;
                         files.push(mail::OutgoingFile {
                             mime: mail::mime_for(&name).into(),
                             name: mail::safe_file_name(&name),
                             bytes: bytes.into(),
                         });
                     }
-                    anyhow::Ok(files)
+                    Ok(files)
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -1573,7 +1674,7 @@ impl Nimbra {
                         composer.files.extend(files);
                         composer.error = None;
                     }
-                    Err(error) => composer.error = Some(error.to_string().into()),
+                    Err(error) => composer.error = Some(error.into()),
                 }
                 if this.compose.as_ref().is_some_and(|c| c.serial == serial) {
                     this.composer_changed(cx);
@@ -1833,11 +1934,10 @@ impl Nimbra {
                 }
             }
             Err(error) => {
+                eprintln!("nimbra: attachments were not read for a From change: {error}");
                 composer.moving_to = None;
-                self.notice = Some(
-                    format!("From was not changed: the attachments could not be read ({error}).")
-                        .into(),
-                );
+                self.notice =
+                    Some("Couldn’t bring the attachments along, so From is unchanged.".into());
             }
         }
         cx.notify();
@@ -1861,22 +1961,35 @@ impl Nimbra {
         composer.saved_as = SavedAs::default();
         let serial = composer.serial;
         let moved = composer.draft_id.take();
+        let saving = composer.saving;
         if let (Some(draft), Some(client)) = (moved.clone(), old_client) {
-            std::thread::spawn(move || {
-                if let Err(error) = client.delete_draft(&draft)
+            self.forget_moved_draft(client, draft, cx);
+        }
+        if moved.is_some() || saving {
+            // Unsaved in the new account: it counts as an edit, so it is saved there.
+            if let Some(composer) = &mut self.compose {
+                composer.edits += 1;
+                composer.saved = false;
+            }
+            self.save_composer(serial, false, cx);
+        }
+        cx.notify();
+    }
+
+    /// Deletes a draft left in the account a composer's From moved away from. Quitting waits
+    /// for it, as for other writes.
+    fn forget_moved_draft(&self, client: Arc<mail::Client>, id: String, cx: &mut Context<Self>) {
+        let working = self.writes.begin();
+        cx.background_executor()
+            .spawn(async move {
+                let _working = working;
+                if let Err(error) = client.delete_draft(&id)
                     && !mail::is_gone(&error)
                 {
                     eprintln!("nimbra: a draft left in the account it was moved from");
                 }
-            });
-        }
-        if moved.is_some() || composer.saving {
-            // Unsaved in the new account: it counts as an edit, so it is saved there.
-            composer.edits += 1;
-            composer.saved = false;
-            self.save_composer(serial, false, cx);
-        }
-        cx.notify();
+            })
+            .detach();
     }
 
     /// Where a new message is from: the default account, with several and it connected;
@@ -1895,10 +2008,14 @@ impl Nimbra {
         viewport: (f32, f32),
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        use crate::theme::{radius, space};
+        use crate::ui::{Elevation, elevation};
+
         let Some(composer) = &self.compose else {
             return div().into_any_element();
         };
         let full = composer.full;
+        let loading = composer.loading;
         let (width, height) = composer.size;
         let (left, top) = composer
             .position
@@ -1911,83 +2028,113 @@ impl Nimbra {
                 d.w_full()
             }
         };
+        // A hairline between the sections of the card, inset to the text's edges.
+        let divider = || {
+            div().flex().justify_center().child(
+                column(div())
+                    .px(px(20.))
+                    .child(div().h(px(1.)).bg(t.border)),
+            )
+        };
+        // A line of text that is still on its way.
+        let bar = |share: f32| {
+            div()
+                .h(px(8.))
+                .w(relative(share))
+                .rounded_full()
+                .bg(t.border)
+        };
         let field = |label: &str,
                      input: &Entity<TextInput>,
                      lead: Vec<AnyElement>,
-                     trailing: Option<AnyElement>,
-                     below: Option<AnyElement>| {
+                     trailing: Option<AnyElement>| {
+            // While a draft loads its fields keep their place (and the keyboard), unseen.
+            let value = div()
+                .flex_1()
+                .min_w(px(120.))
+                .relative()
+                .child(div().when(loading, |d| d.opacity(0.)).child(input.clone()))
+                .when(loading, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .child(bar(0.4)),
+                    )
+                });
+            div().flex().justify_center().child(
+                column(div())
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::M))
+                    .px(px(20.))
+                    .py(px(10.))
+                    .child(
+                        div()
+                            .w(px(56.))
+                            .flex_none()
+                            .text_color(t.text3)
+                            .child(label.to_string()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(14.))
+                            .children(lead)
+                            .child(value),
+                    )
+                    .children(trailing),
+            )
+        };
+        // The small round button that takes something off.
+        let remove = |id: (&'static str, usize)| {
+            let hover = t.hover;
             div()
+                .id(id)
                 .flex()
+                .flex_none()
+                .items_center()
                 .justify_center()
-                .border_b_1()
-                .border_color(t.border)
-                .child(
-                    column(div())
-                        .relative()
-                        .flex()
-                        .items_center()
-                        .gap(px(12.))
-                        .px(px(20.))
-                        .py(px(10.))
-                        .child(
-                            div()
-                                .w(px(56.))
-                                .flex_none()
-                                .text_color(t.text3)
-                                .child(label.to_string()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .flex()
-                                .flex_wrap()
-                                .items_center()
-                                .gap(px(6.))
-                                .text_size(px(14.))
-                                .children(lead)
-                                .child(div().flex_1().min_w(px(120.)).child(input.clone())),
-                        )
-                        .children(trailing)
-                        .children(below),
-                )
+                .size(px(18.))
+                .rounded_full()
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .press(t)
+                .child(icon("x", 10., t.text3))
         };
         // Each finished address is a pill with a button to take it off.
-        let pills = |field: Field, cx: &mut Context<Self>| -> Vec<AnyElement> {
-            let Some(slot) = Composer::slot(field) else {
-                return Vec::new();
-            };
-            composer.chips[slot]
-                .iter()
-                .enumerate()
-                .map(|(i, address)| {
-                    let hover = t.hover;
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .pl(px(9.))
-                        .pr(px(3.))
-                        .py(px(1.))
-                        .rounded_full()
-                        .bg(t.hover)
-                        .border_1()
-                        .border_color(t.border_strong)
-                        .text_size(px(13.))
-                        .child(short(address, 34))
-                        .child(
-                            div()
-                                .id(("remove-recipient", slot * 1000 + i))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .size(px(16.))
-                                .rounded_full()
-                                .cursor_pointer()
-                                .text_color(t.text3)
-                                .hover(move |s| s.bg(hover))
-                                .child("×")
-                                .on_click(cx.listener(move |this, _, _, cx| {
+        let pills =
+            |field: Field, cx: &mut Context<Self>| -> Vec<AnyElement> {
+                let Some(slot) = Composer::slot(field) else {
+                    return Vec::new();
+                };
+                composer.chips[slot]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, address)| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .pl(px(10.))
+                            .pr(px(2.))
+                            .py(px(1.))
+                            .rounded_full()
+                            .bg(t.hover)
+                            .border_1()
+                            .border_color(t.border_strong)
+                            .text_size(px(13.))
+                            .child(short(address, 34))
+                            .child(remove(("remove-recipient", slot * 1000 + i)).on_click(
+                                cx.listener(move |this, _, _, cx| {
                                     if let Some(composer) = &mut this.compose
                                         && i < composer.chips[slot].len()
                                     {
@@ -1996,21 +2143,26 @@ impl Nimbra {
                                         this.composer_changed(cx);
                                         cx.notify();
                                     }
-                                })),
-                        )
-                        .into_any_element()
-                })
-                .collect()
-        };
+                                }),
+                            ))
+                            .into_any_element()
+                    })
+                    .collect()
+            };
         // "Cc Bcc" opens the two extra recipient fields.
-        let cc_toggle = (!composer.show_cc).then(|| {
-            let (dim, bright) = (t.text3, t.text);
+        let cc_toggle = (!composer.show_cc && !loading).then(|| {
+            let (hover, bright) = (t.hover, t.text);
             div()
                 .id("show-cc")
                 .flex_none()
-                .text_color(dim)
+                .px(px(6.))
+                .py(px(1.))
+                .mr(px(-6.))
+                .rounded(px(radius::CHIP))
+                .text_color(t.text3)
                 .cursor_pointer()
-                .hover(move |s| s.text_color(bright))
+                .hover(move |s| s.bg(hover).text_color(bright))
+                .press(t)
                 .child("Cc Bcc")
                 .on_click(cx.listener(|this, _, _, cx| {
                     if let Some(composer) = &mut this.compose {
@@ -2029,26 +2181,26 @@ impl Nimbra {
                 .w(px(380.))
                 .flex()
                 .flex_col()
-                .p(px(4.))
-                .rounded(px(10.))
+                .p(px(space::XS))
+                .rounded(px(radius::CARD))
                 .bg(t.raised)
                 .border_1()
-                .border_color(t.border_strong)
-                .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
+                .border_color(t.edge)
+                .shadow(elevation(t, Elevation::Pop))
                 .children(s.people.iter().enumerate().map(|(i, p)| {
-                    let hover = t.hover;
+                    let (hover, on) = (t.hover, i == s.selected);
                     div()
                         .id(("suggest", i))
-                        .press(t)
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .px(px(8.))
+                        .px(px(space::S))
                         .py(px(6.))
-                        .rounded(px(7.))
+                        .rounded(px(radius::CONTROL))
                         .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .when(i == s.selected, |d| d.bg(t.hover))
+                        .when(on, |d| d.bg(t.selected))
+                        .when(!on, |d| d.hover(move |s| s.bg(hover)))
+                        .map(|d| if on { d.press_selected(t) } else { d.press(t) })
                         .child(avatar(
                             crate::data::tone_for(p.label()),
                             &crate::data::initials(p.label()),
@@ -2067,15 +2219,14 @@ impl Nimbra {
                             cx.listener(move |this, _, _, cx| this.accept_suggestion(Some(i), cx)),
                         )
                 }));
-            {
-                let strip = div()
-                    .flex()
-                    .justify_center()
-                    .border_b_1()
-                    .border_color(t.border)
-                    .child(column(div()).pl(px(84.)).pr(px(20.)).pb(px(8.)).child(list));
-                (s.field, strip.into_any_element())
-            }
+            let strip = div().flex().justify_center().child(
+                column(div())
+                    .pl(px(84.))
+                    .pr(px(20.))
+                    .pb(px(space::S))
+                    .child(list),
+            );
+            (s.field, strip.into_any_element())
         });
         let mut drop_for = |f: Field| -> Option<AnyElement> {
             if dropdown.as_ref().is_some_and(|(field, _)| *field == f) {
@@ -2085,44 +2236,33 @@ impl Nimbra {
             }
         };
         // Attached files, each with a button to take it off.
-        let chip = |id: usize, name: &str, size: u64| {
-            let hover = t.hover;
+        let chip = |name: &str, size: u64, remover: Stateful<Div>| {
             div()
                 .flex()
                 .items_center()
                 .gap(px(6.))
                 .pl(px(10.))
-                .pr(px(4.))
-                .py(px(4.))
-                .rounded(px(8.))
+                .pr(px(space::XS))
+                .py(px(space::XS))
+                .rounded(px(radius::CONTROL))
                 .bg(t.hover)
                 .border_1()
                 .border_color(t.border)
                 .child(icon("clip", 13., t.text3))
                 .child(short(name, 32))
-                .child(meta(file_size(size), t.text3))
-                .child(
-                    div()
-                        .id(("remove-file", id))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(18.))
-                        .rounded(px(5.))
-                        .cursor_pointer()
-                        .text_color(t.text3)
-                        .hover(move |s| s.bg(hover))
-                        .child("×"),
-                )
+                .child(caption(file_size(size), t.text3))
+                .child(remover)
+                .into_any_element()
         };
         let chips: Vec<AnyElement> = composer
             .files
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                chip(i, &f.name, f.bytes.len() as u64)
-                    .id(("file-chip", i))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                chip(
+                    &f.name,
+                    f.bytes.len() as u64,
+                    remove(("remove-file", i)).on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(composer) = &mut this.compose
                             && i < composer.files.len()
                         {
@@ -2130,13 +2270,14 @@ impl Nimbra {
                             this.composer_changed(cx);
                             cx.notify();
                         }
-                    }))
-                    .into_any_element()
+                    })),
+                )
             })
             .chain(composer.kept.iter().enumerate().map(|(i, att)| {
-                chip(1000 + i, &att.name, att.size)
-                    .id(("kept-chip", i))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                chip(
+                    &att.name,
+                    att.size,
+                    remove(("remove-kept", i)).on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(composer) = &mut this.compose
                             && i < composer.kept.len()
                         {
@@ -2144,18 +2285,25 @@ impl Nimbra {
                             this.composer_changed(cx);
                             cx.notify();
                         }
-                    }))
-                    .into_any_element()
+                    })),
+                )
             }))
             .collect();
         let accent = t.violet;
-        let title = if composer.draft_id.is_some() {
+        let title = if composer.draft_id.is_some() || loading {
             Some("Draft")
         } else if composer.reply.is_some() {
             Some("Reply")
         } else {
             None
         };
+        let header_button =
+            |name: &'static str, id: &'static str, label: SharedString, key: &'static str| {
+                icon_button(t, name)
+                    .id(id)
+                    .press(t)
+                    .tooltip(tip(t.dark, label, key))
+            };
         let card = div()
             .id("compose-card")
             .flex()
@@ -2172,13 +2320,10 @@ impl Nimbra {
                     .top(px(top))
                     .w(px(width))
                     .h(px(height))
-                    .rounded(px(18.))
+                    .rounded(px(radius::SHEET))
                     .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![
-                        shadow(c(0x8b7cff, 0.18), 0., 120., 10.),
-                        shadow(c(0x000000, if t.dark { 0.6 } else { 0.2 }), 30., 80., -10.),
-                    ])
+                    .border_color(t.edge)
+                    .shadow(elevation(t, Elevation::Sheet))
             })
             .child(
                 div()
@@ -2201,10 +2346,10 @@ impl Nimbra {
                         column(div())
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(px(space::S))
                             .px(px(20.))
                             .pt(px(16.))
-                            .pb(px(8.))
+                            .pb(px(space::S))
                             // A new message has no title: its From is the first row.
                             .children(title.map(|title| {
                                 if full {
@@ -2214,7 +2359,7 @@ impl Nimbra {
                                 }
                             }))
                             // A new message: who it is from, and a menu to change it.
-                            .when(self.can_change_from(), |d| {
+                            .when(self.can_change_from() && !loading, |d| {
                                 // The account it is changing to shows at once, with what
                                 // it is waiting for.
                                 let moving = composer.moving_to.is_some();
@@ -2228,6 +2373,7 @@ impl Nimbra {
                                     .map(|a| a.email.clone())
                                     .unwrap_or_default();
                                 let hover = t.hover;
+                                let open = self.menu == Some(Menu::From);
                                 // The label is the fields' label column (56 wide, 12 to the
                                 // value) and only the address is the button: its padding
                                 // hangs into that gap, so the address starts where values do.
@@ -2245,16 +2391,16 @@ impl Nimbra {
                                         .id("compose-from")
                                         .flex()
                                         .items_center()
-                                        .gap(px(4.))
+                                        .gap(px(space::XS))
                                         .min_w(px(0.))
-                                        .px(px(8.))
+                                        .px(px(space::S))
                                         .py(px(3.))
                                         .ml(px(-4.))
-                                        .rounded(px(7.))
+                                        .rounded(px(radius::CONTROL))
                                         .cursor_pointer()
-                                        .hover(move |s| s.bg(hover))
-                                        .when(self.menu == Some(Menu::From), |d| d.bg(t.selected))
-                                        .tooltip(tip(t.dark, "Send from another account", ""))
+                                        .when(open, |d| d.bg(t.selected))
+                                        .when(!open, |d| d.hover(move |s| s.bg(hover)))
+                                        .tooltip(tip(t.dark, "Send From Another Account", ""))
                                         .child(
                                             div()
                                                 .min_w(px(0.))
@@ -2289,49 +2435,46 @@ impl Nimbra {
                                         .and_then(|id| {
                                             self.settings.accounts.iter().find(|a| a.id == id)
                                         })
-                                        .map(|a| meta(format!("from {}", a.email), t.text3)),
+                                        .map(|a| meta(format!("From {}", a.email), t.text3)),
                                 )
                             })
                             .child(div().flex_1())
                             .when(!self.compose_detached, |d| {
                                 d.child(
-                                    icon_button(t, "detach")
-                                        .id("compose-detach")
-                                        .press(t)
-                                        .tooltip(tip(t.dark, "Open in its own window", ""))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.detach_compose(cx)
-                                            }),
-                                        ),
+                                    header_button(
+                                        "detach",
+                                        "compose-detach",
+                                        "Open in Window".into(),
+                                        "",
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.detach_compose(cx)
+                                        }),
+                                    ),
                                 )
-                            })
-                            .when(!self.compose_detached, |d| {
-                                d.child(
-                                    icon_button(t, if full { "shrink" } else { "expand" })
-                                        .id("compose-size")
-                                        .press(t)
-                                        .tooltip(tip(t.dark, "Full page or floating", "⌘⇧F"))
-                                        // On press, as the close button (see there).
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.toggle_full_compose(cx)
-                                            }),
-                                        ),
+                                .child(
+                                    header_button(
+                                        if full { "shrink" } else { "expand" },
+                                        "compose-size",
+                                        if full { "Floating" } else { "Full Page" }.into(),
+                                        "⌘⇧F",
+                                    )
+                                    // On press, as the close button (see there).
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.toggle_full_compose(cx)
+                                        }),
+                                    ),
                                 )
-                            })
-                            // Close (asks about the draft if there is one). A window of
-                            // its own has its close button in the title bar instead.
-                            .when(!self.compose_detached, |d| {
-                                d.child(
-                                    icon_button(t, "x")
-                                        .id("compose-close")
-                                        .press(t)
-                                        .tooltip(tip(t.dark, "Close", "esc"))
+                                // Close (asks about the draft if there is one). A window of
+                                // its own has its close button in the title bar instead.
+                                .child(
+                                    header_button("x", "compose-close", "Close".into(), "esc")
                                         // On press, not release: a press that takes the
                                         // keyboard from the editor (a native view) can lose
                                         // its release, which made a click need doing twice.
@@ -2346,62 +2489,64 @@ impl Nimbra {
                             })
                             .when(self.compose_detached, |d| {
                                 d.child(
-                                    icon_button(t, "attach")
-                                        .id("compose-attach")
-                                        .press(t)
-                                        .tooltip(tip(t.dark, "Back into the window", ""))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.attach_compose(cx)
-                                            }),
-                                        ),
+                                    header_button(
+                                        "attach",
+                                        "compose-attach",
+                                        "Back to Main Window".into(),
+                                        "",
+                                    )
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.attach_compose(cx)
+                                        }),
+                                    ),
                                 )
-                                .child(kbd(t, "esc"))
                             }),
                     ),
             )
-            .child(field(
-                "To",
-                &composer.to,
-                pills(Field::To, cx),
-                cc_toggle,
-                None,
-            ))
+            .child(field("To", &composer.to, pills(Field::To, cx), cc_toggle))
             .children(drop_for(Field::To))
+            .child(divider())
             .when(composer.show_cc, |d| {
-                d.child(field("Cc", &composer.cc, pills(Field::Cc, cx), None, None))
+                d.child(field("Cc", &composer.cc, pills(Field::Cc, cx), None))
                     .children(drop_for(Field::Cc))
-                    .child(field(
-                        "Bcc",
-                        &composer.bcc,
-                        pills(Field::Bcc, cx),
-                        None,
-                        None,
-                    ))
+                    .child(divider())
+                    .child(field("Bcc", &composer.bcc, pills(Field::Bcc, cx), None))
                     .children(drop_for(Field::Bcc))
+                    .child(divider())
             })
-            .child(field("Subject", &composer.subject, Vec::new(), None, None))
+            .child(field("Subject", &composer.subject, Vec::new(), None))
+            .child(divider())
             .when(!chips.is_empty(), |d| {
                 d.child(
-                    div()
-                        .flex()
-                        .justify_center()
-                        .border_b_1()
-                        .border_color(t.border)
-                        .child(
-                            column(div())
-                                .flex()
-                                .flex_wrap()
-                                .gap(px(8.))
-                                .px(px(20.))
-                                .py(px(10.))
-                                .children(chips),
-                        ),
+                    div().flex().justify_center().child(
+                        column(div())
+                            .flex()
+                            .flex_wrap()
+                            .gap(px(space::S))
+                            .px(px(20.))
+                            .py(px(10.))
+                            .children(chips),
+                    ),
+                )
+                .child(divider())
+            })
+            .when(loading, |d| {
+                d.child(
+                    div().flex_1().min_h(px(0.)).flex().justify_center().child(
+                        column(div())
+                            .flex()
+                            .flex_col()
+                            .gap(px(14.))
+                            .px(px(20.))
+                            .py(px(if full { 28. } else { 18. }))
+                            .children([0.22, 0.94, 0.88, 0.57].map(bar)),
+                    ),
                 )
             })
-            .when(composer.rich, |d| {
+            .when(composer.rich && !loading, |d| {
                 let editor = self.editor.clone();
                 let tool = |id: usize,
                             name: &'static str,
@@ -2412,25 +2557,17 @@ impl Nimbra {
                     let hover = t.hover;
                     div()
                         .id(("format", id))
-                        .press(t)
                         .flex()
                         .flex_none()
                         .items_center()
                         .justify_center()
                         .size(px(28.))
-                        .rounded(px(7.))
+                        .rounded(px(radius::CONTROL))
                         .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .when(active, |d| d.bg(t.hover).border_1().border_color(t.border))
-                        .child(icon(name, 15., if active { t.text } else { t.text2 }))
-                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                            if *hovered {
-                                this.format_hint = Some((label, key));
-                            } else if this.format_hint.is_some_and(|(l, _)| l == label) {
-                                this.format_hint = None;
-                            }
-                            cx.notify();
-                        }))
+                        .when(active, |d| d.bg(t.selected).press_selected(t))
+                        .when(!active, |d| d.hover(move |s| s.bg(hover)).press(t))
+                        .tooltip(tip(t.dark, label, key))
+                        .child(icon(name, 15., if active { t.violet } else { t.text2 }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(editor) = &this.editor {
                                 editor.exec(command);
@@ -2440,67 +2577,50 @@ impl Nimbra {
                         }))
                 };
                 let f = composer.format;
-                let gap = || div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(t.border);
+                let gap = || div().w(px(1.)).h(px(16.)).mx(px(space::XS)).bg(t.border);
                 d.child(
-                    div()
-                        .flex()
-                        .justify_center()
-                        .border_b_1()
-                        .border_color(t.border)
-                        .child(
-                            column(div())
-                                .flex()
-                                .items_center()
-                                .gap(px(2.))
-                                .px(px(14.))
-                                .py(px(5.))
-                                .child(tool(0, "bold", "Bold", "⌘B", "bold", f[0]))
-                                .child(tool(1, "italic", "Italic", "⌘I", "italic", f[1]))
-                                .child(tool(2, "underline", "Underline", "⌘U", "underline", f[2]))
-                                .child(gap())
-                                .child(tool(3, "link", "Link", "⌘K", "link", false))
-                                .child(gap())
-                                .child(tool(
-                                    4,
-                                    "bullets",
-                                    "Bulleted list",
-                                    "⌘⇧8",
-                                    "insertUnorderedList",
-                                    f[3],
-                                ))
-                                .child(tool(
-                                    5,
-                                    "numbers",
-                                    "Numbered list",
-                                    "⌘⇧7",
-                                    "insertOrderedList",
-                                    f[4],
-                                ))
-                                .child(tool(6, "quote", "Quote", "", "blockquote", false))
-                                .child(gap())
-                                .child(tool(
-                                    7,
-                                    "clear-format",
-                                    "Clear formatting",
-                                    "",
-                                    "removeFormat",
-                                    false,
-                                ))
-                                .child(div().flex_1())
-                                .when_some(self.format_hint, |d, (label, key)| {
-                                    d.child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(8.))
-                                            .text_size(px(12.))
-                                            .text_color(t.text2)
-                                            .child(label)
-                                            .when(!key.is_empty(), |d| d.child(kbd(t, key))),
-                                    )
-                                }),
-                        ),
+                    div().flex().justify_center().child(
+                        column(div())
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .px(px(14.))
+                            .py(px(5.))
+                            .child(tool(0, "bold", "Bold", "⌘B", "bold", f[0]))
+                            .child(tool(1, "italic", "Italic", "⌘I", "italic", f[1]))
+                            .child(tool(2, "underline", "Underline", "⌘U", "underline", f[2]))
+                            .child(gap())
+                            .child(tool(3, "link", "Link", "⌘K", "link", false))
+                            .child(gap())
+                            .child(tool(
+                                4,
+                                "bullets",
+                                "Bulleted List",
+                                "⌘⇧8",
+                                "insertUnorderedList",
+                                f[3],
+                            ))
+                            .child(tool(
+                                5,
+                                "numbers",
+                                "Numbered List",
+                                "⌘⇧7",
+                                "insertOrderedList",
+                                f[4],
+                            ))
+                            .child(tool(6, "quote", "Quote", "", "blockquote", false))
+                            .child(gap())
+                            .child(tool(
+                                7,
+                                "clear-format",
+                                "Clear Formatting",
+                                "",
+                                "removeFormat",
+                                false,
+                            )),
+                    ),
                 )
+                .child(divider())
                 // The editor is a native web view: this element only reserves its space and
                 // tells it where that space is each frame.
                 .child(
@@ -2531,7 +2651,8 @@ impl Nimbra {
                         ),
                 )
             })
-            .when(!composer.rich, |d| {
+            .when(!composer.rich && !loading, |d| {
+                let (hover, bright) = (t.hover, t.text2);
                 d.child(
                     div()
                         .id("compose-body")
@@ -2548,19 +2669,30 @@ impl Nimbra {
                                 .py(px(if full { 24. } else { 14. }))
                                 .text_size(px(15.))
                                 .children(composer.lines.iter().cloned())
-                                // The quoted earlier message stays folded behind "…".
+                                // The quoted earlier message stays folded behind "•••".
                                 .when_some(composer.quoted.clone(), |d, quoted| {
                                     d.child(
                                         div().flex().pt(px(10.)).child(
                                             div()
                                                 .id("toggle-quoted")
-                                                .px(px(8.))
-                                                .rounded(px(6.))
+                                                .px(px(space::S))
+                                                .rounded(px(radius::CHIP))
                                                 .bg(t.hover)
                                                 .border_1()
                                                 .border_color(t.border)
                                                 .text_color(t.text3)
                                                 .cursor_pointer()
+                                                .hover(move |s| s.bg(hover).text_color(bright))
+                                                .press(t)
+                                                .tooltip(tip(
+                                                    t.dark,
+                                                    if composer.show_quoted {
+                                                        "Hide Quoted Text"
+                                                    } else {
+                                                        "Show Quoted Text"
+                                                    },
+                                                    "",
+                                                ))
                                                 .child("•••")
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     if let Some(composer) = &mut this.compose {
@@ -2574,16 +2706,28 @@ impl Nimbra {
                                     .when(
                                         composer.show_quoted,
                                         |d| {
+                                            // A rule beside the quote, not a border on it.
                                             d.child(
                                                 div()
+                                                    .flex()
+                                                    .gap(px(space::M))
                                                     .mt(px(10.))
-                                                    .pl(px(14.))
-                                                    .border_l_2()
-                                                    .border_color(t.border_strong)
-                                                    .text_size(px(14.))
-                                                    .line_height(px(22.))
-                                                    .text_color(t.text3)
-                                                    .child(short(&quoted, 6000)),
+                                                    .child(
+                                                        div()
+                                                            .flex_none()
+                                                            .w(px(2.))
+                                                            .rounded_full()
+                                                            .bg(t.border_strong),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .min_w(px(0.))
+                                                            .text_size(px(14.))
+                                                            .line_height(px(22.))
+                                                            .text_color(t.text3)
+                                                            .child(short(&quoted, 6000)),
+                                                    ),
                                             )
                                         },
                                     )
@@ -2591,78 +2735,79 @@ impl Nimbra {
                         ),
                 )
             })
+            .child(divider())
             .child(
-                div()
-                    .flex()
-                    .justify_center()
-                    .border_t_1()
-                    .border_color(t.border)
-                    .child(
-                        column(div())
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .px(px(14.))
-                            .py(px(12.))
-                            .child(
-                                icon_button(t, "clip")
-                                    .id("attach")
-                                    .press(t)
-                                    .tooltip(tip(t.dark, "Attach files", ""))
-                                    .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .pl(px(4.))
-                                    .text_color(if composer.error.is_some() {
-                                        t.rose
-                                    } else {
-                                        t.text3
-                                    })
-                                    .child(match &composer.error {
-                                        Some(error) => short(error, 90),
-                                        None if composer.sending => "Sending…".into(),
-                                        None if composer.saving => "Saving…".into(),
-                                        None if composer.saved => "Saved to Drafts".into(),
-                                        None if self.connection.is_none() => {
-                                            "Sample mode: nothing is sent.".into()
-                                        }
-                                        None => "Drop files here to attach them.".into(),
-                                    }),
-                            )
-                            .child(
-                                icon_button(t, "trash")
-                                    .id("discard")
-                                    .press(t)
-                                    .tooltip(tip(t.dark, "Discard draft", ""))
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.discard_compose(cx)),
-                                    ),
-                            )
-                            .child(
-                                button(t, ButtonKind::Secondary, "Send later")
-                                    .id("send-later")
-                                    .press(t)
-                                    .tooltip(tip(
-                                        t.dark,
-                                        "Sent from this Mac while Nimbra is running",
-                                        "",
-                                    ))
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                div().flex().justify_center().child(
+                    column(div())
+                        .flex()
+                        .items_center()
+                        .gap(px(space::S))
+                        .px(px(14.))
+                        .py(px(space::M))
+                        .child(
+                            icon_button(t, "clip")
+                                .id("attach")
+                                .press(t)
+                                .tooltip(tip(t.dark, "Attach Files", ""))
+                                .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
+                        )
+                        // Only real status: what is happening now, or what went wrong.
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .pl(px(space::XS))
+                                .truncate()
+                                .text_color(if composer.error.is_some() {
+                                    t.rose
+                                } else {
+                                    t.text3
+                                })
+                                .children(match &composer.error {
+                                    Some(error) => Some(error.clone()),
+                                    None if composer.sending => Some("Sending…".into()),
+                                    None if composer.saving => Some("Saving…".into()),
+                                    None if composer.saved => Some("Saved".into()),
+                                    None if self.connection.is_none() => Some("Sample mode".into()),
+                                    None => None,
+                                }),
+                        )
+                        .child(
+                            icon_button(t, "trash")
+                                .id("discard")
+                                .press(t)
+                                .tooltip(tip(t.dark, "Discard Draft", ""))
+                                .on_click(cx.listener(|this, _, _, cx| this.discard_compose(cx))),
+                        )
+                        .child(
+                            button(t, ButtonKind::Secondary, "Send Later")
+                                .id("send-later")
+                                .press(t)
+                                .when(loading, |d| d.opacity(0.5))
+                                .tooltip(tip(t.dark, "Sent while Nimbra is open", ""))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if this.compose_ready() {
                                         this.toggle_menu(Menu::SendLater, window, cx)
-                                    })),
-                            )
-                            .child(crate::ui::glow(
+                                    }
+                                })),
+                        )
+                        .child({
+                            let ready = !composer.sending && !loading;
+                            crate::ui::glow(
                                 button(t, ButtonKind::Primary, "Send")
                                     .id("send")
                                     .press(t)
-                                    .when(composer.sending, |d| d.opacity(0.5))
-                                    .on_click(cx.listener(|this, _, _, cx| this.send_mail(cx))),
+                                    .when(!ready, |d| d.opacity(0.5))
+                                    .when(ready, |d| d.tooltip(tip(t.dark, "Send", "⌘↵")))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if this.compose_ready() {
+                                            this.send_mail(cx)
+                                        }
+                                    })),
                                 "send",
-                            )),
-                    ),
+                            )
+                        }),
+                ),
             )
             // Every edge and corner resizes the floating card (no visible grip).
             .when(!full, |d| {
@@ -2722,32 +2867,27 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .when(!full, |d| d.rounded(px(18.)))
+                        .when(!full, |d| d.rounded(px(radius::SHEET)))
                         .bg(t.scrim)
                         .occlude()
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(14.))
-                                .w(px(340.))
-                                .p(px(22.))
-                                .rounded(px(16.))
+                                .gap(px(20.))
+                                .w(px(320.))
+                                .p(px(space::XL))
+                                .rounded(px(radius::SHEET))
                                 .bg(t.raised)
                                 .border_1()
-                                .border_color(t.border_strong)
-                                .shadow(vec![shadow(c(0x000000, 0.35), 18., 50., -8.)])
+                                .border_color(t.edge)
+                                .shadow(elevation(t, Elevation::Sheet))
                                 .child(title_s("Save this draft?", t.text))
-                                .child(meta(
-                                    "Keep it in Drafts to finish later, or discard what you wrote.",
-                                    t.text2,
-                                ))
                                 .child(
                                     div()
                                         .flex()
                                         .items_center()
-                                        .gap(px(8.))
-                                        .pt(px(4.))
+                                        .gap(px(space::S))
                                         .child(
                                             button(t, ButtonKind::Ghost, "Discard")
                                                 .id("ask-discard")
@@ -2762,12 +2902,13 @@ impl Nimbra {
                                             button(t, ButtonKind::Secondary, "Cancel")
                                                 .id("ask-cancel")
                                                 .press(t)
+                                                .tooltip(tip(t.dark, "Keep Writing", "esc"))
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.request_close_compose(cx)
                                                 })),
                                         )
                                         .child(crate::ui::glow(
-                                            button(t, ButtonKind::Primary, "Save draft")
+                                            button(t, ButtonKind::Primary, "Save Draft")
                                                 .id("ask-save")
                                                 .press(t)
                                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -2831,7 +2972,7 @@ impl Render for ComposeWindow {
             let title = if composer.reply.is_some() {
                 "Reply"
             } else {
-                "New message"
+                "New Message"
             };
             window.set_window_title(title);
         }

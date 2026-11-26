@@ -6,6 +6,8 @@ use std::time::Instant;
 use super::PhotoAnswer;
 use super::*;
 use crate::settings::{MarkRead, TextSize, ThemeChoice};
+use crate::theme::radius;
+use crate::ui::{Elevation, elevation, motion};
 
 /// The app's icon on About, in points.
 const ABOUT_ICON: f32 = 96.;
@@ -80,20 +82,6 @@ impl Tab {
             Tab::About => "sparkles",
         }
     }
-
-    fn blurb(self) -> &'static str {
-        match self {
-            Tab::General => "How Nimbra starts, checks for mail and treats what you open.",
-            Tab::Accounts => "The accounts signed in on this Mac: Gmail, and any other address.",
-            Tab::Appearance => "Light or dark, and how mail reads.",
-            Tab::Reading => "How messages are shown.",
-            Tab::Composing => "What goes out with what you write.",
-            Tab::Notifications => "When and how Nimbra tells you about new mail.",
-            Tab::Privacy => "What Nimbra keeps on this Mac, and how.",
-            Tab::Shortcuts => "Everything you can do from the keyboard.",
-            Tab::About => "",
-        }
-    }
 }
 
 pub(super) struct SettingsWindow {
@@ -107,6 +95,8 @@ pub(super) struct SettingsWindow {
     /// A segmented choice that just changed: the option it slides from, when, and a
     /// count that keys the slide.
     slides: std::collections::HashMap<&'static str, (usize, Instant, usize)>,
+    /// A switch that just flipped: when, and a count that keys its slide.
+    flips: std::collections::HashMap<&'static str, (Instant, usize)>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -160,6 +150,7 @@ impl SettingsWindow {
             pending_focus: None,
             armed: None,
             slides: std::collections::HashMap::new(),
+            flips: std::collections::HashMap::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -251,8 +242,6 @@ impl Render for SettingsWindow {
                     .pt(px(52.))
                     .gap(px(2.))
                     .bg(t.sidebar)
-                    .border_r_1()
-                    .border_color(t.border)
                     .children(Tab::ALL.iter().enumerate().map(|(i, item)| {
                         let item = *item;
                         let on = item == tab;
@@ -263,11 +252,14 @@ impl Render for SettingsWindow {
                             .gap(px(10.))
                             .px(px(10.))
                             .h(px(32.))
-                            .rounded(px(8.))
+                            .rounded(px(radius::CONTROL))
                             .cursor_pointer()
-                            .when(on, |d| d.bg(t.selected).font_weight(FontWeight::MEDIUM))
-                            .when(!on, |d| d.hover(move |s| s.bg(hover)))
-                            .press(&t)
+                            .when(on, |d| {
+                                d.bg(t.selected)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .press_selected(&t)
+                            })
+                            .when(!on, |d| d.hover(move |s| s.bg(hover)).press(&t))
                             .child(icon(item.icon(), 16., if on { t.violet } else { t.text2 }))
                             .child(
                                 div()
@@ -281,6 +273,7 @@ impl Render for SettingsWindow {
                             }))
                     })),
             )
+            .child(div().flex_none().w(px(1.)).h_full().bg(t.border))
             // The section itself.
             .child(
                 div()
@@ -307,16 +300,7 @@ impl Render for SettingsWindow {
                                     .py(px(40.)),
                                 _ => d.max_w(px(680.)).pt(px(44.)).pb(px(40.)),
                             })
-                            .when(tab != Tab::About, |d| {
-                                d.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(6.))
-                                        .child(title_s(tab.label(), t.text))
-                                        .child(meta(tab.blurb(), t.text3)),
-                                )
-                            })
+                            .when(tab != Tab::About, |d| d.child(title_s(tab.label(), t.text)))
                             .children(content),
                     ),
             )
@@ -337,14 +321,14 @@ fn group(t: &Theme, title: Option<&str>, rows: Vec<AnyElement>) -> AnyElement {
             div()
                 .flex()
                 .flex_col()
-                .rounded(px(14.))
+                .rounded(px(radius::CARD))
                 .bg(t.raised)
                 .border_1()
-                .border_color(t.border)
-                .children(rows.into_iter().enumerate().map(move |(i, row)| {
-                    div()
-                        .when(i + 1 < count, |d| d.border_b_1().border_color(t.border))
-                        .child(row)
+                .border_color(t.edge)
+                .children(rows.into_iter().enumerate().flat_map(move |(i, row)| {
+                    let divider = (i + 1 < count)
+                        .then(|| div().mx(px(16.)).h(px(1.)).bg(t.border).into_any_element());
+                    std::iter::once(row).chain(divider)
                 })),
         )
         .into_any_element()
@@ -378,8 +362,18 @@ fn row(t: &Theme, label: &str, detail: &str, control: impl IntoElement) -> AnyEl
         .into_any_element()
 }
 
-/// An on/off switch.
-fn switch(t: &Theme, on: bool) -> Div {
+/// An on/off switch, `at` of the way from off (0) to on (1).
+fn switch(t: &Theme, at: f32) -> Div {
+    let mix = |from: Hsla, to: Hsla| {
+        let (a, b) = (gpui::Rgba::from(from), gpui::Rgba::from(to));
+        let lerp = |x: f32, y: f32| x + (y - x) * at;
+        Hsla::from(gpui::Rgba {
+            r: lerp(a.r, b.r),
+            g: lerp(a.g, b.g),
+            b: lerp(a.b, b.b),
+            a: lerp(a.a, b.a),
+        })
+    };
     div()
         .flex()
         .flex_none()
@@ -390,22 +384,48 @@ fn switch(t: &Theme, on: bool) -> Div {
         .border_1()
         .rounded_full()
         .cursor_pointer()
-        .when(on, |d| {
-            d.justify_end()
-                .bg(t.violet)
-                .border_color(gpui::transparent_black())
-        })
-        .when(!on, |d| d.bg(t.hover).border_color(t.border_strong))
+        .bg(mix(t.hover, t.violet))
+        .border_color(mix(t.border_strong, t.violet.opacity(0.)))
         .child(
             div()
+                .ml(px(15. * at))
                 .size(px(17.))
                 .rounded_full()
                 .bg(gpui::white())
-                .shadow(vec![shadow(c(0x000000, 0.25), 1., 2., 0.)]),
+                .shadow(vec![shadow(t.shadow, 1., 2., 0.)]),
         )
 }
 
 impl SettingsWindow {
+    /// A switch, sliding to where it is now when it has just been flipped.
+    fn switch_for(&self, t: &Theme, id: &'static str, on: bool) -> AnyElement {
+        let flipped = self
+            .flips
+            .get(id)
+            .copied()
+            .filter(|(at, _)| at.elapsed() < motion::SWITCH && !motion::reduced());
+        let rest = if on { 1. } else { 0. };
+        let theme = *t;
+        match flipped {
+            Some((_, n)) => switch(t, rest)
+                .with_animation(
+                    (id, n),
+                    Animation::new(motion::SWITCH).with_easing(motion::ease_out),
+                    move |_, delta| {
+                        let at = if on { delta } else { 1. - delta };
+                        switch(&theme, at)
+                    },
+                )
+                .into_any_element(),
+            None => switch(t, rest).into_any_element(),
+        }
+    }
+
+    fn flipped(&mut self, id: &'static str) {
+        let n = self.flips.get(id).map_or(0, |f| f.1) + 1;
+        self.flips.insert(id, (Instant::now(), n));
+    }
+
     /// A switch row that flips a preference.
     fn toggle(
         &self,
@@ -417,13 +437,19 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
         flip: impl Fn(&mut Nimbra) + 'static,
     ) -> AnyElement {
+        let control = self.switch_for(t, id, on);
         row(
             t,
             label,
             detail,
-            switch(t, on)
+            div()
                 .id(id)
-                .on_click(cx.listener(move |this, _, _, cx| this.set(cx, |n| flip(n)))),
+                .flex_none()
+                .child(control)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.flipped(id);
+                    this.set(cx, |n| flip(n))
+                })),
         )
     }
 
@@ -441,7 +467,7 @@ impl SettingsWindow {
         const SIZE: f32 = 12.5;
         const H: f32 = 26.;
         const GAP: f32 = 2.;
-        const SLIDE: Duration = Duration::from_millis(260);
+        const SLIDE: Duration = motion::PILL;
         // Each option is as wide as its label (measured) plus padding, so the highlight
         // can move between known places.
         let widths: Vec<f32> = options
@@ -457,22 +483,19 @@ impl SettingsWindow {
             .absolute()
             .top(px(3.))
             .h(px(H))
-            .rounded(px(7.))
+            .rounded(px(radius::CHIP))
             .bg(t.raised)
             .border_1()
-            .border_color(t.border_strong)
-            .shadow(vec![shadow(
-                c(0x000000, if t.dark { 0.25 } else { 0.08 }),
-                1.,
-                3.,
-                0.,
-            )]);
+            .border_color(t.edge)
+            .shadow(vec![shadow(t.shadow.opacity(0.5), 1., 3., 0.)]);
         let pill = match self.slides.get(id) {
-            Some(&(from, at, n)) if at.elapsed() < SLIDE && from != selected => {
+            Some(&(from, at, n))
+                if at.elapsed() < SLIDE && from != selected && !motion::reduced() =>
+            {
                 let (from_x, from_w) = spot(from.min(options.len() - 1));
                 pill.with_animation(
                     (id, n),
-                    Animation::new(SLIDE).with_easing(ease_out_quint()),
+                    Animation::new(SLIDE).with_easing(motion::ease_out),
                     move |d, delta| {
                         d.left(px(3. + from_x + (to_x - from_x) * delta))
                             .w(px(from_w + (to_w - from_w) * delta))
@@ -489,7 +512,7 @@ impl SettingsWindow {
             .flex_none()
             .gap(px(GAP))
             .p(px(3.))
-            .rounded(px(9.))
+            .rounded(px(radius::CONTROL))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
@@ -505,12 +528,12 @@ impl SettingsWindow {
                     .justify_center()
                     .w(px(widths[i]))
                     .h(px(H))
-                    .rounded(px(7.))
+                    .rounded(px(radius::CHIP))
                     .cursor_pointer()
                     .text_size(px(SIZE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if on { t.text } else { t.text2 })
-                    .when(!on, |d| d.hover(move |s| s.bg(hover)))
+                    .when(!on, |d| d.hover(move |s| s.bg(hover)).press(t))
                     .child(label.to_string())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if i != selected {
@@ -530,28 +553,39 @@ impl SettingsWindow {
         let (login, mark, every) = (n.login_item, n.settings.mark_read, n.settings.check_every);
         let login_row = row(
             t,
-            "Open Nimbra at login",
-            "New mail is checked and notified from the moment you sign in to your Mac.",
-            switch(t, login)
+            "Open at Login",
+            "",
+            div()
                 .id("login")
+                .flex_none()
+                .child(self.switch_for(t, "login", login))
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.owner.update(cx, |n, cx| {
-                        match crate::system::set_open_at_login(!n.login_item) {
-                            Ok(()) => n.login_item = !n.login_item,
-                            Err(message) => n.notice = Some(message.into()),
-                        }
+                    let flipped = this.owner.update(cx, |n, cx| {
                         cx.notify();
+                        match crate::system::set_open_at_login(!n.login_item) {
+                            Ok(()) => {
+                                n.login_item = !n.login_item;
+                                true
+                            }
+                            Err(message) => {
+                                n.notice = Some(message.into());
+                                false
+                            }
+                        }
                     });
+                    if flipped {
+                        this.flipped("login");
+                    }
                 })),
         );
         let mark_row = row(
             t,
-            "Mark as read",
-            "When an opened conversation stops being unread.",
+            "Mark as Read",
+            "",
             self.choice(
                 t,
                 "mark",
-                &["When opened", "After 2 seconds", "Manually"],
+                &["When Opened", "After 2 Seconds", "Manually"],
                 match mark {
                     MarkRead::Open => 0,
                     MarkRead::Delay => 1,
@@ -563,8 +597,8 @@ impl SettingsWindow {
         );
         let every_row = row(
             t,
-            "Check for new mail",
-            "Nimbra asks the mail server what changed this often while it runs.",
+            "Check for Mail",
+            "",
             self.choice(
                 t,
                 "every",
@@ -665,14 +699,10 @@ impl SettingsWindow {
                     )
                     .when(several && !is_default, |d| {
                         d.child(
-                            button(t, ButtonKind::Ghost, "Make default")
+                            button(t, ButtonKind::Ghost, "Make Default")
                                 .id(("default-account", i))
                                 .press(t)
-                                .tooltip(tip(
-                                    t.dark,
-                                    "Its profile in the sidebar, and new messages from it",
-                                    "",
-                                ))
+                                .tooltip(tip(t.dark, "New messages come from it", ""))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let id = make_default.clone();
                                     this.owner.update(cx, |n, cx| n.set_default_account(id, cx));
@@ -681,7 +711,7 @@ impl SettingsWindow {
                     })
                     .when(!shown, |d| {
                         d.child(
-                            button(t, ButtonKind::Secondary, "Switch to")
+                            button(t, ButtonKind::Secondary, "Switch To")
                                 .id(("switch-account", i))
                                 .press(t)
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -694,12 +724,7 @@ impl SettingsWindow {
             })
             .collect();
         if rows.is_empty() {
-            rows.push(row(
-                t,
-                "No account yet",
-                "Connect an account from the main window to start.",
-                div(),
-            ));
+            rows.push(row(t, "No Accounts", "", div()));
         }
         let armed = self.is_armed("sign-out");
         let actions = div()
@@ -707,7 +732,7 @@ impl SettingsWindow {
             .gap(px(8.))
             .when(can_add, |d| {
                 d.child(
-                    button(t, ButtonKind::Secondary, "Add account")
+                    button(t, ButtonKind::Secondary, "Add Account")
                         .id("add-account")
                         .press(t)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -723,9 +748,9 @@ impl SettingsWindow {
                         t,
                         ButtonKind::Ghost,
                         if armed {
-                            "Click again to sign out"
+                            "Click Again to Sign Out"
                         } else {
-                            "Sign out of this account"
+                            "Sign Out"
                         },
                     )
                     .id("sign-out")
@@ -739,7 +764,7 @@ impl SettingsWindow {
                 )
             });
         let check_again = |cx: &mut Context<Self>| {
-            button(t, ButtonKind::Secondary, "Check again")
+            button(t, ButtonKind::Secondary, "Check Again")
                 .id("check-photo")
                 .press(t)
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -749,8 +774,8 @@ impl SettingsWindow {
         match photo_answer {
             Some(PhotoAnswer::NotAllowed) => rows.push(row(
                 t,
-                "Show your Google photo",
-                "This sign-in predates profile photos. Allow your basic profile once in your browser, choosing this same account.",
+                "Show Your Google Photo",
+                "Allow it once in your browser, with this same account.",
                 button(t, ButtonKind::Secondary, "Allow")
                     .id("allow-photo")
                     .press(t)
@@ -760,14 +785,14 @@ impl SettingsWindow {
             )),
             Some(PhotoAnswer::Unchecked) => rows.push(row(
                 t,
-                "A letter instead of your photo?",
-                "This is the picture Google gives every app. To look for your own photo, Nimbra needs the People API turned on in its Google Cloud project. Then check again.",
+                "Profile Photo",
+                "Needs the People API on in Nimbra’s Google Cloud project.",
                 check_again(cx),
             )),
             Some(PhotoAnswer::None) => rows.push(row(
                 t,
-                "Google has no photo for this account",
-                "Google only offers a drawn letter. If you did set a photo, your Workspace admin may be keeping it from apps.",
+                "No Google Photo",
+                "A Workspace admin can keep photos from apps.",
                 check_again(cx),
             )),
             Some(PhotoAnswer::Theirs) | None => {}
@@ -781,10 +806,11 @@ impl SettingsWindow {
                 .child(actions)
                 .when(connected, |d| {
                     d.child(meta(
-                        format!(
-                            "Signing out of {} removes its sign-in and the mail kept for it on this Mac. Other accounts stay.",
-                            if active_email.is_empty() { "an account".to_string() } else { active_email }
-                        ),
+                        if active_email.is_empty() {
+                            "Signing out removes the account’s sign-in and mail from this Mac.".to_string()
+                        } else {
+                            format!("Signing out removes {active_email}’s sign-in and mail from this Mac.")
+                        },
                         t.text3,
                     ))
                 })
@@ -853,21 +879,28 @@ impl SettingsWindow {
                                 ),
                         )
                 };
+                let (rest, lit) = (if on { t.violet } else { t.border }, t.border_strong);
                 div()
                     .id(("theme-tile", id))
+                    .group("theme-tile")
                     .flex()
                     .flex_col()
                     .gap(px(8.))
                     .cursor_pointer()
+                    .active(|s| s.opacity(0.85))
                     .child(
                         div()
                             .flex()
                             .w(px(150.))
                             .h(px(92.))
-                            .rounded(px(10.))
+                            .rounded(px(radius::ROW))
                             .overflow_hidden()
                             .border_2()
-                            .border_color(if on { t.violet } else { t.border })
+                            .border_color(rest)
+                            .when(on, |d| d.shadow(elevation(t, Elevation::Glow)))
+                            .when(!on, |d| {
+                                d.group_hover("theme-tile", move |s| s.border_color(lit))
+                            })
                             .when(light, |d| d.child(half(Theme::light(), true, !dark)))
                             .when(dark, |d| d.child(half(Theme::dark(), !light, true))),
                     )
@@ -879,14 +912,18 @@ impl SettingsWindow {
                             .when(on, |d| d.font_weight(FontWeight::MEDIUM))
                             .child(label),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let system_dark = matches!(
+                            window.appearance(),
+                            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
+                        );
                         this.set(cx, move |n| {
                             n.settings.theme = choice;
-                            match choice {
-                                ThemeChoice::Light => n.dark = false,
-                                ThemeChoice::Dark => n.dark = true,
-                                ThemeChoice::System => {}
-                            }
+                            n.dark = match choice {
+                                ThemeChoice::Light => false,
+                                ThemeChoice::Dark => true,
+                                ThemeChoice::System => system_dark,
+                            };
                         })
                     }))
             };
@@ -900,8 +937,8 @@ impl SettingsWindow {
             .into_any_element();
         let size_row = row(
             t,
-            "Text size in the reader",
-            "For messages shown in Nimbra's reader.",
+            "Reader Text Size",
+            "",
             self.choice(
                 t,
                 "text-size",
@@ -921,8 +958,8 @@ impl SettingsWindow {
         let badge_row = self.toggle(
             t,
             "dock-badge",
-            "Unread count on the Dock icon",
-            "The inbox's unread conversations.",
+            "Unread Count in Dock",
+            "",
             badge,
             cx,
             |n| n.settings.dock_badge = !n.settings.dock_badge,
@@ -941,30 +978,30 @@ impl SettingsWindow {
             n.settings.dark_emails,
         );
         let mut rows = vec![
-                    self.toggle(
-                        t,
-                        "original",
-                        "Open mail in its original formatting",
-                        "Off shows every message in Nimbra's reader. V switches either way.",
-                        original,
-                        cx,
-                        |n| {
-                            n.settings.original_view = !n.settings.original_view;
-                            n.original = n.settings.original_view;
-                        },
-                    ),
-                    self.toggle(
-                        t,
-                        "images",
-                        "Load remote images",
-                        "Off keeps images from the web out until you ask. They can tell a sender that you opened the mail.",
-                        images,
-                        cx,
-                        |n| {
-                            n.settings.load_images = !n.settings.load_images;
-                            n.original_images = n.settings.load_images;
-                        },
-                    ),
+            self.toggle(
+                t,
+                "original",
+                "Original Formatting",
+                "Off shows every message in the reader.",
+                original,
+                cx,
+                |n| {
+                    n.settings.original_view = !n.settings.original_view;
+                    n.original = n.settings.original_view;
+                },
+            ),
+            self.toggle(
+                t,
+                "images",
+                "Load Remote Images",
+                "Senders can tell when images load.",
+                images,
+                cx,
+                |n| {
+                    n.settings.load_images = !n.settings.load_images;
+                    n.original_images = n.settings.load_images;
+                },
+            ),
         ];
         // Darkening needs WebKit (see webview.rs), so the switch is only where it works.
         if cfg!(target_os = "macos") {
@@ -973,28 +1010,15 @@ impl SettingsWindow {
                 self.toggle(
                     t,
                     "dark-emails",
-                    "Darken emails in dark theme",
-                    "Light emails get a dark page and light text. Pictures keep their colours. Off shows mail as sent.",
+                    "Darken Emails in Dark Mode",
+                    "Pictures keep their colours.",
                     dark_emails,
                     cx,
                     |n| n.settings.dark_emails = !n.settings.dark_emails,
                 ),
             );
         }
-        vec![
-            group(t, None, rows),
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .px(px(4.))
-                .child(icon("ban", 14., t.text3))
-                .child(meta(
-                    "Original formatting always runs with the sender's scripts off, and links open in your browser.",
-                    t.text3,
-                ))
-                .into_any_element(),
-        ]
+        vec![group(t, None, rows)]
     }
 
     fn composing(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1011,18 +1035,13 @@ impl SettingsWindow {
             .gap(px(8.))
             .p(px(16.))
             .child(div().font_weight(FontWeight::MEDIUM).child("Signature"))
-            .child(meta(
-                "Added below new messages, replies and forwards.",
-                t.text3,
-            ))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .mt(px(4.))
                     .px(px(12.))
                     .py(px(8.))
-                    .rounded(px(10.))
+                    .rounded(px(radius::ROW))
                     .bg(t.hover)
                     .border_1()
                     .border_color(t.border)
@@ -1033,8 +1052,8 @@ impl SettingsWindow {
             .into_any_element();
         let undo_row = row(
             t,
-            "Undo send",
-            "How long a sent message can still be taken back.",
+            "Undo Send",
+            "How long you can take a sent message back.",
             self.choice(
                 t,
                 "undo",
@@ -1053,8 +1072,8 @@ impl SettingsWindow {
         let quote_row = self.toggle(
             t,
             "quote",
-            "Include the original in replies",
-            "Folded behind ••• below what you write.",
+            "Quote the Original in Replies",
+            "",
             quote,
             cx,
             |n| n.settings.quote_replies = !n.settings.quote_replies,
@@ -1076,26 +1095,20 @@ impl SettingsWindow {
                     self.toggle(
                         t,
                         "notify",
-                        "Notify me about new mail",
-                        "New unread mail in the inbox, while Nimbra is running.",
+                        "New Mail",
+                        "While Nimbra is open.",
                         on,
                         cx,
                         |n| n.settings.notifications = !n.settings.notifications,
                     ),
-                    self.toggle(
-                        t,
-                        "sound",
-                        "Play a sound",
-                        "macOS's notification sound.",
-                        sound,
-                        cx,
-                        |n| n.settings.notify_sound = !n.settings.notify_sound,
-                    ),
+                    self.toggle(t, "sound", "Sound", "", sound, cx, |n| {
+                        n.settings.notify_sound = !n.settings.notify_sound
+                    }),
                     row(
                         t,
-                        "Try it",
-                        "Shows a sample notification.",
-                        button(t, ButtonKind::Secondary, "Send a test")
+                        "Test Notification",
+                        "",
+                        button(t, ButtonKind::Secondary, "Send Test")
                             .id("notify-test")
                             .press(t)
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1121,7 +1134,9 @@ impl SettingsWindow {
 
     fn privacy(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let armed = self.is_armed("clear");
-        let fact = |name: &'static str, title: &'static str, text: &'static str| {
+        let accounts = &self.owner.read(cx).settings.accounts;
+        let sign_ins = Sign::of(accounts);
+        let fact = |name: &'static str, title: &'static str, text: String| {
             div()
                 .flex()
                 .gap(px(12.))
@@ -1140,45 +1155,41 @@ impl SettingsWindow {
                 )
                 .into_any_element()
         };
-        vec![
-            group(
-                t,
-                None,
-                vec![
-                    fact(
-                        "ban",
-                        "Encrypted on disk",
-                        "Mail kept on this Mac is encrypted (ChaCha20-Poly1305) with a key that lives only in your Keychain.",
-                    ),
-                    fact(
-                        "users",
-                        "Sign-in in the Keychain",
-                        "Google's sign-in is stored in the macOS Keychain, never in a file.",
-                    ),
-                    fact(
-                        "mail",
-                        "Only what it needs",
-                        "Nimbra asks Google to read, organise and send mail. Deleting forever needs your one-time permission.",
-                    ),
-                    fact(
-                        "image",
-                        "Mail is shown safely",
-                        "Scripts never run in email, remote content stays out unless allowed, and links open in your browser.",
-                    ),
-                ],
+        let mut facts = vec![
+            fact(
+                "ban",
+                "Encrypted on Disk",
+                "Mail on this Mac is encrypted with a key kept only in your Keychain.".into(),
             ),
+            fact("users", "Keychain Only", sign_ins.keychain().into()),
+        ];
+        if sign_ins.google {
+            facts.push(fact(
+                "mail",
+                "Only What It Needs",
+                "Google lets Nimbra read, organise and send. Deleting forever asks you first."
+                    .into(),
+            ));
+        }
+        facts.push(fact(
+            "image",
+            "Mail Shown Safely",
+            "Scripts in email never run, and links open in your browser.".into(),
+        ));
+        vec![
+            group(t, None, facts),
             group(
                 t,
                 None,
                 vec![row(
                     t,
-                    "Clear mail kept on this Mac",
-                    "Removes the copies Nimbra keeps for speed. Your mail in Gmail is not touched; it is downloaded again as needed.",
+                    "Clear Mail on This Mac",
+                    sign_ins.clear(),
                     button(
                         t,
                         ButtonKind::Secondary,
                         if armed {
-                            "Click again to clear"
+                            "Click Again to Clear"
                         } else {
                             "Clear"
                         },
@@ -1196,72 +1207,25 @@ impl SettingsWindow {
         ]
     }
 
+    /// The same list as the `?` sheet, in groups.
     fn shortcuts(&self, t: &Theme) -> Vec<AnyElement> {
-        let keys: &[(&str, &[(&str, &str)])] = &[
-            (
-                "Reading",
-                &[
-                    ("J / ↓", "Next conversation"),
-                    ("K / ↑", "Previous conversation"),
-                    ("Return", "Full view"),
-                    ("V", "Original formatting or reader"),
-                    ("⌘[ / ⌘]", "Back / forward"),
-                ],
-            ),
-            (
-                "Organising",
-                &[
-                    ("E", "Mark done"),
-                    ("U", "Read or unread"),
-                    ("S", "Star"),
-                    ("H", "Snooze"),
-                    ("⌫", "Move to trash"),
-                    ("Z / ⌘Z", "Undo"),
-                    ("⌘A", "Select all"),
-                ],
-            ),
-            (
-                "Writing",
-                &[
-                    ("C / ⌘N", "New message"),
-                    ("R", "Reply"),
-                    ("A", "Reply all"),
-                    ("F", "Forward"),
-                    ("⌘↵", "Send"),
-                    ("⌘S", "Save draft"),
-                    ("⌘⇧F", "Full page composer"),
-                    ("⌘B ⌘I ⌘U ⌘K", "Bold, italic, underline, link"),
-                ],
-            ),
-            (
-                "App",
-                &[
-                    ("/ or ⌘F", "Search"),
-                    ("⌘K", "Snooze"),
-                    ("⌘R", "Check for mail"),
-                    ("⌘B / ⌘⇧B", "Sidebar (auto-hide) / message list"),
-                    ("⌘⇧L", "Light or dark"),
-                    ("⌘,", "Settings"),
-                    ("⌘P", "Print"),
-                    ("⌘H / ⌘M / ⌘W", "Hide / minimise / close window"),
-                ],
-            ),
-        ];
-        keys.iter()
+        crate::keyboard::SHORTCUTS
+            .iter()
             .map(|(title, items)| {
                 group(
                     t,
                     Some(title),
                     items
                         .iter()
-                        .map(|(key, what)| {
+                        .map(|(keys, what)| {
                             div()
                                 .flex()
                                 .items_center()
+                                .gap(px(4.))
                                 .px(px(16.))
                                 .py(px(9.))
                                 .child(div().flex_1().text_color(t.text2).child(*what))
-                                .child(kbd(t, key))
+                                .children(keys.iter().map(|key| kbd(t, key)))
                                 .into_any_element()
                         })
                         .collect(),
@@ -1282,7 +1246,7 @@ impl SettingsWindow {
                         .size(px(ABOUT_ICON))
                         // The glow follows the icon's own shape, which the image brings.
                         .rounded(px(ABOUT_ICON / 4.))
-                        .shadow(vec![shadow(c(0x8b7cff, 0.45), 14., 40., -6.)])
+                        .shadow(vec![shadow(t.glow, 14., 40., -6.)])
                         // The icon as macOS shows it in the same appearance.
                         .child(
                             gpui::img(if t.dark {
@@ -1294,16 +1258,12 @@ impl SettingsWindow {
                         ),
                 )
                 .child(title_l("Nimbra", t.text))
-                .child(meta(format!("Version {}", env!("CARGO_PKG_VERSION")), t.text3))
+                .child(meta(
+                    format!("Version {}", env!("CARGO_PKG_VERSION")),
+                    t.text3,
+                ))
                 .child(
-                    div()
-                        .max_w(px(380.))
-                        .text_center()
-                        .text_color(t.text2)
-                        .child("A calm, fast Gmail client for the Mac. Your mail stays in Gmail; this Mac keeps an encrypted copy so it opens instantly."),
-                )
-                .child(
-                    button(t, ButtonKind::Secondary, "Keyboard shortcuts")
+                    button(t, ButtonKind::Secondary, "Keyboard Shortcuts")
                         .id("about-shortcuts")
                         .press(t)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1329,4 +1289,44 @@ fn label_width(cx: &App, text: &str, size: f32) -> f32 {
                 .map_or(size * 0.55, |a| f32::from(a.width))
         })
         .sum()
+}
+
+/// How the accounts on this Mac sign in, for copy that names only what applies.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Sign {
+    google: bool,
+    microsoft: bool,
+    password: bool,
+}
+
+impl Sign {
+    fn of(accounts: &[crate::settings::AccountRef]) -> Self {
+        accounts.iter().fold(Sign::default(), |mut sign, account| {
+            match (&account.servers, &account.oauth) {
+                (None, _) => sign.google = true,
+                (Some(_), Some(_)) => sign.microsoft = true,
+                (Some(_), None) => sign.password = true,
+            }
+            sign
+        })
+    }
+
+    fn keychain(self) -> &'static str {
+        match (self.google || self.microsoft, self.password) {
+            (true, true) => "Sign-ins and passwords are stored only in the Keychain.",
+            (false, true) => "Passwords are stored only in the Keychain.",
+            (true, false) if !self.microsoft => {
+                "Your Google sign-in is stored only in the Keychain."
+            }
+            _ => "Sign-ins are stored only in the Keychain.",
+        }
+    }
+
+    fn clear(self) -> &'static str {
+        if self.google && !self.microsoft && !self.password {
+            "Your mail in Gmail is untouched and downloads again as needed."
+        } else {
+            "Your mail on the server is untouched and downloads again as needed."
+        }
+    }
 }

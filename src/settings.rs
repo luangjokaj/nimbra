@@ -1,7 +1,7 @@
 //! Preferences, kept in a small JSON file next to the mail store (not in it: they are not
 //! mail, and they stay when you sign out).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
@@ -160,30 +160,107 @@ fn path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join("Library/Application Support/Nimbra/settings.json"))
 }
 
+/// What loading found other than a good file, for the app to say once.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Recovery {
+    /// The file was unreadable; the last good copy was used. It was set aside.
+    FromBackup,
+    /// The file and its backup were both unreadable: defaults, with the file set aside.
+    Reset,
+}
+
+static RECOVERY: std::sync::OnceLock<Recovery> = std::sync::OnceLock::new();
+
+/// Set when the settings had to be recovered at launch.
+pub fn recovery() -> Option<Recovery> {
+    RECOVERY.get().copied()
+}
+
 /// The saved settings, or the defaults.
 pub fn load() -> Settings {
-    path()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    let Some(path) = path() else {
+        return Settings::default();
+    };
+    let (settings, recovery) = load_from(&path);
+    if let Some(recovery) = recovery {
+        eprintln!("nimbra: settings were unreadable ({recovery:?})");
+        let _ = RECOVERY.set(recovery);
+    }
+    settings
+}
+
+fn backup_of(path: &Path) -> PathBuf {
+    path.with_extension("json.bak")
+}
+
+fn partial_of(path: &Path) -> PathBuf {
+    path.with_extension("json.partial")
+}
+
+fn parse(path: &Path) -> std::io::Result<Option<Settings>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(error),
+        // Unreadable counts as damaged: never as "there are none".
+        Err(_) => Ok(None),
+    }
+}
+
+/// A damaged file is moved aside (never saved over) and the last good copy used instead.
+fn load_from(path: &Path) -> (Settings, Option<Recovery>) {
+    let damaged = match parse(path) {
+        Ok(Some(settings)) => return (settings, None),
+        Ok(None) => {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let aside = path.with_extension(format!("json.corrupt-{stamp}"));
+            if let Err(error) = std::fs::rename(path, &aside) {
+                eprintln!("nimbra: could not set damaged settings aside: {error}");
+            }
+            true
+        }
+        Err(_) => false,
+    };
+    // A save cut off between its two moves left its new copy, complete and on disk.
+    if let Ok(Some(settings)) = parse(&partial_of(path)) {
+        return (settings, damaged.then_some(Recovery::FromBackup));
+    }
+    match parse(&backup_of(path)) {
+        Ok(Some(settings)) => (settings, damaged.then_some(Recovery::FromBackup)),
+        Ok(None) => (Settings::default(), Some(Recovery::Reset)),
+        Err(_) => (Settings::default(), damaged.then_some(Recovery::Reset)),
+    }
 }
 
 pub fn save(settings: &Settings) -> Result<()> {
-    let path = path().context("no home folder")?;
+    save_to(&path().context("no home folder")?, settings)
+}
+
+fn save_to(path: &Path, settings: &Settings) -> Result<()> {
     let dir = path.parent().context("no settings folder")?;
     std::fs::create_dir_all(dir)?;
     let mut settings = settings.clone();
     settings.signature = settings.signature.chars().take(SIGNATURE_LIMIT).collect();
     let json = serde_json::to_vec_pretty(&settings)?;
-    // Written next to the file and then moved over it, so a crash never leaves half a file.
-    let partial = path.with_extension("json.partial");
-    std::fs::write(&partial, json)?;
-    #[cfg(unix)]
+    // Written in full next to the file and on disk before it takes its place; the copy it
+    // replaces stays as the backup.
+    let partial = partial_of(path);
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o600))?;
+        use std::io::Write as _;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&partial)?;
+        file.write_all(&json)?;
+        file.sync_all()?;
     }
-    std::fs::rename(&partial, &path)?;
+    if path.exists() {
+        std::fs::rename(path, backup_of(path))?;
+    }
+    std::fs::rename(&partial, path)?;
+    std::fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
 
@@ -262,5 +339,111 @@ mod tests {
             serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
         assert_eq!(back.accounts[1].oauth.as_deref(), Some("microsoft"));
         assert_eq!(back.accounts[0].oauth, None);
+    }
+
+    /// A settings file in a folder of its own, removed when dropped.
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("nimbra-settings-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Folder(dir)
+        }
+
+        fn file(&self) -> PathBuf {
+            self.0.join("settings.json")
+        }
+
+        fn names(&self) -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(&self.0)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_torn_file_loads_the_last_good_copy_and_is_kept_aside() {
+        let folder = Folder::new("torn");
+        save_to(&folder.file(), &two()).unwrap();
+        let mut newer = two();
+        newer.signature = "Newer".into();
+        save_to(&folder.file(), &newer).unwrap();
+        std::fs::write(folder.file(), b"").unwrap();
+
+        let (settings, recovery) = load_from(&folder.file());
+
+        assert_eq!(recovery, Some(Recovery::FromBackup));
+        assert_eq!(settings.accounts.len(), 2);
+        assert!(
+            folder
+                .names()
+                .iter()
+                .any(|n| n.starts_with("settings.json.corrupt-")),
+            "{:?}",
+            folder.names()
+        );
+    }
+
+    #[test]
+    fn a_damaged_file_without_a_backup_is_reported_not_silently_reset() {
+        let folder = Folder::new("reset");
+        std::fs::write(folder.file(), b"{\"accounts\": [").unwrap();
+
+        let (_, recovery) = load_from(&folder.file());
+
+        assert_eq!(recovery, Some(Recovery::Reset));
+        assert!(
+            !folder.file().exists(),
+            "the damaged file must not be saved over"
+        );
+    }
+
+    #[test]
+    fn a_save_cut_off_between_its_moves_keeps_the_newest_copy() {
+        let folder = Folder::new("between");
+        save_to(&folder.file(), &Settings::default()).unwrap();
+        let mut newer = two();
+        newer.signature = "Newest".into();
+        std::fs::write(
+            partial_of(&folder.file()),
+            serde_json::to_vec(&newer).unwrap(),
+        )
+        .unwrap();
+        std::fs::rename(folder.file(), backup_of(&folder.file())).unwrap();
+
+        let (settings, recovery) = load_from(&folder.file());
+
+        assert_eq!((settings.signature.as_str(), recovery), ("Newest", None));
+    }
+
+    #[test]
+    fn no_file_yet_is_a_first_launch() {
+        let folder = Folder::new("fresh");
+        assert_eq!(load_from(&folder.file()), (Settings::default(), None));
+    }
+
+    #[test]
+    fn saving_keeps_the_previous_copy_as_the_backup() {
+        let folder = Folder::new("backup");
+        save_to(&folder.file(), &two()).unwrap();
+        save_to(&folder.file(), &Settings::default()).unwrap();
+
+        let backup: Settings =
+            serde_json::from_slice(&std::fs::read(backup_of(&folder.file())).unwrap()).unwrap();
+
+        assert_eq!(backup.accounts.len(), 2);
+        assert_eq!(folder.names(), ["settings.json", "settings.json.bak"]);
     }
 }
