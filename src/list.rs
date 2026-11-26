@@ -1389,24 +1389,20 @@ impl Nimbra {
                 .border_color(night.edge)
                 .rounded(px(radius::CARD))
         };
-        let stat = |name: &str, label: &str, value: &str| {
-            quiet(div())
+        // One line of facts, each a figure in ink and its words in the night's soft tone.
+        let fact = |figure: String, words: &str| {
+            div()
                 .flex()
-                .flex_col()
-                .gap(px(space::S))
-                .px(px(space::L2))
-                .py(px(space::L))
-                .min_w(px(168.))
+                .gap(px(5.))
                 .child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap(px(space::S))
-                        .child(icon(name, 14., night.soft))
-                        .child(meta(label.to_string(), night.soft)),
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(night.ink)
+                        .child(figure),
                 )
-                .child(display(value.to_string(), 32., night.ink))
+                .child(words.to_string())
         };
+        let dot = || div().text_color(night.soft).opacity(0.6).child("·");
         let arrival = self.arrival.unwrap_or(Arrival::SETTLED);
         let settle = |d: Div, shown: f32| d.relative().top(px(drop_for(shown))).opacity(shown);
         let stars = night::stars(&night, 48, |i| arrival.star(i));
@@ -1472,27 +1468,43 @@ impl Nimbra {
                         .justify_center()
                         .w_full()
                         .h(relative(HORIZON))
+                        // A total eclipse with its corona: the sidebar's eclipse, done.
+                        .child(settle(
+                            div()
+                                .rounded_full()
+                                .bg(t.moon)
+                                .shadow(vec![shadow(
+                                    c(0x8a5cff, if t.dark { 0.32 } else { 0.22 }),
+                                    0.,
+                                    120.,
+                                    16.,
+                                )])
+                                .child(crate::eclipse::eclipse(t, ZERO_ECLIPSE, 1., 40.)),
+                            arrival.headline(),
+                        ))
+                        .child(div().h(px(space::XXXL)).flex_none())
                         .child(settle(
                             meta(today, night.soft).font_weight(FontWeight::MEDIUM),
                             arrival.date(),
                         ))
-                        .child(div().h(px(space::L)).flex_none())
+                        .child(div().h(px(space::S)).flex_none())
                         .child(settle(hero("Inbox Zero", night.ink), arrival.headline()))
                         // Sample content: real mail shows the headline only.
                         .when(self.is_demo(), |d| {
                             d.child(
                                 settle(div(), arrival.line())
                                     .flex()
-                                    .mt(px(space::XXXL))
+                                    .items_center()
                                     .gap(px(space::M))
-                                    .child(stat(
-                                        "done",
-                                        "Threads handled",
-                                        &(32 + self.history.len()).to_string(),
-                                    ))
-                                    .child(stat("clock", "Time in inbox", "38m"))
+                                    .mt(px(space::L))
+                                    .text_size(px(15.))
+                                    .line_height(px(22.))
+                                    .text_color(night.soft)
+                                    .child(fact((32 + self.history.len()).to_string(), "threads"))
+                                    .child(dot())
+                                    .child(fact("38 min".into(), "in your inbox"))
                                     .when(self.settings.show_streak, |d| {
-                                        d.child(stat("zap", "Zero streak", "8 days"))
+                                        d.child(dot()).child(fact("8-day".into(), "streak"))
                                     }),
                             )
                         }),
@@ -1552,6 +1564,9 @@ impl Nimbra {
         )
     }
 }
+
+/// The eclipse over Inbox Zero, across.
+const ZERO_ECLIPSE: f32 = 128.;
 
 /// A turning reload arrow, for as long as it is drawn.
 pub(super) fn spinning(arrow: gpui::Svg, id: &'static str) -> AnyElement {

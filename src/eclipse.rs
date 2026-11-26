@@ -43,7 +43,7 @@ pub fn eclipse(t: &Theme, size: f32, covered: f32, glow: f32) -> Div {
         .shadow(vec![shadow(halo, 0., glow, 0.)]);
     let body = if covered >= 1. {
         // Totality: the moon just inside the sun, leaving a ring of corona.
-        let rim = (size * 0.045).max(1.5);
+        let rim = (size * 0.025).max(1.5);
         div()
             .absolute()
             .top(px(rim))

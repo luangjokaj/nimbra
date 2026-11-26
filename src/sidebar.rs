@@ -490,7 +490,8 @@ impl Nimbra {
             })
             .flatten();
         let visible = self.visible();
-        let left = visible.len();
+        // The sample inbox's threads not yet done, whichever mailbox is open.
+        let left = self.done.iter().filter(|done| !**done).count();
         let unread = visible.iter().filter(|i| self.mails[**i].unread).count();
         // The other mailboxes are not connected yet, so their counts only show in the demo.
         let demo = self.is_demo();
