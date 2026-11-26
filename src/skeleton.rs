@@ -4,8 +4,9 @@
 //! under them has the real layout's margins and line heights, so nothing moves when the mail
 //! arrives. A slow, faint wave of light runs down both panes.
 //!
-//! It is all in the two greys of `inks`: no accent colours, and nothing marked as open or
-//! unread, so that it reads as a place being filled and not as mail.
+//! It is all in the two greys of `inks`, in thin lines: no accent colours, no pictures,
+//! labels or buttons, and nothing marked as open or unread, so that it reads as a place
+//! quietly being filled and not as mail.
 
 use super::*;
 
@@ -14,47 +15,46 @@ const ROW_H: f32 = 69.;
 /// The rows above EARLIER.
 const TODAY: usize = 4;
 /// How dim the bars' controls are until there is mail to use them on.
-const WAITING: f32 = 0.4;
+const WAITING: f32 = 0.6;
 
 /// One message in the list, as shares of the room it has.
 struct Row {
     sender: f32,
     subject: f32,
     snippet: f32,
-    label: Option<f32>,
 }
 
-const fn row(sender: f32, subject: f32, snippet: f32, label: Option<f32>) -> Row {
+const fn row(sender: f32, subject: f32, snippet: f32) -> Row {
     Row {
         sender,
         subject,
         snippet,
-        label,
     }
 }
 
 /// Uneven, as mail is. Repeated down the list.
 const MAIL: [Row; 9] = [
-    row(0.30, 0.46, 0.40, Some(54.)),
-    row(0.20, 0.34, 0.60, None),
-    row(0.38, 0.62, 0.27, None),
-    row(0.26, 0.28, 0.52, Some(40.)),
-    row(0.17, 0.52, 0.38, None),
-    row(0.33, 0.40, 0.44, None),
-    row(0.24, 0.70, 0.18, None),
-    row(0.29, 0.31, 0.63, Some(62.)),
-    row(0.21, 0.48, 0.30, None),
+    row(0.30, 0.46, 0.40),
+    row(0.20, 0.34, 0.60),
+    row(0.38, 0.62, 0.27),
+    row(0.26, 0.28, 0.52),
+    row(0.17, 0.52, 0.38),
+    row(0.33, 0.40, 0.44),
+    row(0.24, 0.70, 0.18),
+    row(0.29, 0.31, 0.63),
+    row(0.21, 0.48, 0.30),
 ];
 
 /// The email's paragraphs, as the share of the column each line fills.
 const GREETING: [f32; 1] = [0.22];
 const OPENING: [f32; 4] = [0.97, 0.92, 0.99, 0.58];
 const MIDDLE: [f32; 3] = [0.94, 0.98, 0.41];
+const CLOSING: [f32; 2] = [0.88, 0.36];
 const SIGN_OFF: [f32; 2] = [0.16, 0.27];
 
 /// The two greys everything is drawn in: where bold words will be, and the rest.
 fn inks(t: &Theme) -> (Hsla, Hsla) {
-    (t.border, t.border.opacity(0.6))
+    (t.border.opacity(0.8), t.border.opacity(0.45))
 }
 
 /// A line of text's ink, centred in that line's height.
@@ -75,10 +75,10 @@ fn wave(key: usize, down: f32, element: Div) -> AnyElement {
     element
         .with_animation(
             ("skeleton", key),
-            Animation::new(Duration::from_millis(1700)).repeat(),
+            Animation::new(Duration::from_millis(2400)).repeat(),
             move |element, delta| {
                 let light = ((delta - down * 0.8) * std::f32::consts::TAU).cos();
-                element.opacity(0.86 + 0.14 * light)
+                element.opacity(0.9 + 0.1 * light)
             },
         )
         .into_any_element()
@@ -153,24 +153,9 @@ impl Nimbra {
                 .items_center()
                 .gap(px(8.))
                 .h(px(22.))
-                .child(ink(relative(mail.sender), 10., 22., strong))
-                .children(mail.label.map(|width| {
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(6.))
-                        .h(px(20.))
-                        .pl(px(7.))
-                        .pr(px(9.))
-                        .rounded_full()
-                        .border_1()
-                        .border_color(t.border)
-                        .child(div().size(px(6.)).rounded_full().bg(soft))
-                        .child(ink(px(width), 6., 16., soft))
-                }))
+                .child(ink(relative(mail.sender), 8., 22., strong))
                 .child(div().flex_1())
-                .child(ink(px(26.), 7., 22., soft).flex_none());
+                .child(ink(px(26.), 6., 22., soft).flex_none());
             let row = div()
                 .relative()
                 .flex()
@@ -198,8 +183,8 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .gap(px(6.))
-                                .child(ink(relative(mail.subject), 8., 18., strong))
-                                .child(ink(relative(mail.snippet), 8., 18., soft)),
+                                .child(ink(relative(mail.subject), 7., 18., strong))
+                                .child(ink(relative(mail.snippet), 7., 18., soft)),
                         ),
                 );
             let before = match i {
@@ -297,10 +282,11 @@ impl Nimbra {
             .child(rule())
             .children(["reply", "reply-all", "forward"].map(|name| icon_button(t, name)))
             .child(rule())
+            // As the real toggle: lit while the reader view is on.
             .child(if self.original {
-                button(t, ButtonKind::Ghost, "Reader view", Some("V")).bg(t.selected)
+                button(t, ButtonKind::Ghost, "Reader view", Some("V"))
             } else {
-                button(t, ButtonKind::Ghost, "Show original", Some("V"))
+                button(t, ButtonKind::Ghost, "Show original", Some("V")).bg(t.selected)
             })
             .child(div().flex_1())
             .children(["up", "down", "more"].map(|name| icon_button(t, name)));
@@ -347,7 +333,7 @@ impl Nimbra {
             .pb(px(12.))
             .border_b_1()
             .border_color(t.border)
-            .child(wave(100, 0.05, ink(relative(0.46), 18., 30., strong)))
+            .child(wave(100, 0.05, ink(relative(0.46), 14., 30., strong)))
             // Where a label or a Spam note would be.
             .child(div())
             .child(wave(
@@ -388,18 +374,9 @@ impl Nimbra {
             .px(px(64.))
             .pt(px(40.))
             .pb(px(24.))
-            .child(
-                div().flex().child(
-                    div()
-                        .h(px(22.))
-                        .w(px(84.))
-                        .rounded_full()
-                        .border_1()
-                        .border_color(t.border)
-                        .bg(t.hover),
-                ),
-            )
-            .child(wave(100, 0.1, ink(relative(0.62), 24., 43., strong)))
+            // Where a label would be.
+            .child(div().h(px(22.)))
+            .child(wave(100, 0.1, ink(relative(0.62), 20., 43., strong)))
             .child(div())
             .child(wave(
                 101,
@@ -415,45 +392,23 @@ impl Nimbra {
             ))
     }
 
-    /// An email that could be one: a greeting, text, a picture, a button and a sign-off.
+    /// An email that could be one: a greeting, a few paragraphs and a sign-off, in thin
+    /// lines only.
     fn skeleton_email(&self, t: &Theme, side: f32, top: f32) -> Div {
         let (_, soft) = inks(t);
         let paragraph = |lines: &'static [f32]| {
             div().flex().flex_col().children(
                 lines
                     .iter()
-                    .map(|&share| ink(relative(share), 8., 22., soft)),
+                    .map(|&share| ink(relative(share), 7., 22., soft)),
             )
         };
-        let picture = div()
-            .flex()
-            .items_center()
-            .justify_center()
-            .w_full()
-            .h(px(168.))
-            .rounded(px(12.))
-            .bg(t.hover)
-            .border_1()
-            .border_color(t.border)
-            .child(icon("image", 26., t.faint));
-        let action = div().flex().child(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(148.))
-                .h(px(36.))
-                .rounded(px(9.))
-                .bg(t.hover)
-                .child(ink(px(84.), 8., 16., soft)),
-        );
         let parts = [
             (0.22, paragraph(&GREETING)),
             (0.30, paragraph(&OPENING)),
-            (0.46, picture),
-            (0.62, paragraph(&MIDDLE)),
-            (0.72, action),
-            (0.82, paragraph(&SIGN_OFF)),
+            (0.46, paragraph(&MIDDLE)),
+            (0.58, paragraph(&CLOSING)),
+            (0.70, paragraph(&SIGN_OFF)),
         ];
         div().flex_1().min_h(px(0.)).overflow_hidden().child(
             div()
