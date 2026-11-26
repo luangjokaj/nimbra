@@ -9,6 +9,11 @@ use super::*;
 use crate::discover::Found;
 use crate::imap_mail::Credential;
 use crate::servers::{Secret, Security, Server, Servers};
+use crate::theme::radius;
+use crate::ui::{Elevation, elevation, motion};
+
+const NOT_FOUND: &str = "Couldn’t find the servers. Check them above.";
+const NO_PASSWORD: &str = "Enter the password.";
 
 /// Google's "G", in its colours, for the Continue with Google button.
 static GOOGLE_LOGO: std::sync::LazyLock<Arc<gpui::Image>> = std::sync::LazyLock::new(|| {
@@ -182,8 +187,7 @@ impl Nimbra {
         });
         fill(sheet, &guess("ana@example.com"), cx);
         sheet.manual = true;
-        sheet.error =
-            Some("Nimbra could not find this account’s servers. Check them above.".into());
+        sheet.error = Some(NOT_FOUND.into());
         cx.notify();
     }
 
@@ -240,14 +244,14 @@ impl Nimbra {
         let email = sheet.email.read(cx).text().trim().to_string();
         let password = sheet.password.read(cx).text();
         if !mail::is_address(&email) {
-            sheet.error = Some("Type your whole email address.".into());
+            sheet.error = Some("Enter the full email address.".into());
             cx.notify();
             return;
         }
         // Without a password, what the address is decides (Google and Microsoft sign in
         // in the browser); typed servers always need one.
         if password.is_empty() && sheet.manual {
-            sheet.error = Some("Type the account’s password.".into());
+            sheet.error = Some(NO_PASSWORD.into());
             cx.notify();
             return;
         }
@@ -302,7 +306,7 @@ impl Nimbra {
                 self.add_google_account(cx);
             }
             Checked::NoPassword => {
-                sheet.error = Some("Type the account’s password.".into());
+                sheet.error = Some(NO_PASSWORD.into());
                 cx.notify();
             }
             Checked::OAuth("Microsoft") if self.microsoft.is_some() => {
@@ -310,10 +314,8 @@ impl Nimbra {
             }
             Checked::OAuth(provider) => {
                 sheet.error = Some(
-                    format!(
-                        "{provider} accounts need {provider}’s own sign-in, which Nimbra does not have yet."
-                    )
-                    .into(),
+                    format!("{provider} needs its own sign-in, which Nimbra doesn’t support yet.")
+                        .into(),
                 );
                 cx.notify();
             }
@@ -323,8 +325,7 @@ impl Nimbra {
                     fill(sheet, &servers, cx);
                     sheet.manual = true;
                 }
-                sheet.error =
-                    Some("Nimbra could not find this account’s servers. Check them above.".into());
+                sheet.error = Some(NOT_FOUND.into());
                 cx.notify();
             }
             Checked::Failed(servers, why) => {
@@ -364,7 +365,8 @@ impl Nimbra {
         let (pending, url) = match crate::microsoft::SignIn::start(&config, hint.as_deref()) {
             Ok(started) => started,
             Err(error) => {
-                sheet.error = Some(error.to_string().into());
+                eprintln!("nimbra: Microsoft sign-in did not start: {error}");
+                sheet.error = Some("Couldn’t start signing in with Microsoft. Try again.".into());
                 cx.notify();
                 return;
             }
@@ -380,20 +382,12 @@ impl Nimbra {
             let outcome = cx
                 .background_executor()
                 .spawn(async move {
-                    let (email, tokens) = pending.finish(&config)?;
+                    let (email, tokens) = pending.finish(&config).map_err(MicrosoftStep::SignIn)?;
                     let tokens = Arc::new(tokens);
                     let servers = crate::microsoft::servers(&email);
                     crate::imap_mail::check_login(&servers, Credential::Microsoft(tokens.clone()))
-                        .map_err(|error| {
-                            if error.is::<mail::Offline>() {
-                                anyhow::anyhow!(
-                                    "Microsoft’s mail server could not be reached. Check the connection and try again."
-                                )
-                            } else {
-                                error
-                            }
-                        })?;
-                    anyhow::Ok((email, tokens, servers))
+                        .map_err(MicrosoftStep::Mailbox)?;
+                    Ok::<_, MicrosoftStep>((email, tokens, servers))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -410,7 +404,7 @@ impl Nimbra {
                         let credential = Credential::Microsoft(tokens);
                         this.keep_imap_account(for_account, email, credential, servers, cx)
                     }
-                    Err(error) => Err(error.to_string().into()),
+                    Err(step) => Err(step.explain()),
                 };
                 if let Err(error) = kept
                     && let Some(sheet) = &mut this.account_sheet
@@ -445,18 +439,24 @@ impl Nimbra {
             Some(id) if !id.is_empty() => id,
             // The first account of an old install is Gmail's and has no id of its own.
             Some(_) => return Err("That address is already in Nimbra, with Google.".into()),
-            None => mail::new_account_id().map_err(|error| error.to_string())?,
+            None => mail::new_account_id().map_err(|error| {
+                eprintln!("nimbra: no id for a new account: {error}");
+                SharedString::from("Couldn’t add the account. Try again.")
+            })?,
+        };
+        let keychain = |error: anyhow::Error| {
+            eprintln!("nimbra: the keychain refused a sign-in: {error:#}");
+            SharedString::from("Couldn’t save to the Keychain. Unlock it and try again.")
         };
         // Saved for this account, and whichever it signed in with before forgotten.
         let (credential, oauth) = match credential {
             Credential::Password(password) => {
-                crate::servers::store_password(&id, &password)
-                    .map_err(|error| format!("{error:#}"))?;
+                crate::servers::store_password(&id, &password).map_err(keychain)?;
                 crate::microsoft::forget_refresh_token(&id);
                 (Credential::Password(password), None)
             }
             Credential::Microsoft(tokens) => {
-                let saved = tokens.saved_as(&id).map_err(|error| format!("{error:#}"))?;
+                let saved = tokens.saved_as(&id).map_err(keychain)?;
                 crate::servers::forget_password(&id);
                 (
                     Credential::Microsoft(Arc::new(saved)),
@@ -524,22 +524,17 @@ impl Nimbra {
                     .flex_col()
                     .gap(px(14.))
                     .p(px(22.))
-                    .rounded(px(18.))
+                    .rounded(px(radius::SHEET))
                     .bg(t.raised)
                     .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![shadow(
-                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
-                        30.,
-                        80.,
-                        -10.,
-                    )])
+                    .border_color(t.edge)
+                    .shadow(elevation(t, Elevation::Sheet))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(title_s(
                         if asking_again {
-                            "Sign in again"
+                            "Sign In Again"
                         } else {
-                            "Add account"
+                            "Add Account"
                         },
                         t.text,
                     ))
@@ -548,11 +543,7 @@ impl Nimbra {
                             .when(self.microsoft.is_some(), |d| {
                                 d.child(self.microsoft_button(t, cx).w_full())
                             })
-                            .child(meta(
-                                "Or any other address (Zoho, iCloud, Fastmail, your own domain):"
-                                    .to_string(),
-                                t.text3,
-                            ))
+                            .child(div().pt(px(6.)).child(overline(t, "OTHER ADDRESS")))
                     })
                     .child(self.account_fields(t, cx)),
             )
@@ -577,10 +568,10 @@ impl Nimbra {
                         .flex_col()
                         .gap(px(14.))
                         .p(px(16.))
-                        .rounded(px(14.))
+                        .rounded(px(radius::CARD))
                         .bg(t.raised)
                         .border_1()
-                        .border_color(t.border)
+                        .border_color(t.edge)
                         .when(!detail.is_empty(), |d| {
                             d.child(meta(detail.to_string(), t.text3))
                         })
@@ -590,19 +581,19 @@ impl Nimbra {
         };
         let mut cards = vec![card(
             "Google",
-            "Gmail and Google Workspace. You sign in in your browser, with Google.",
+            "Gmail and Google Workspace",
             self.google_button(t, cx).into_any_element(),
         )];
         if self.microsoft.is_some() {
             cards.push(card(
                 "Microsoft",
-                "Outlook.com, Hotmail and Microsoft 365. You sign in in your browser, with Microsoft.",
+                "Outlook and Microsoft 365",
                 self.microsoft_button(t, cx).into_any_element(),
             ));
         }
         cards.push(card(
-            "Any other address",
-            "Zoho, iCloud, Fastmail, Yahoo, or your own domain. Nimbra finds the servers.",
+            "Other Address",
+            "iCloud, Fastmail, Zoho and more",
             self.account_fields(t, cx).into_any_element(),
         ));
         cards
@@ -679,7 +670,7 @@ impl Nimbra {
                         .items_center()
                         .h(px(BOX_H))
                         .px(px(12.))
-                        .rounded(px(10.))
+                        .rounded(px(radius::ROW))
                         .bg(t.hover)
                         .border_1()
                         .border_color(t.border)
@@ -703,10 +694,11 @@ impl Nimbra {
                         .justify_center()
                         .w(px(option_w))
                         .h_full()
-                        .rounded(px(7.))
+                        .rounded(px(radius::CHIP))
                         .text_size(px(13.))
                         .font_weight(FontWeight::MEDIUM)
                         .cursor_pointer()
+                        .when(value != choice, |d| d.press(t))
                         .text_color(if value == choice { t.text } else { t.text3 })
                         .child(label)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -755,26 +747,22 @@ impl Nimbra {
             };
             let (to, from) = (x(value), x(other));
             let (changed, generation) = slid[usize::from(!imap)];
-            let sliding = changed.is_some_and(|at| at.elapsed() < Duration::from_millis(260));
+            let sliding =
+                changed.is_some_and(|at| at.elapsed() < motion::PILL) && !motion::reduced();
             let pill = div()
                 .absolute()
                 .top(px(3.))
                 .w(px(option_w))
                 .h(px(BOX_H - 2. - 6.))
-                .rounded(px(7.))
+                .rounded(px(radius::CHIP))
                 .bg(t.raised)
                 .border_1()
-                .border_color(t.border)
-                .shadow(vec![shadow(
-                    c(0x000000, if t.dark { 0.25 } else { 0.08 }),
-                    1.,
-                    3.,
-                    0.,
-                )]);
+                .border_color(t.edge)
+                .shadow(vec![shadow(t.shadow.opacity(0.5), 1., 3., 0.)]);
             let pill = if sliding {
                 pill.with_animation(
                     (id, generation as usize),
-                    Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
+                    Animation::new(motion::PILL).with_easing(motion::ease_out),
                     move |d, delta| d.left(px(3. + from + (to - from) * delta)),
                 )
                 .into_any_element()
@@ -794,7 +782,7 @@ impl Nimbra {
                         .w(px(SWITCH_W))
                         .h(px(BOX_H))
                         .p(px(3.))
-                        .rounded(px(10.))
+                        .rounded(px(radius::ROW))
                         .bg(t.hover)
                         .border_1()
                         .border_color(t.border)
@@ -818,61 +806,63 @@ impl Nimbra {
             .flex()
             .flex_col()
             .gap(px(14.))
-                    .child(field("Email", &sheet.email))
-                    .child(field("Password", &sheet.password))
-                    .when(sheet.manual, |d| {
-                        d.child(field("User name", &sheet.username))
-                            .child(server_row(
-                                "Incoming (IMAP)",
-                                &sheet.imap_host,
-                                &sheet.imap_port,
-                                security("imap-security", sheet.imap_security, true, cx)
-                                    .into_any_element(),
-                            ))
-                            .child(server_row(
-                                "Outgoing (SMTP)",
-                                &sheet.smtp_host,
-                                &sheet.smtp_port,
-                                security("smtp-security", sheet.smtp_security, false, cx)
-                                    .into_any_element(),
-                            ))
-                    })
-                    .child(meta(
-                        match &sheet.error {
-                            Some(error) => error.clone(),
-                            None if sheet.microsoft => "Finish signing in with Microsoft in your browser…".into(),
-                            None if sheet.busy => "Finding the servers and checking the password…".into(),
-                            None => "The password is kept in your Mac’s keychain. With two-step sign-in on, use an app password from your provider."
-                                .into(),
-                        },
-                        if sheet.error.is_some() { t.rose } else { t.text3 },
+            .child(field("Email", &sheet.email))
+            .child(field("Password", &sheet.password))
+            .when(sheet.manual, |d| {
+                d.child(field("User name", &sheet.username))
+                    .child(server_row(
+                        "Incoming (IMAP)",
+                        &sheet.imap_host,
+                        &sheet.imap_port,
+                        security("imap-security", sheet.imap_security, true, cx).into_any_element(),
                     ))
+                    .child(server_row(
+                        "Outgoing (SMTP)",
+                        &sheet.smtp_host,
+                        &sheet.smtp_port,
+                        security("smtp-security", sheet.smtp_security, false, cx)
+                            .into_any_element(),
+                    ))
+            })
+            // Only real status, beside the buttons so nothing moves when it shows.
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().flex_1().min_w(px(0.)).children(match &sheet.error {
+                        Some(error) => Some(meta(error.clone(), t.rose)),
+                        None if sheet.microsoft => {
+                            Some(meta("Finish signing in in your browser.", t.text3))
+                        }
+                        None => None,
+                    }))
                     .child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .gap(px(8.))
-                            .child(
-                                button(t, ButtonKind::Ghost, "Cancel")
-                                    .id("account-cancel")
-                                    .press(t)
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.close_account_sheet(cx)),
-                                    ),
-                            )
-                            .child(crate::ui::glow(
-
-                                button(
-                                    t,
-                                    ButtonKind::Primary,
-                                    if sheet.busy { "Checking…" } else if asking_again { "Sign in" } else { "Add" },
-                                )
-                                .id("account-continue")
-                                .press(t)
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.account_sheet_continue(cx)),
-                                ), "account-continue")),
+                        button(t, ButtonKind::Ghost, "Cancel")
+                            .id("account-cancel")
+                            .press(t)
+                            .tooltip(tip(t.dark, "Cancel", "esc"))
+                            .on_click(cx.listener(|this, _, _, cx| this.close_account_sheet(cx))),
                     )
+                    .child(crate::ui::glow(
+                        button(
+                            t,
+                            ButtonKind::Primary,
+                            if sheet.busy {
+                                "Checking…"
+                            } else if asking_again {
+                                "Sign In"
+                            } else {
+                                "Add"
+                            },
+                        )
+                        .id("account-continue")
+                        .press(t)
+                        .when(sheet.busy, |d| d.opacity(0.5))
+                        .on_click(cx.listener(|this, _, _, cx| this.account_sheet_continue(cx))),
+                        "account-continue",
+                    )),
+            )
     }
 }
 
@@ -917,10 +907,11 @@ fn find_and_check(email: &str, password: &str, typed: Option<Servers>) -> Checke
     Checked::Works(servers)
 }
 
-/// A readable reason a server refused.
+/// A readable reason a server refused: what happened and what to do, never the raw error.
 fn explain(error: &anyhow::Error, which: &str) -> SharedString {
     if error.is::<mail::SignedOut>() || error.is::<crate::smtp::AuthFailed>() {
-        // The server's own words, when it gave a reason ("enable IMAP first").
+        // The server's own words, when it gave a reason ("enable IMAP first"), already
+        // cleaned to one short line.
         let reason = error
             .downcast_ref::<crate::imap_mail::ServerSaid>()
             .map(|said| said.0.trim().to_string())
@@ -928,13 +919,39 @@ fn explain(error: &anyhow::Error, which: &str) -> SharedString {
             .map(|said| format!(" It said: “{said}”."))
             .unwrap_or_default();
         format!(
-            "The {which} server did not take that password.{reason} Check that IMAP is on for the account, and with two-step sign-in, use an app password."
+            "The {which} server didn’t accept that password.{reason} With two-step sign-in, use an app password."
         )
         .into()
     } else if error.is::<mail::Offline>() {
-        format!("The {which} server could not be reached. Check its name and port.").into()
+        format!("The {which} server couldn’t be reached. Check its name and port.").into()
     } else {
-        format!("The {which} server: {error}").into()
+        eprintln!("nimbra: the {which} server refused: {error:#}");
+        format!("The {which} server refused the connection. Check its name, port and security.")
+            .into()
+    }
+}
+
+/// Where signing in with Microsoft stopped.
+enum MicrosoftStep {
+    SignIn(anyhow::Error),
+    Mailbox(anyhow::Error),
+}
+
+impl MicrosoftStep {
+    fn explain(self) -> SharedString {
+        let (MicrosoftStep::SignIn(error) | MicrosoftStep::Mailbox(error)) = &self;
+        eprintln!("nimbra: Microsoft sign-in stopped: {error:#}");
+        match self {
+            _ if error.is::<mail::Offline>() => {
+                "Microsoft couldn’t be reached. Check the connection and try again.".into()
+            }
+            MicrosoftStep::SignIn(_) => {
+                "Signing in with Microsoft didn’t finish. Try again.".into()
+            }
+            MicrosoftStep::Mailbox(_) => {
+                "Microsoft’s mail server didn’t let Nimbra in. Check that IMAP is on.".into()
+            }
+        }
     }
 }
 
@@ -1013,14 +1030,48 @@ mod live {
             Checked::Works(_)
         ));
         match find_and_check("sheet@example.org", "wrong", Some(local())) {
-            Checked::Failed(_, why) => assert!(why.contains("did not take that password"), "{why}"),
+            Checked::Failed(_, why) => {
+                assert!(why.contains("didn’t accept that password"), "{why}")
+            }
             _ => panic!("a wrong password must not be kept"),
         }
         let mut closed = local();
         closed.imap.port = 1;
         match find_and_check("sheet@example.org", "pass", Some(closed)) {
-            Checked::Failed(_, why) => assert!(why.contains("could not be reached"), "{why}"),
+            Checked::Failed(_, why) => assert!(why.contains("couldn’t be reached"), "{why}"),
             _ => panic!("an unreachable server must not be kept"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unknown_failure_names_the_server_not_the_error() {
+        let error = anyhow::anyhow!("tls: handshake eof (os error 54)");
+
+        let why = explain(&error, "incoming (IMAP)");
+
+        assert!(!why.contains("os error"), "{why}");
+        assert!(why.starts_with("The incoming (IMAP) server"), "{why}");
+    }
+
+    #[test]
+    fn an_unreachable_server_asks_for_its_name_and_port() {
+        let why = explain(&anyhow::Error::new(mail::Offline), "outgoing (SMTP)");
+
+        assert!(why.contains("couldn’t be reached"), "{why}");
+    }
+
+    #[test]
+    fn a_refused_password_suggests_an_app_password() {
+        let why = explain(
+            &anyhow::Error::new(crate::smtp::AuthFailed),
+            "outgoing (SMTP)",
+        );
+
+        assert!(why.contains("app password"), "{why}");
     }
 }

@@ -385,9 +385,6 @@ pub struct Nimbra {
     /// Where a composer in a window of its own goes back to: the message window it came
     /// from, or the main window (None).
     compose_home: Option<gpui::AnyWindowHandle>,
-    /// The formatting button under the mouse: its name and keys, shown in the toolbar (a
-    /// tooltip would open under the editor, which is a native view and covers it).
-    format_hint: Option<(&'static str, &'static str)>,
     /// The window showing the composer when it is not the main one (a message window it
     /// was started from, or a window of its own).
     compose_host: Option<gpui::AnyWindowHandle>,
@@ -871,7 +868,6 @@ impl Nimbra {
             others: HashMap::new(),
             account_unread: HashMap::new(),
             compose_host: None,
-            format_hint: None,
             compose_detached: false,
             compose_home: None,
             compose_ask: false,
@@ -1065,6 +1061,16 @@ impl Nimbra {
             this.status = Status::Loading;
             this.checks.start(View::Inbox, "");
         }
+        // Damaged settings were set aside at launch, never saved over: say so once.
+        this.notice = match crate::settings::recovery() {
+            Some(crate::settings::Recovery::FromBackup) => {
+                Some("Settings were damaged, so the last good copy is back.".into())
+            }
+            Some(crate::settings::Recovery::Reset) => {
+                Some("Settings were damaged and reset. Add your accounts again.".into())
+            }
+            None => this.notice.take(),
+        };
         this.watch_for_mail(cx);
         this.watch_other_accounts(cx);
         this.watch_notification_clicks(cx);
