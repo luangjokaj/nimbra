@@ -2344,7 +2344,7 @@ impl Nimbra {
                     .flex()
                     .justify_center()
                     // In full page the header is also the strip you drag or double-click.
-                    .when(full, |d| d.on_mouse_down(MouseButton::Left, drag_or_zoom))
+                    .when(full, |d| d.moves_window())
                     .when(!full, |d| {
                         d.cursor(gpui::CursorStyle::OpenHand).on_mouse_down(
                             MouseButton::Left,

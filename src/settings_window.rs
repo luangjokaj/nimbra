@@ -298,7 +298,7 @@ impl Render for SettingsWindow {
                 .flex_none()
                 .items_center()
                 .h(px(TOP_BAR - 1.))
-                .on_mouse_down(MouseButton::Left, drag_or_zoom)
+                .moves_window()
         };
         div()
             .flex()

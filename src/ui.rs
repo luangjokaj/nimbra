@@ -4,6 +4,8 @@ use gpui::{
     BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point, prelude::*, px, svg,
 };
 
+use std::time::{Duration, Instant};
+
 use crate::theme::{MONO, SANS, Theme, Tone, over, radius, space};
 
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
@@ -205,14 +207,114 @@ pub trait Press {
 impl Press for Stateful<Div> {
     fn press(self, t: &Theme) -> Self {
         let held = t.pressed;
-        self.active(move |s| s.bg(held))
+        self.active(move |s| s.bg(held)).owns_press()
     }
 
     fn press_selected(self, t: &Theme) -> Self {
         let held = over(t.pressed, t.selected);
-        self.active(move |s| s.bg(held))
+        self.active(move |s| s.bg(held)).owns_press()
     }
 }
+
+/// The left press being handled and the one before it, as the bars and controls saw them.
+#[derive(Default)]
+struct LeftPresses {
+    current: Option<LeftPress>,
+    previous: Option<LeftPress>,
+}
+
+impl gpui::Global for LeftPresses {}
+
+#[derive(Clone, Copy)]
+struct LeftPress {
+    window: gpui::AnyWindowHandle,
+    at: gpui::Point<gpui::Pixels>,
+    clicks: usize,
+    when: Instant,
+    /// A control took it.
+    owned: bool,
+    /// It landed on a bar's empty space.
+    on_bar: bool,
+}
+
+impl LeftPresses {
+    /// Every listener of one press calls this; the first call for it starts a new record.
+    fn begin<'a>(
+        event: &gpui::MouseDownEvent,
+        window: &gpui::Window,
+        cx: &'a mut gpui::App,
+    ) -> &'a mut LeftPress {
+        let handle = window.window_handle();
+        let presses = cx.default_global::<LeftPresses>();
+        let same = presses.current.is_some_and(|p| {
+            p.window == handle
+                && p.at == event.position
+                && p.clicks == event.click_count
+                && p.when.elapsed() < SAME_PRESS
+        });
+        if !same {
+            presses.previous = presses.current.take();
+        }
+        presses.current.get_or_insert(LeftPress {
+            window: handle,
+            at: event.position,
+            clicks: event.click_count,
+            when: Instant::now(),
+            owned: false,
+            on_bar: false,
+        })
+    }
+}
+
+/// Listeners of one press all run well within this; two presses are never this close.
+const SAME_PRESS: Duration = Duration::from_millis(30);
+
+/// A strip that stands in for the title bar: dragging it moves the window and a double click
+/// zooms it, as macOS expects. Only its empty space does: a press on a control in it (or laid
+/// over it) is the control's (`owns_press`), and a double click zooms only when both presses
+/// landed on empty bar.
+pub trait TitleBar: InteractiveElement + Sized {
+    fn moves_window(self) -> Self {
+        let begin =
+            |event: &gpui::MouseDownEvent, window: &mut gpui::Window, cx: &mut gpui::App| {
+                if event.button == gpui::MouseButton::Left {
+                    LeftPresses::begin(event, window, cx);
+                }
+            };
+        self.capture_any_mouse_down(begin)
+            .on_mouse_down_out(begin)
+            .on_mouse_down(gpui::MouseButton::Left, |event, window, cx| {
+                LeftPresses::begin(event, window, cx);
+                let presses = cx.default_global::<LeftPresses>();
+                let previous = presses.previous;
+                let Some(press) = presses.current.as_mut().filter(|p| !p.owned) else {
+                    return;
+                };
+                press.on_bar = true;
+                let here = press.window;
+                if event.click_count == 2
+                    && previous.is_some_and(|p| p.on_bar && !p.owned && p.window == here)
+                {
+                    window.titlebar_double_click();
+                } else {
+                    window.start_window_move();
+                }
+            })
+    }
+
+    /// Keeps a press here from moving or zooming the window through a bar beneath, and from
+    /// counting towards a double click on it. Anything with a pressed look (`Press`, `solid`)
+    /// already does.
+    fn owns_press(self) -> Self {
+        self.on_mouse_down(gpui::MouseButton::Left, |event, window, cx| {
+            let press = LeftPresses::begin(event, window, cx);
+            press.owned = true;
+            press.on_bar = false;
+        })
+    }
+}
+
+impl<E: InteractiveElement> TitleBar for E {}
 
 /// Keyboard focus as a crisp 2pt ring laid over its element (which needs `.relative()`),
 /// so gaining or losing focus never moves anything.
@@ -318,6 +420,7 @@ pub fn solid(d: Stateful<Div>, rest: Hsla, hover: Hsla, held: Hsla) -> Stateful<
         .text_color(gpui::white())
         .hover(move |s| s.bg(hover))
         .active(move |s| s.bg(held))
+        .owns_press()
 }
 
 /// Builds the tooltip for a button. Pass an empty `key` when there is no shortcut, and a

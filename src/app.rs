@@ -23,8 +23,9 @@ use crate::sending::{Job, QueuedMail, Stage};
 use crate::theme::{Accent, SANS, Theme, Tone, c, over, radius, space};
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Press, TOP_BAR, TOP_LINE, avatar, button, caption, display, focus_ring, hero, icon,
-    icon_button, kbd, meta, overline, pane_divider, pill, shadow, tip, title_l, title_s,
+    ButtonKind, Press, TOP_BAR, TOP_LINE, TitleBar, avatar, button, caption, display, focus_ring,
+    hero, icon, icon_button, kbd, meta, overline, pane_divider, pill, shadow, tip, title_l,
+    title_s,
 };
 use crate::webview::HtmlView;
 
@@ -306,15 +307,6 @@ impl Source {
             fallback_all: Vec::new(),
             account: mail.account.clone(),
         }
-    }
-}
-
-/// Dragging the top strip moves the window; a double click zooms it, as macOS expects.
-fn drag_or_zoom(event: &gpui::MouseDownEvent, window: &mut Window, _: &mut App) {
-    if event.click_count == 2 {
-        window.titlebar_double_click();
-    } else {
-        window.start_window_move();
     }
 }
 

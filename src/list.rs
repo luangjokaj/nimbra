@@ -1124,28 +1124,45 @@ impl Nimbra {
             .bg(t.panel)
             .child(pane_divider(t))
             // Drag the right edge to resize the list; double-click it to hide the list.
-            .child({
+            // Drawn over the bars, so a press on it never moves the window; its hover stays
+            // inside the list.
+            .when(!self.window_covered() && !self.shortcuts, |d| {
                 let hover = t.hover;
-                div()
-                    .id("list-resize")
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right(px(-3.))
-                    .w(px(7.))
-                    .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .hover(move |s| s.bg(hover))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                            if event.click_count == 2 {
-                                this.toggle_list(cx);
-                            } else {
-                                this.list_grab =
-                                    Some((f32::from(event.position.x), this.list_width));
-                            }
-                        }),
-                    )
+                d.child(gpui::deferred(
+                    div()
+                        .id("list-resize")
+                        .group("list-resize")
+                        .occlude()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right(px(-3.))
+                        .w(px(7.))
+                        .cursor(gpui::CursorStyle::ResizeLeftRight)
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left_0()
+                                .w(px(4.))
+                                .group_hover("list-resize", move |s| s.bg(hover)),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                if event.click_count == 2 {
+                                    this.toggle_list(cx);
+                                } else {
+                                    this.list_grab =
+                                        Some((f32::from(event.position.x), this.list_width));
+                                }
+                            }),
+                        )
+                        // After the listener above, so it runs first: listeners run in reverse.
+                        .owns_press(),
+                ))
             })
             .child(
                 // One row on the top line: the mailbox's name, then Offline, the filters and
@@ -1158,7 +1175,7 @@ impl Nimbra {
                     .h(px(TOP_BAR - 1.))
                     .pl(px(LIST_LEFT))
                     .pr(px(LIST_RIGHT))
-                    .on_mouse_down(MouseButton::Left, drag_or_zoom)
+                    .moves_window()
                     .child(
                         div()
                             .flex_1()
@@ -1177,6 +1194,7 @@ impl Nimbra {
                             .bg(t.hover)
                             .border_1()
                             .border_color(t.border)
+                            .owns_press()
                             .child(pill)
                             .child(
                                 segment("All", None, !self.unread_only, widths[0])

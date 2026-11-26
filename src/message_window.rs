@@ -221,9 +221,7 @@ impl Render for MessageWindow {
             .h(px(crate::ui::TOP_BAR - 1.))
             .pl(px(84.))
             .pr(px(14.))
-            .on_mouse_down(MouseButton::Left, |event, window, cx| {
-                drag_or_zoom(event, window, cx)
-            })
+            .moves_window()
             .when_some(done, |d, (name, label)| {
                 d.child(
                     tool(name, label, "E", 3).on_click(cx.listener(|this, _, window, cx| {

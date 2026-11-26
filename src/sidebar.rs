@@ -661,12 +661,7 @@ impl Nimbra {
             .overflow_y_scroll()
             .px(px(12.))
             .pb(px(10.))
-            .child(
-                div()
-                    .h(px(SIDEBAR_CLEAR))
-                    .flex_none()
-                    .on_mouse_down(MouseButton::Left, drag_or_zoom),
-            )
+            .child(div().h(px(SIDEBAR_CLEAR)).flex_none().moves_window())
             .child(
                 div()
                     .flex()
@@ -1059,19 +1054,14 @@ impl Nimbra {
             // moves nothing inside.
             .pr(px(1.))
             // Space for the native traffic lights; dragging here moves the window.
-            .child(
-                div()
-                    .h(px(SIDEBAR_TOP))
-                    .flex_none()
-                    .on_mouse_down(MouseButton::Left, drag_or_zoom),
-            )
+            .child(div().h(px(SIDEBAR_TOP)).flex_none().moves_window())
             // The window's one primary action, always in the same place.
             .child(
                 div()
                     .flex_none()
                     .px(px(12.))
                     .pt(px(COMPOSE_ABOVE))
-                    .on_mouse_down(MouseButton::Left, drag_or_zoom)
+                    .moves_window()
                     .child(
                         compose_button(t, ComposeLook::Labelled, "compose")
                             .w_full()

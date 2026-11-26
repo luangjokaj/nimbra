@@ -1066,7 +1066,7 @@ impl Nimbra {
             .px(px(TOOLBAR_PAD))
             // Its hairline is the line under it (`edge`).
             .h(px(TOP_BAR - 1.))
-            .on_mouse_down(MouseButton::Left, drag_or_zoom)
+            .moves_window()
             .when(fit.list, |d| {
                 d.child(
                     tool(

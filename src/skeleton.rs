@@ -96,11 +96,7 @@ fn wave(key: usize, down: f32, element: Div) -> AnyElement {
 
 /// Lies over a bar of real controls, so none hovers or clicks; it still moves the window.
 fn shield() -> Div {
-    div()
-        .absolute()
-        .inset_0()
-        .occlude()
-        .on_mouse_down(MouseButton::Left, drag_or_zoom)
+    div().absolute().inset_0().occlude().moves_window()
 }
 
 impl Nimbra {
