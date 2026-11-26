@@ -163,6 +163,20 @@ spctl --assess --type execute "$APP"
 spctl --assess --type open --context context:primary-signature "$DMG"
 cp "$DMG" dist/Nimbra.dmg
 (cd dist && shasum -a 256 "Nimbra-$VERSION.dmg" Nimbra.dmg > SHA256SUMS.txt)
+# The update manifest the app reads through nimbra.me/releases/latest.json (the website
+# serves the newest release's copy). The app still checks the download's signature.
+SHA="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+python3 - "$VERSION" "$TAG" "$SHA" > dist/latest.json <<'PY'
+import json, sys
+version, tag, sha = sys.argv[1:4]
+base = "https://github.com/luangjokaj/nimbra/releases"
+print(json.dumps({
+    "version": version,
+    "url": f"{base}/download/{tag}/Nimbra-{version}.dmg",
+    "sha256": sha,
+    "notes": f"{base}/tag/{tag}",
+}, indent=2))
+PY
 echo "Ready: $DMG (notarized, stapled, Gatekeeper accepts it)"
 
 if [ "$DRY_RUN" = 1 ]; then
@@ -186,7 +200,7 @@ git push --quiet origin "$TAG"
 # 7. Publish.
 say "Publishing the GitHub Release"
 TITLE="Nimbra $VERSION${STAGE:+ $STAGE}"
-gh release create "$TAG" "$DMG" dist/Nimbra.dmg dist/SHA256SUMS.txt \
+gh release create "$TAG" "$DMG" dist/Nimbra.dmg dist/SHA256SUMS.txt dist/latest.json \
   --title "$TITLE" --notes-file dist/notes.md --verify-tag ${STAGE:+--prerelease}
 say "Released $TITLE"
 echo "$(gh release view "$TAG" --json url -q .url)"

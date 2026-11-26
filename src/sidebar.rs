@@ -984,6 +984,41 @@ impl Nimbra {
                     )
                 });
 
+        // A new version, downloaded and checked: one click restarts into it.
+        let update = self.update_ready.clone().map(|version| {
+            let hover = t.selected;
+            div()
+                .id("update-ready")
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mb(px(6.))
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(px(10.))
+                .bg(t.hover)
+                .border_1()
+                .border_color(t.border)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .tooltip(tip(t.dark, "Restart Nimbra to update", ""))
+                .on_click(cx.listener(|this, _, _, cx| this.restart_to_update(cx)))
+                .child(div().size(px(7.)).rounded_full().bg(t.mint))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .child(meta(format!("Nimbra {version} is ready"), t.text2)),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.text)
+                        .child("Restart"),
+                )
+        });
         // Settings stays at the bottom, whatever is scrolled above it.
         let footer = div()
             .flex_none()
@@ -991,6 +1026,7 @@ impl Nimbra {
             .py(px(8.))
             .border_t_1()
             .border_color(t.border_strong)
+            .children(update)
             .child(
                 self.cursor_on(div(), t, &cursor, SidebarRow::Settings, false, 10.)
                     .flex()

@@ -140,6 +140,57 @@ impl Nimbra {
         }
     }
 
+    /// Looks for a new version a minute after launch and then every few hours, while
+    /// Settings allows it; one that is ready is offered in the sidebar (`update.rs`).
+    pub(super) fn watch_for_updates(&mut self, cx: &mut Context<Self>) {
+        if !crate::update::enabled() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let mut wait = crate::update::FIRST;
+            loop {
+                cx.background_executor().timer(wait).await;
+                wait = crate::update::EVERY;
+                let Ok(allowed) = this.update(cx, |this, _| {
+                    this.settings.auto_update && this.update_ready.is_none()
+                }) else {
+                    break; // the window is gone
+                };
+                if !allowed {
+                    continue;
+                }
+                let found = cx
+                    .background_executor()
+                    .spawn(async { crate::update::check() })
+                    .await;
+                match found {
+                    Ok(Some(version)) => {
+                        // Count only; never more than the version.
+                        eprintln!("nimbra: update {version} ready");
+                        this.update(cx, |this, cx| {
+                            this.update_ready = Some(version);
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                    Ok(None) => {}
+                    // Offline, or a download that was not right: tried again later.
+                    Err(error) => eprintln!("nimbra: no update: {error:#}"),
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The sidebar's Restart: quits, and the new version opens in this one's place.
+    pub(super) fn restart_to_update(&mut self, cx: &mut Context<Self>) {
+        if self.update_ready.is_none() {
+            return;
+        }
+        self.restart_for_update = true;
+        cx.quit();
+    }
+
     /// Reads what macOS says, for as long as the app runs.
     pub(super) fn watch_system(&mut self, cx: &mut Context<Self>) {
         // Quitting is decided inside AppKit's own call, so it is kept current here; and the

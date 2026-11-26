@@ -77,6 +77,13 @@ marks the GitHub Release as a pre-release titled "Nimbra 0.1.0 alpha" (`--beta` 
 `0.1.0`, as macOS wants numbers only in an app's version. A pre-release is not what GitHub's "latest release" links
 point to, so the README links to the Releases page.
 
+### Updates
+
+Each release also gets a `latest.json` (its version, the DMG's address and SHA-256, and the release page). The website
+serves the newest release's copy, alphas included, at `https://nimbra.me/releases/latest.json`, and release builds of
+the app check it (`src/update.rs`). A release reaches installed apps within a few minutes of being published and an app
+check after that. Only builds made with `NIMBRA_RELEASE=1` know the address; any other build never updates.
+
 ### Sign-in clients
 
 A release build includes the Google and Microsoft OAuth clients from `~/.config/nimbra/oauth.env`, so that people who

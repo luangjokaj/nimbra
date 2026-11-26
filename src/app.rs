@@ -481,6 +481,10 @@ pub struct Nimbra {
     /// The message window at the bottom (floats above the email, which is a native view)
     /// and the message it shows.
     notice_window: Option<gpui::WindowHandle<NoticeToast>>,
+    /// A newer Nimbra, downloaded and checked, waiting to replace this one (`update.rs`).
+    update_ready: Option<String>,
+    /// Quitting to restart into it: the new version opens once it is in place.
+    restart_for_update: bool,
     /// The address suggestions' window, where it was put, and for how many rows.
     suggest_window: Option<(gpui::WindowHandle<SuggestPopup>, (f64, f64), usize)>,
     notice_shown: Option<SharedString>,
@@ -885,6 +889,8 @@ impl Nimbra {
             attachment_saved: HashMap::new(),
             notice_window: None,
             suggest_window: None,
+            update_ready: crate::update::staged(),
+            restart_for_update: false,
             notice_shown: None,
             notice_gen: 0,
             focus_restore: None,
@@ -1182,9 +1188,14 @@ impl Nimbra {
         // Every way out: ⌘Q, the Dock, logging out.
         cx.on_app_quit(|this, cx| {
             this.finish_before_quit(cx);
+            // A new version waiting takes this one's place once it has quit.
+            if this.update_ready.is_some() && crate::update::enabled() {
+                crate::update::install_on_quit(this.restart_for_update);
+            }
             async {}
         })
         .detach();
+        this.watch_for_updates(cx);
         // Already signed in on a previous run: go straight to the inbox. The keychain is
         // read off the main thread because macOS may show a permission prompt for it, and
         // the window should not freeze (or fail to appear) while that is open.

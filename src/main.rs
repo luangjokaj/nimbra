@@ -41,6 +41,7 @@ mod tls;
 mod toast;
 mod tooltip;
 mod ui;
+mod update;
 mod usage;
 mod webkeys;
 mod webview;

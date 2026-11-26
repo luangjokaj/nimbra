@@ -1426,6 +1426,16 @@ impl SettingsWindow {
             cx,
             |n| n.settings.usage_counts = !n.settings.usage_counts,
         );
+        let updating = self.owner.read(cx).settings.auto_update;
+        let update_row = self.toggle(
+            t,
+            "auto-update",
+            "Update automatically",
+            "Checks nimbra.me for a new version every few hours, downloads it in the background, and asks you to restart. The check sends nothing but the request.",
+            updating,
+            cx,
+            |n| n.settings.auto_update = !n.settings.auto_update,
+        );
         let fact = |name: &'static str, title: &'static str, text: &'static str| {
             div()
                 .flex()
@@ -1500,7 +1510,7 @@ impl SettingsWindow {
                     })),
                 )],
             ),
-            group(t, None, vec![usage_row]),
+            group(t, None, vec![usage_row, update_row]),
         ]
     }
 

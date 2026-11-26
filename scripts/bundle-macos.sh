@@ -34,6 +34,11 @@ if [ "${NIMBRA_RELEASE:-}" = "1" ] && [ -f "$OAUTH_ENV" ]; then
   echo "Including the Google and Microsoft sign-in clients"
 fi
 
+# Release builds update themselves from the website's manifest (src/update.rs); others never.
+if [ "${NIMBRA_RELEASE:-}" = "1" ]; then
+  export NIMBRA_UPDATE_FEED="https://nimbra.me/releases/latest.json"
+fi
+
 cargo build --release
 
 rm -rf "$APP"
