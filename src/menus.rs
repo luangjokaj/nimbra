@@ -62,6 +62,8 @@ pub(super) enum Menu {
     Label(usize),
     /// The right-click menu of a row in the list (by index into the loaded threads).
     Row(usize),
+    /// The right-click menu of a mailbox in the sidebar: hide it, or reset its section.
+    Mailbox(View),
 }
 
 pub(super) const MENU_WIDTH: f32 = 220.;
@@ -419,6 +421,31 @@ impl Nimbra {
                     .map(|(label, _)| ("clock", label.into(), t.text2))
                     .collect()
             }
+            Menu::Mailbox(view) => {
+                let section = if matches!(
+                    view,
+                    View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social
+                ) && !self.own_servers()
+                {
+                    "split"
+                } else {
+                    "mailbox"
+                };
+                let mut items = Vec::new();
+                if view != View::Inbox {
+                    if self.sidebar_now().is_hidden(view) {
+                        items.push(("eye", "Show in sidebar".into(), t.text2));
+                    } else {
+                        items.push(("eye", "Hide from sidebar".into(), t.text2));
+                    }
+                }
+                items.push((
+                    "reload",
+                    format!("Reset {} order", section_name(section)).into(),
+                    t.text2,
+                ));
+                items
+            }
             Menu::More => {
                 let menu = self.more_menu();
                 self.more_actions = menu.iter().map(|(action, _, _)| *action).collect();
@@ -531,7 +558,7 @@ impl Nimbra {
                 }
             }
             // At the pointer, nudged back inside the window if it would hang over an edge.
-            Menu::Row(_) | Menu::Label(_) => (
+            Menu::Row(_) | Menu::Label(_) | Menu::Mailbox(_) => (
                 self.menu_at.0.min(f32::from(viewport.width) - width - 8.),
                 self.menu_at.1.min(f32::from(viewport.height) - height - 8.),
             ),
@@ -705,6 +732,23 @@ impl Nimbra {
             (Menu::MoveTo, index) => {
                 if let Some(target) = self.move_targets.get(index).cloned() {
                     self.move_selected(target, cx);
+                }
+            }
+            (Menu::Mailbox(view), index) => {
+                let section = if matches!(
+                    view,
+                    View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social
+                ) && !self.own_servers()
+                {
+                    "split"
+                } else {
+                    "mailbox"
+                };
+                if view != View::Inbox && index == 0 {
+                    let hidden = self.sidebar_now().is_hidden(view);
+                    self.set_hidden(view, !hidden, cx);
+                } else {
+                    self.reset_sidebar_section(section, cx);
                 }
             }
             (Menu::More, index) => match self.more_actions.get(index).copied() {
@@ -993,7 +1037,12 @@ impl Nimbra {
             }));
         Some(match menu {
             // These menus only exist as pop-up windows.
-            Menu::Row(_) | Menu::SendLater | Menu::MoveTo | Menu::Label(_) | Menu::From => {
+            Menu::Row(_)
+            | Menu::SendLater
+            | Menu::MoveTo
+            | Menu::Label(_)
+            | Menu::From
+            | Menu::Mailbox(_) => {
                 return None;
             }
             Menu::Labels => {
@@ -1039,5 +1088,14 @@ impl Nimbra {
                     ))
             }
         })
+    }
+}
+
+/// How a sidebar section is called in its menu.
+fn section_name(section: &str) -> &'static str {
+    match section {
+        "split" => "Split Inbox",
+        "labels" => "Labels",
+        _ => "Mailbox",
     }
 }

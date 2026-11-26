@@ -612,6 +612,8 @@ pub struct Nimbra {
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
+    /// Sidebar sections showing their hidden mailboxes for now.
+    revealing: Vec<&'static str>,
     /// What each item of the open ⋯ menu does, in order.
     more_actions: Vec<menus::MoreAction>,
     /// What the open menu, the snooze panel and the label sheet were opened for. A refresh
@@ -977,6 +979,7 @@ impl Nimbra {
             menu_at: (0., 0.),
             row_actions: Vec::new(),
             more_actions: Vec::new(),
+            revealing: Vec::new(),
             menu_for: None,
             palette_for: None,
             label_for: None,

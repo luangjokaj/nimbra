@@ -33,8 +33,65 @@ pub struct Sidebar<'a> {
     /// Important.
     pub folders: bool,
     pub labels: usize,
+    /// The labels' ids, by index (`View::Label(i)` is `label_ids[i]`), for their order.
+    pub label_ids: Vec<String>,
     /// The folded sections ("accounts", "split", "mailbox", "labels").
     pub collapsed: &'a [String],
+    /// The order dragged into each section, by section key ("split", "mailbox", and
+    /// "labels:<account>"): mailbox names (`view_name`) or label ids.
+    pub order: &'a std::collections::HashMap<String, Vec<String>>,
+    /// Mailboxes hidden from the sidebar, by name.
+    pub hidden: &'a [String],
+    /// Sections showing their hidden mailboxes for now ("split", "mailbox").
+    pub revealing: &'a [&'static str],
+}
+
+/// A mailbox's name in the settings (its place in the sidebar, or that it is hidden).
+/// Labels go by their ids instead.
+pub fn view_name(view: View) -> Option<&'static str> {
+    Some(match view {
+        View::Inbox => "inbox",
+        View::Primary => "primary",
+        View::Updates => "updates",
+        View::Promotions => "promotions",
+        View::Social => "social",
+        View::Starred => "starred",
+        View::Important => "important",
+        View::Snoozed => "snoozed",
+        View::Reminders => "reminders",
+        View::Drafts => "drafts",
+        View::Sent => "sent",
+        View::Done => "done",
+        View::AllMail => "all-mail",
+        View::Spam => "spam",
+        View::Trash => "trash",
+        View::AllInboxes | View::Search | View::Label(_) => return None,
+    })
+}
+
+/// `defaults` in the order dragged (`order`, by name); any not named keep their default
+/// order after those that are.
+pub fn arrange(
+    defaults: &[View],
+    order: &[String],
+    name: impl Fn(View) -> Option<String>,
+) -> Vec<View> {
+    let mut placed: Vec<View> = order
+        .iter()
+        .filter_map(|wanted| {
+            defaults
+                .iter()
+                .copied()
+                .find(|view| name(*view).as_deref() == Some(wanted.as_str()))
+        })
+        .collect();
+    placed.dedup();
+    for view in defaults {
+        if !placed.contains(view) {
+            placed.push(*view);
+        }
+    }
+    placed
 }
 
 /// The most labels the sidebar lists.
@@ -43,6 +100,102 @@ pub const LABELS_SHOWN: usize = 40;
 impl Sidebar<'_> {
     pub fn several(&self) -> bool {
         !self.demo && self.accounts.len() >= 2
+    }
+
+    /// The section's mailboxes in their default order.
+    fn defaults(&self, section: &str) -> Vec<View> {
+        match section {
+            "split" if self.demo => vec![View::Inbox],
+            "split" if self.folders => Vec::new(),
+            "split" => vec![
+                View::Inbox,
+                View::Primary,
+                View::Updates,
+                View::Promotions,
+                View::Social,
+            ],
+            "mailbox" if self.demo => vec![
+                View::Starred,
+                View::Snoozed,
+                View::Reminders,
+                View::Drafts,
+                View::Sent,
+                View::Done,
+            ],
+            "mailbox" => {
+                let mut views = Vec::new();
+                if self.folders {
+                    views.push(View::Inbox);
+                }
+                views.push(View::Starred);
+                if !self.folders {
+                    views.push(View::Important);
+                }
+                views.extend([
+                    View::Snoozed,
+                    View::Reminders,
+                    View::Drafts,
+                    View::Sent,
+                    View::Done,
+                    View::AllMail,
+                    View::Spam,
+                    View::Trash,
+                ]);
+                views
+            }
+            "labels" if self.demo || self.folders => Vec::new(),
+            "labels" => (0..self.labels.min(LABELS_SHOWN))
+                .map(View::Label)
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The key the section's order is kept under: labels are each account's own.
+    pub fn order_key(&self, section: &str) -> String {
+        if section == "labels" {
+            format!("labels:{}", self.shown)
+        } else {
+            section.to_string()
+        }
+    }
+
+    fn name(&self, view: View) -> Option<String> {
+        match view {
+            View::Label(index) => self.label_ids.get(index).cloned(),
+            view => view_name(view).map(str::to_string),
+        }
+    }
+
+    /// The section's mailboxes as the sidebar shows them: in the order dragged, without
+    /// those hidden (unless the section is showing them). The open mailbox and the inbox
+    /// are never hidden.
+    pub fn section(&self, section: &'static str) -> Vec<View> {
+        let order = self
+            .order
+            .get(&self.order_key(section))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        arrange(&self.defaults(section), order, |view| self.name(view))
+            .into_iter()
+            .filter(|view| {
+                self.revealing.contains(&section) || !self.is_hidden(*view) || *view == self.mailbox
+            })
+            .collect()
+    }
+
+    /// Whether the mailbox is hidden (the inbox never is).
+    pub fn is_hidden(&self, view: View) -> bool {
+        view != View::Inbox
+            && view_name(view).is_some_and(|name| self.hidden.iter().any(|h| h == name))
+    }
+
+    /// How many of the section's mailboxes are hidden.
+    pub fn hidden_in(&self, section: &str) -> usize {
+        self.defaults(section)
+            .into_iter()
+            .filter(|view| self.is_hidden(*view))
+            .count()
     }
 
     /// Top to bottom. A folded section still has the open mailbox, as on screen; the demo's
@@ -58,72 +211,12 @@ impl Sidebar<'_> {
                 }
             }
         }
-        let mut section = |key: &str, views: &[View]| {
-            for view in views {
-                if open(key) || *view == self.mailbox {
-                    rows.push(Row::Mailbox(*view));
+        for key in ["split", "mailbox", "labels"] {
+            for view in self.section(key) {
+                if open(key) || view == self.mailbox {
+                    rows.push(Row::Mailbox(view));
                 }
             }
-        };
-        if self.demo {
-            section("split", &[View::Inbox]);
-            section(
-                "mailbox",
-                &[
-                    View::Starred,
-                    View::Snoozed,
-                    View::Reminders,
-                    View::Drafts,
-                    View::Sent,
-                    View::Done,
-                ],
-            );
-        } else if self.folders {
-            section(
-                "mailbox",
-                &[
-                    View::Inbox,
-                    View::Starred,
-                    View::Snoozed,
-                    View::Reminders,
-                    View::Drafts,
-                    View::Sent,
-                    View::Done,
-                    View::AllMail,
-                    View::Spam,
-                    View::Trash,
-                ],
-            );
-        } else {
-            section(
-                "split",
-                &[
-                    View::Inbox,
-                    View::Primary,
-                    View::Updates,
-                    View::Promotions,
-                    View::Social,
-                ],
-            );
-            section(
-                "mailbox",
-                &[
-                    View::Starred,
-                    View::Important,
-                    View::Snoozed,
-                    View::Reminders,
-                    View::Drafts,
-                    View::Sent,
-                    View::Done,
-                    View::AllMail,
-                    View::Spam,
-                    View::Trash,
-                ],
-            );
-            let labels: Vec<View> = (0..self.labels.min(LABELS_SHOWN))
-                .map(View::Label)
-                .collect();
-            section("labels", &labels);
         }
         rows.push(Row::Settings);
         rows
@@ -309,8 +402,52 @@ mod tests {
             demo: false,
             folders: false,
             labels: 3,
+            label_ids: vec!["L0".into(), "L1".into(), "L2".into()],
             collapsed,
+            order: &NO_ORDER,
+            hidden: &[],
+            revealing: &[],
         }
+    }
+
+    static NO_ORDER: std::sync::LazyLock<std::collections::HashMap<String, Vec<String>>> =
+        std::sync::LazyLock::new(Default::default);
+
+    #[test]
+    fn mailboxes_follow_the_order_dragged_and_leave_out_the_hidden() {
+        let accounts = ids(1);
+        let mut order = std::collections::HashMap::new();
+        order.insert("mailbox".to_string(), vec!["sent".into(), "starred".into()]);
+        order.insert("labels:".to_string(), vec!["L2".into()]);
+        let hidden = ["spam".to_string(), "inbox".to_string()];
+        let bar = Sidebar {
+            order: &order,
+            hidden: &hidden,
+            ..sidebar(&accounts, &[], View::Inbox)
+        };
+        let mailbox = bar.section("mailbox");
+        assert_eq!(mailbox[..3], [View::Sent, View::Starred, View::Important]);
+        assert!(!mailbox.contains(&View::Spam));
+        assert_eq!(bar.hidden_in("mailbox"), 1);
+        // The inbox is never hidden; labels have their own order.
+        assert_eq!(bar.section("split")[0], View::Inbox);
+        assert_eq!(
+            bar.section("labels"),
+            [View::Label(2), View::Label(0), View::Label(1)]
+        );
+        // Showing the hidden ones, or having one open, brings it back.
+        let revealing = Sidebar {
+            revealing: &["mailbox"],
+            ..bar
+        };
+        assert!(revealing.section("mailbox").contains(&View::Spam));
+        let open = Sidebar {
+            mailbox: View::Spam,
+            order: &order,
+            hidden: &hidden,
+            ..sidebar(&accounts, &[], View::Spam)
+        };
+        assert!(open.section("mailbox").contains(&View::Spam));
     }
 
     #[test]
