@@ -23,6 +23,7 @@ mod mail;
 mod mailto;
 mod microsoft;
 mod mime;
+mod night;
 mod notify;
 mod quitting;
 mod rich;
