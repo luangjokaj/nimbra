@@ -1636,7 +1636,8 @@ impl SettingsWindow {
             .flex()
             .items_center()
             .gap(px(10.))
-            .w(px(320.))
+            // As wide as the address, up to a limit (a longer one ends in "…").
+            .max_w(px(320.))
             .h(px(36.))
             .pl(px(6.))
             .pr(px(10.))
@@ -1647,7 +1648,7 @@ impl SettingsWindow {
             .child(face)
             .child(
                 div()
-                    .flex_1()
+                    .flex_initial()
                     .min_w(px(0.))
                     .overflow_hidden()
                     .whitespace_nowrap()
@@ -1954,7 +1955,7 @@ impl SettingsWindow {
             .flex_col()
             .gap(px(10.))
             .px(px(16.))
-            .pt(px(4.))
+            .pt(px(10.))
             .pb(px(16.))
             .child(
                 div()
