@@ -473,8 +473,7 @@ impl Nimbra {
 
         // Where the menu goes, in window coordinates: under its button.
         let viewport = window.viewport_size();
-        let pane_left = if self.sidebar_open { self.side_w() } else { 0. }
-            + if self.list_open { self.list_width } else { 0. };
+        let pane_left = self.pane_layout().1;
         // Addresses can be longer than the usual menu: From grows to fit its longest one,
         // so it keeps the same space on its right as on its left.
         let width = if menu == Menu::From {
@@ -488,9 +487,12 @@ impl Nimbra {
         };
         let height = items.len() as f32 * 32. + 14.;
         let (left, top) = match menu {
-            Menu::Labels => (pane_left + 150., 50.),
-            Menu::MoveTo => (pane_left + 186., 50.),
-            Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
+            Menu::Labels => (pane_left + 150., crate::ui::GUTTER + 50.),
+            Menu::MoveTo => (pane_left + 186., crate::ui::GUTTER + 50.),
+            Menu::More => (
+                f32::from(viewport.width) - crate::ui::GUTTER - 20. - width,
+                crate::ui::GUTTER + 50.,
+            ),
             // Under the composer's From: beside the title of a draft, and in the fields'
             // value column on a new message, which has no title.
             Menu::From => match &self.compose {

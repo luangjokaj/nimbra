@@ -2,12 +2,12 @@
 
 use gpui::{
     AnimationExt, BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point,
-    prelude::*, px, svg,
+    prelude::*, px, relative, svg,
 };
 
 use crate::theme::{
-    GRADIENT_GLOW, GRADIENT_PRIMARY, GRADIENT_PRIMARY_PRESSED, MONO, SANS, Theme, Tone, c, over,
-    radius, space,
+    GRADIENT_GLOW, GRADIENT_PRIMARY, GRADIENT_PRIMARY_PRESSED, MONO, SANS, Theme, Tone, c, fade,
+    gradient, over, radius, space,
 };
 
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
@@ -21,6 +21,104 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
 /// A window's top bar with its 1pt bottom border. The 50pt above the border centre what is in
 /// it on y = 25, the line of the traffic lights, with the same space above and below.
 pub const TOP_BAR: f32 = 51.;
+
+/// The backdrop showing between the main window's panels and around them.
+pub const GUTTER: f32 = 8.;
+
+/// The line the main window's top row is centred on: a top bar's centre, inside a panel
+/// that starts a gutter down.
+pub const TOP_LINE: f32 = GUTTER + 25.;
+
+/// The still nebula the main window's panels float over. Clouds are blurred shadows, as
+/// GPUI has no radial gradient or blur filter.
+pub fn backdrop(t: &Theme) -> Div {
+    let n = t.nebula;
+    div()
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .bg(c(n.ground, 1.))
+        .children(n.washes.map(|(angle, hex, alpha, end)| {
+            div().absolute().inset_0().bg(fade(angle, hex, alpha, end))
+        }))
+        .children(n.blooms.map(|b| {
+            div()
+                .absolute()
+                .left(relative(b.x))
+                .top(relative(b.y))
+                .ml(px(-b.reach))
+                .mt(px(-b.reach))
+                .size(px(2. * b.reach))
+                .rounded_full()
+                .shadow(vec![shadow(c(b.hex, b.alpha), 0., 2. * b.reach, 0.)])
+        }))
+}
+
+/// How far forward a floating panel sits: the reader is in front of the list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Depth {
+    Back,
+    Front,
+}
+
+/// A floating panel of the main window: rounded glass over the nebula, with an aura of
+/// violet light around it. Finish it with `rim` as its last child.
+pub fn panel(t: &Theme, depth: Depth) -> Div {
+    div()
+        .relative()
+        .rounded(px(radius::SHEET))
+        .bg(match depth {
+            Depth::Back => t.panel,
+            Depth::Front => t.surface,
+        })
+        .shadow(aura(t, depth))
+}
+
+/// The light a floating panel gives off, and the shadow that lifts it.
+pub fn aura(t: &Theme, depth: Depth) -> Vec<BoxShadow> {
+    let (glow, lift) = match depth {
+        Depth::Back => (0.7, 0.8),
+        Depth::Front => (1., 1.),
+    };
+    vec![
+        shadow(
+            t.shadow.opacity(if t.dark { 0.7 } else { 0.5 } * lift),
+            14.,
+            36.,
+            -12.,
+        ),
+        shadow(t.aura.opacity(t.aura.a * glow), 0., 32., 0.),
+    ]
+}
+
+/// A panel's light edge, laid over it so it takes no room: a hairline all round, brighter
+/// along the top where the light catches it.
+pub fn rim(t: &Theme, corner: f32) -> Div {
+    let sheen = t.sheen;
+    let half = |angle: f32| {
+        div()
+            .flex_1()
+            .h_full()
+            .bg(gradient(angle, sheen.opacity(0.), sheen))
+    };
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(corner))
+        .border_1()
+        .border_color(t.rim)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left(px(corner))
+                .right(px(corner))
+                .h(px(1.))
+                .flex()
+                .child(half(90.))
+                .child(half(270.)),
+        )
+}
 
 /// Timestamps, counts and keys: Geist Mono 11/14 medium.
 pub fn caption(text: impl Into<SharedString>, color: Hsla) -> Div {
@@ -137,8 +235,15 @@ pub fn avatar(tone: Tone, initials: &str, size: f32) -> Div {
         .size(px(size))
         .rounded_full()
         .bg(tone.gradient())
+        // A thin luminous ring, and the tone's own light around it.
         .border_1()
-        .border_color(c(0xffffff, 0.18))
+        .border_color(c(0xffffff, 0.42))
+        .shadow(vec![shadow(
+            tone.light().opacity(0.6),
+            0.,
+            size * 0.45,
+            -1.,
+        )])
         .text_size(px(size * 0.37))
         .line_height(px(size * 0.5))
         .font_weight(FontWeight::SEMIBOLD)

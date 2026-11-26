@@ -194,8 +194,8 @@ mod platform {
 
     /// An x that has all three traffic lights left of the window.
     const AWAY: f32 = -120.;
-    /// Their distance from the top, as in the main window's `traffic_light_position`.
-    const LIGHTS_TOP: f64 = 18.;
+    /// Their distance from the line they are centred on.
+    const LIGHTS_ABOVE_LINE: f64 = 7.;
 
     thread_local! {
         static SPACING: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
@@ -265,21 +265,23 @@ mod platform {
         }
     }
 
-    /// Puts the traffic lights at `x` (the close button's left edge), or takes them away:
+    /// Puts the traffic lights at `at`, the close button's left edge and the line their
+    /// centres are on, or takes them away:
     /// out of the window, where they cannot be clicked, and clear, for a frame in which
     /// GPUI has moved them back (it does on a resize).
     ///
     /// AppKit lays the title bar out again when they are hidden or moved, at its own height
     /// and spacing. So `setHidden:` is never used, and each frame sets every button's whole
     /// position, as GPUI does, rather than moving it from where it was found.
-    pub fn place_traffic_lights(window: &gpui::Window, x: Option<f32>) {
+    pub fn place_traffic_lights(window: &gpui::Window, at: Option<(f32, f32)>) {
         let Some(ns_window) = ns_window(window) else {
             return;
         };
         let fullscreen = window.is_fullscreen();
         // In full screen macOS shows and places them itself.
-        let alpha: f64 = if fullscreen || x.is_some() { 1. } else { 0. };
-        let x = f64::from(x.unwrap_or(AWAY));
+        let alpha: f64 = if fullscreen || at.is_some() { 1. } else { 0. };
+        let x = f64::from(at.map_or(AWAY, |(x, _)| x));
+        let top = at.map_or(18., |(_, line)| f64::from(line) - LIGHTS_ABOVE_LINE);
         // SAFETY: the window's own three standard buttons (NSWindowButton 0, 1 and 2) and
         // plain geometry getters, on the main thread.
         unsafe {
@@ -312,7 +314,7 @@ mod platform {
             });
             let outer: Frame = msg_send![ns_window, frame];
             let inner: Frame = msg_send![ns_window, contentLayoutRect];
-            let y = outer.height - inner.height - LIGHTS_TOP - frames[0].height;
+            let y = outer.height - inner.height - top - frames[0].height;
             let to = |kind: usize| Point {
                 x: x + spacing * kind as f64,
                 y,
@@ -347,7 +349,7 @@ mod platform {
         })
     }
 
-    pub fn place_traffic_lights(_window: &gpui::Window, _x: Option<f32>) {}
+    pub fn place_traffic_lights(_window: &gpui::Window, _at: Option<(f32, f32)>) {}
 
     /// GPUI's own mouse events reach the window everywhere here: the root view tells them.
     pub fn install_monitors() {}
