@@ -957,12 +957,24 @@ impl SettingsWindow {
                     .child(actions)
                     // Dragged onto another row, it takes that row's place.
                     .when(several, |d| {
-                        d.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
-                            .drag_over::<DraggedAccount>(move |style, _, _, _| style.bg(hover))
-                            .on_drop(cx.listener(move |this, dragged: &DraggedAccount, _, cx| {
+                        d.on_drag(dragged, |dragged, _, window, cx| {
+                            // A closed hand everywhere in the window until it is dropped (the
+                            // drag starts once this returns).
+                            window.defer(cx, |window, cx| {
+                                cx.set_active_drag_cursor_style(
+                                    gpui::CursorStyle::ClosedHand,
+                                    window,
+                                );
+                            });
+                            cx.new(|_| dragged.clone())
+                        })
+                        .drag_over::<DraggedAccount>(move |style, _, _, _| style.bg(hover))
+                        .on_drop(cx.listener(
+                            move |this, dragged: &DraggedAccount, _, cx| {
                                 let id = dragged.id.clone();
                                 this.owner.update(cx, |n, cx| n.move_account(&id, i, cx));
-                            }))
+                            },
+                        ))
                     })
                     .into_any_element()
             })
