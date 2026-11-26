@@ -59,7 +59,7 @@
 cargo run
 ```
 
-Or download the latest signed build: [Nimbra.dmg](https://github.com/luangjokaj/nimbra/releases/latest/download/Nimbra.dmg) (see [CHANGELOG.md](CHANGELOG.md) for what's new).
+Or download a signed build from [Releases](https://github.com/luangjokaj/nimbra/releases) (see [CHANGELOG.md](CHANGELOG.md) for what's new). Nimbra is in alpha: expect rough edges.
 
 Without an account set up, or with `NIMBRA_DEMO=1`, Nimbra runs on built-in sample data and never touches the network.
 
@@ -77,6 +77,8 @@ GPUI is built with the `runtime_shaders` feature, so Xcode's Metal toolchain is 
 ## Connect your mail
 
 ### Gmail
+
+The builds on the Releases page sign in to Google and Microsoft as they are. The steps below are for building Nimbra yourself.
 
 1. In Google Cloud Console, create a project, enable the Gmail API, and create an OAuth client of type "Desktop app". Keep the consent screen in Testing mode and add yourself as a test user.
 2. Put the client in `~/.config/nimbra/oauth.env` (mode 600), never in the repo:
