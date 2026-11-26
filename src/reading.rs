@@ -924,10 +924,9 @@ impl Nimbra {
         } else {
             pane_w
         };
-        // A narrow pane drops what has another way in first: the position and the arrows
-        // (the list, J and K), then reply, reply all and forward (on each message, R A F).
-        // "Show original" becomes its icon. More actions always stays.
-        let roomy = pane_w >= 760.;
+        // A narrow pane keeps every action but drops their words, and the previous and
+        // next arrows (the list, J and K do that too). Reply all and Show original are in
+        // More actions (and A and V).
         let narrow = pane_w < 600.;
         let visible = self.visible();
         let pos = visible
@@ -1070,10 +1069,10 @@ impl Nimbra {
                         ))
                         .child(div().w(px(8.)))
                     })
-                    .child(div().w(px(6.)))
-                    // The key is part of the button: it lights up and clicks with it.
+                    .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
+                    // What is done to a thread: as words, which the narrow pane drops.
                     .child(
-                        done_button(t)
+                        action_button(t, "done", "Done", !narrow)
                             .id("mark-done")
                             .press(t)
                             .tooltip(tip(t.dark, "Mark done (archive)", "E"))
@@ -1082,11 +1081,10 @@ impl Nimbra {
                             }))
                             .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
                     )
-                    .child(div().w(px(6.)))
                     .child({
                         // Where the Snooze menu drops from, also when opened with H.
                         let anchor = self.snooze_anchor.clone();
-                        icon_button(t, "clock")
+                        action_button(t, "clock", "Snooze", !narrow)
                             .id("snooze")
                             .relative()
                             .press(t)
@@ -1112,6 +1110,32 @@ impl Nimbra {
                             }))
                     })
                     .child(
+                        action_button(t, "reply", "Reply", !narrow)
+                            .id("reply")
+                            .press(t)
+                            .tooltip(tip(t.dark, "Reply", "R"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Reply", "R", cx)
+                            }))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_compose(ComposeKind::Reply, cx)
+                            })),
+                    )
+                    .child(
+                        action_button(t, "forward", "Forward", !narrow)
+                            .id("forward")
+                            .press(t)
+                            .tooltip(tip(t.dark, "Forward", "F"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Forward", "F", cx)
+                            }))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_compose(ComposeKind::Forward, cx)
+                            })),
+                    )
+                    .child(div().flex_1())
+                    // Where it goes and what it is, as icons.
+                    .child(
                         icon_button(t, "star")
                             .id("star")
                             .press(t)
@@ -1121,18 +1145,6 @@ impl Nimbra {
                             }))
                             .when(m.starred, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
-                    )
-                    .child(
-                        icon_button(t, "mail")
-                            .id("toggle-unread")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Mark as unread or read", "U"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Mark as unread or read", "U", cx)
-                            }))
-                            // Lit while the open thread is unread.
-                            .when(m.unread, |d| d.bg(t.selected))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
                     )
                     .child(
                         icon_button(t, "tag")
@@ -1169,100 +1181,6 @@ impl Nimbra {
                             }))
                             .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
                     )
-                    .when(!narrow, |d| {
-                        d.child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
-                            .child(
-                                icon_button(t, "reply")
-                                    .id("reply")
-                                    .press(t)
-                                    .tooltip(tip(t.dark, "Reply", "R"))
-                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        this.set_hint(*hovered, "Reply", "R", cx)
-                                    }))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_compose(ComposeKind::Reply, cx)
-                                    })),
-                            )
-                            .child(
-                                icon_button(t, "reply-all")
-                                    .id("reply-all")
-                                    .press(t)
-                                    .tooltip(tip(t.dark, "Reply all", "A"))
-                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        this.set_hint(*hovered, "Reply all", "A", cx)
-                                    }))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_compose(ComposeKind::ReplyAll, cx)
-                                    })),
-                            )
-                            .child(
-                                icon_button(t, "forward")
-                                    .id("forward")
-                                    .press(t)
-                                    .tooltip(tip(t.dark, "Forward", "F"))
-                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        this.set_hint(*hovered, "Forward", "F", cx)
-                                    }))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_compose(ComposeKind::Forward, cx)
-                                    })),
-                            )
-                    })
-                    .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
-                    .child(
-                        if roomy {
-                            button(
-                                t,
-                                ButtonKind::Ghost,
-                                if original {
-                                    "Reader view"
-                                } else {
-                                    "Show original"
-                                },
-                                Some("V"),
-                            )
-                        } else {
-                            icon_button(t, "eye")
-                        }
-                        .id("original")
-                        .press_soft()
-                        .tooltip(tip(t.dark, "Switch between original and reader view", "V"))
-                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                            this.set_hint(
-                                *hovered,
-                                "Switch between original and reader view",
-                                "V",
-                                cx,
-                            )
-                        }))
-                        // Lit while the native reader view is on.
-                        .when(!original, |d| d.bg(t.selected))
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
-                    )
-                    .child(div().flex_1())
-                    .when(roomy, |d| {
-                        d.child(mono(format!("{pos} / {}", visible.len()), t.text3).mr(px(6.)))
-                            .child(
-                                icon_button(t, "up")
-                                    .id("prev")
-                                    .press(t)
-                                    .tooltip(tip(t.dark, "Previous thread", "K"))
-                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        this.set_hint(*hovered, "Previous thread", "K", cx)
-                                    }))
-                                    .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
-                            )
-                            .child(
-                                icon_button(t, "down")
-                                    .id("next")
-                                    .press(t)
-                                    .tooltip(tip(t.dark, "Next thread", "J"))
-                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        this.set_hint(*hovered, "Next thread", "J", cx)
-                                    }))
-                                    .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
-                            )
-                    })
                     .child(
                         icon_button(t, "more")
                             .id("more")
@@ -1275,7 +1193,33 @@ impl Nimbra {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_menu(Menu::More, window, cx)
                             })),
-                    ),
+                    )
+                    // The previous and next thread (also J and K, and the list).
+                    .when(!narrow, |d| {
+                        d.child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
+                            .child(
+                                icon_button(t, "up")
+                                    .id("prev")
+                                    .press(t)
+                                    .tooltip(tip(t.dark, "Previous thread", "K"))
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        this.set_hint(*hovered, "Previous thread", "K", cx)
+                                    }))
+                                    .when(pos <= 1, |d| d.opacity(0.4))
+                                    .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
+                            )
+                            .child(
+                                icon_button(t, "down")
+                                    .id("next")
+                                    .press(t)
+                                    .tooltip(tip(t.dark, "Next thread", "J"))
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        this.set_hint(*hovered, "Next thread", "J", cx)
+                                    }))
+                                    .when(pos >= visible.len(), |d| d.opacity(0.4))
+                                    .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
+                            )
+                    }),
             )
             // Conversation (native reader)
             .when(loading, |d| d.child(self.loading_pane(t, m, cx.entity())))
@@ -2337,14 +2281,30 @@ impl Nimbra {
     }
 }
 
-/// Done, with its key inside the button (the toolbar's and the loading screen's).
-pub(super) fn done_button(t: &Theme) -> Div {
-    icon_button(t, "done")
-        .w_auto()
-        .pl(px(7.))
-        .pr(px(6.))
+/// A toolbar action as an icon and a word (Done, Snooze, Reply, Forward); just the icon
+/// where the pane is narrow. Also drawn, dimmed, on the loading screen.
+pub(super) fn action_button(t: &Theme, name: &str, label: &str, worded: bool) -> Div {
+    let hover = t.hover;
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
         .gap(px(6.))
-        .child(kbd(t, "E"))
+        .h(px(30.))
+        .px(px(if worded { 9. } else { 7. }))
+        .rounded(px(8.))
+        .cursor_pointer()
+        .text_color(t.text2)
+        .hover(move |s| s.bg(hover))
+        .child(icon(name, 16., t.text2))
+        .when(worded, |d| {
+            d.child(
+                div()
+                    .text_size(px(13.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(label.to_string()),
+            )
+        })
 }
 
 #[cfg(test)]

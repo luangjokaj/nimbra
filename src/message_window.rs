@@ -190,6 +190,8 @@ impl Render for MessageWindow {
         let original = self.original && m.html.is_some();
         let width = f32::from(window.viewport_size().width);
 
+        // As the main window's toolbar (`reading.rs`): the actions as words, then icons.
+        let worded = width >= 560.;
         let tool = |name: &'static str, label: &'static str, id: usize| {
             let key = match id {
                 0 => "R",
@@ -203,11 +205,25 @@ impl Render for MessageWindow {
                 .press(&t)
                 .tooltip(tip(t.dark, label, key))
         };
+        let action = |name: &'static str, word: &'static str, label: &'static str, id: usize| {
+            super::reading::action_button(&t, name, word, worded)
+                .id(("message-window-action", id))
+                .press(&t)
+                .tooltip(tip(
+                    t.dark,
+                    label,
+                    match id {
+                        0 => "R",
+                        2 => "F",
+                        _ => "E",
+                    },
+                ))
+        };
         let toolbar = div()
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(4.))
+            .gap(px(2.))
             .h(px(crate::ui::TOP_BAR))
             .pl(px(84.))
             .pr(px(14.))
@@ -216,25 +232,27 @@ impl Render for MessageWindow {
             .on_mouse_down(MouseButton::Left, |event, window, cx| {
                 drag_or_zoom(event, window, cx)
             })
-            .child(tool("reply", "Reply", 0).on_click(
+            .child(
+                action("done", "Done", "Mark done (archive)", 3).on_click(cx.listener(
+                    |this, _, window, cx| this.act(window, cx, |n, row, cx| n.done_thread(row, cx)),
+                )),
+            )
+            .child(action("reply", "Reply", "Reply", 0).on_click(
                 cx.listener(|this, _, window, cx| this.reply(ComposeKind::Reply, window, cx)),
             ))
+            .child(action("forward", "Forward", "Forward", 2).on_click(
+                cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx)),
+            ))
+            .child(div().flex_1())
             .child(tool("reply-all", "Reply all", 1).on_click(
                 cx.listener(|this, _, window, cx| this.reply(ComposeKind::ReplyAll, window, cx)),
             ))
-            .child(tool("forward", "Forward", 2).on_click(
-                cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx)),
-            ))
-            .child(div().w(px(1.)).h(px(18.)).mx(px(6.)).bg(t.border))
-            .child(
-                tool("done", "Done", 3).on_click(cx.listener(|this, _, window, cx| {
-                    this.act(window, cx, |n, row, cx| n.done_thread(row, cx))
-                })),
-            )
             .child(tool("trash", "Move to trash", 4).on_click(cx.listener(
                 |this, _, window, cx| this.act(window, cx, |n, row, cx| n.trash_thread(row, cx)),
             )))
-            .child(div().flex_1())
+            .when(m.html.is_some(), |d| {
+                d.child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
+            })
             .when(m.html.is_some(), |d| {
                 d.child(
                     button(

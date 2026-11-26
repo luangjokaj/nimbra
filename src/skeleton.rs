@@ -252,7 +252,6 @@ impl Nimbra {
     }
 
     fn skeleton_reading(&self, t: &Theme) -> Div {
-        let gap = |width: f32| div().flex_none().w(px(width));
         let rule = || {
             div()
                 .flex_none()
@@ -261,6 +260,9 @@ impl Nimbra {
                 .mx(px(6.))
                 .bg(t.border_strong)
         };
+        let worded = self
+            .frame
+            .is_none_or(|f| f32::from(f.size.width) - self.pane_left() >= 600.);
         let tools = div()
             .flex()
             .items_center()
@@ -270,26 +272,21 @@ impl Nimbra {
             .pl(px(20.))
             .pr(px(20.))
             .opacity(WAITING)
+            // As the real toolbar (`reading.rs`).
             .child(icon_button(t, "list"))
-            .child(gap(6.))
-            .child(gap(6.))
-            .child(super::reading::done_button(t))
-            .child(gap(6.))
-            .children(
-                ["clock", "star", "mail", "tag", "folder", "trash"]
-                    .map(|name| icon_button(t, name)),
-            )
             .child(rule())
-            .children(["reply", "reply-all", "forward"].map(|name| icon_button(t, name)))
-            .child(rule())
-            // As the real toggle: lit while the reader view is on.
-            .child(if self.original {
-                button(t, ButtonKind::Ghost, "Reader view", Some("V"))
-            } else {
-                button(t, ButtonKind::Ghost, "Show original", Some("V")).bg(t.selected)
-            })
+            .child(super::reading::action_button(t, "done", "Done", worded))
+            .child(super::reading::action_button(t, "clock", "Snooze", worded))
+            .child(super::reading::action_button(t, "reply", "Reply", worded))
+            .child(super::reading::action_button(
+                t, "forward", "Forward", worded,
+            ))
             .child(div().flex_1())
-            .children(["up", "down", "more"].map(|name| icon_button(t, name)));
+            .children(["star", "tag", "folder", "trash", "more"].map(|name| icon_button(t, name)))
+            .when(worded, |d| {
+                d.child(rule())
+                    .children(["up", "down"].map(|name| icon_button(t, name)))
+            });
 
         div()
             .flex()

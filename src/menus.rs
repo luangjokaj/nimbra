@@ -3,6 +3,17 @@
 
 use super::*;
 
+/// What the reading pane's ⋯ menu can do (what the toolbar leaves out).
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum MoreAction {
+    ReplyAll,
+    ToggleOriginal,
+    MarkUnread,
+    OpenInGmail,
+    Spam,
+    Block,
+}
+
 /// What a row's right-click menu can do.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum RowAction {
@@ -408,20 +419,12 @@ impl Nimbra {
                     .map(|(label, _)| ("clock", label.into(), t.text2))
                     .collect()
             }
-            Menu::More if self.is_demo() => vec![("inbox", "Mark as unread".into(), t.text2)],
             Menu::More => {
-                let mut items = vec![("inbox", "Mark as unread".into(), t.text2)];
-                if !self.own_servers() {
-                    items.push(("link", "Open in Gmail".into(), t.text2));
-                }
-                items.push(("bell", "Report spam".into(), t.text2));
-                let block = if self.sender_blocked(self.selected) {
-                    "Unblock sender"
-                } else {
-                    "Block sender"
-                };
-                items.push(("ban", block.into(), t.text2));
-                items
+                let menu = self.more_menu();
+                self.more_actions = menu.iter().map(|(action, _, _)| *action).collect();
+                menu.into_iter()
+                    .map(|(_, icon, label)| (icon, label, t.text2))
+                    .collect()
             }
             Menu::Row(index) => {
                 let Some(mail) = self.mails.get(index) else {
@@ -631,6 +634,40 @@ impl Nimbra {
         }
     }
 
+    /// The ⋯ menu's items, in order: what the toolbar leaves out.
+    pub(super) fn more_menu(&self) -> Vec<(MoreAction, &'static str, SharedString)> {
+        let demo = self.is_demo();
+        let html = self
+            .mails
+            .get(self.selected)
+            .is_some_and(|m| m.html.is_some());
+        let draft = self.mailbox == View::Drafts && !demo;
+        let mut items = vec![(MoreAction::ReplyAll, "reply-all", "Reply all".into())];
+        // Only where there is an original to show (not a draft, not plain text).
+        if html && !draft {
+            let label = if self.original {
+                "Reader view"
+            } else {
+                "Show original"
+            };
+            items.push((MoreAction::ToggleOriginal, "eye", label.into()));
+        }
+        items.push((MoreAction::MarkUnread, "inbox", "Mark as unread".into()));
+        if !demo {
+            if !self.own_servers() {
+                items.push((MoreAction::OpenInGmail, "link", "Open in Gmail".into()));
+            }
+            items.push((MoreAction::Spam, "bell", "Report spam".into()));
+            let block = if self.sender_blocked(self.selected) {
+                "Unblock sender"
+            } else {
+                "Block sender"
+            };
+            items.push((MoreAction::Block, "ban", block.into()));
+        }
+        items
+    }
+
     fn menu_choice(&mut self, menu: Menu, index: usize, cx: &mut Context<Self>) {
         self.menu_window = None;
         self.menu = None;
@@ -670,13 +707,15 @@ impl Nimbra {
                     self.move_selected(target, cx);
                 }
             }
-            (Menu::More, 0) => self.mark_unread(cx),
-            (Menu::More, 1) if !self.own_servers() => self.open_in_gmail(cx),
-            // The last one.
-            (Menu::More, index) if index == if self.own_servers() { 2 } else { 3 } => {
-                self.toggle_block(cx)
-            }
-            (Menu::More, _) => self.remove_selected(mail::Change::Spam, cx),
+            (Menu::More, index) => match self.more_actions.get(index).copied() {
+                Some(MoreAction::ReplyAll) => self.open_compose(ComposeKind::ReplyAll, cx),
+                Some(MoreAction::ToggleOriginal) => self.toggle_original(cx),
+                Some(MoreAction::MarkUnread) => self.mark_unread(cx),
+                Some(MoreAction::OpenInGmail) => self.open_in_gmail(cx),
+                Some(MoreAction::Spam) => self.remove_selected(mail::Change::Spam, cx),
+                Some(MoreAction::Block) => self.toggle_block(cx),
+                None => {}
+            },
             (Menu::From, index) => {
                 if let Some(id) = self.settings.accounts.get(index).map(|a| a.id.clone()) {
                     self.set_compose_account(id, cx);
@@ -991,14 +1030,13 @@ impl Nimbra {
             Menu::More => {
                 panel
                     .right(px(20.))
-                    .child(item(0, "inbox", "Mark as unread".into(), t.text2).on_click(
-                        cx.listener(|this, _, _, cx| this.menu_choice(Menu::More, 0, cx)),
+                    .children(self.more_menu().into_iter().enumerate().map(
+                        |(index, (_, icon, label))| {
+                            item(index, icon, label, t.text2).on_click(cx.listener(
+                                move |this, _, _, cx| this.menu_choice(Menu::More, index, cx),
+                            ))
+                        },
                     ))
-                    .when(!self.is_demo() && !self.own_servers(), |d| {
-                        d.child(item(1, "link", "Open in Gmail".into(), t.text2).on_click(
-                            cx.listener(|this, _, _, cx| this.menu_choice(Menu::More, 1, cx)),
-                        ))
-                    })
             }
         })
     }

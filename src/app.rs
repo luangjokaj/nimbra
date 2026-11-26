@@ -612,6 +612,8 @@ pub struct Nimbra {
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
+    /// What each item of the open ⋯ menu does, in order.
+    more_actions: Vec<menus::MoreAction>,
     /// What the open menu, the snooze panel and the label sheet were opened for. A refresh
     /// can move or remove rows under each, so they check before acting (see `still_meant`).
     menu_for: Option<MeantFor>,
@@ -974,6 +976,7 @@ impl Nimbra {
             hint: None,
             menu_at: (0., 0.),
             row_actions: Vec::new(),
+            more_actions: Vec::new(),
             menu_for: None,
             palette_for: None,
             label_for: None,
@@ -1083,6 +1086,17 @@ impl Nimbra {
             if let Some(composer) = &mut this.compose {
                 composer.full = screen == "compose-full";
             }
+        }
+        // NIMBRA_SCREEN=window: the open thread in a window of its own (screenshots).
+        if screen == "window" {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(800))
+                    .await;
+                this.update(cx, |this, cx| this.open_message_window(this.selected, cx))
+                    .ok();
+            })
+            .detach();
         }
         // NIMBRA_SCREEN=welcome: what a new user sees first (signed out, no account), with
         // nothing read from the keychain (screenshots).
