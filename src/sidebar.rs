@@ -510,11 +510,13 @@ impl Nimbra {
         // Real counts from Gmail: unread in the inbox for mailboxes and labels (archived
         // "Done" threads left out), total for Drafts.
         let unread_in = |id: &str| {
-            self.counts
-                .get(id)
-                .map(|(unread, _)| *unread)
-                .filter(|n| *n > 0)
-                .map(|n| n.to_string())
+            // The inbox as the Dock counts it (see `inbox_unread`).
+            let unread = if id == "INBOX" {
+                Some(self.inbox_unread())
+            } else {
+                self.counts.get(id).map(|(unread, _)| *unread)
+            };
+            unread.filter(|n| *n > 0).map(|n| n.to_string())
         };
         let drafts = self
             .counts
@@ -529,7 +531,7 @@ impl Nimbra {
         let many = !demo && self.settings.accounts.len() >= 2;
         let unread_of = |id: &str| -> u32 {
             if id == self.account_id {
-                self.counts.get("INBOX").map_or(0, |(unread, _)| *unread)
+                self.inbox_unread()
             } else {
                 self.account_unread.get(id).copied().unwrap_or(0)
             }

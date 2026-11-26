@@ -559,10 +559,9 @@ impl Nimbra {
             });
         // While it was shown its count was kept in `counts`: hand that on, or the sidebar
         // and the Dock go back to the number from before it was shown.
-        if listed(&self.account_id)
-            && let Some((unread, _)) = self.counts.get("INBOX")
-        {
-            self.account_unread.insert(self.account_id.clone(), *unread);
+        if listed(&self.account_id) && self.counts.contains_key("INBOX") {
+            let unread = self.inbox_unread();
+            self.account_unread.insert(self.account_id.clone(), unread);
         }
         self.account_gen += 1;
         // The account shown so far stays connected (All inboxes, new-mail checks).

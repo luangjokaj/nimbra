@@ -425,12 +425,30 @@ impl Nimbra {
     }
 
     /// The Dock icon's number: unread conversations in every signed-in account's inbox.
+    /// Unread threads in the shown account's inbox, for the Dock and the sidebar. While the
+    /// whole inbox is on screen (open, and no further page), it is counted from the list,
+    /// so an inbox that shows nothing unread never has a count: the server's own number can
+    /// lag behind what was just read or archived, and IMAP's counts messages, not threads.
+    pub(super) fn inbox_unread(&self) -> u32 {
+        let listed_whole = self.mailbox == View::Inbox
+            && self.query.is_empty()
+            && self.status == Status::Ready
+            && self.paged.contains(&View::Inbox)
+            && !self.next_pages.contains_key(&View::Inbox);
+        if listed_whole {
+            let unread = self
+                .visible()
+                .into_iter()
+                .filter(|&i| self.mails[i].unread)
+                .count();
+            return u32::try_from(unread).unwrap_or(u32::MAX);
+        }
+        self.counts.get("INBOX").map_or(0, |(unread, _)| *unread)
+    }
+
     pub(super) fn update_badge(&mut self) {
         let count = if self.settings.dock_badge && crate::notify::badges_allowed() {
-            let shown = self
-                .connection
-                .is_some()
-                .then(|| self.counts.get("INBOX").map_or(0, |(unread, _)| *unread));
+            let shown = self.connection.is_some().then(|| self.inbox_unread());
             inbox_badge(&self.account_id, shown, &self.account_unread, |id| {
                 self.others.contains_key(id)
             })
