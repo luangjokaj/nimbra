@@ -1253,12 +1253,22 @@ impl Client {
 
     /// Whether Sent already has a message (servers that file what they send themselves).
     fn in_sent(&self, message_id: &str) -> Result<bool> {
+        Ok(self.sent_has(message_id)?.unwrap_or(true))
+    }
+
+    /// Whether a message with this id is certainly in Sent.
+    fn filed_in_sent(&self, message_id: &str) -> bool {
+        self.sent_has(message_id).ok().flatten().unwrap_or(false)
+    }
+
+    /// Whether Sent has a message with this id; `None` when there is no Sent folder.
+    fn sent_has(&self, message_id: &str) -> Result<Option<bool>> {
         self.with(true, |connection| {
             let Some(folder) = self.folder(connection, Role::Sent)? else {
-                return Ok(true);
+                return Ok(None);
             };
             Self::select(connection, &folder.name)?;
-            Ok(find_by_message_id(connection, message_id)?.is_some())
+            Ok(Some(find_by_message_id(connection, message_id)?.is_some()))
         })
     }
 
@@ -1673,11 +1683,18 @@ impl Provider for Client {
         for list in [&draft.to, &draft.cc, &draft.bcc] {
             recipients.extend(crate::mail::addresses(list).map_err(crate::mail::before_sending)?);
         }
-        let message_id = header_message_id(&raw)
-            .map_or_else(|| crate::mail::new_message_id(&self.email), Ok)
-            .map_err(crate::mail::before_sending)?;
-        let sent = crate::mail::without_bcc(&raw);
-        self.deliver(&sent, &recipients, &message_id)?;
+        let kept_id = header_message_id(&raw);
+        // Sent before, with the answer lost on the way: only the draft is left to remove.
+        let delivered = kept_id
+            .as_deref()
+            .is_some_and(|message_id| self.filed_in_sent(message_id));
+        if !delivered {
+            let message_id = kept_id
+                .map_or_else(|| crate::mail::new_message_id(&self.email), Ok)
+                .map_err(crate::mail::before_sending)?;
+            let sent = crate::mail::without_bcc(&raw);
+            self.deliver(&sent, &recipients, &message_id)?;
+        }
         if let Err(error) = self.delete_draft(id)
             && !crate::mail::is_gone(&error)
         {
