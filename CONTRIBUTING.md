@@ -56,9 +56,9 @@ Where things live is in [Layout](README.md#layout).
 
 ### It matches the design
 
-The design lives in the [Mail Client Figma file](https://www.figma.com/design/s6tsR2l2X4MKmoA1dNlm4I/Mail-Client):
-the screens as built, the colour variables, the text styles and the component kit. A UI change should match it, or
-come with the Figma change it needs. "Looks close" isn't a match: compare at the same size, in light and dark.
+A UI change looks like it was always there. Use the colours, fonts and sizes in `src/theme.rs` and the building
+blocks in `src/ui.rs` (buttons, icons, pills, keys) rather than new values, and match the spacing of the screens next
+to it. "Looks close" isn't a match: compare screenshots at the same size, in light and dark.
 
 Things review checks on every UI change:
 
