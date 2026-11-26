@@ -444,11 +444,7 @@ impl SnoozeMenu {
                 .px(px(10.))
                 .rounded(px(radius::CONTROL))
                 .cursor_pointer()
-                .when(lit, |d| {
-                    d.relative()
-                        .bg(t.selected)
-                        .child(lit_edge(t, radius::CONTROL))
-                })
+                .when(lit, |d| d.relative().bg(t.selected))
                 .press_selected(t)
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                     if *hovered && this.sel != index {
@@ -486,7 +482,7 @@ impl SnoozeMenu {
             .h(px(18.))
             .p(px(2.))
             .rounded_full()
-            .bg(mix(t.border_strong, t.violet, lit))
+            .bg(mix(t.border_strong, t.primary, lit))
             .child(
                 div()
                     .size(px(14.))

@@ -165,17 +165,6 @@ pub(super) fn sheet_shadow(t: &Theme) -> Vec<gpui::BoxShadow> {
     )]
 }
 
-/// The lit row of a menu or the finder: a violet tint under it and, laid over it, a violet
-/// hairline. Give the row `.relative()`.
-pub(super) fn lit_edge(t: &Theme, corner: f32) -> Div {
-    div()
-        .absolute()
-        .inset_0()
-        .rounded(px(corner))
-        .border_1()
-        .border_color(t.violet.opacity(0.32))
-}
-
 /// Solid violet for what is chosen or is the one main action, under a white label:
 /// (at rest, hovered, held).
 pub(super) fn solid_violet(t: &Theme) -> (Hsla, Hsla, Hsla) {
@@ -992,11 +981,7 @@ impl Render for MenuPopup {
                     d.child(caption(item.key, t.text3))
                 })
                 .when(!enabled, |d| d.text_color(t.text3))
-                .when(lit, |d| {
-                    d.relative()
-                        .bg(t.selected)
-                        .child(lit_edge(&t, radius::CONTROL))
-                })
+                .when(lit, |d| d.relative().bg(t.selected))
                 .when(enabled, |d| {
                     d.cursor_pointer()
                         .press_selected(&t)

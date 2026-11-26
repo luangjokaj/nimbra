@@ -422,12 +422,7 @@ impl Nimbra {
                 .py(px(space::S))
                 .rounded(px(radius::ROW))
                 .cursor_pointer()
-                .when(active, |d| {
-                    d.relative()
-                        .bg(t.selected)
-                        .child(lit_edge(t, radius::ROW))
-                        .press_selected(t)
-                })
+                .when(active, |d| d.relative().bg(t.selected).press_selected(t))
                 .when(!active, |d| d.hover(move |s| s.bg(hover)).press(t))
         };
         let section = |label: &str| {

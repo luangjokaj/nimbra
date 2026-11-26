@@ -317,7 +317,24 @@ impl Render for SettingsWindow {
                     .w(px(TABS_W))
                     .h_full()
                     .pr(px(1.))
-                    .bg(t.panel)
+                    // The main sidebar's dusk, solid: this window has no blur behind it.
+                    .bg(gpui::linear_gradient(
+                        180.,
+                        gpui::linear_color_stop(
+                            gpui::Hsla {
+                                a: 1.,
+                                ..t.sidebar_top
+                            },
+                            0.,
+                        ),
+                        gpui::linear_color_stop(
+                            gpui::Hsla {
+                                a: 1.,
+                                ..t.sidebar_bottom
+                            },
+                            1.,
+                        ),
+                    ))
                     .child(pane_divider(&t))
                     .child(title_bar())
                     .child(div().flex().flex_col().gap(px(2.)).px(px(10.)).children(
@@ -336,7 +353,7 @@ impl Render for SettingsWindow {
                                 // As the main sidebar shows its open mailbox: a quiet pill.
                                 .when(on, |d| d.bg(t.glass).font_weight(FontWeight::MEDIUM))
                                 .when(!on, |d| d.hover(move |s| s.bg(hover)).press(&t))
-                                .child(icon(item.icon(), 16., if on { t.text } else { t.text2 }))
+                                .child(icon(item.icon(), 16., if on { t.violet } else { t.text3 }))
                                 .child(
                                     div()
                                         .text_color(if on { t.text } else { t.text2 })
@@ -417,7 +434,8 @@ fn group(t: &Theme, title: Option<&str>, rows: Vec<AnyElement>) -> AnyElement {
                 .flex()
                 .flex_col()
                 .rounded(px(radius::CARD))
-                .bg(t.raised)
+                // A step in from the page, so the white of a picked segment stands out.
+                .bg(crate::theme::over(t.hover, t.surface))
                 .border_1()
                 .border_color(t.edge)
                 .children(rows.into_iter().enumerate().flat_map(move |(i, row)| {
@@ -479,8 +497,8 @@ fn switch(t: &Theme, at: f32) -> Div {
         .border_1()
         .rounded_full()
         .cursor_pointer()
-        .bg(mix(t.hover, t.violet))
-        .border_color(mix(t.border_strong, t.violet.opacity(0.)))
+        .bg(mix(t.hover, t.primary))
+        .border_color(mix(t.border_strong, t.primary.opacity(0.)))
         .child(
             div()
                 .ml(px(15. * at))
