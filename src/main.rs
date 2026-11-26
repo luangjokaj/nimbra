@@ -55,10 +55,10 @@ use gpui::{
 };
 
 use app::{
-    AboutNimbra, Back, Compose, Confirm, Dismiss, DockDrafts, DockInbox, DockSent, DockSnoozed,
-    DockStarred, First, FocusSearch, FocusSidebar, Forward, ForwardMessage, GoAllMail, GoDrafts,
-    GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp, HideOthers, HideWindow, Last,
-    MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReply,
+    AboutNimbra, Back, CheckForUpdates, Compose, Confirm, Dismiss, DockDrafts, DockInbox, DockSent,
+    DockSnoozed, DockStarred, First, FocusSearch, FocusSidebar, Forward, ForwardMessage, GoAllMail,
+    GoDrafts, GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp, HideOthers, HideWindow,
+    Last, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReply,
     MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal, MenuToggleSidebar,
     MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenInWindow, OpenSettings, OpenSidebarRow,
     PageDown, PageUp, PickDown, PickThread, PickUp, Prev, Print, Quit, Reload, Reply, ReplyAll,
@@ -390,6 +390,7 @@ fn main() {
                 name: "Nimbra".into(),
                 items: vec![
                     MenuItem::action("About Nimbra", AboutNimbra),
+                    MenuItem::action("Check for Updates…", CheckForUpdates),
                     MenuItem::separator(),
                     MenuItem::action("Settings…", OpenSettings),
                     MenuItem::separator(),

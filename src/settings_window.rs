@@ -1589,6 +1589,12 @@ impl SettingsWindow {
     }
 
     fn about(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let n = self.owner.read(cx);
+        let (update_ready, update_checking, update_status) = (
+            n.update_ready.clone(),
+            n.update_checking,
+            n.update_status.clone(),
+        );
         vec![
             div()
                 .flex()
@@ -1613,7 +1619,13 @@ impl SettingsWindow {
                 )
                 .child(serif("Nimbra", 44., t.text))
                 .child(meta(
-                    format!("Version {}", env!("CARGO_PKG_VERSION")),
+                    // The version, and what the last check for a new one found.
+                    match &update_status {
+                        Some(status) => {
+                            format!("Version {} · {status}", env!("CARGO_PKG_VERSION"))
+                        }
+                        None => format!("Version {}", env!("CARGO_PKG_VERSION")),
+                    },
                     t.text3,
                 ))
                 .child(
@@ -1621,6 +1633,37 @@ impl SettingsWindow {
                         .flex()
                         .gap(px(8.))
                         .pt(px(4.))
+                        // Check for a new version now, or restart into the one that is ready.
+                        .child(match &update_ready {
+                            Some(_) => crate::ui::glow(
+                                button(t, ButtonKind::Primary, "Restart to update", None)
+                                    .id("about-update")
+                                    .press_soft()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.owner.update(cx, |n, cx| n.restart_to_update(cx));
+                                    })),
+                                "about-update",
+                                true,
+                            )
+                            .into_any_element(),
+                            None => button(
+                                t,
+                                ButtonKind::Secondary,
+                                if update_checking {
+                                    "Checking…"
+                                } else {
+                                    "Check for updates"
+                                },
+                                None,
+                            )
+                            .id("about-update")
+                            .press_soft()
+                            .when(update_checking, |b| b.opacity(0.6))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.owner.update(cx, |n, cx| n.check_for_updates(cx));
+                            }))
+                            .into_any_element(),
+                        })
                         .child(
                             button(t, ButtonKind::Secondary, "nimbra.me", None)
                                 .id("about-homepage")

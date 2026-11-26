@@ -144,6 +144,8 @@ actions!(
         HideApp,
         /// Nimbra › About Nimbra.
         AboutNimbra,
+        /// Nimbra › Check for Updates…
+        CheckForUpdates,
         HideOthers,
         ShowAll,
         Minimize,
@@ -485,6 +487,10 @@ pub struct Nimbra {
     update_ready: Option<String>,
     /// Quitting to restart into it: the new version opens once it is in place.
     restart_for_update: bool,
+    /// A check for a new version is running (from the menu, Settings or the timer).
+    update_checking: bool,
+    /// What the last check found, for Settings › About.
+    update_status: Option<SharedString>,
     /// The address suggestions' window, where it was put, and for how many rows.
     suggest_window: Option<(gpui::WindowHandle<SuggestPopup>, (f64, f64), usize)>,
     notice_shown: Option<SharedString>,
@@ -891,6 +897,8 @@ impl Nimbra {
             suggest_window: None,
             update_ready: crate::update::staged(),
             restart_for_update: false,
+            update_checking: false,
+            update_status: None,
             notice_shown: None,
             notice_gen: 0,
             focus_restore: None,
@@ -2592,6 +2600,7 @@ impl Render for Nimbra {
             }))
             .on_action(cx.listener(|this, _: &ToggleTheme, _, cx| this.toggle_theme(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, _, cx| this.check_for_updates(cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &Back, _, cx| this.go_back(cx)))
             .on_action(cx.listener(|this, _: &Forward, _, cx| this.go_forward(cx)))

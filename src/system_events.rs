@@ -159,27 +159,94 @@ impl Nimbra {
                 if !allowed {
                     continue;
                 }
-                let found = cx
-                    .background_executor()
-                    .spawn(async { crate::update::check() })
-                    .await;
-                match found {
-                    Ok(Some(version)) => {
-                        // Count only; never more than the version.
-                        eprintln!("nimbra: update {version} ready");
-                        this.update(cx, |this, cx| {
-                            this.update_ready = Some(version);
-                            cx.notify();
-                        })
-                        .ok();
-                    }
-                    Ok(None) => {}
-                    // Offline, or a download that was not right: tried again later.
-                    Err(error) => eprintln!("nimbra: no update: {error:#}"),
+                let started = this
+                    .update(cx, |this, cx| this.start_update_check(false, cx))
+                    .unwrap_or(false);
+                if !started {
+                    continue;
                 }
             }
         })
         .detach();
+    }
+
+    /// Nimbra › Check for Updates…, and the button in Settings › About: checks now, even
+    /// with automatic updates off, and says what it found.
+    pub(super) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if !crate::update::enabled() {
+            self.update_status = Some("This build doesn’t update itself.".into());
+            self.notice = Some(
+                "This build doesn’t update itself. Download Nimbra from nimbra.me for updates."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
+        if let Some(version) = &self.update_ready {
+            self.notice = Some(
+                format!("Nimbra {version} is ready. Restart from the bottom of the sidebar.")
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
+        self.start_update_check(true, cx);
+    }
+
+    /// Checks for a new version in the background. `told`: the person asked, so the
+    /// answer is shown whatever it is (the timer only speaks up when one is ready).
+    /// Returns whether a check started.
+    fn start_update_check(&mut self, told: bool, cx: &mut Context<Self>) -> bool {
+        if self.update_checking {
+            return false;
+        }
+        self.update_checking = true;
+        self.update_status = Some("Checking for updates…".into());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async { crate::update::check() })
+                .await;
+            this.update(cx, |this, cx| {
+                this.update_checking = false;
+                match found {
+                    Ok(Some(version)) => {
+                        // Count only; never more than the version.
+                        eprintln!("nimbra: update {version} ready");
+                        this.update_status = Some(format!("Nimbra {version} is ready.").into());
+                        if told {
+                            this.notice = Some(format!(
+                                "Nimbra {version} is ready. Restart from the bottom of the sidebar."
+                            ).into());
+                        }
+                        this.update_ready = Some(version);
+                    }
+                    Ok(None) => {
+                        this.update_status = Some("Nimbra is up to date.".into());
+                        if told {
+                            this.notice = Some(
+                                format!("Nimbra is up to date ({}).", env!("CARGO_PKG_VERSION"))
+                                    .into(),
+                            );
+                        }
+                    }
+                    // Offline, or a download that was not right: tried again later.
+                    Err(error) => {
+                        eprintln!("nimbra: no update: {error:#}");
+                        this.update_status = Some("Couldn’t check for updates.".into());
+                        if told {
+                            this.notice =
+                                Some(format!("Couldn’t check for updates: {error}.").into());
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        true
     }
 
     /// The sidebar's Restart: quits, and the new version opens in this one's place.
