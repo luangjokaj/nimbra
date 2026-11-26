@@ -408,14 +408,14 @@ impl Nimbra {
             }
             Menu::From => {
                 let from = self.compose_from();
-                self.settings
-                    .accounts
-                    .iter()
-                    .map(|a| {
-                        if Some(a.id.as_str()) == from.as_deref() {
-                            ("done", a.email.clone().into(), t.text)
+                // Every account (or the sample's one).
+                self.signature_accounts()
+                    .into_iter()
+                    .map(|(id, email)| {
+                        if Some(id.as_str()) == from.as_deref() {
+                            ("done", email.into(), t.text)
                         } else {
-                            ("mail", a.email.clone().into(), t.text2)
+                            ("mail", email.into(), t.text2)
                         }
                     })
                     .collect()

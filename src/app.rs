@@ -1102,9 +1102,10 @@ impl Nimbra {
             back: Vec::new(),
             forward: Vec::new(),
         };
-        // NIMBRA_SCREEN=compose opens the composer on the sample data (screenshots).
+        // NIMBRA_SCREEN=compose opens a new message on the sample data (screenshots), as
+        // Compose does.
         if screen == "compose" || screen == "compose-full" {
-            this.open_compose(ComposeKind::Reply, cx);
+            this.open_compose(ComposeKind::New, cx);
             if let Some(composer) = &mut this.compose {
                 composer.full = screen == "compose-full";
             }
@@ -1658,7 +1659,7 @@ impl Nimbra {
 
     /// The accounts that can have signatures, as (id, address): every account, or with
     /// none, the sample one.
-    fn signature_accounts(&self) -> Vec<(String, String)> {
+    pub(super) fn signature_accounts(&self) -> Vec<(String, String)> {
         if self.settings.accounts.is_empty() && self.is_demo() {
             return vec![(self.account_id.clone(), "luan@example.com".into())];
         }

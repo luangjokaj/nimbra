@@ -1869,6 +1869,13 @@ impl Nimbra {
             && self.compose.as_ref().is_some_and(|c| c.reply.is_none())
     }
 
+    /// The From row shows: where it can change, and in the sample's new messages (with its
+    /// one address), so the sample looks like the real thing.
+    fn shows_from(&self) -> bool {
+        self.can_change_from()
+            || (self.is_demo() && self.compose.as_ref().is_some_and(|c| c.reply.is_none()))
+    }
+
     /// The composer's From changes. A draft it already saved is deleted from the old
     /// account's Drafts and saved again in the new one's.
     ///
@@ -2406,7 +2413,7 @@ impl Nimbra {
                             .pt(px(16.))
                             .pb(px(8.))
                             // A new message: who it is from, and a menu to change it.
-                            .when(self.can_change_from(), |d| {
+                            .when(self.shows_from(), |d| {
                                 // The account it is changing to shows at once, with what
                                 // it is waiting for.
                                 let moving = composer.moving_to.is_some();
@@ -2415,9 +2422,11 @@ impl Nimbra {
                                     .clone()
                                     .or_else(|| self.compose_from())
                                     .and_then(|id| {
-                                        self.settings.accounts.iter().find(|a| a.id == id)
+                                        self.signature_accounts()
+                                            .into_iter()
+                                            .find(|(account, _)| *account == id)
                                     })
-                                    .map(|a| a.email.clone())
+                                    .map(|(_, email)| email)
                                     .unwrap_or_default();
                                 let hover = t.hover;
                                 // The label is the fields' label column (56 wide, 12 to the
