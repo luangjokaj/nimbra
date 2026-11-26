@@ -138,8 +138,6 @@ pub struct Theme {
     /// What is held under the pointer: a deeper wash of the accent than selection.
     pub pressed: Hsla,
     pub focus: Hsla,
-    /// Soft accent light around what has focus or is the primary action.
-    pub glow: Hsla,
     /// The luminous hairline around raised glass (tooltips, menus, sheets, cards).
     pub edge: Hsla,
     /// The open mailbox's pill in the sidebar, and how opaque it comes out: less than the
@@ -213,7 +211,6 @@ impl Theme {
             selected: c(0x8b7cff, 0.16),
             pressed: c(0x8b7cff, 0.24),
             focus: c(0x8b7cff, 0.6),
-            glow: c(0x8b7cff, 0.35),
             edge: c(0xc9c2ff, 0.14),
             glass: c(0xffffff, 0.12),
             glass_opacity: 0.75,
@@ -280,7 +277,6 @@ impl Theme {
             selected: c(0x6e5cf6, 0.10),
             pressed: c(0x6e5cf6, 0.16),
             focus: c(0x6e5cf6, 0.6),
-            glow: c(0x6e5cf6, 0.22),
             edge: c(0x6e5cf6, 0.16),
             glass: c(0x000000, 0.07),
             glass_opacity: 0.78,

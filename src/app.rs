@@ -25,9 +25,9 @@ use crate::theme::{
 };
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Depth, Elevation, GUTTER, Press, TOP_BAR, TOP_LINE, avatar, button, caption,
-    display, elevation, focus_ring, hero, icon, icon_button, kbd, lift, meta, overline, panel,
-    pill, rim, shadow, tip, title_l, title_s,
+    ButtonKind, Depth, GUTTER, Press, TOP_BAR, TOP_LINE, avatar, button, caption, display,
+    focus_ring, hero, icon, icon_button, kbd, lift, meta, overline, panel, pill, rim, shadow, tip,
+    title_l, title_s,
 };
 use crate::webview::HtmlView;
 

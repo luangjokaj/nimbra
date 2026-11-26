@@ -344,8 +344,6 @@ pub enum Elevation {
     Pop,
     /// Finder, confirm, shortcuts, composer: lifted further.
     Sheet,
-    /// The primary action or the focused field: accent light without lift.
-    Glow,
 }
 
 pub fn elevation(t: &Theme, level: Elevation) -> Vec<BoxShadow> {
@@ -355,7 +353,6 @@ pub fn elevation(t: &Theme, level: Elevation) -> Vec<BoxShadow> {
             shadow(t.shadow_sheet, 24., 64., -16.),
             shadow(t.shadow_sheet.opacity(t.shadow_sheet.a * 0.5), 2., 6., 0.),
         ],
-        Elevation::Glow => vec![shadow(t.glow, 4., 20., -4.)],
     }
 }
 
