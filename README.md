@@ -18,6 +18,7 @@
     <img src="https://img.shields.io/badge/Rust-2024-b7410e?style=flat&logo=rust" alt="Rust" />
     <img src="https://img.shields.io/badge/UI-GPUI-8b7cff?style=flat" alt="GPUI" />
     <img src="https://img.shields.io/badge/mail-Gmail%20%C2%B7%20IMAP-555?style=flat" alt="Gmail and IMAP" />
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3da639?style=flat" alt="MIT license" /></a>
   </p>
 
   <p>
@@ -26,7 +27,8 @@
     <a href="#connect-your-mail">Connect your mail</a> ·
     <a href="#keys">Keys</a> ·
     <a href="#privacy-and-security">Privacy</a> ·
-    <a href="#development">Development</a>
+    <a href="#development">Development</a> ·
+    <a href="CONTRIBUTING.md">Contributing</a>
   </p>
 </div>
 
@@ -255,6 +257,12 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/ui.rs`, `src/input.rs`: shared building blocks and the text field
 - `assets/`: the app icon, bundled Geist and Instrument Serif fonts (OFL) and Lucide-style icons
 
+## Contributing
+
+Bug fixes are welcome; for anything bigger, start a discussion first. [CONTRIBUTING.md](CONTRIBUTING.md) has how to
+run it, what a good change looks like, and the commit style ([Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)).
+Found a security problem? Report it privately: see [SECURITY.md](SECURITY.md).
+
 ## License
 
-Nimbra will be open source. A license will be added before the first public release.
+[MIT](LICENSE)
