@@ -47,8 +47,11 @@ pushed until the notarized disk image exists, so a failed run leaves nothing hal
 4. **App.** Builds `Nimbra.app` (`scripts/bundle-macos.sh`) with the PostHog key, signs it for distribution
    (hardened runtime, secure timestamp: `scripts/sign-macos.sh`), and notarizes and staples it
    (`scripts/notarize-macos.sh`).
-5. **Disk image.** Packs `dist/Nimbra-<version>.dmg` with an Applications shortcut (`scripts/dmg-macos.sh`), then
-   signs, notarizes and staples it too, and checks both with Gatekeeper.
+5. **Disk image.** Packs `dist/Nimbra-<version>.dmg` (`scripts/dmg-macos.sh`): it opens on the Inbox zero sky
+   (`assets/dmg/background.png` and `@2x`), with Nimbra and an Applications shortcut either side of an arrow. Then it
+   signs, notarizes and staples it too, and checks both with Gatekeeper. The window's layout is in
+   `scripts/dmg-settings.py`, written by [dmgbuild](https://dmgbuild.readthedocs.io), which the script installs once
+   into its own Python environment in `~/.cache/nimbra`.
 6. **Commit and tag.** Commits `chore(release): <version>`, tags `v<version>`, and pushes both.
 7. **GitHub Release.** Publishes `v<version>` with `Nimbra-<version>.dmg`, a copy named `Nimbra.dmg`, and
    `SHA256SUMS.txt`, with the changelog section as the notes.
