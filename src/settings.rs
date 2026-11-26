@@ -26,6 +26,10 @@ pub struct Settings {
     /// The Gmail accounts signed in on this Mac (ids and addresses; the sign-ins themselves
     /// are in the keychain).
     pub accounts: Vec<AccountRef>,
+    /// Accounts a newer Nimbra wrote that this one cannot read: kept as they are and saved
+    /// again, so that running an older copy never loses them.
+    #[serde(skip)]
+    pub unreadable_accounts: Vec<serde_json::Value>,
     /// The account shown.
     pub active: String,
     /// The account that is yours by default: its profile at the bottom of the sidebar, and
@@ -119,6 +123,7 @@ impl Default for Settings {
             dark_emails: true,
             theme: ThemeChoice::System,
             accounts: Vec::new(),
+            unreadable_accounts: Vec::new(),
             active: String::new(),
             default_account: None,
             collapsed: Vec::new(),
@@ -204,11 +209,38 @@ fn partial_of(path: &Path) -> PathBuf {
 
 fn parse(path: &Path) -> std::io::Result<Option<Settings>> {
     match std::fs::read(path) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+        Ok(bytes) => Ok(read(&bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(error),
         // Unreadable counts as damaged: never as "there are none".
         Err(_) => Ok(None),
     }
+}
+
+/// The settings in a file's bytes. A field this build cannot read (a newer build's choice,
+/// say) takes its default and the others are kept; so are the accounts it can read. `None`
+/// when the file is not settings at all, or its list of accounts is not a list.
+fn read(bytes: &[u8]) -> Option<Settings> {
+    use serde_json::Value;
+    let Ok(Value::Object(mut file)) = serde_json::from_slice(bytes) else {
+        return None;
+    };
+    let accounts = match file.remove("accounts") {
+        Some(Value::Array(accounts)) => accounts,
+        Some(_) => return None,
+        None => Vec::new(),
+    };
+    file.retain(|key, value| {
+        let alone = serde_json::Map::from_iter([(key.clone(), value.clone())]);
+        serde_json::from_value::<Settings>(Value::Object(alone)).is_ok()
+    });
+    let mut settings: Settings = serde_json::from_value(Value::Object(file)).ok()?;
+    for account in accounts {
+        match serde_json::from_value(account.clone()) {
+            Ok(known) => settings.accounts.push(known),
+            Err(_) => settings.unreadable_accounts.push(account),
+        }
+    }
+    Some(settings)
 }
 
 /// A damaged file is moved aside (never saved over) and the last good copy used instead.
@@ -265,7 +297,11 @@ fn save_to(path: &Path, settings: &Settings) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let mut settings = settings.clone();
     settings.signature = settings.signature.chars().take(SIGNATURE_LIMIT).collect();
-    let json = serde_json::to_vec_pretty(&settings)?;
+    let mut json = serde_json::to_value(&settings)?;
+    if let Some(serde_json::Value::Array(accounts)) = json.get_mut("accounts") {
+        accounts.extend(settings.unreadable_accounts);
+    }
+    let json = serde_json::to_vec_pretty(&json)?;
     // Written in full next to the file and on disk before it takes its place; the copy it
     // replaces stays as the backup.
     let partial = partial_of(path);
@@ -652,6 +688,74 @@ mod tests {
         let (settings, recovery) = load_from(&folder.file());
 
         assert_eq!((settings.signature.as_str(), recovery), ("Newest", None));
+    }
+
+    /// As a newer build might write it: a theme, a mark-read choice, a field and an
+    /// account's security that this build does not know.
+    const FROM_A_NEWER_BUILD: &str = r#"{
+        "signature": "Luan",
+        "theme": "midnight",
+        "mark_read": "on_scroll",
+        "check_every": 60,
+        "future": {"x": 1},
+        "accounts": [
+            {"id": "", "email": "a@example.com"},
+            {"id": "cccccccccccc", "email": "c@example.com", "servers": {
+                "username": "c@example.com",
+                "imap": {"host": "imap.example.com", "port": 993, "security": "quic"},
+                "smtp": {"host": "smtp.example.com", "port": 465, "security": "tls"}
+            }}
+        ]
+    }"#;
+
+    #[test]
+    fn a_newer_builds_settings_keep_what_this_build_can_read() {
+        let folder = Folder::new("newer");
+        std::fs::write(folder.file(), FROM_A_NEWER_BUILD).unwrap();
+
+        let (settings, recovery) = load_from(&folder.file());
+
+        assert_eq!(recovery, None);
+        assert_eq!(settings.signature, "Luan");
+        assert_eq!(settings.check_every, 60);
+        assert_eq!(settings.theme, ThemeChoice::System);
+        assert_eq!(settings.mark_read, MarkRead::Open);
+        assert_eq!(settings.accounts.len(), 1);
+        assert_eq!(settings.accounts[0].email, "a@example.com");
+    }
+
+    #[test]
+    fn an_account_this_build_cannot_read_survives_a_save() {
+        let folder = Folder::new("unread-account");
+        std::fs::write(folder.file(), FROM_A_NEWER_BUILD).unwrap();
+        let (mut settings, _) = load_from(&folder.file());
+        settings.signature = "Changed".into();
+
+        save_to(&folder.file(), &settings).unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(folder.file()).unwrap()).unwrap();
+        let ids: Vec<&str> = saved["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| a["id"].as_str())
+            .collect();
+        assert_eq!(ids, ["", "cccccccccccc"]);
+        assert_eq!(saved["accounts"][1]["servers"]["imap"]["security"], "quic");
+    }
+
+    #[test]
+    fn accounts_that_are_not_a_list_count_as_damaged() {
+        let folder = Folder::new("accounts-damaged");
+        save_to(&folder.file(), &two()).unwrap();
+        save_to(&folder.file(), &two()).unwrap();
+        std::fs::write(folder.file(), br#"{"accounts": 3}"#).unwrap();
+
+        let (settings, recovery) = load_from(&folder.file());
+
+        assert_eq!(recovery, Some(Recovery::FromBackup));
+        assert_eq!(settings.accounts.len(), 2);
     }
 
     #[test]
