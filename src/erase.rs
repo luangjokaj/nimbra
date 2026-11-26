@@ -37,15 +37,35 @@ pub fn rounded(radius: f32, fallback: Hsla) -> impl IntoElement {
     .inset_0()
 }
 
-/// Fades what scrolls up to the top edge of the element it is in into `material`, which is
+/// Which edge of a scrolled element a `fade` is at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Top,
+    Bottom,
+}
+
+/// Fades what scrolls to an edge of the element it is in into `material`, which is
 /// see-through. Painting the material over it would be a darker band on the blurred desktop,
 /// so each line of pixels is erased part-way and gets that much material back. Nothing shows
-/// at rest. `clear` is the room above the first thing scrolled: by then it is all there.
-pub fn fade(height: f32, clear: f32, material: Hsla, scroll: ScrollHandle) -> impl IntoElement {
-    canvas(
+/// while nothing is scrolled past that edge. `clear` is how far past it the fade is all
+/// there.
+pub fn fade(
+    edge: Edge,
+    height: f32,
+    clear: f32,
+    material: Hsla,
+    scroll: ScrollHandle,
+) -> impl IntoElement {
+    let element = canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
-            let strength = (-f32::from(scroll.offset().y) / clear).clamp(0., 1.);
+            let past = match edge {
+                Edge::Top => -f32::from(scroll.offset().y),
+                Edge::Bottom => {
+                    f32::from(scroll.max_offset().height) + f32::from(scroll.offset().y)
+                }
+            };
+            let strength = (past / clear).clamp(0., 1.);
             if strength == 0. {
                 return;
             }
@@ -64,7 +84,14 @@ pub fn fade(height: f32, clear: f32, material: Hsla, scroll: ScrollHandle) -> im
                     size(px((right - left) / scale), px(1. / scale)),
                 )
             };
-            let covered = |row: usize| strength * covered(row as f32 / lines as f32);
+            // Measured from the edge the fade is at.
+            let covered = |row: usize| {
+                let from_edge = match edge {
+                    Edge::Top => row,
+                    Edge::Bottom => lines.saturating_sub(row + 1),
+                };
+                strength * covered(from_edge as f32 / lines as f32)
+            };
             // A layer each, so that all of it is erased before any is laid back.
             window.paint_layer(bounds, |window| {
                 for row in 0..lines {
@@ -99,10 +126,13 @@ pub fn fade(height: f32, clear: f32, material: Hsla, scroll: ScrollHandle) -> im
         },
     )
     .absolute()
-    .top_0()
     .left_0()
     .right_0()
-    .h(px(height))
+    .h(px(height));
+    match edge {
+        Edge::Top => element.top_0(),
+        Edge::Bottom => element.bottom_0(),
+    }
 }
 
 /// A rounded pane on `material` that is more see-through than it, in the colour `tint`:

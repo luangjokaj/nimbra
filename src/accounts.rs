@@ -700,9 +700,9 @@ impl Nimbra {
             if let Some(store) = store.clone() {
                 let kept = cx
                     .background_executor()
-                    .spawn(async move { store.load::<Vec<u8>>(PHOTO) })
+                    .spawn(async move { store.load::<Vec<u8>>(PHOTO).and_then(photo_image) })
                     .await;
-                if let Some(image) = kept.and_then(photo_image) {
+                if let Some(image) = kept {
                     this.update(cx, |this, cx| {
                         if this.keeps(&account) {
                             this.photos.insert(account.clone(), image);
@@ -727,7 +727,7 @@ impl Nimbra {
                             mail::Photo::NotAllowed => {}
                         }
                     }
-                    anyhow::Ok(photo)
+                    anyhow::Ok(photo_of(photo))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -735,7 +735,7 @@ impl Nimbra {
                 if !this.keeps(&account) {
                     return;
                 }
-                let photo = match fetched {
+                let (answer, image) = match fetched {
                     Ok(photo) => photo,
                     Err(error) => {
                         // Never the address or the photo's link.
@@ -744,13 +744,7 @@ impl Nimbra {
                         return;
                     }
                 };
-                let (answer, bytes) = match photo {
-                    mail::Photo::Image(bytes) => (PhotoAnswer::Theirs, Some(bytes)),
-                    mail::Photo::Unchecked(bytes) => (PhotoAnswer::Unchecked, Some(bytes)),
-                    mail::Photo::NoPhoto => (PhotoAnswer::None, None),
-                    mail::Photo::NotAllowed => (PhotoAnswer::NotAllowed, None),
-                };
-                if let Some(image) = bytes.and_then(photo_image) {
+                if let Some(image) = image {
                     this.photos.insert(account.clone(), image);
                 } else if answer == PhotoAnswer::None {
                     this.photos.remove(&account);

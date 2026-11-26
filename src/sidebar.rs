@@ -2,6 +2,7 @@
 //! sections, and showing, hiding and floating it.
 
 use super::*;
+use crate::ui::motion;
 
 impl Nimbra {
     /// The sidebar's width now (dragged, kept in the settings).
@@ -27,7 +28,7 @@ impl Nimbra {
         let moving = self
             .folding
             .get(key)
-            .filter(|(at, _)| at.elapsed() < FOLD)
+            .filter(|(at, _)| at.elapsed() < motion::FOLD)
             .map(|(_, n)| *n);
         if keep || (open && moving.is_none()) {
             return Some(row);
@@ -40,7 +41,7 @@ impl Nimbra {
                 .child(row)
                 .with_animation(
                     ("fold-row", n * 1000 + id),
-                    Animation::new(FOLD).with_easing(ease_out_quint()),
+                    Animation::new(motion::FOLD).with_easing(motion::ease_out),
                     move |d, delta| {
                         let shown = if open { delta } else { 1. - delta };
                         // The text fades well before the row gets thin, so no slivers show.
@@ -83,21 +84,12 @@ impl Nimbra {
                     this.settings.collapsed.retain(|k| k != key);
                 }
                 this.fold_gen += 1;
-                this.folding
-                    .insert(key, (std::time::Instant::now(), this.fold_gen));
+                // Folding moves rows: with Reduce Motion they are simply there or gone.
+                if !motion::reduced() {
+                    this.folding
+                        .insert(key, (std::time::Instant::now(), this.fold_gen));
+                }
                 this.save_settings(cx);
-                // Once folded, the rows leave the layout.
-                cx.spawn(async move |this, cx| {
-                    cx.background_executor()
-                        .timer(FOLD + Duration::from_millis(20))
-                        .await;
-                    this.update(cx, |this, cx| {
-                        this.folding.retain(|_, (at, _)| at.elapsed() < FOLD);
-                        cx.notify();
-                    })
-                    .ok();
-                })
-                .detach();
                 cx.notify();
             }))
     }
@@ -202,7 +194,7 @@ impl Nimbra {
             .map(|place| place.x);
         self.peek.reset();
         self.sidebar_open = !self.sidebar_open;
-        self.sidebar_toggled = Some(std::time::Instant::now());
+        self.sidebar_toggled = (!motion::reduced()).then(std::time::Instant::now);
         if self.sidebar_open {
             self.focus_restore = None;
         }
@@ -211,7 +203,7 @@ impl Nimbra {
 
     pub(super) fn sidebar_sliding(&self) -> bool {
         self.sidebar_toggled
-            .is_some_and(|at| at.elapsed().as_secs_f32() < PANEL_SLIDE_SECONDS)
+            .is_some_and(|at| at.elapsed() < motion::SLIDE)
     }
 
     /// Where the sidebar is drawn `ahead` seconds from now: docked, sliding, floating over
@@ -223,8 +215,7 @@ impl Nimbra {
                 && self.sidebar_open
                 && let (Some(from), Some(at)) = (self.docked_from, self.sidebar_toggled)
             {
-                let left =
-                    1. - panel_ease((at.elapsed().as_secs_f32() + ahead) / PANEL_SLIDE_SECONDS);
+                let left = 1. - panel_ease((at.elapsed().as_secs_f32() + ahead) / slide_seconds());
                 return Some(SidebarPlace {
                     x: from * left,
                     inset: FLOAT_INSET * left,
@@ -250,9 +241,9 @@ impl Nimbra {
             .sidebar_toggled
             .map(|at| at.elapsed().as_secs_f32() + ahead)
         {
-            Some(elapsed) if elapsed < PANEL_SLIDE_SECONDS => {
+            Some(elapsed) if elapsed < slide_seconds() => {
                 let from = 1. - to;
-                self.side_w() * (from + (to - from) * panel_ease(elapsed / PANEL_SLIDE_SECONDS))
+                self.side_w() * (from + (to - from) * panel_ease(elapsed / slide_seconds()))
             }
             _ => self.side_w() * to,
         }
@@ -268,34 +259,39 @@ impl Nimbra {
             || (self.compose.is_some() && self.compose_host.is_none())
     }
 
-    /// While the sidebar is hidden, follows the pointer to bring it in and send it away.
+    /// While the sidebar is hidden, follows the pointer to bring it in and send it away. It
+    /// looks only when the pointer moves (or the window is drawn, as on becoming active or
+    /// not): nothing runs while it rests.
     pub(super) fn watch_edge(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.sidebar_open || self.watching_edge {
+        if self.sidebar_open {
+            return;
+        }
+        if self.watching_edge {
+            crate::autohide::moved();
             return;
         }
         self.watching_edge = true;
+        let mut moves = crate::autohide::watch_moves();
         cx.spawn_in(window, async move |this, cx| {
-            let mut wait = Duration::from_millis(16);
             loop {
-                cx.background_executor().timer(wait).await;
-                let Ok(next) = this.update_in(cx, |this, window, cx| this.look_at_edge(window, cx))
-                else {
+                let watching = this
+                    .update_in(cx, |this, window, cx| this.look_at_edge(window, cx))
+                    .unwrap_or(false);
+                if !watching || futures::StreamExt::next(&mut moves).await.is_none() {
                     break;
-                };
-                match next {
-                    Some(next) => wait = next,
-                    None => break,
                 }
+                // A burst of moves is one look.
+                while moves.try_recv().is_ok() {}
             }
         })
         .detach();
     }
 
-    /// One look at the pointer. Returns when to take the next, or `None` when done.
-    fn look_at_edge(&mut self, window: &Window, cx: &mut Context<Self>) -> Option<Duration> {
+    /// One look at the pointer. Whether to keep watching.
+    fn look_at_edge(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
         if self.sidebar_open {
             self.watching_edge = false;
-            return None;
+            return false;
         }
         // An open menu is a window of its own, which takes the focus from this one.
         // So does dragging its edge: the pointer is past it while it widens.
@@ -312,12 +308,7 @@ impl Nimbra {
         {
             cx.notify();
         }
-        // Nothing can happen while inactive except becoming active: look less often.
-        Some(Duration::from_millis(if window.is_window_active() {
-            16
-        } else {
-            250
-        }))
+        true
     }
 
     /// Sidebar toggle, back, forward and reload, sitting beside the traffic lights.
@@ -337,7 +328,7 @@ impl Nimbra {
                 .items_center()
                 .justify_center()
                 .size(px(28.))
-                .rounded(px(7.))
+                .rounded(px(radius::CONTROL))
                 .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
                 .child(icon(name, 17., if enabled { t.text2 } else { t.faint }))
         };
@@ -354,7 +345,15 @@ impl Nimbra {
                     .press(t)
                     // Highlighted while the sidebar is hidden, like the list button.
                     .when(!self.sidebar_open, |d| d.bg(t.selected))
-                    .tooltip(tip(t.dark, "Show or hide sidebar", "⌘B"))
+                    .tooltip(tip(
+                        t.dark,
+                        if self.sidebar_open {
+                            "Hide Sidebar"
+                        } else {
+                            "Show Sidebar"
+                        },
+                        "⌘B",
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
             .child(div().w(px(6.)))
@@ -362,14 +361,22 @@ impl Nimbra {
                 control("back", self.can_go_back())
                     .id("go-back")
                     .press(t)
-                    .tooltip(tip(t.dark, "Back", "⌘["))
+                    .tooltip(tip(
+                        t.dark,
+                        "Back",
+                        if self.can_go_back() { "⌘[" } else { "" },
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| this.go_back(cx))),
             )
             .child(
                 control("next", self.can_go_forward())
                     .id("go-forward")
                     .press(t)
-                    .tooltip(tip(t.dark, "Forward", "⌘]"))
+                    .tooltip(tip(
+                        t.dark,
+                        "Forward",
+                        if self.can_go_forward() { "⌘]" } else { "" },
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| this.go_forward(cx))),
             )
             .child(div().w(px(6.)))
@@ -381,7 +388,7 @@ impl Nimbra {
                         if self.offline {
                             self.offline_label().into()
                         } else {
-                            SharedString::from("Check for mail")
+                            SharedString::from("Check for Mail")
                         },
                         "⌘R",
                     ))
@@ -391,32 +398,29 @@ impl Nimbra {
                     .items_center()
                     .justify_center()
                     .size(px(28.))
-                    .rounded(px(7.))
+                    .rounded(px(radius::CONTROL))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
+                    .press(t)
                     .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
-                    .child(if self.shows_checking() {
-                        // Keeps turning for as long as a mailbox request is in flight.
-                        icon("reload", 17., t.violet)
-                            .with_animation(
-                                "reload-loop",
-                                Animation::new(Duration::from_millis(900)).repeat(),
-                                |svg, delta| {
-                                    svg.with_transformation(Transformation::rotate(percentage(
-                                        delta,
-                                    )))
-                                },
-                            )
-                            .into_any_element()
-                    } else if self.reload_gen == 0 {
+                    // Keeps turning for as long as a mailbox request is in flight; the loading
+                    // screen says so itself.
+                    .child(if self.shows_checking() && self.status != Status::Loading {
+                        let arrow = icon("reload", 17., t.violet);
+                        if motion::reduced() {
+                            arrow.into_any_element()
+                        } else {
+                            spinning(arrow, "reload-loop")
+                        }
+                    } else if self.reload_gen == 0 || motion::reduced() {
                         icon("reload", 17., t.text2).into_any_element()
                     } else {
                         // One full turn each time mail is checked.
                         icon("reload", 17., t.text2)
                             .with_animation(
                                 ("reload-spin", self.reload_gen),
-                                Animation::new(Duration::from_millis(700))
-                                    .with_easing(ease_out_quint()),
+                                Animation::new(Duration::from_millis(500))
+                                    .with_easing(motion::ease_out),
                                 |svg, delta| {
                                     svg.with_transformation(Transformation::rotate(percentage(
                                         delta,
@@ -490,12 +494,9 @@ impl Nimbra {
                     .cloned()
             })
             .flatten();
-        let left = self.visible().len();
-        let unread = self
-            .visible()
-            .iter()
-            .filter(|i| self.mails[**i].unread)
-            .count();
+        let visible = self.visible();
+        let left = visible.len();
+        let unread = visible.iter().filter(|i| self.mails[**i].unread).count();
         let bars = [9., 14., 8., 17., 12., 20., 15.];
         // The other mailboxes are not connected yet, so their counts only show in the demo.
         let demo = self.is_demo();
@@ -579,9 +580,9 @@ impl Nimbra {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_color(if shown { t.text } else { t.text2 })
-                                .child(fit(
+                                .child(sidebar_fit(
                                     &account.email,
-                                    label_room(self.side_w(), count.as_deref(), cx),
+                                    label_room(self.side_w(), 18. + 10., count.as_deref(), cx),
                                     cx,
                                 )),
                         )
@@ -677,20 +678,18 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .pl(px(10.))
-                        .pr(px(6.))
-                        .py(px(6.))
-                        .rounded(px(9.))
+                        .h(px(30.))
+                        .px(px(10.))
+                        .rounded(px(radius::CONTROL))
                         .bg(t.hover)
                         .border_1()
                         .border_color(t.border)
-                        .cursor_pointer()
                         .id("jump")
                         .cursor(gpui::CursorStyle::IBeam)
                         .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
-                        .when(self.mailbox == View::Search, |d| d.border_color(t.mint))
+                        .when(self.mailbox == View::Search, |d| d.border_color(t.focus))
                         .when(cursor == Some(SidebarRow::Search), |d| {
-                            d.border_color(t.mint).relative().child(reveal(
+                            d.border_color(t.focus).relative().child(reveal(
                                 self.sidebar_scroll.clone(),
                                 self.reveal_cursor.clone(),
                                 SIDEBAR_CLEAR,
@@ -709,12 +708,11 @@ impl Nimbra {
                                     t.text
                                 })
                                 .child(if self.query.is_empty() {
-                                    SharedString::from("Search mail")
+                                    SharedString::from("Search")
                                 } else {
-                                    short(&self.query, 24)
+                                    sidebar_fit(&self.query, self.side_w() - 2. * 12. - 58., cx)
                                 }),
-                        )
-                        .child(kbd(t, "/")),
+                        ),
                 )
                 .when(many, |d| {
                     d.child(
@@ -758,30 +756,42 @@ impl Nimbra {
                     ))
                 })
                 .when(demo, |d| {
-                    d.children(self.fold_row(
-                        "split",
-                        false,
-                        910,
-                        nav(t, "users", "Team", fake("4"), false, None).into_any_element(),
-                    ))
-                    .children(self.fold_row(
-                        "split",
-                        false,
-                        911,
-                        nav(t, "calendar", "Calendar", fake("2"), false, None).into_any_element(),
-                    ))
-                    .children(self.fold_row(
-                        "split",
-                        false,
-                        912,
-                        nav(t, "news", "Newsletters", fake("31"), false, None).into_any_element(),
-                    ))
-                    .children(self.fold_row(
-                        "split",
-                        false,
-                        913,
-                        nav(t, "zap", "Other", fake("23"), false, None).into_any_element(),
-                    ))
+                    d.children(
+                        self.fold_row(
+                            "split",
+                            false,
+                            910,
+                            sample(nav_still(t, "users", "Team", fake("4"), false, None))
+                                .into_any_element(),
+                        ),
+                    )
+                    .children(
+                        self.fold_row(
+                            "split",
+                            false,
+                            911,
+                            sample(nav_still(t, "calendar", "Calendar", fake("2"), false, None))
+                                .into_any_element(),
+                        ),
+                    )
+                    .children(
+                        self.fold_row(
+                            "split",
+                            false,
+                            912,
+                            sample(nav_still(t, "news", "Newsletters", fake("31"), false, None))
+                                .into_any_element(),
+                        ),
+                    )
+                    .children(
+                        self.fold_row(
+                            "split",
+                            false,
+                            913,
+                            sample(nav_still(t, "zap", "Other", fake("23"), false, None))
+                                .into_any_element(),
+                        ),
+                    )
                 })
                 // With real mail the split inbox is Gmail's own categories.
                 .when(!demo && !folders, |d| {
@@ -842,18 +852,26 @@ impl Nimbra {
                             d.child(
                                 div()
                                     .id("new-label-sidebar")
+                                    .group("new-label")
                                     .mt(px(10.))
                                     .mr(px(4.))
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .size(px(22.))
-                                    .rounded(px(6.))
+                                    .rounded(px(radius::CHIP))
                                     .cursor_pointer()
-                                    .text_color(t.text3)
                                     .hover(move |s| s.bg(hover))
-                                    .tooltip(tip(t.dark, "New label", ""))
-                                    .child("+")
+                                    .press(t)
+                                    .tooltip(tip(
+                                        t.dark,
+                                        if folders { "New Folder" } else { "New Label" },
+                                        "",
+                                    ))
+                                    .child(icon("plus", 13., t.text3).group_hover("new-label", {
+                                        let bright = t.text;
+                                        move |s| s.text_color(bright)
+                                    }))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.open_label_sheet(LabelSheet::New { apply: false }, cx)
                                     })),
@@ -861,76 +879,86 @@ impl Nimbra {
                         }),
                 )
                 .when(demo, |d| {
-                    d.children(self.fold_row(
-                        "labels",
-                        false,
-                        920,
-                        nav(t, "tag", "Product", None, false, Some(t.violet)).into_any_element(),
-                    ))
-                    .children(self.fold_row(
-                        "labels",
-                        false,
-                        921,
-                        nav(t, "tag", "Design", None, false, Some(t.rose)).into_any_element(),
-                    ))
-                    .children(self.fold_row(
-                        "labels",
-                        false,
-                        922,
-                        nav(t, "tag", "Finance", None, false, Some(t.amber)).into_any_element(),
-                    ))
-                    .children(self.fold_row(
-                        "labels",
-                        false,
-                        923,
-                        nav(t, "tag", "Travel", None, false, Some(t.sky)).into_any_element(),
-                    ))
+                    d.children(
+                        self.fold_row(
+                            "labels",
+                            false,
+                            920,
+                            sample(nav_still(t, "tag", "Product", None, false, Some(t.violet)))
+                                .into_any_element(),
+                        ),
+                    )
+                    .children(
+                        self.fold_row(
+                            "labels",
+                            false,
+                            921,
+                            sample(nav_still(t, "tag", "Design", None, false, Some(t.rose)))
+                                .into_any_element(),
+                        ),
+                    )
+                    .children(
+                        self.fold_row(
+                            "labels",
+                            false,
+                            922,
+                            sample(nav_still(t, "tag", "Finance", None, false, Some(t.amber)))
+                                .into_any_element(),
+                        ),
+                    )
+                    .children(
+                        self.fold_row(
+                            "labels",
+                            false,
+                            923,
+                            sample(nav_still(t, "tag", "Travel", None, false, Some(t.sky)))
+                                .into_any_element(),
+                        ),
+                    )
                 })
                 .when(!demo, |d| {
                     let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
-                    d.children(self.labels.iter().enumerate().take(40).filter_map(
-                        |(index, label)| {
-                            let view = View::Label(index);
-                            let row = nav(
+                    let label_room = label_room(self.side_w(), 16. + 10., None, cx);
+                    d.children(self.labels.iter().enumerate().filter_map(|(index, label)| {
+                        let view = View::Label(index);
+                        let count = unread_in(&label.id);
+                        let room = label_room
+                            - count
+                                .as_deref()
+                                .map_or(0., |n| 10. + text_width(n, 11., crate::theme::MONO, cx));
+                        let row = nav(
+                            t,
+                            "tag",
+                            &sidebar_fit(&label.name, room, cx),
+                            count,
+                            self.mailbox == view,
+                            Some(tints[index % tints.len()]),
+                        )
+                        .id(("mailbox", view_key(view)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.select_mailbox(view, cx)))
+                        // Right-click: rename or delete the label.
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                this.menu_at =
+                                    (f32::from(event.position.x), f32::from(event.position.y));
+                                this.menu_dismissed = None;
+                                this.toggle_menu(Menu::Label(index), window, cx);
+                            }),
+                        )
+                        .press(t);
+                        let row = self
+                            .cursor_on(
+                                row,
                                 t,
-                                "tag",
-                                &short(&label.name, 22),
-                                unread_in(&label.id),
+                                &cursor,
+                                SidebarRow::Mailbox(view),
                                 self.mailbox == view,
-                                Some(tints[index % tints.len()]),
+                                NAV_RADIUS,
                             )
-                            .id(("mailbox", view_key(view)))
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.select_mailbox(view, cx)),
-                            )
-                            // Right-click: rename or delete the label.
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(
-                                    move |this, event: &gpui::MouseDownEvent, window, cx| {
-                                        this.menu_at = (
-                                            f32::from(event.position.x),
-                                            f32::from(event.position.y),
-                                        );
-                                        this.menu_dismissed = None;
-                                        this.toggle_menu(Menu::Label(index), window, cx);
-                                    },
-                                ),
-                            )
-                            .press(t);
-                            let row = self
-                                .cursor_on(
-                                    row,
-                                    t,
-                                    &cursor,
-                                    SidebarRow::Mailbox(view),
-                                    self.mailbox == view,
-                                    NAV_RADIUS,
-                                )
-                                .into_any_element();
-                            self.fold_row("labels", self.mailbox == view, view_key(view), row)
-                        },
-                    ))
+                            .into_any_element();
+                        self.fold_row("labels", self.mailbox == view, view_key(view), row)
+                    }))
                 })
                 .child(div().flex_1())
                 // The streak card is sample content, so it only shows with the demo data.
@@ -951,7 +979,7 @@ impl Nimbra {
                                         div()
                                             .flex_1()
                                             .font_weight(FontWeight::MEDIUM)
-                                            .child("Inbox zero streak"),
+                                            .child("Zero Streak"),
                                     )
                                     .child(caption("7d", t.text3)),
                             )
@@ -959,16 +987,16 @@ impl Nimbra {
                                 bars.map(|h: f32| {
                                     div().flex_1().h(px(h)).rounded(px(2.)).bg(gradient(
                                         180.,
-                                        c(0xff7ab6, 1.),
-                                        c(0x8b7cff, 1.),
+                                        c(GRADIENT_GLOW.to, 1.),
+                                        c(GRADIENT_GLOW.from, 1.),
                                     ))
                                 }),
                             ))
                             .child(meta(
                                 if left == 0 {
-                                    "Done at 10:52 · 28 min faster".to_string()
+                                    "Done at 10:52".to_string()
                                 } else {
-                                    format!("{left} left · usually done by 11:20")
+                                    format!("{left} left")
                                 },
                                 t.text3,
                             )),
@@ -976,101 +1004,88 @@ impl Nimbra {
                 });
 
         // Settings stays at the bottom, whatever is scrolled above it.
-        let footer = div()
-            .flex_none()
-            .px(px(12.))
-            .py(px(8.))
-            .border_t_1()
-            .border_color(t.border_strong)
-            .child(
-                self.cursor_on(div(), t, &cursor, SidebarRow::Settings, false, 10.)
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .p(px(6.))
-                    .rounded(px(10.))
-                    .child(
-                        div()
-                            .id("account")
-                            .flex()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .items_center()
-                            .gap(px(10.))
-                            .cursor_pointer()
-                            .tooltip(tip(t.dark, "Settings", "⌘,"))
-                            .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
-                            .child({
-                                // With several accounts, the default one's profile.
-                                let default = (!demo && self.settings.accounts.len() >= 2)
-                                    .then(|| self.settings.default_account())
-                                    .flatten()
-                                    .filter(|id| *id != self.account_id);
-                                match default {
-                                    Some(id) => {
-                                        let initial = self
+        let footer = div().flex_none().px(px(12.)).py(px(8.)).child(
+            self.cursor_on(div(), t, &cursor, SidebarRow::Settings, false, radius::ROW)
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .p(px(6.))
+                .rounded(px(radius::ROW))
+                .child(
+                    div()
+                        .id("account")
+                        .flex()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .items_center()
+                        .gap(px(10.))
+                        .cursor_pointer()
+                        .tooltip(tip(t.dark, "Settings", "⌘,"))
+                        .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
+                        .child({
+                            // With several accounts, the default one's profile.
+                            let default = (!demo && self.settings.accounts.len() >= 2)
+                                .then(|| self.settings.default_account())
+                                .flatten()
+                                .filter(|id| *id != self.account_id);
+                            match default {
+                                Some(id) => {
+                                    let initial = self
+                                        .settings
+                                        .default_email()
+                                        .and_then(|e| e.chars().next())
+                                        .map(|c| c.to_uppercase().to_string())
+                                        .unwrap_or_default();
+                                    match self.photos.get(id) {
+                                        Some(photo) => me_avatar(Some(photo), &initial, 28.),
+                                        None => avatar(
+                                            crate::data::tone_for(
+                                                self.settings.default_email().unwrap_or(""),
+                                            ),
+                                            &initial,
+                                            28.,
+                                        )
+                                        .into_any_element(),
+                                    }
+                                }
+                                None => me_avatar(
+                                    self.photos.get(&self.account_id),
+                                    &self.me_initials,
+                                    28.,
+                                ),
+                            }
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .child("Settings"),
+                                )
+                                .child(meta(
+                                    match (demo, self.settings.accounts.len()) {
+                                        (true, _) => "Work · 3 accounts".to_string(),
+                                        // The one account's address: nothing else here shows it.
+                                        (false, 0 | 1) if !self.account.is_empty() => {
+                                            short(&self.account, 22).to_string()
+                                        }
+                                        (false, 0 | 1) => "Gmail".to_string(),
+                                        // Several: the default account's address.
+                                        (false, n) => self
                                             .settings
                                             .default_email()
-                                            .and_then(|e| e.chars().next())
-                                            .map(|c| c.to_uppercase().to_string())
-                                            .unwrap_or_default();
-                                        match self.photos.get(id) {
-                                            Some(photo) => me_avatar(Some(photo), &initial, 28.),
-                                            None => avatar(
-                                                crate::data::tone_for(
-                                                    self.settings.default_email().unwrap_or(""),
-                                                ),
-                                                &initial,
-                                                28.,
-                                            )
-                                            .into_any_element(),
-                                        }
-                                    }
-                                    None => me_avatar(
-                                        self.photos.get(&self.account_id),
-                                        &self.me_initials,
-                                        28.,
-                                    ),
-                                }
-                            })
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .whitespace_nowrap()
-                                            .overflow_hidden()
-                                            .child("Settings"),
-                                    )
-                                    .child(meta(
-                                        match (demo, self.settings.accounts.len()) {
-                                            (true, _) => "Work · 3 accounts".to_string(),
-                                            // The one account's address: nothing else here shows it.
-                                            (false, 0 | 1) if !self.account.is_empty() => {
-                                                short(&self.account, 22).to_string()
-                                            }
-                                            (false, 0 | 1) => "Gmail".to_string(),
-                                            // Several: the default account's address.
-                                            (false, n) => self
-                                                .settings
-                                                .default_email()
-                                                .map(|e| short(e, 22).to_string())
-                                                .unwrap_or_else(|| format!("{n} accounts")),
-                                        },
-                                        t.text3,
-                                    )),
-                            ),
-                    )
-                    .child(
-                        icon_button(t, if self.dark { "sun" } else { "moon" })
-                            .id("theme")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Light or dark theme", "⌘⇧L"))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
-                    ),
-            );
+                                            .map(|e| short(e, 22).to_string())
+                                            .unwrap_or_else(|| format!("{n} accounts")),
+                                    },
+                                    t.text3,
+                                )),
+                        ),
+                ),
+        );
 
         div()
             .flex()
@@ -1103,6 +1118,15 @@ impl Nimbra {
                     .min_h(px(0.))
                     .child(scrolled)
                     .child(crate::erase::fade(
+                        crate::erase::Edge::Top,
+                        SIDEBAR_FADE,
+                        SIDEBAR_CLEAR,
+                        t.sidebar,
+                        self.sidebar_scroll.clone(),
+                    ))
+                    // What scrolls under Settings fades out too, so no rule is needed there.
+                    .child(crate::erase::fade(
+                        crate::erase::Edge::Bottom,
                         SIDEBAR_FADE,
                         SIDEBAR_CLEAR,
                         t.sidebar,
@@ -1149,24 +1173,17 @@ pub(super) struct SidebarPlace {
 }
 
 /// How long the sidebar and the message list take to slide open or shut.
-pub(super) const PANEL_SLIDE_SECONDS: f32 = 0.3;
+pub(super) fn slide_seconds() -> f32 {
+    motion::SLIDE.as_secs_f32()
+}
 
-/// The curve of those slides: a symmetric ease-in-out (cubic). It starts gently, so the
-/// first frame after a click is not already halfway, and settles softly.
+/// The curve of those slides: the drawer curve, quick to answer and soft to settle.
 pub(super) fn panel_ease(t: f32) -> f32 {
-    let t = t.clamp(0., 1.);
-    if t < 0.5 {
-        4. * t * t * t
-    } else {
-        1. - (-2. * t + 2.).powi(3) / 2.
-    }
+    motion::drawer(t.clamp(0., 1.))
 }
 
 /// The height of a sidebar row (folding animates rows to and from it).
 pub(super) const NAV_ROW: f32 = 30.;
-
-/// How long a sidebar section takes to fold or unfold.
-pub(super) const FOLD: Duration = Duration::from_millis(240);
 
 pub(super) fn view_key_for_section(key: &str) -> usize {
     match key {
@@ -1185,6 +1202,20 @@ pub(super) fn nav(
     tint: Option<Hsla>,
 ) -> Div {
     let hover = t.hover;
+    nav_still(t, name, label, count, selected, tint)
+        .cursor_pointer()
+        .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+}
+
+/// A sidebar row as `nav` draws it, without the hover and pointer of something to click.
+fn nav_still(
+    t: &Theme,
+    name: &str,
+    label: &str,
+    count: Option<String>,
+    selected: bool,
+    tint: Option<Hsla>,
+) -> Div {
     div()
         .flex()
         .items_center()
@@ -1193,13 +1224,11 @@ pub(super) fn nav(
         .h(px(NAV_ROW))
         .flex_none()
         .rounded(px(NAV_RADIUS))
-        .cursor_pointer()
         .when(selected, |d| {
             d.relative()
                 .font_weight(FontWeight::MEDIUM)
                 .child(active_pill(t))
         })
-        .when(!selected, |d| d.hover(move |s| s.bg(hover)))
         .child(icon(
             name,
             16.,
@@ -1213,6 +1242,12 @@ pub(super) fn nav(
         )
         // Not violet, nor is the icon: on glass over a bright desktop it cannot be seen.
         .children(count.map(|n| caption(n, if selected { t.text } else { t.text3 })))
+}
+
+/// A sample row (the demo's split inbox and labels): it does nothing, so it does not look
+/// as though it would.
+fn sample(row: Div) -> Div {
+    row.cursor_default()
 }
 
 /// Laid over a row: once `armed`, scrolls `handle` so the row is in view, at least `top`
@@ -1268,28 +1303,16 @@ fn count_pill(t: &Theme, count: String, shown: bool) -> Div {
 /// Space each side of a count on its pill.
 const COUNT_PAD: f32 = 6.;
 
-/// The room an account row has for its address: the sidebar, less its padding, the
-/// avatar, the gaps and the count's pill.
-fn label_room(sidebar: f32, count: Option<&str>, cx: &App) -> f32 {
+/// The room a sidebar row has for its name: the sidebar, less its padding and the row's,
+/// what leads the row (icon or avatar, and the gap after it) and the count's pill.
+fn label_room(sidebar: f32, lead: f32, count: Option<&str>, cx: &App) -> f32 {
     let pill = count.map_or(0., |n| {
         text_width(n, 12., crate::theme::SANS, cx) + 2. * COUNT_PAD + 10.
     });
-    sidebar - 2. * 12. - 2. * 10. - 18. - 10. - pill
+    sidebar - 2. * 12. - 2. * 10. - lead - pill
 }
 
 /// The text, cut with "…" so that it fits `room` (13 pt, the sidebar's size).
-fn fit(text: &str, room: f32, cx: &App) -> String {
-    let width = |s: &str| text_width(s, 13., crate::theme::SANS, cx);
-    if width(text) <= room {
-        return text.to_string();
-    }
-    let mut cut: Vec<char> = text.chars().collect();
-    while !cut.is_empty() {
-        cut.pop();
-        let shown = format!("{}…", cut.iter().collect::<String>().trim_end());
-        if width(&shown) <= room {
-            return shown;
-        }
-    }
-    "…".to_string()
+fn sidebar_fit(text: &str, room: f32, cx: &App) -> SharedString {
+    fit(text, room, &gpui::font(crate::theme::SANS), 13., cx).0
 }

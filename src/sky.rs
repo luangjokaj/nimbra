@@ -1,24 +1,21 @@
-//! The night over Inbox Zero once it has come up: the stars twinkle, and now and then one
-//! falls. Driven by drawn frames, like `arrival.rs`, so it stops wherever it is not drawn.
+//! The night over Inbox Zero once it has come up. It is still: a little after it is up,
+//! one star falls, and then nothing moves. Its clock is the wall clock, so a late frame
+//! shows the star where it really is, never a slowed one.
 
-use std::f32::consts::TAU;
+use std::time::{Duration, Instant};
 
-/// How long a falling star takes to cross, in seconds.
+/// How long after the night is up the star falls.
+const WAIT: f32 = 2.5;
+/// How long the falling star takes to cross, in seconds.
 const FALL: f32 = 1.1;
 /// How far it goes, and its longest tail, in points.
 const TRAVEL: f32 = 260.;
 const TAIL: f32 = 120.;
 /// The dots its tail is drawn with (GPUI draws no slanted lines).
 const DOTS: usize = 90;
-/// The most one frame moves it on.
-const LONGEST_STEP: f32 = 0.1;
-/// The twinkling grows in over this long, so the field does not jump once it has come up.
-const EASE_IN: f32 = 2.;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fall {
-    /// When it started, in the sky's seconds.
-    start: f32,
     /// Where it starts, as shares of the night's width and height.
     pub x: f32,
     pub y: f32,
@@ -37,101 +34,55 @@ pub struct Dot {
 }
 
 pub struct Sky {
-    seconds: f32,
-    seed: u32,
-    /// When the next star falls.
-    next: f32,
-    fall: Option<Fall>,
+    up: Instant,
+    /// Gone without being seen: the window went to the background first.
+    missed: bool,
 }
 
-impl Default for Sky {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// The one star: fixed, so every night is the same and tests can follow it. From the left
+/// third, 26 degrees below level, heading right.
+const STAR: Fall = Fall {
+    x: 0.3,
+    y: 0.09,
+    dx: 0.898_794,
+    dy: 0.438_371,
+};
 
 impl Sky {
-    pub fn new() -> Self {
-        Sky {
-            seconds: 0.,
-            seed: 0x2545_f491,
-            // The first comes soon, so it is seen.
-            next: 3.5,
-            fall: None,
+    pub fn new(up: Instant) -> Self {
+        Sky { up, missed: false }
+    }
+
+    /// How far into its fall the star is, 0 to 1, while it falls.
+    fn age(&self, now: Instant) -> Option<f32> {
+        if self.missed {
+            return None;
         }
+        let seconds = now.saturating_duration_since(self.up).as_secs_f32() - WAIT;
+        (0. ..FALL).contains(&seconds).then(|| seconds / FALL)
     }
 
-    fn random(&mut self) -> f32 {
-        // xorshift: fixed, so every night is the same and tests can follow it.
-        self.seed ^= self.seed << 13;
-        self.seed ^= self.seed >> 17;
-        self.seed ^= self.seed << 5;
-        (self.seed % 10_000) as f32 / 10_000.
+    pub fn falling(&self, now: Instant) -> bool {
+        self.age(now).is_some()
     }
 
-    /// A frame later.
-    pub fn advance(&mut self, frame: f32) {
-        self.seconds += frame.clamp(0., LONGEST_STEP);
-        if self.fall.is_some_and(|f| self.seconds - f.start >= FALL) {
-            self.fall = None;
+    /// How long until the star falls; `None` once it has, or never will.
+    pub fn until_fall(&self, now: Instant) -> Option<Duration> {
+        let left = WAIT - now.saturating_duration_since(self.up).as_secs_f32();
+        (!self.missed && left > 0.).then(|| Duration::from_secs_f32(left))
+    }
+
+    /// The window went to the background: a star that has not finished falling never
+    /// shows, rather than stopping in mid-flight.
+    pub fn let_go(&mut self, now: Instant) {
+        if self.until_fall(now).is_some() || self.falling(now) {
+            self.missed = true;
         }
-        if self.fall.is_none() && self.seconds >= self.next {
-            let x = 0.15 + self.random() * 0.7;
-            let y = 0.03 + self.random() * 0.2;
-            // 18 to 38 degrees below level, away from the nearer side.
-            let angle = (18. + self.random() * 20.).to_radians();
-            let side = if x < 0.5 { 1. } else { -1. };
-            self.fall = Some(Fall {
-                start: self.seconds,
-                x,
-                y,
-                dx: side * angle.cos(),
-                dy: angle.sin(),
-            });
-            self.next = self.seconds + 8. + self.random() * 14.;
-        }
-    }
-
-    /// A star is falling: it needs every frame until it is gone.
-    pub fn falling(&self) -> bool {
-        self.fall.is_some()
-    }
-
-    /// Lets go of one that is falling (the window went inactive): no star stops mid-flight.
-    pub fn drop_fall(&mut self) {
-        self.fall = None;
-    }
-
-    /// How bright star `index` is now, as a share of its own brightness. About a third
-    /// hold still; the rest fade nearly out and back in, slowly, each at its own pace.
-    pub fn twinkle(&self, index: usize) -> f32 {
-        let hash = (index as u32).wrapping_mul(2_654_435_761);
-        if hash.is_multiple_of(3) {
-            return 1.;
-        }
-        let period = 4.5 + ((hash >> 8) % 100) as f32 / 100. * 4.5;
-        let phase = ((hash >> 16) % 628) as f32 / 100.;
-        let wave = 0.5 + 0.5 * (TAU * self.seconds / period + phase).cos();
-        // Eased at both ends: it lingers when lit and when faint, and turns softly.
-        let lit = wave * wave * (3. - 2. * wave);
-        let depth = 0.9 * (self.seconds / EASE_IN).min(1.);
-        1. - depth * (1. - lit)
-    }
-
-    /// The soft glow around a twinkling star as it comes back to full brightness: 0 to 1.
-    pub fn sparkle(&self, index: usize) -> f32 {
-        let hash = (index as u32).wrapping_mul(2_654_435_761);
-        if hash.is_multiple_of(3) {
-            return 0.;
-        }
-        let near_full = ((self.twinkle(index) - 0.8) / 0.2).max(0.);
-        near_full * near_full
     }
 
     /// The falling star now: where it started, and its dots from the head back.
-    pub fn fall(&self) -> Option<(Fall, Vec<Dot>)> {
-        let fall = self.fall?;
-        let age = ((self.seconds - fall.start) / FALL).clamp(0., 1.);
+    pub fn fall(&self, now: Instant) -> Option<(Fall, Vec<Dot>)> {
+        let age = self.age(now)?;
         // Quick, then slowing a little as it burns out.
         let gone = 1. - (1. - age) * (1. - age);
         let head = TRAVEL * gone;
@@ -149,14 +100,14 @@ impl Sky {
                     (2. - 1.2 * back, shown * 0.45 * (1. - back).powf(1.8))
                 };
                 Dot {
-                    x: fall.dx * along,
-                    y: fall.dy * along,
+                    x: STAR.dx * along,
+                    y: STAR.dy * along,
                     size,
                     alpha,
                 }
             })
             .collect();
-        Some((fall, dots))
+        Some((STAR, dots))
     }
 }
 
@@ -164,80 +115,66 @@ impl Sky {
 mod tests {
     use super::*;
 
-    #[test]
-    fn twinkling_stays_in_range_starts_still_and_moves_gently() {
-        let mut sky = Sky::new();
-        assert!((0..48).all(|i| sky.twinkle(i) == 1.));
-        let mut faint = false;
-        for _ in 0..(60 * 30) {
-            let before: Vec<f32> = (0..48).map(|i| sky.twinkle(i)).collect();
-            sky.advance(1. / 60.);
-            for (i, was) in before.iter().enumerate() {
-                let b = sky.twinkle(i);
-                assert!((0.099..=1.).contains(&b), "{b}");
-                // No jumps: a frame moves it by little.
-                assert!((b - was).abs() < 0.02, "{i}: {was} to {b}");
-                let glow = sky.sparkle(i);
-                assert!((0. ..=1.).contains(&glow));
-                assert!(glow == 0. || b > 0.8, "glows only when nearly full");
-                faint |= b < 0.2;
-            }
-        }
-        assert!(faint, "some fade nearly out");
+    fn at(up: Instant, seconds: f32) -> Instant {
+        up + Duration::from_secs_f32(seconds)
     }
 
     #[test]
-    fn stars_fall_now_and_then_and_never_two_at_once() {
-        let mut sky = Sky::new();
-        let mut starts = Vec::new();
-        let mut was = false;
-        for _ in 0..(120 * 60) {
-            sky.advance(1. / 60.);
-            let now = sky.falling();
-            if now && !was {
-                starts.push(sky.seconds);
-            }
-            was = now;
+    fn one_star_falls_and_then_the_sky_is_still() {
+        let up = Instant::now();
+        let sky = Sky::new(up);
+        assert!(!sky.falling(at(up, 1.)));
+        assert!(sky.falling(at(up, WAIT + 0.5)));
+        for later in [WAIT + FALL + 0.01, 60., 3600.] {
+            assert!(!sky.falling(at(up, later)));
+            assert_eq!(sky.until_fall(at(up, later)), None);
         }
-        // Two minutes: the first early, then every 8 to 22 seconds.
-        assert!(starts[0] < 4.);
-        assert!((5..=15).contains(&starts.len()), "{starts:?}");
-        for pair in starts.windows(2) {
-            let gap = pair[1] - pair[0];
-            assert!((8. - 0.1..=22. + 0.1).contains(&gap), "{gap}");
-        }
+    }
+
+    #[test]
+    fn it_waits_for_the_star_with_one_wake() {
+        let up = Instant::now();
+        let sky = Sky::new(up);
+        let wait = sky.until_fall(at(up, 1.)).expect("still to come");
+        assert!((wait.as_secs_f32() - (WAIT - 1.)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_star_in_the_background_is_never_shown_half_way() {
+        let up = Instant::now();
+        let mut sky = Sky::new(up);
+        sky.let_go(at(up, WAIT + 0.3));
+        assert!(sky.fall(at(up, WAIT + 0.4)).is_none());
+        assert_eq!(sky.until_fall(at(up, 0.)), None);
     }
 
     #[test]
     fn a_fall_goes_down_fades_in_and_out_and_ends() {
-        let mut sky = Sky::new();
-        while !sky.falling() {
-            sky.advance(1. / 60.);
-        }
-        let mut heads = Vec::new();
-        while let Some((fall, dots)) = sky.fall() {
-            assert!((0.15..=0.85).contains(&fall.x) && (0.03..=0.23).contains(&fall.y));
-            assert!(
-                dots.iter()
-                    .all(|d| d.alpha >= 0. && d.alpha <= 1. && d.size > 0.)
-            );
-            assert!(dots.windows(2).all(|w| w[0].alpha >= w[1].alpha));
-            heads.push((dots[0].y, dots[0].alpha));
-            sky.advance(1. / 60.);
-        }
+        let up = Instant::now();
+        let sky = Sky::new(up);
+        let heads: Vec<(f32, f32)> = (0..=66)
+            .filter_map(|frame| sky.fall(at(up, WAIT + frame as f32 / 60.)))
+            .map(|(fall, dots)| {
+                assert!((0.15..=0.85).contains(&fall.x));
+                assert!(
+                    dots.iter()
+                        .all(|d| (0. ..=1.).contains(&d.alpha) && d.size > 0.)
+                );
+                assert!(dots.windows(2).all(|w| w[0].alpha >= w[1].alpha));
+                (dots[0].y, dots[0].alpha)
+            })
+            .collect();
         assert!(
             heads.windows(2).all(|w| w[1].0 >= w[0].0),
             "always downwards"
         );
         assert!(heads.first().unwrap().1 < 0.2 && heads.last().unwrap().1 < 0.2);
         assert!(heads.iter().any(|h| h.1 > 0.9));
-        assert!(heads.len() as f32 / 60. <= FALL + 0.05);
     }
 
     #[test]
-    fn a_long_pause_does_not_skip_a_fall() {
-        let mut sky = Sky::new();
-        sky.advance(30.);
-        assert!(sky.seconds <= LONGEST_STEP);
+    fn the_star_heads_away_from_the_nearer_side_and_down() {
+        assert!((STAR.dx * STAR.dx + STAR.dy * STAR.dy - 1.).abs() < 1e-4);
+        assert!(STAR.x < 0.5 && STAR.dx > 0. && STAR.dy > 0.);
     }
 }
