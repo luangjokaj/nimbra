@@ -812,6 +812,11 @@ impl SettingsWindow {
         let photo_answer = n.photo_answers.get(&active).copied().filter(|_| connected);
         let several = accounts.len() >= 2;
         let default = n.settings.default_account().map(str::to_string);
+        // A row about the photo goes under the accounts (see the end).
+        let photo_row = matches!(
+            photo_answer,
+            Some(PhotoAnswer::NotAllowed | PhotoAnswer::Unchecked | PhotoAnswer::None)
+        );
         let mut rows: Vec<AnyElement> = accounts
             .iter()
             .enumerate()
@@ -941,7 +946,13 @@ impl SettingsWindow {
                     .gap(px(10.))
                     .px(px(16.))
                     .py(px(14.))
-                    .rounded(px(10.))
+                    // Highlighted while another is dragged over it: square where it meets the
+                    // rows around it, and rounded like the card (14, inside its border) where
+                    // it is the card's own top or bottom.
+                    .when(i == 0, |d| d.rounded_t(px(13.)))
+                    .when(i + 1 == accounts.len() && !photo_row, |d| {
+                        d.rounded_b(px(13.))
+                    })
                     .child(identity)
                     .child(actions)
                     // Dragged onto another row, it takes that row's place.
