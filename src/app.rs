@@ -95,6 +95,9 @@ mod palette;
 #[path = "shortcuts_sheet.rs"]
 mod shortcuts_sheet;
 use shortcuts_sheet::ShortcutsSheet;
+#[path = "suggest_popup.rs"]
+mod suggest_popup;
+use suggest_popup::SuggestPopup;
 #[path = "snooze_menu.rs"]
 mod snooze_menu;
 use snooze_menu::SnoozeMenu;
@@ -478,6 +481,8 @@ pub struct Nimbra {
     /// The message window at the bottom (floats above the email, which is a native view)
     /// and the message it shows.
     notice_window: Option<gpui::WindowHandle<NoticeToast>>,
+    /// The address suggestions' window, where it was put, and for how many rows.
+    suggest_window: Option<(gpui::WindowHandle<SuggestPopup>, (f64, f64), usize)>,
     notice_shown: Option<SharedString>,
     notice_gen: usize,
     /// The search panel (opened with / or ⌘F): its field, the results so far (from the mail
@@ -879,6 +884,7 @@ impl Nimbra {
             attachment_busy: HashMap::new(),
             attachment_saved: HashMap::new(),
             notice_window: None,
+            suggest_window: None,
             notice_shown: None,
             notice_gen: 0,
             focus_restore: None,
@@ -1063,6 +1069,26 @@ impl Nimbra {
             if let Some(composer) = &mut this.compose {
                 composer.full = screen == "compose-full";
             }
+        }
+        // NIMBRA_SCREEN=compose-suggest: a new message with "a" typed in To, so the address
+        // suggestions show (screenshots).
+        if screen == "compose-suggest" {
+            this.open_compose(ComposeKind::New, cx);
+            // Once the sample mail, where addresses are suggested from, is in.
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                this.update(cx, |this, cx| {
+                    if let Some(to) = this.compose.as_ref().map(|c| c.to.clone()) {
+                        to.update(cx, |input, cx| input.set("j".into(), usize::MAX, cx));
+                        this.pending_focus = Some(to.read(cx).focus_handle(cx));
+                        this.field_changed(Field::To, cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
         }
         // Mail opens in its original formatting by default; NIMBRA_READER=1 starts in the
         // native reader instead. Messages without HTML always use the reader.
@@ -2177,6 +2203,18 @@ impl Render for Nimbra {
         self.sync_html_view(window);
         if !composing_elsewhere {
             self.sync_editor(window, cx);
+        }
+        // Nothing to suggest any more (or no composer): the suggestions' window goes.
+        if self.suggest_window.is_some()
+            && !self
+                .compose
+                .as_ref()
+                .is_some_and(|c| c.suggest.as_ref().is_some_and(|s| !s.people.is_empty()))
+        {
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |this, cx| this.sync_suggestions(cx)).ok();
+            })
+            .detach();
         }
         // A new message (or none): show it in its window, after this frame.
         if self.notice != self.notice_shown {

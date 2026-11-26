@@ -1377,7 +1377,7 @@ impl Nimbra {
     }
 
     /// A recipient field or the message changed.
-    fn field_changed(&mut self, field: Field, cx: &mut Context<Self>) {
+    pub(super) fn field_changed(&mut self, field: Field, cx: &mut Context<Self>) {
         // A comma (or semicolon) finishes an address: it becomes a pill.
         if let Some(composer) = &mut self.compose
             && Composer::slot(field).is_some()
@@ -1464,7 +1464,7 @@ impl Nimbra {
     }
 
     /// Puts the chosen suggestion in place of what was being typed.
-    fn accept_suggestion(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
+    pub(super) fn accept_suggestion(&mut self, index: Option<usize>, cx: &mut Context<Self>) {
         let Some(composer) = &mut self.compose else {
             return;
         };
@@ -2021,60 +2021,39 @@ impl Nimbra {
                 }))
                 .into_any_element()
         });
-        // Address suggestions, in a strip under the field. (Not floating over the fields
-        // below: the message editor is a native view that would cover it.)
+        // Address suggestions float over the fields below, in a window of their own (see
+        // `suggest_popup`). Under the field, only an anchor that tells it where to be.
         let mut dropdown: Option<(Field, AnyElement)> = composer.suggest.as_ref().map(|s| {
-            let list = div()
-                .w(px(380.))
+            let owner = cx.weak_entity();
+            let anchor = gpui::canvas(
+                move |bounds, window, cx| {
+                    let at = crate::blur::screen_point(
+                        window,
+                        f32::from(bounds.origin.x),
+                        f32::from(bounds.origin.y),
+                    );
+                    let composer_window = window.window_handle();
+                    if let Some(at) = at {
+                        cx.defer(move |cx| {
+                            owner
+                                .update(cx, |this, cx| {
+                                    this.place_suggestions(at, composer_window, cx)
+                                })
+                                .ok();
+                        });
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .w(px(suggest_popup::SUGGEST_WIDTH))
+            .h(px(1.));
+            // Takes no room: the fields below stay where they are.
+            let strip = div()
+                .h(px(0.))
                 .flex()
-                .flex_col()
-                .p(px(4.))
-                .rounded(px(10.))
-                .bg(t.raised)
-                .border_1()
-                .border_color(t.border_strong)
-                .shadow(vec![shadow(t.shadow, 12., 32., -6.)])
-                .children(s.people.iter().enumerate().map(|(i, p)| {
-                    let hover = t.hover;
-                    div()
-                        .id(("suggest", i))
-                        .press(t)
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .px(px(8.))
-                        .py(px(6.))
-                        .rounded(px(7.))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .when(i == s.selected, |d| d.bg(t.hover))
-                        .child(avatar(
-                            crate::data::tone_for(p.label()),
-                            &crate::data::initials(p.label()),
-                            24.,
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .child(short(p.label(), 44))
-                                .when(!p.name.is_empty(), |d| {
-                                    d.child(meta(short(&p.address, 50), t.text3))
-                                }),
-                        )
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.accept_suggestion(Some(i), cx)),
-                        )
-                }));
-            {
-                let strip = div()
-                    .flex()
-                    .justify_center()
-                    .border_b_1()
-                    .border_color(t.border)
-                    .child(column(div()).pl(px(84.)).pr(px(20.)).pb(px(8.)).child(list));
-                (s.field, strip.into_any_element())
-            }
+                .justify_center()
+                .child(column(div()).pl(px(84.)).pr(px(20.)).child(anchor));
+            (s.field, strip.into_any_element())
         });
         let mut drop_for = |f: Field| -> Option<AnyElement> {
             if dropdown.as_ref().is_some_and(|(field, _)| *field == f) {
