@@ -1167,6 +1167,7 @@ impl Nimbra {
                             at_ms: at,
                             subject,
                             account: composer.account.clone(),
+                            out: false,
                         };
                         self.add_scheduled(item, cx);
                     }
@@ -1557,7 +1558,7 @@ impl Nimbra {
                         files.push(mail::OutgoingFile {
                             mime: mail::mime_for(&name).into(),
                             name: mail::safe_file_name(&name),
-                            bytes,
+                            bytes: bytes.into(),
                         });
                     }
                     anyhow::Ok(files)
@@ -1797,7 +1798,7 @@ impl Nimbra {
                             let file = mail::OutgoingFile {
                                 name: att.name.clone(),
                                 mime: att.mime.clone(),
-                                bytes,
+                                bytes: bytes.into(),
                             };
                             Ok((att, file))
                         })
@@ -2888,7 +2889,7 @@ mod tests {
         let file = mail::OutgoingFile {
             name: name.into(),
             mime: "text/plain".into(),
-            bytes: name.as_bytes().to_vec(),
+            bytes: name.as_bytes().into(),
         };
         (attachment(name), file)
     }

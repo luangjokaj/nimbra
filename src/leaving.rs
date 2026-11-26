@@ -189,6 +189,7 @@ impl Leaving {
             && self.changes.is_empty()
             && !self.saves.any()
             && !self.writes.any()
+            && !crate::store::writing()
     }
 
     /// Returns at the deadline at the latest, even if the keychain never answers.
@@ -211,6 +212,8 @@ impl Leaving {
             saves,
             writes,
         } = self;
+        // The saves handed to the stores' writers first: the queues below are read back.
+        crate::store::settle(deadline);
         // On disk before anything is waited for: being killed while waiting loses nothing.
         for item in &unfinished {
             item.job.keep();
@@ -244,6 +247,7 @@ impl Leaving {
         for queue in &queues {
             queue.save();
         }
+        crate::store::settle(deadline);
     }
 }
 

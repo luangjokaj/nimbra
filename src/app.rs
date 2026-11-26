@@ -1671,7 +1671,8 @@ impl Nimbra {
         }
         if self.shown_signed_out(&error) {
             self.connection = None;
-            // The stored mail belongs to that sign-in: remove it, and its key.
+            // The mail kept for that sign-in goes; what the user wrote and has not sent stays,
+            // for signing in again (`hold_sends`).
             self.store = None;
             self.checks.forget();
             self.offline = false;
@@ -1680,13 +1681,13 @@ impl Nimbra {
             self.outbox = Outbox::default();
             let shown = self.account_id.clone();
             self.forget_photo(&shown);
-            self.abandon_sends(&shown);
+            self.hold_sends(&shown);
             self.parked
                 .retain(|(_, c)| c.account.as_ref().is_some_and(|a| *a != shown));
             self.next_pages.clear();
             self.forget_checked();
             let account = self.account_id.clone();
-            std::thread::spawn(move || crate::store::wipe(&account));
+            std::thread::spawn(move || crate::store::wipe_mail(&account));
             self.cache.clear();
             self.mails.clear();
             self.done.clear();

@@ -1246,7 +1246,7 @@ impl Client {
                 Ok(OutgoingFile {
                     name: att.name.clone(),
                     mime: att.mime.clone(),
-                    bytes: self.download(&att.message_id, &att.attachment_id)?,
+                    bytes: self.download(&att.message_id, &att.attachment_id)?.into(),
                 })
             })
             .collect()
@@ -2035,7 +2035,7 @@ mod tests {
         mail.files.push(OutgoingFile {
             name: "Plan \"Q4\".pdf".into(),
             mime: "application/pdf\r\nX-Evil: 1".into(),
-            bytes: vec![1, 2, 3],
+            bytes: vec![1, 2, 3].into(),
         });
         let text = String::from_utf8(mail.to_rfc822(false, &[]).unwrap()).unwrap();
         assert!(text.contains("Bcc: hidden@example.com\r\n"));
@@ -2056,7 +2056,7 @@ mod tests {
             text.find("multipart/alternative").unwrap()
                 < text.find("application/octet-stream").unwrap()
         );
-        mail.files[0].bytes = vec![0; (ATTACHMENT_LIMIT + 1) as usize];
+        mail.files[0].bytes = vec![0; (ATTACHMENT_LIMIT + 1) as usize].into();
         assert!(mail.to_rfc822(false, &[]).is_err());
     }
 
