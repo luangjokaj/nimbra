@@ -837,7 +837,7 @@ impl Nimbra {
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("New Message".into()),
                         appears_transparent: true,
-                        traffic_light_position: Some(gpui::point(px(18.), px(18.))),
+                        traffic_light_position: Some(crate::ui::traffic_lights()),
                     }),
                     window_min_size: Some(gpui::size(px(520.), px(420.))),
                     ..Default::default()
@@ -2009,7 +2009,7 @@ impl Nimbra {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use crate::theme::{radius, space};
-        use crate::ui::{Elevation, elevation};
+        use crate::ui::{Depth, Elevation, elevation, sheen, sheet};
 
         let Some(composer) = &self.compose else {
             return div().into_any_element();
@@ -2304,36 +2304,38 @@ impl Nimbra {
                     .press(t)
                     .tooltip(tip(t.dark, label, key))
             };
-        let card = div()
+        // Full page, a panel of the window (its edge a border, so a drop can light it); floating,
+        // a sheet over it.
+        let card = if full {
+            panel(t, Depth::Front)
+                .size_full()
+                // Clear of the traffic lights however narrow the window is.
+                .px(px(FULL_INSET))
+                .border_1()
+                .border_color(t.rim)
+                .child(sheen(t, radius::SHEET))
+        } else {
+            sheet(t)
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(width))
+                .h(px(height))
+        };
+        let card = card
             .id("compose-card")
             .flex()
             .flex_col()
-            .bg(t.raised)
             .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
                 this.attach_files(paths.paths().to_vec(), cx)
             }))
             .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.border_color(accent))
-            .when(full, |d| d.size_full().bg(t.surface))
-            .when(!full, |d| {
-                d.absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .w(px(width))
-                    .h(px(height))
-                    .rounded(px(radius::SHEET))
-                    .border_1()
-                    .border_color(t.edge)
-                    .shadow(elevation(t, Elevation::Sheet))
-            })
             .child(
                 div()
                     .flex()
                     .justify_center()
-                    // In full page the header also clears the traffic lights and is the
-                    // strip you drag or double-click.
-                    .when(full, |d| {
-                        d.pt(px(36.)).on_mouse_down(MouseButton::Left, drag_or_zoom)
-                    })
+                    // In full page the header is also the strip you drag or double-click.
+                    .when(full, |d| d.on_mouse_down(MouseButton::Left, drag_or_zoom))
                     .when(!full, |d| {
                         d.cursor(gpui::CursorStyle::OpenHand).on_mouse_down(
                             MouseButton::Left,
@@ -2347,17 +2349,12 @@ impl Nimbra {
                             .flex()
                             .items_center()
                             .gap(px(space::S))
-                            .px(px(20.))
-                            .pt(px(16.))
-                            .pb(px(space::S))
+                            .h(px(HEADER))
+                            // The buttons' glyphs end on the fields' edge.
+                            .pl(px(20.))
+                            .pr(px(13.))
                             // A new message has no title: its From is the first row.
-                            .children(title.map(|title| {
-                                if full {
-                                    title_m(title, t.text)
-                                } else {
-                                    title_s(title, t.text)
-                                }
-                            }))
+                            .children(title.map(|title| title_s(title, t.text)))
                             // A new message: who it is from, and a menu to change it.
                             .when(self.can_change_from() && !loading, |d| {
                                 // The account it is changing to shows at once, with what
@@ -2742,7 +2739,9 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .gap(px(space::S))
-                        .px(px(14.))
+                        // The clip's glyph, and Send's edge, on the fields' edges.
+                        .pl(px(13.))
+                        .pr(px(20.))
                         .py(px(space::M))
                         .child(
                             icon_button(t, "clip")
@@ -2871,17 +2870,12 @@ impl Nimbra {
                         .bg(t.scrim)
                         .occlude()
                         .child(
-                            div()
+                            sheet(t)
                                 .flex()
                                 .flex_col()
                                 .gap(px(20.))
                                 .w(px(320.))
                                 .p(px(space::XL))
-                                .rounded(px(radius::SHEET))
-                                .bg(t.raised)
-                                .border_1()
-                                .border_color(t.edge)
-                                .shadow(elevation(t, Elevation::Sheet))
                                 .child(title_s("Save this draft?", t.text))
                                 .child(
                                     div()
@@ -2927,6 +2921,10 @@ impl Nimbra {
             .flex()
             .items_start()
             .justify_center()
+            // Full page, it is the window's one panel, over the window's nebula.
+            .when(full, |d| {
+                d.p(px(crate::ui::GUTTER)).child(crate::ui::backdrop(t))
+            })
             // Dimmed in the main window; over a message window the email stays readable.
             .when(!full && self.compose_host.is_none(), |d| d.bg(t.scrim))
             // A grabbed composer follows the mouse anywhere in the window.
@@ -2948,6 +2946,13 @@ impl Nimbra {
             .into_any_element()
     }
 }
+
+/// The composer's header: centred on the top line inside the full-page panel's 1pt border.
+const HEADER: f32 = 2. * (crate::ui::TOP_LINE - crate::ui::GUTTER - 1.);
+
+/// How far a full-page composer keeps its content in from the panel's sides: past the
+/// traffic lights, which sit on its header's line.
+const FULL_INSET: f32 = 52.;
 
 /// A window holding only the composer (the composer's detach button).
 pub(super) struct ComposeWindow {

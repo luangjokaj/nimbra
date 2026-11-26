@@ -25,9 +25,9 @@ use crate::theme::{
 };
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Depth, Elevation, GUTTER, Press, TOP_BAR, TOP_LINE, aura, avatar, button, caption,
-    display, elevation, focus_ring, hero, icon, icon_button, kbd, meta, overline, panel, pill, rim,
-    shadow, tip, title_l, title_m, title_s,
+    ButtonKind, Depth, Elevation, GUTTER, Press, TOP_BAR, TOP_LINE, avatar, button, caption,
+    display, elevation, focus_ring, hero, icon, icon_button, kbd, lift, meta, overline, panel,
+    pill, rim, shadow, tip, title_l, title_s,
 };
 use crate::webview::HtmlView;
 
@@ -1498,7 +1498,7 @@ impl Nimbra {
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some(mail.subject.clone()),
                         appears_transparent: true,
-                        traffic_light_position: Some(gpui::point(px(18.), px(18.))),
+                        traffic_light_position: Some(crate::ui::traffic_lights()),
                     }),
                     window_min_size: Some(gpui::size(px(520.), px(420.))),
                     ..Default::default()
@@ -1608,7 +1608,7 @@ impl Nimbra {
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("Settings".into()),
                         appears_transparent: true,
-                        traffic_light_position: Some(gpui::point(px(16.), px(16.))),
+                        traffic_light_position: Some(crate::ui::traffic_lights()),
                     }),
                     window_min_size: Some(gpui::size(px(720.), px(480.))),
                     ..Default::default()
@@ -2327,13 +2327,13 @@ impl Render for Nimbra {
         let place = self.sidebar_place(0.);
         // 1 while the sidebar floats, down to 0 as it docks.
         let afloat = place.map_or(0., |place| place.inset / FLOAT_INSET);
-        // The traffic lights travel with the sidebar. A full-page composer has room of its
-        // own for them in its header.
+        // The traffic lights travel with the sidebar. A full-page composer has room for them
+        // on its header's line, as far in as the sidebar would put them.
         let full_compose = !composing_elsewhere && self.compose.as_ref().is_some_and(|c| c.full);
         crate::autohide::place_traffic_lights(
             window,
             if full_compose {
-                Some((18., 25.))
+                Some((18. + GUTTER, TOP_LINE))
             } else {
                 place.map(|place| (18. + place.x, TOP_LINE))
             },
@@ -2612,12 +2612,12 @@ impl Render for Nimbra {
             .when_some(place, |d, place| {
                 let radius = FLOAT_RADIUS;
                 let height = viewport.1 - 2. * GUTTER;
-                let mut lift = aura(&t, Depth::Back);
+                let mut shadows = lift(&t, Depth::Back);
                 // Floating over the list, it is lifted further.
-                lift.push(shadow(t.shadow.opacity(afloat), 10., 30., -6.));
+                shadows.push(shadow(t.shadow.opacity(afloat), 10., 30., -6.));
                 // The panel is see-through to the blurred desktop, docked or floating. The
                 // window's blur is only of what is behind the window, so what is painted under
-                // the panel is erased in its exact shape: its aura (which is filled) too,
+                // the panel is erased in its exact shape: its shadow (which is filled) too,
                 // leaving it only around the outside.
                 d.child(
                     div()
@@ -2627,7 +2627,7 @@ impl Render for Nimbra {
                         .w(px(self.side_w()))
                         .h(px(height))
                         .rounded(px(radius))
-                        .shadow(lift),
+                        .shadow(shadows),
                 )
                 .child(
                     div()

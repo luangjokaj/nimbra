@@ -61,8 +61,8 @@ pub const GRADIENT_PRIMARY_PRESSED: Ramp = Ramp {
     from: 0x6350e8,
     to: 0xb9336b,
 };
-/// Light rather than surface: the primary button's glow, the Brief frame, streaks, Inbox
-/// zero. Never under text.
+/// Light rather than surface: the primary button's glow, streaks, Inbox zero. Never under
+/// text.
 pub const GRADIENT_GLOW: Ramp = Ramp {
     from: 0x8b7cff,
     to: 0xff7ab6,
@@ -129,8 +129,9 @@ pub struct Theme {
     /// The hairline around each floating panel, and the brighter light along its top.
     pub rim: Hsla,
     pub sheen: Hsla,
-    /// The light each panel gives off into the backdrop.
-    pub aura: Hsla,
+    /// The light the open row gives off into its panel: with the primary action and focus,
+    /// the only things that glow.
+    pub lit: Hsla,
     pub raised: Hsla,
     pub hover: Hsla,
     pub selected: Hsla,
@@ -174,20 +175,20 @@ impl Theme {
             dark: true,
             nebula: Nebula {
                 ground: 0x08070e,
-                washes: [(20., 0x34279a, 0.9, 0.7), (200., 0x5e2160, 0.7, 0.55)],
+                washes: [(20., 0x34279a, 0.72, 0.7), (200., 0x5e2160, 0.55, 0.55)],
                 blooms: [
                     Bloom {
                         x: 0.08,
                         y: 0.0,
                         hex: 0x6a4cff,
-                        alpha: 0.62,
+                        alpha: 0.36,
                         reach: 240.,
                     },
                     Bloom {
                         x: 0.66,
                         y: 0.0,
                         hex: 0x3b68ff,
-                        alpha: 0.4,
+                        alpha: 0.3,
                         reach: 180.,
                     },
                     Bloom {
@@ -206,7 +207,7 @@ impl Theme {
             card_edge: c(0xb9adff, 0.26),
             rim: c(0xd4ccff, 0.11),
             sheen: c(0xe9e4ff, 0.34),
-            aura: c(0x7a68ff, 0.34),
+            lit: c(0x7a68ff, 0.42),
             raised: c(0x17171f, 1.),
             hover: c(0xffffff, 0.045),
             selected: c(0x8b7cff, 0.16),
@@ -241,27 +242,27 @@ impl Theme {
             dark: false,
             nebula: Nebula {
                 ground: 0xf0ebf8,
-                washes: [(20., 0xd9cffd, 0.9, 0.7), (200., 0xfff0dc, 1., 0.6)],
+                washes: [(20., 0xd9cffd, 0.75, 0.7), (200., 0xfff0dc, 0.85, 0.6)],
                 blooms: [
                     Bloom {
                         x: 0.08,
                         y: 0.0,
                         hex: 0xb7a6ff,
-                        alpha: 0.6,
+                        alpha: 0.48,
                         reach: 240.,
                     },
                     Bloom {
                         x: 0.66,
                         y: 0.0,
                         hex: 0xffbfdd,
-                        alpha: 0.45,
+                        alpha: 0.36,
                         reach: 180.,
                     },
                     Bloom {
                         x: 0.95,
                         y: 1.0,
                         hex: 0xffd6a8,
-                        alpha: 0.7,
+                        alpha: 0.55,
                         reach: 240.,
                     },
                 ],
@@ -273,7 +274,7 @@ impl Theme {
             card_edge: c(0x6e5cf6, 0.2),
             rim: c(0x7c68e8, 0.14),
             sheen: c(0xffffff, 1.),
-            aura: c(0x8a76ff, 0.3),
+            lit: c(0x8a76ff, 0.36),
             raised: c(0xffffff, 1.),
             hover: c(0x000000, 0.035),
             selected: c(0x6e5cf6, 0.10),
@@ -344,19 +345,6 @@ impl Tone {
             Tone::Graphite => (0x6d6c78, 0x2a2a33),
         };
         gradient(135., c(a, 1.), c(b, 1.))
-    }
-
-    /// The light end of its gradient: the glow around an avatar.
-    pub fn light(self) -> Hsla {
-        let hex = match self {
-            Tone::Violet => 0x9b8cff,
-            Tone::Rose => 0xff9cc8,
-            Tone::Amber => 0xffd08a,
-            Tone::Mint => 0x8bf0c7,
-            Tone::Sky => 0x9dd8ff,
-            Tone::Graphite => 0x9d9ca8,
-        };
-        c(hex, 1.)
     }
 }
 

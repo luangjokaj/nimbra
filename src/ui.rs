@@ -61,8 +61,8 @@ pub enum Depth {
     Front,
 }
 
-/// A floating panel of the main window: rounded glass over the nebula, with an aura of
-/// violet light around it. Finish it with `rim` as its last child.
+/// A floating panel of the main window: a calm surface over the nebula, lifted by a soft
+/// neutral shadow. Finish it with `rim` as its last child.
 pub fn panel(t: &Theme, depth: Depth) -> Div {
     div()
         .relative()
@@ -71,29 +71,37 @@ pub fn panel(t: &Theme, depth: Depth) -> Div {
             Depth::Back => t.panel,
             Depth::Front => t.surface,
         })
-        .shadow(aura(t, depth))
+        .shadow(lift(t, depth))
 }
 
-/// The light a floating panel gives off, and the shadow that lifts it.
-pub fn aura(t: &Theme, depth: Depth) -> Vec<BoxShadow> {
-    let (glow, lift) = match depth {
-        Depth::Back => (0.7, 0.8),
-        Depth::Front => (1., 1.),
-    };
+/// The shadow under a floating panel: a wide soft one for depth and a close one that sets
+/// its edge down. Neutral, so the panel reads as a surface and not as a light.
+pub fn lift(t: &Theme, depth: Depth) -> Vec<BoxShadow> {
+    let strength = match depth {
+        Depth::Back => 0.8,
+        Depth::Front => 1.,
+    } * if t.dark { 1. } else { 0.7 };
     vec![
-        shadow(
-            t.shadow.opacity(if t.dark { 0.7 } else { 0.5 } * lift),
-            14.,
-            36.,
-            -12.,
-        ),
-        shadow(t.aura.opacity(t.aura.a * glow), 0., 32., 0.),
+        shadow(t.shadow.opacity(t.shadow.a * strength), 16., 40., -14.),
+        shadow(t.shadow.opacity(t.shadow.a * 0.5 * strength), 1., 3., 0.),
     ]
 }
 
 /// A panel's light edge, laid over it so it takes no room: a hairline all round, brighter
 /// along the top where the light catches it.
 pub fn rim(t: &Theme, corner: f32) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(corner))
+        .border_1()
+        .border_color(t.rim)
+        .child(sheen(t, corner))
+}
+
+/// The light along the top edge of a panel or sheet: brightest in the middle, gone before
+/// the corners. Laid over the top hairline, so it takes no room.
+pub fn sheen(t: &Theme, corner: f32) -> Div {
     let sheen = t.sheen;
     let half = |angle: f32| {
         div()
@@ -103,21 +111,44 @@ pub fn rim(t: &Theme, corner: f32) -> Div {
     };
     div()
         .absolute()
-        .inset_0()
-        .rounded(px(corner))
+        .top_0()
+        .left(px(corner))
+        .right(px(corner))
+        .h(px(1.))
+        .flex()
+        .child(half(90.))
+        .child(half(270.))
+}
+
+/// A floating sheet (the composer, Add Account, a question over either): raised glass with
+/// a light edge and a neutral shadow. Its `t.edge` border is where a drop target lights up.
+pub fn sheet(t: &Theme) -> Div {
+    div()
+        .relative()
+        .rounded(px(radius::SHEET))
+        .bg(t.raised)
         .border_1()
-        .border_color(t.rim)
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left(px(corner))
-                .right(px(corner))
-                .h(px(1.))
-                .flex()
-                .child(half(90.))
-                .child(half(270.)),
-        )
+        .border_color(t.edge)
+        .shadow(elevation(t, Elevation::Sheet))
+        .child(sheen(t, radius::SHEET))
+}
+
+/// A window drawn as the main one is: panels a gutter apart over the nebula. Lay its panels
+/// out as children, in a row.
+pub fn panels(t: &Theme) -> Div {
+    div()
+        .relative()
+        .flex()
+        .size_full()
+        .p(px(GUTTER))
+        .gap(px(GUTTER))
+        .child(backdrop(t))
+}
+
+/// Where a window of panels puts its traffic lights: the close button's top-left, so that
+/// they are centred on the top line, as far into the first panel as its content.
+pub fn traffic_lights() -> gpui::Point<gpui::Pixels> {
+    point(px(18. + GUTTER), px(TOP_LINE - 7.))
 }
 
 /// Timestamps, counts and keys: Geist Mono 11/14 medium.
@@ -184,11 +215,6 @@ pub fn title_s(text: impl Into<SharedString>, color: Hsla) -> Div {
     display(text, 22., color)
 }
 
-/// The reader's subject: 30/36.
-pub fn title_m(text: impl Into<SharedString>, color: Hsla) -> Div {
-    display(text, 30., color)
-}
-
 /// Empty and status screens: 40/48.
 pub fn title_l(text: impl Into<SharedString>, color: Hsla) -> Div {
     display(text, 40., color)
@@ -224,15 +250,9 @@ pub fn avatar(tone: Tone, initials: &str, size: f32) -> Div {
         .size(px(size))
         .rounded_full()
         .bg(tone.gradient())
-        // A thin luminous ring, and the tone's own light around it.
+        // A thin ring, so that avatars side by side stay apart.
         .border_1()
-        .border_color(c(0xffffff, 0.42))
-        .shadow(vec![shadow(
-            tone.light().opacity(0.6),
-            0.,
-            size * 0.45,
-            -1.,
-        )])
+        .border_color(c(0xffffff, 0.24))
         .text_size(px(size * 0.37))
         .line_height(px(size * 0.5))
         .font_weight(FontWeight::SEMIBOLD)
@@ -316,13 +336,13 @@ pub fn shadow(color: Hsla, y: f32, blur: f32, spread: f32) -> BoxShadow {
     }
 }
 
-/// Depth as soft light: a shadow for lift, plus accent light where the eye should go.
-/// Pair a raised surface with a `t.edge` hairline border.
+/// Depth: neutral shadows for lift, and accent light only where the eye should go (the
+/// primary action, focus). Pair a raised surface with a `t.edge` hairline border.
 #[derive(Clone, Copy)]
 pub enum Elevation {
     /// Menus, tooltips, toasts.
     Pop,
-    /// Finder, confirm, shortcuts, composer: lifted, with a faint violet aura.
+    /// Finder, confirm, shortcuts, composer: lifted further.
     Sheet,
     /// The primary action or the focused field: accent light without lift.
     Glow,
@@ -333,7 +353,7 @@ pub fn elevation(t: &Theme, level: Elevation) -> Vec<BoxShadow> {
         Elevation::Pop => vec![shadow(t.shadow, 6., 16., -4.)],
         Elevation::Sheet => vec![
             shadow(t.shadow_sheet, 24., 64., -16.),
-            shadow(t.glow.opacity(0.4), 0., 48., -8.),
+            shadow(t.shadow_sheet.opacity(t.shadow_sheet.a * 0.5), 2., 6., 0.),
         ],
         Elevation::Glow => vec![shadow(t.glow, 4., 20., -4.)],
     }
@@ -727,6 +747,29 @@ pub mod motion {
             let start = Instant::now();
             tween.retarget_at(1., start, true);
             assert!(tween.moving_at(start));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Glow is kept for the open row, the primary action and focus: what lifts a panel or a
+    /// sheet is the theme's own neutral shadow, never the accent's light.
+    #[test]
+    fn panels_and_sheets_cast_only_neutral_shadows() {
+        for t in [Theme::dark(), Theme::light()] {
+            let shadows = [lift(&t, Depth::Back), lift(&t, Depth::Front)]
+                .into_iter()
+                .flatten()
+                .chain(elevation(&t, Elevation::Sheet));
+            for s in shadows {
+                let neutral = [t.shadow, t.shadow_sheet]
+                    .iter()
+                    .any(|n| (n.h - s.color.h).abs() < 1e-3 && (n.s - s.color.s).abs() < 1e-3);
+                assert!(neutral, "{:?}", s.color);
+            }
         }
     }
 }

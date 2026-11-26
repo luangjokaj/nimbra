@@ -186,7 +186,8 @@ impl Render for MessageWindow {
             }
         }
         let original = self.original && m.html.is_some();
-        let width = f32::from(window.viewport_size().width);
+        // The panel's width: the window's, less the gutters around it.
+        let width = f32::from(window.viewport_size().width) - 2. * crate::ui::GUTTER;
 
         let (done, in_trash) = {
             let n = self.owner.read(cx);
@@ -321,6 +322,8 @@ impl Render for MessageWindow {
                 .flex_col()
                 .flex_1()
                 .min_h(px(0.))
+                // The web view is square: it stops short of the panel's round corners.
+                .when(tray.is_none(), |d| d.pb(px(crate::theme::radius::SHEET)))
                 .child(top)
                 .child(divider())
                 .child(
@@ -437,12 +440,7 @@ impl Render for MessageWindow {
             n.selection_watch(self.layouts.clone(), cx)
                 .into_any_element()
         });
-        div()
-            .relative()
-            .flex()
-            .flex_col()
-            .size_full()
-            .child(watch)
+        crate::ui::panels(&t)
             .on_action(cx.listener(|this, _: &crate::input::Copy, _, cx| {
                 let place = super::selection::Place::Window(this.key.clone());
                 let mail = this.mail(cx);
@@ -484,14 +482,23 @@ impl Render for MessageWindow {
             .on_action(cx.listener(|this, _: &Trash, window, cx| {
                 this.act(window, cx, |n, row, cx| n.trash_thread(row, cx))
             }))
-            .bg(t.surface)
             .font_family(crate::theme::SANS)
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
-            .child(toolbar)
-            .child(divider().when(!(original || loading || scrolled), |d| d.opacity(0.)))
-            .child(body)
+            .child(
+                panel(&t, crate::ui::Depth::Front)
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .h_full()
+                    .child(watch)
+                    .child(toolbar)
+                    .child(divider().when(!(original || loading || scrolled), |d| d.opacity(0.)))
+                    .child(body)
+                    .child(rim(&t, crate::theme::radius::SHEET)),
+            )
             .children(compose)
     }
 }
