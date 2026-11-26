@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Releases Nimbra: ./scripts/release <version> [--dry-run] [--skip-ci]
+# Releases Nimbra: ./scripts/release <version> [--alpha|--beta] [--dry-run] [--skip-ci]
+#
+# --alpha or --beta marks it a pre-release on GitHub ("Nimbra 0.1.0 alpha"): labelled as
+# such, and not what the "latest release" links point to. The version itself stays plain
+# (macOS wants numbers only in an app's version).
 #
 # In order, stopping at the first problem:
 #   1. checks: on an up-to-date, clean main, CI green, the version new, gh and the notary ready
@@ -19,18 +23,21 @@ say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 
 VERSION=""
+STAGE=""
 DRY_RUN=0
 SKIP_CI=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --skip-ci) SKIP_CI=1 ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --alpha) STAGE=alpha ;;
+    --beta) STAGE=beta ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) fail "Unknown option: $arg" ;;
     *) VERSION="$arg" ;;
   esac
 done
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Usage: ./scripts/release <version like 0.2.0> [--dry-run] [--skip-ci]"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Usage: ./scripts/release <version like 0.2.0> [--alpha|--beta] [--dry-run] [--skip-ci]"
 TAG="v$VERSION"
 
 # Release settings (the usage-count key, the notary profile), kept outside the repo.
@@ -174,7 +181,8 @@ git push --quiet origin "$TAG"
 
 # 7. Publish.
 say "Publishing the GitHub Release"
+TITLE="Nimbra $VERSION${STAGE:+ $STAGE}"
 gh release create "$TAG" "$DMG" dist/Nimbra.dmg dist/SHA256SUMS.txt \
-  --title "Nimbra $VERSION" --notes-file dist/notes.md --verify-tag
-say "Released Nimbra $VERSION"
+  --title "$TITLE" --notes-file dist/notes.md --verify-tag ${STAGE:+--prerelease}
+say "Released $TITLE"
 echo "$(gh release view "$TAG" --json url -q .url)"

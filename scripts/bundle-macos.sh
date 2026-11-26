@@ -17,6 +17,23 @@ if [ -f "$BUILD_ENV" ]; then
   set +a
 fi
 
+# A release build carries the Google and Microsoft sign-in clients, so that anyone can add
+# those accounts (see `built_in` in src/gmail.rs). They are read from oauth.env, line by
+# line and never run as a script; other builds read that file at run time instead.
+OAUTH_ENV="${HOME}/.config/nimbra/oauth.env"
+if [ "${NIMBRA_RELEASE:-}" = "1" ] && [ -f "$OAUTH_ENV" ]; then
+  oauth_value() {
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$OAUTH_ENV" | head -1 | tr -d '"'
+  }
+  export NIMBRA_BUILTIN_GOOGLE_CLIENT_ID="$(oauth_value NIMBRA_GOOGLE_CLIENT_ID)"
+  export NIMBRA_BUILTIN_GOOGLE_CLIENT_SECRET="$(oauth_value NIMBRA_GOOGLE_CLIENT_SECRET)"
+  export NIMBRA_BUILTIN_MICROSOFT_CLIENT_ID="$(oauth_value NIMBRA_MICROSOFT_CLIENT_ID)"
+  for name in NIMBRA_BUILTIN_GOOGLE_CLIENT_ID NIMBRA_BUILTIN_GOOGLE_CLIENT_SECRET NIMBRA_BUILTIN_MICROSOFT_CLIENT_ID; do
+    [ -n "${!name}" ] || { echo "error: $name is empty: check $OAUTH_ENV" >&2; exit 1; }
+  done
+  echo "Including the Google and Microsoft sign-in clients"
+fi
+
 cargo build --release
 
 rm -rf "$APP"

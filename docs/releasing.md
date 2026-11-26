@@ -67,6 +67,24 @@ Notarizing takes a minute or two per upload, so a whole release takes about five
 does steps 1 to 5 and stops: you get the notarized disk image in `dist/` to open and test, and nothing is committed,
 tagged or published. `--skip-ci` skips the CI check, for when CI is down and you've run the checks yourself.
 
+### Alpha and beta
+
+```sh
+./scripts/release 0.1.0 --alpha
+```
+
+marks the GitHub Release as a pre-release titled "Nimbra 0.1.0 alpha" (`--beta` for a beta). The version stays a plain
+`0.1.0`, as macOS wants numbers only in an app's version. A pre-release is not what GitHub's "latest release" links
+point to, so the README links to the Releases page.
+
+### Sign-in clients
+
+A release build includes the Google and Microsoft OAuth clients from `~/.config/nimbra/oauth.env`, so that people who
+download Nimbra can add those accounts without setting up their own. The bundle script reads the three
+`NIMBRA_*_CLIENT_*` lines from that file when `NIMBRA_RELEASE=1` and stops if one is missing. None of them is secret
+(Google treats a desktop app's client secret as public, and sign-in uses PKCE), but the file still stays out of the
+repo.
+
 ## Versions
 
 Nimbra follows [semantic versioning](https://semver.org). You pick the number:
