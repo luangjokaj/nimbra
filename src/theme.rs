@@ -130,7 +130,7 @@ pub enum Accent {
     Sky,
 }
 
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub enum Tone {
     Violet,
     Rose,
@@ -139,6 +139,7 @@ pub enum Tone {
     #[allow(dead_code)]
     Mint,
     Sky,
+    #[default]
     Graphite,
 }
 

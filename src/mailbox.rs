@@ -2,6 +2,7 @@
 //! loading more, opening a thread and fetching its content, and watching for new mail.
 
 use super::*;
+use nimbra_core::listing;
 
 /// A mailbox clicked whose stored list is being read off the main thread. Kept by mailbox,
 /// account and click, and checked when the list arrives.
@@ -92,9 +93,10 @@ impl Nimbra {
                 .iter()
                 .zip(&self.done)
                 .filter(left)
-                .map(|(mail, _)| Mail {
-                    account: None, // as a store keeps its own account's
-                    ..mail.clone()
+                .map(|(mail, _)| {
+                    let mut mail = mail.clone();
+                    mail.account = None; // as a store keeps its own account's
+                    mail
                 })
                 .collect();
             if account == self.account_id {
@@ -104,7 +106,7 @@ impl Nimbra {
                 self.next_pages.remove(&View::Inbox);
             }
             self.inboxes_saved_empty.insert(account, empty);
-            store.save_soon(&record(View::Inbox), rows);
+            store.save_soon(&record(View::Inbox), stored(&rows));
         }
     }
 
@@ -238,7 +240,7 @@ impl Nimbra {
             let mails = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut mails: Vec<Mail> = store.load(&record)?;
+                    let mut mails: Vec<Mail> = loaded(store.load(&record)?);
                     for mail in &mut mails {
                         mail.refresh_time();
                     }
@@ -407,46 +409,27 @@ impl Nimbra {
         // From this Mac, a list has no token for its next page.
         let (find_page, listed) = (!self.paged.contains(&view), self.mails.len());
         cx.notify();
-        let recipient = matches!(view, View::Sent | View::Drafts);
-        let count_ids: Vec<String> = [
-            "INBOX",
-            "DRAFT",
-            "CATEGORY_PERSONAL",
-            "CATEGORY_UPDATES",
-            "CATEGORY_PROMOTIONS",
-            "CATEGORY_SOCIAL",
-        ]
-        .map(String::from)
-        .into_iter()
-        .chain(self.labels.iter().take(8).map(|l| l.id.clone()))
-        .collect();
+        let count_ids = listing::count_ids(self.labels.iter().map(|l| l.id.as_str()));
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let result = within(cx.background_executor(), async move {
-                let changes = client.history(&start)?;
-                if changes.threads.len() > 40 {
-                    return Err(mail::HistoryExpired.into());
-                }
-                // Fresh details for each changed thread; `None` when it is gone.
-                let mut updates = Vec::new();
-                for id in &changes.threads {
-                    match client.summary(id, recipient) {
-                        Ok(summary) => updates.push((id.clone(), Some(summary))),
-                        Err(error) if error.to_string().starts_with("Gmail error 404") => {
-                            updates.push((id.clone(), None))
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-                let counts = (count && !updates.is_empty()).then(|| client.counts(&count_ids));
-                let page = if !find_page {
-                    None
-                } else if (1..=500).contains(&listed) {
-                    client.page_after(view, label_id.as_deref(), listed).ok()
-                } else {
-                    Some(None)
-                };
-                anyhow::Ok(((changes.latest, updates, counts, page), label_id))
+                let synced = listing::sync(
+                    &*client,
+                    &start,
+                    view,
+                    label_id.as_deref(),
+                    find_page,
+                    listed,
+                    count,
+                    &count_ids,
+                )?;
+                let listing::Synced {
+                    latest,
+                    updates,
+                    counts,
+                    page,
+                } = synced;
+                anyhow::Ok(((latest, updates, counts, page), label_id))
             })
             .await;
             this.update(cx, |this, cx| {
@@ -483,15 +466,7 @@ impl Nimbra {
                             return;
                         }
                         let mut list: Vec<Mail> = this.mails.clone();
-                        for (id, summary) in updates {
-                            list.retain(|mail| mail.id.as_deref() != Some(id.as_str()));
-                            if let Some(summary) = summary
-                                && view.takes(&summary, label_id.as_deref())
-                            {
-                                list.push(Mail::from_summary(summary));
-                            }
-                        }
-                        list.sort_by_key(|mail| std::cmp::Reverse(mail.timestamp_ms));
+                        listing::apply_updates(&mut list, updates, view, label_id.as_deref());
                         this.install(list, cx);
                     }
                     Err(error) if error.is::<mail::HistoryExpired>() => this.fetch_inbox(cx),
@@ -667,12 +642,13 @@ impl Nimbra {
                     drop(reading);
                     let store = Arc::new(opened?);
                     let saved: Option<Saved> = store.load("meta");
-                    let mut mails: Option<Vec<Mail>> = store.load(&view_record);
+                    let mut mails: Option<Vec<Mail>> = store.load(&view_record).map(loaded);
                     for mail in mails.iter_mut().flatten() {
                         mail.refresh_time();
                     }
                     let later = scheduled::list(&store);
-                    let snoozed: Vec<Snooze> = store.load("snoozed").unwrap_or_default();
+                    let snoozed: Vec<Snooze> =
+                        store.load(nimbra_core::snooze::LIST).unwrap_or_default();
                     if let Some(client) = &client {
                         client.keep_rows_in(&store);
                     }
@@ -799,33 +775,19 @@ impl Nimbra {
         if matches!(self.mailbox, View::Search | View::AllInboxes) || self.status != Status::Ready {
             return;
         }
-        // Keep the store small: the newest 300 threads of a mailbox, and the full text of
-        // the newest 100 (older ones are downloaded again when opened).
-        const KEEP_THREADS: usize = 300;
-        const KEEP_BODIES: usize = 100;
-        // Copies of the rows share their messages: this is no copy of the mail itself.
-        let mails: Vec<Mail> = self
-            .mails
-            .iter()
-            .zip(&self.done)
-            .filter(|(_, done)| !**done)
-            .map(|(mail, _)| mail.clone())
-            .take(KEEP_THREADS)
-            .enumerate()
-            .map(|(index, mut mail)| {
-                if index >= KEEP_BODIES && mail.loaded {
-                    mail.loaded = false;
-                    mail.body = Default::default();
-                    mail.earlier = Default::default();
-                    mail.html = None;
-                }
-                mail
-            })
-            .collect();
+        // Keep the store small: the newest threads of a mailbox, and the full text of the
+        // newest of those (`listing::kept`).
+        let rows = listing::kept(
+            self.mails
+                .iter()
+                .zip(&self.done)
+                .filter(|(_, done)| !**done)
+                .map(|(mail, _)| &mail.row),
+        );
         if self.mailbox == View::Inbox {
-            self.inbox_saved_empty = mails.is_empty();
+            self.inbox_saved_empty = rows.is_empty();
             self.inboxes_saved_empty
-                .insert(self.account_id.clone(), mails.is_empty());
+                .insert(self.account_id.clone(), rows.is_empty());
         }
         let saved = Saved {
             account: self.account.to_string(),
@@ -836,7 +798,7 @@ impl Nimbra {
         };
         // Written in turn on the store's thread, which also turns them into JSON. The list
         // first: a sync point ahead of its list would miss what changed.
-        store.save_soon(&self.record_for(self.mailbox), mails);
+        store.save_soon(&self.record_for(self.mailbox), rows);
         store.save_soon("meta", saved);
     }
 
@@ -924,7 +886,7 @@ impl Nimbra {
                     Duration::ZERO
                 } else {
                     this.update(cx, |this, _| {
-                        Duration::from_secs(this.settings.check_every.clamp(10, 3600) as u64)
+                        nimbra_core::watching::check_interval(this.settings.check_every)
                     })
                     .unwrap_or(EVERY)
                 };
@@ -939,7 +901,7 @@ impl Nimbra {
                     if left.is_zero() {
                         break;
                     }
-                    let slice = left.min(Duration::from_secs(30));
+                    let slice = left.min(nimbra_core::watching::SLICE);
                     let current = this
                         .update(cx, |this, _| (this.account_gen, this.connection.clone()))
                         .ok();
@@ -1047,17 +1009,10 @@ impl Nimbra {
                 let (fresh, summaries) = cx
                     .background_executor()
                     .spawn(async move {
-                        let fresh = match &store {
-                            Some(store) => crate::blocking::screen(&*client, store, fresh),
-                            None => fresh,
-                        };
                         // Sender and subject for the first few; the rest are summed up.
-                        let summaries = fresh
-                            .iter()
-                            .take(3)
-                            .filter_map(|id| client.summary(id, false).ok())
-                            .collect::<Vec<_>>();
-                        (fresh, summaries)
+                        let news =
+                            nimbra_core::notifying::new_mail(&*client, store.as_deref(), fresh);
+                        (news.fresh, news.named)
                     })
                     .await;
                 if fresh.is_empty() {
@@ -1104,10 +1059,15 @@ impl Nimbra {
             loop {
                 let wait = this
                     .update(cx, |this, _| {
-                        let every = this.settings.check_every.clamp(10, 3600) as u64;
+                        let every =
+                            nimbra_core::watching::check_interval(this.settings.check_every);
                         // Sooner while changes wait there for a connection.
                         let waiting = !this.away_waiting.is_empty();
-                        Duration::from_secs(if waiting { 15 } else { every })
+                        if waiting {
+                            crate::outbox::RETRY_EVERY
+                        } else {
+                            every
+                        }
                     })
                     .unwrap_or(EVERY);
                 crate::integration::pause(cx.background_executor().timer(wait)).await;
@@ -1159,28 +1119,21 @@ impl Nimbra {
                                 },
                             };
                             // Blocked senders: moved away, and no notification.
-                            let fresh = match &store {
-                                Some(store) => {
-                                    if swept {
-                                        crate::blocking::sweep(&*client, store);
-                                    }
-                                    crate::blocking::screen(&*client, store, fresh)
-                                }
-                                None => fresh,
-                            };
-                            let unread = client
-                                .counts(&["INBOX".to_string()])
-                                .get("INBOX")
-                                .map_or(0, |(unread, _)| *unread);
-                            let summaries: Vec<mail::Summary> = fresh
-                                .iter()
-                                .take(3)
-                                .filter_map(|thread| client.summary(thread, false).ok())
-                                .collect();
-                            let extra = fresh.len().saturating_sub(summaries.len());
+                            if swept && let Some(store) = &store {
+                                crate::blocking::sweep(&*client, store);
+                            }
+                            let news =
+                                nimbra_core::notifying::new_mail(&*client, store.as_deref(), fresh);
+                            let unread = listing::inbox_unread(&*client);
+                            let (summaries, extra) = (news.named, news.more);
                             // Snoozes and scheduled sends kept with this account.
                             let woken = store.as_ref().map_or_else(Vec::new, |store| {
-                                carry_out_due(&account, store, &connected, &writes)
+                                nimbra_core::snooze::carry_out_due(
+                                    &account,
+                                    store,
+                                    &connected,
+                                    || writes.begin(),
+                                )
                             });
                             anyhow::Ok((at, summaries, extra, changed, unread, woken))
                         })
@@ -1283,36 +1236,25 @@ impl Nimbra {
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let result = within(cx.background_executor(), async move {
-                // Read the history point first, so nothing that changes during the
-                // fetch is missed by the next sync.
-                let (email, history_id) = client.profile()?;
-                let (threads, next_page) =
-                    client.threads_page(view, label_id.as_deref(), 30, None)?;
-                // Labels are a nicety; the mailbox still loads without them.
-                let labels = need_labels.then(|| client.labels().unwrap_or_default());
-                // Sidebar counts: the system mailboxes plus the labels that are listed.
-                let mut ids: Vec<String> = [
-                    "INBOX",
-                    "DRAFT",
-                    "CATEGORY_PERSONAL",
-                    "CATEGORY_UPDATES",
-                    "CATEGORY_PROMOTIONS",
-                    "CATEGORY_SOCIAL",
-                ]
-                .map(String::from)
-                .to_vec();
-                ids.extend(match &labels {
-                    Some(labels) => labels.iter().take(8).map(|l| l.id.clone()).collect(),
-                    None => known_labels.into_iter().take(8).collect::<Vec<_>>(),
-                });
-                let counts = if count {
-                    client.counts(&ids)
-                } else {
-                    HashMap::new()
-                };
+                let page = listing::first_page(
+                    &*client,
+                    view,
+                    label_id.as_deref(),
+                    listing::PAGE,
+                    need_labels,
+                    &known_labels,
+                    count,
+                )?;
                 // Rows are made here: each takes the local time and its formatting.
-                let threads: Vec<Mail> = threads.into_iter().map(Mail::from_summary).collect();
-                anyhow::Ok((email, history_id, threads, labels, counts, next_page))
+                let threads: Vec<Mail> = page.threads.into_iter().map(Mail::from_summary).collect();
+                anyhow::Ok((
+                    page.email,
+                    page.history_id,
+                    threads,
+                    page.labels,
+                    page.counts,
+                    page.next_page,
+                ))
             })
             .await;
             this.update(cx, |this, cx| {
@@ -1383,7 +1325,7 @@ impl Nimbra {
                     .zip(&self.done)
                     .filter(|(mail, done)| !**done && self.account_of(mail) == id)
                     .count();
-                (id, client, listed.next_multiple_of(30).clamp(30, 480))
+                (id, client, listing::all_inboxes_count(listed))
             })
             .collect();
         if self.mails.is_empty() && !self.cache.contains_key(&View::AllInboxes) {
@@ -1405,20 +1347,7 @@ impl Nimbra {
                 futures::future::join_all(accounts.into_iter().map(|(id, client, count)| {
                     let account = id.clone();
                     let listing = within(executor, async move {
-                        let (threads, next) =
-                            client.threads_page(View::Inbox, None, count, None)?;
-                        let unread = client
-                            .counts(&["INBOX".to_string()])
-                            .get("INBOX")
-                            .map_or(0, |(unread, _)| *unread);
-                        let threads: Vec<Mail> = threads
-                            .into_iter()
-                            .map(|summary| Mail {
-                                account: Some(account.clone()),
-                                ..Mail::from_summary(summary)
-                            })
-                            .collect();
-                        Ok((threads, next, unread))
+                        listing::account_inbox::<Mail>(&*client, &account, count)
                     });
                     async move { (id, listing.await) }
                 }))
@@ -1427,26 +1356,15 @@ impl Nimbra {
                 if this.account_gen != generation || !this.finish_check(check, cx) {
                     return;
                 }
-                let mut fresh: Vec<Mail> = Vec::new();
-                let mut first_error = None;
-                let mut failed = 0;
-                let mut pages = HashMap::new();
                 let asked = results.len();
-                for (id, result) in results {
-                    match result {
-                        Ok((threads, next, unread)) => {
-                            if let Some(next) = next {
-                                pages.insert(id.clone(), next);
-                            }
-                            this.account_unread.insert(id.clone(), unread);
-                            fresh.extend(threads);
-                        }
-                        Err(error) => {
-                            failed += 1;
-                            first_error.get_or_insert(error);
-                        }
-                    }
-                }
+                let listing::AllInboxes {
+                    rows: fresh,
+                    pages,
+                    unread,
+                    failed,
+                    first_error,
+                } = listing::all_inboxes(results);
+                this.account_unread.extend(unread);
                 this.all_inboxes_reached = failed == 0 && asked >= this.settings.accounts.len();
                 this.set_all_pages(pages);
                 if !this.writes.any() {
@@ -1458,7 +1376,6 @@ impl Nimbra {
                     this.fail(error, cx);
                     return;
                 }
-                fresh.sort_by_key(|mail| std::cmp::Reverse(mail.timestamp_ms));
                 this.install(fresh, cx);
                 if failed == 0 {
                     this.checked.insert(this.record_for(View::AllInboxes), seen);
@@ -1529,7 +1446,9 @@ impl Nimbra {
             crate::settings::MarkRead::Delay => {
                 let id = self.mails.get(self.selected).and_then(|m| m.id.clone());
                 cx.spawn(async move |this, cx| {
-                    cx.background_executor().timer(Duration::from_secs(2)).await;
+                    cx.background_executor()
+                        .timer(nimbra_core::notifying::MARK_READ_DELAY)
+                        .await;
                     this.update(cx, |this, cx| {
                         let still = this.mails.get(this.selected).and_then(|m| m.id.clone());
                         if still.is_some() && still == id && this.kept_unread.is_none() {
@@ -1828,39 +1747,18 @@ impl Nimbra {
                 let mut pages = this.all_next.clone();
                 let mut list = this.listed();
                 let before = list.len();
+                // A listing made meanwhile has other pages: what is not from them is left.
                 let known: HashSet<ThreadKey> = this
                     .mails
                     .iter()
                     .map(|mail| this.thread_key(mail))
                     .collect();
-                let mut first_error = None;
-                for (id, page, result) in results {
-                    // A listing made meanwhile has other pages: this one is not from them.
-                    if pages.get(&id) != Some(&page) {
-                        continue;
-                    }
-                    match result {
-                        Ok((threads, next)) => {
-                            match next {
-                                Some(next) => pages.insert(id.clone(), next),
-                                None => pages.remove(&id),
-                            };
-                            list.extend(threads.into_iter().filter_map(|summary| {
-                                let mut mail = Mail::from_summary(summary);
-                                mail.account = Some(id.clone());
-                                (!known.contains(&this.thread_key(&mail))).then_some(mail)
-                            }));
-                        }
-                        Err(error) => {
-                            first_error.get_or_insert(error);
-                        }
-                    }
-                }
+                let first_error =
+                    listing::more_of_all_inboxes(&mut list, &known, &mut pages, results);
                 if from_top && list.len() == before && !pages.is_empty() {
                     this.more_failed.insert(View::AllInboxes); // or it would ask without end
                 }
                 this.set_all_pages(pages);
-                list.sort_by_key(|mail| std::cmp::Reverse(mail.timestamp_ms));
                 this.install(list, cx);
                 if let Some(error) = first_error {
                     this.more_failed.insert(View::AllInboxes);
@@ -2009,6 +1907,16 @@ impl Nimbra {
         self.palette = false;
         cx.notify();
     }
+}
+
+/// The rows a list is kept as in the store (the engine's `listing::Row`).
+pub(super) fn stored(mails: &[Mail]) -> Vec<crate::data::Row> {
+    mails.iter().map(|mail| mail.row.clone()).collect()
+}
+
+/// A list as it was kept, as rows to draw.
+pub(super) fn loaded(rows: Vec<crate::data::Row>) -> Vec<Mail> {
+    rows.into_iter().map(Mail::from).collect()
 }
 
 #[cfg(test)]

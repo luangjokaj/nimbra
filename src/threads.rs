@@ -3,32 +3,8 @@
 
 use super::*;
 
-/// A thread put away until later (snooze), or until later unless someone replies
-/// (a reminder). Kept on this Mac: Gmail's API has no snooze.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub(super) struct Snooze {
-    pub(super) thread_id: String,
-    /// When it comes back (or, for a reminder, when to check for a reply).
-    pub(super) until_ms: i64,
-    /// Only come back if nobody has written since.
-    pub(super) no_reply: bool,
-    /// The time of the thread's latest message when it was put away.
-    pub(super) since_ms: i64,
-    /// The row, to list it under Snoozed.
-    pub(super) mail: Mail,
-}
-
-/// A row without its messages, to keep with a snooze: they are downloaded again when it
-/// is opened, and are not written into the snoozed list each time it changes.
-fn row_only(mail: &Mail) -> Mail {
-    Mail {
-        loaded: false,
-        body: Default::default(),
-        earlier: Default::default(),
-        html: None,
-        ..mail.clone()
-    }
-}
+// A thread put away until later, kept with its account: the engine's, as both apps keep it.
+pub(super) use nimbra_core::snooze::Snooze;
 
 /// One choice in the snooze palette.
 #[derive(Clone)]
@@ -199,71 +175,35 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// The times offered when snoozing.
+    /// The times offered when snoozing (`snooze::menu_times`), as the menu shows them.
     pub(super) fn snooze_choices() -> Vec<SnoozeChoice> {
-        use chrono::{Datelike, Duration as Days, Local, TimeZone, Timelike, Weekday};
-        let now = Local::now();
-        let at = |date: chrono::NaiveDate, hour: u32| {
-            Local
-                .from_local_datetime(&date.and_hms_opt(hour, 0, 0).unwrap_or_default())
-                .single()
-        };
-        let label = |when: chrono::DateTime<Local>| when.format("%a %-d %b, %H:%M").to_string();
-        let mut choices = Vec::new();
-        let mut push =
-            |icon, name: &str, when: Option<chrono::DateTime<Local>>, header, no_reply| {
-                if let Some(when) = when {
-                    choices.push(SnoozeChoice {
-                        icon,
-                        label: name.to_string(),
-                        hint: label(when),
-                        header,
-                        until_ms: when.timestamp_millis(),
-                        no_reply,
-                    });
+        use nimbra_core::snooze::MenuTime;
+        let label =
+            |when: chrono::DateTime<chrono::Local>| when.format("%a %-d %b, %H:%M").to_string();
+        nimbra_core::snooze::menu_times(chrono::Local::now())
+            .into_iter()
+            .map(|(kind, when)| {
+                let (icon, name, header) = match kind {
+                    MenuTime::LaterToday => ("clock", "Later today", Some("SNOOZE")),
+                    MenuTime::InThreeHours => ("clock", "In three hours", Some("SNOOZE")),
+                    MenuTime::TomorrowMorning => ("clock", "Tomorrow morning", None),
+                    MenuTime::ThisWeekend => ("calendar", "This weekend", None),
+                    MenuTime::NextWeek => ("calendar", "Next week", None),
+                    MenuTime::NoReplyInThreeDays => {
+                        ("bell", "Remind me if no reply in 3 days", Some("REMINDER"))
+                    }
+                    MenuTime::NoReplyInAWeek => ("bell", "Remind me if no reply in a week", None),
+                };
+                SnoozeChoice {
+                    icon,
+                    label: name.to_string(),
+                    hint: label(when),
+                    header,
+                    until_ms: when.timestamp_millis(),
+                    no_reply: kind.no_reply(),
                 }
-            };
-        let today = now.date_naive();
-        if now.hour() < 17 {
-            push("clock", "Later today", at(today, 18), Some("SNOOZE"), false);
-        } else {
-            push(
-                "clock",
-                "In three hours",
-                Some(now + Days::hours(3)),
-                Some("SNOOZE"),
-                false,
-            );
-        }
-        let tomorrow = today + Days::days(1);
-        push("clock", "Tomorrow morning", at(tomorrow, 8), None, false);
-        if !matches!(now.weekday(), Weekday::Fri | Weekday::Sat | Weekday::Sun) {
-            let mut saturday = today;
-            while saturday.weekday() != Weekday::Sat {
-                saturday += Days::days(1);
-            }
-            push("calendar", "This weekend", at(saturday, 9), None, false);
-        }
-        let mut monday = today + Days::days(1);
-        while monday.weekday() != Weekday::Mon {
-            monday += Days::days(1);
-        }
-        push("calendar", "Next week", at(monday, 8), None, false);
-        push(
-            "bell",
-            "Remind me if no reply in 3 days",
-            at(today + Days::days(3), 9),
-            Some("REMINDER"),
-            true,
-        );
-        push(
-            "bell",
-            "Remind me if no reply in a week",
-            at(today + Days::days(7), 9),
-            None,
-            true,
-        );
-        choices
+            })
+            .collect()
     }
 
     /// Snoozes the open (or picked) threads: out of the inbox now, back at the chosen time,
@@ -280,18 +220,12 @@ impl Nimbra {
         let mut new: Vec<(String, Snooze)> = Vec::new();
         for &index in &targets {
             let mail = &self.mails[index];
-            let Some(thread_id) = mail.id.clone() else {
+            if mail.id.is_none() {
                 continue;
-            };
+            }
             new.push((
                 self.account_of(mail).to_string(),
-                Snooze {
-                    thread_id,
-                    until_ms: choice.until_ms,
-                    no_reply: choice.no_reply,
-                    since_ms: mail.timestamp_ms,
-                    mail: row_only(mail),
-                },
+                Snooze::new(&mail.row, choice.until_ms, choice.no_reply),
             ));
         }
         let owners: std::collections::BTreeSet<String> =
@@ -302,10 +236,7 @@ impl Nimbra {
                 .filter(|(o, _)| *o == owner)
                 .map(|(_, snooze)| snooze.clone())
                 .collect();
-            self.change_snoozed_of(&owner, move |list| {
-                list.retain(|kept| !theirs.iter().any(|s| s.thread_id == kept.thread_id));
-                list.extend(theirs.iter().cloned());
-            });
+            self.change_snoozed_of(&owner, move |list| nimbra_core::snooze::put(list, &theirs));
         }
         self.watch_schedule(cx);
         let said = if choice.no_reply {
@@ -351,7 +282,7 @@ impl Nimbra {
     fn change_snoozed(&mut self, change: impl Fn(&mut Vec<Snooze>) + Send + Sync + 'static) {
         change(&mut self.snoozed);
         if let Some(store) = &self.store {
-            drop(store.update_soon("snoozed", move |kept| change(kept)));
+            drop(store.update_soon(nimbra_core::snooze::LIST, move |kept| change(kept)));
         }
     }
 
@@ -367,7 +298,7 @@ impl Nimbra {
                 let (changes, list) = self.snoozed_away.entry(account.to_string()).or_default();
                 *changes += 1;
                 change(list);
-                drop(store.update_soon("snoozed", move |kept| change(kept)));
+                drop(store.update_soon(nimbra_core::snooze::LIST, move |kept| change(kept)));
                 self.read_snoozed_elsewhere();
             }
             _ => self.change_snoozed(change),
@@ -385,7 +316,7 @@ impl Nimbra {
             let reading = store.clone();
             let list: Vec<Snooze> = cx
                 .background_executor()
-                .spawn(async move { reading.load("snoozed").unwrap_or_default() })
+                .spawn(async move { reading.load(nimbra_core::snooze::LIST).unwrap_or_default() })
                 .await;
             this.update(cx, |this, cx| {
                 let same_store = this
@@ -419,12 +350,12 @@ impl Nimbra {
             let account = account.clone();
             let theirs = ids.clone();
             self.change_snoozed_of(&account, move |list| {
-                list.retain(|s| !theirs.contains(&s.thread_id))
+                nimbra_core::snooze::forget(list, &theirs)
             });
             // One kept with the shown account from before (snoozed from All inboxes).
             if account != self.account_id && self.snoozed.iter().any(|s| ids.contains(&s.thread_id))
             {
-                self.change_snoozed(move |list| list.retain(|s| !ids.contains(&s.thread_id)));
+                self.change_snoozed(move |list| nimbra_core::snooze::forget(list, &ids));
             }
         }
     }
@@ -444,7 +375,7 @@ impl Nimbra {
             .chain(&self.snoozed_elsewhere)
             .filter(|s| s.no_reply == reminders)
             .map(|s| {
-                let mut mail = s.mail.clone();
+                let mut mail = Mail::from(s.mail.clone());
                 mail.time = snooze_time(s.until_ms);
                 mail
             })
@@ -491,7 +422,7 @@ impl Nimbra {
                 self.snoozed
                     .iter()
                     .chain(away)
-                    .any(|s| s.thread_id == *id && mail.timestamp_ms > s.since_ms)
+                    .any(|s| nimbra_core::snooze::is_answered(s, &mail.row))
                     .then(|| (account.to_string(), id.clone()))
             })
             .collect();
@@ -522,24 +453,18 @@ impl Nimbra {
             let working = self.writes.begin();
             cx.spawn(async move |this, cx| {
                 let (id, since, no_reply) = (item.thread_id.clone(), item.since_ms, item.no_reply);
-                let until = item.until_ms;
+                let item_kept = item.clone();
                 let result = cx
                     .background_executor()
                     .spawn(async move {
                         let _working = working;
-                        let woken = wake(&*client, &id, since, no_reply);
                         // Out of its account's list here, whichever account is shown by now.
-                        if woken.as_ref().map_or_else(mail::is_gone, |_| true)
-                            && let Some(store) = &store
-                            && store
-                                .update("snoozed", |list: &mut Vec<Snooze>| {
-                                    list.retain(|s| s.thread_id != id || s.until_ms != until);
-                                })
-                                .is_err()
-                        {
-                            eprintln!("nimbra: could not save the snoozed list");
+                        match &store {
+                            Some(store) => {
+                                nimbra_core::snooze::wake_kept(store, &*client, &item_kept)
+                            }
+                            None => wake(&*client, &id, since, no_reply),
                         }
-                        woken
                     })
                     .await;
                 this.update(cx, |this, cx| {

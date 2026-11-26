@@ -22,11 +22,11 @@ impl Hit {
     pub(super) fn from_mail(mail: &Mail) -> Self {
         Hit {
             id: mail.id.clone(),
-            sender: mail.sender.clone(),
+            sender: mail.sender.clone().into(),
             initials: mail.initials.clone(),
             tone: mail.tone,
-            subject: mail.subject.clone(),
-            snippet: mail.snippet.clone(),
+            subject: mail.subject.clone().into(),
+            snippet: mail.snippet.clone().into(),
             time: mail.time.clone(),
             unread: mail.unread,
             mail: Box::new(mail.clone()),

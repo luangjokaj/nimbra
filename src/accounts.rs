@@ -5,23 +5,8 @@
 use super::*;
 use crate::imap_mail::Credential;
 
-/// How an account with its own servers signs in, read from the keychain (blocking): its
-/// Microsoft sign-in when `microsoft` is given, else its password. `None` when there is none.
-fn stored_credential(
-    id: &str,
-    microsoft: Option<&crate::microsoft::Config>,
-) -> anyhow::Result<Option<Credential>> {
-    Ok(match microsoft {
-        Some(config) => crate::microsoft::stored_refresh_token(id)?.map(|token| {
-            Credential::Microsoft(Arc::new(crate::microsoft::Tokens::new(
-                config.clone(),
-                token,
-                id.to_string(),
-            )))
-        }),
-        None => crate::servers::stored_password(id)?.map(Credential::Password),
-    })
-}
+// How an account with its own servers signs in, from the keychain: the engine's.
+use nimbra_core::accounts::stored_credential;
 
 /// Shown for a Microsoft account when Microsoft's sign-in is not set up on this Mac.
 const NO_MICROSOFT: &str = "This account signs in with Microsoft, which is not set up on this Mac (NIMBRA_MICROSOFT_CLIENT_ID).";
@@ -151,11 +136,10 @@ impl Nimbra {
 
     /// The account signs in with Microsoft (its servers are Microsoft's).
     pub(super) fn is_microsoft(&self, id: &str) -> bool {
-        self.settings.accounts.iter().any(|a| {
-            a.id == id
-                && a.servers.is_some()
-                && a.oauth.as_deref() == Some(crate::microsoft::PROVIDER)
-        })
+        self.settings
+            .accounts
+            .iter()
+            .any(|a| a.id == id && nimbra_core::accounts::is_microsoft(a))
     }
 
     /// What reading an account's credential needs (see `stored_credential`): Microsoft's
@@ -175,16 +159,7 @@ impl Nimbra {
         credential: Option<Credential>,
     ) -> Option<Arc<mail::Client>> {
         let account = self.settings.accounts.iter().find(|a| a.id == id)?;
-        let servers = account.servers.clone()?;
-        Some(crate::contacts::wrap(
-            crate::imap_mail::Client::new(
-                id.to_string(),
-                account.email.clone(),
-                servers,
-                credential?,
-            ),
-            &account.email,
-        ))
+        nimbra_core::accounts::imap_connection(account, credential)
     }
 
     /// Signs in to another Gmail account in the browser, then switches to it. The account
@@ -485,7 +460,8 @@ impl Nimbra {
                     let waiting = store
                         .load::<Outbox>("outbox")
                         .is_some_and(|outbox| !outbox.changes.is_empty());
-                    let snoozed: Vec<Snooze> = store.load("snoozed").unwrap_or_default();
+                    let snoozed: Vec<Snooze> =
+                        store.load(nimbra_core::snooze::LIST).unwrap_or_default();
                     let inbox_empty = crate::store::Store::saved_empty(&key, &record(View::Inbox));
                     anyhow::Ok((store, waiting, snoozed, inbox_empty))
                 })
@@ -746,21 +722,12 @@ impl Nimbra {
     /// in to an account that is already listed keeps the existing entry.
     pub(super) fn remember_account(&mut self, email: &str, cx: &mut Context<Self>) {
         let id = self.account_id.clone();
-        if let Some(other) = self
-            .settings
-            .accounts
-            .iter()
-            .find(|a| a.email.eq_ignore_ascii_case(email) && a.id != id)
-            .map(|a| a.id.clone())
+        if let Some(other) =
+            nimbra_core::accounts::duplicate_of(&self.settings, email, &id).map(|a| a.id.clone())
         {
             // The same Google account twice: drop the new sign-in, show the existing one.
             let duplicate = id.clone();
-            std::thread::spawn(move || {
-                gmail::forget_refresh_token(&duplicate);
-                crate::servers::forget_password(&duplicate);
-                crate::microsoft::forget_refresh_token(&duplicate);
-                crate::store::wipe(&duplicate);
-            });
+            std::thread::spawn(move || nimbra_core::accounts::forget_secrets_and_mail(&duplicate));
             self.notice = Some("That account is already in Nimbra.".into());
             self.switch_account(other, cx);
             return;
@@ -1119,17 +1086,10 @@ impl Nimbra {
         self.abandon_sends(&account);
         let gone = account.clone();
         std::thread::spawn(move || {
-            gmail::forget_refresh_token(&gone);
-            crate::servers::forget_password(&gone);
-            crate::microsoft::forget_refresh_token(&gone);
-            crate::store::wipe(&gone);
+            nimbra_core::accounts::forget_secrets_and_mail(&gone);
             forget_previews(&gone);
         });
-        self.settings.accounts.retain(|a| a.id != account);
-        self.settings.forget_signatures(&account);
-        if self.settings.default_account.as_deref() == Some(account.as_str()) {
-            self.settings.default_account = None;
-        }
+        nimbra_core::accounts::remove(&mut self.settings, &account);
         self.others.remove(&account);
         self.forget_photo(&account);
         self.other_stores.remove(&account);
@@ -1173,10 +1133,7 @@ impl Nimbra {
         self.abandon_sends(&account);
         let gone = account.clone();
         std::thread::spawn(move || {
-            gmail::forget_refresh_token(&gone);
-            crate::servers::forget_password(&gone);
-            crate::microsoft::forget_refresh_token(&gone);
-            crate::store::wipe(&gone);
+            nimbra_core::accounts::forget_secrets_and_mail(&gone);
             forget_previews(&gone);
         });
         self.settings.accounts.retain(|a| a.id != account);

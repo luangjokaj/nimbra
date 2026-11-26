@@ -291,7 +291,7 @@ impl Nimbra {
         // Not the row: new mail would load the email again, undoing Block images.
         let (thread, account) = self.thread_key(mail);
         let key = format!("{account}:{thread}");
-        Some((key, mail.html.clone()?))
+        Some((key, mail.html.clone()?.into()))
     }
 
     /// Whether light emails are given a dark page right now (Settings › Reading).
@@ -1328,15 +1328,16 @@ impl Nimbra {
                                 .when(!m.earlier.is_empty(), |d| {
                                     d.child(div().children(m.earlier.iter().enumerate().map(
                                         |(k, e)| {
+                                            let (tone, initials, when) = m.earlier_look(k);
                                             // Click a collapsed message to read it in full.
                                             div()
                                                 .child(
                                                     earlier(
-                                                        e.tone,
-                                                        &e.initials,
+                                                        tone,
+                                                        &initials,
                                                         &e.sender,
                                                         if e.expanded { "" } else { &e.snippet },
-                                                        &e.when,
+                                                        &when,
                                                     )
                                                     .id(("earlier", k))
                                                     .cursor_pointer()
@@ -1509,19 +1510,20 @@ impl Nimbra {
         let (header, sender, tone, initials, time) = match index {
             0 => (
                 &mail.header,
-                mail.sender.clone(),
+                SharedString::from(mail.sender.clone()),
                 mail.tone,
                 mail.initials.clone(),
                 mail.time.clone(),
             ),
             k => {
                 let e = &mail.earlier[k - 1];
+                let (tone, initials, when) = mail.earlier_look(k - 1);
                 (
                     &e.header,
-                    e.sender.clone(),
-                    e.tone,
-                    e.initials.clone(),
-                    e.when.clone(),
+                    SharedString::from(e.sender.clone()),
+                    tone,
+                    initials,
+                    when,
                 )
             }
         };

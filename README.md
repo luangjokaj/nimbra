@@ -44,7 +44,7 @@
 
 - **Fast by nature.** Native Rust, drawn on the GPU, no Electron. Mailboxes open from an encrypted local store and refresh in the background, so the app opens straight into your mail.
 - **One key for everything.** `E` done, `H` snooze, `R` reply, `S` star, `/` search, `Z` undo. Hints show the key only while it would do something, and `?` lists them all.
-- **Split inbox.** Important, Team, Calendar, Newsletters and Other, plus Starred, Snoozed, Reminders, Drafts, Sent, Done and your labels.
+- **Split inbox.** Gmail's Primary, Updates, Promotions and Social, each with its unread count, plus Starred, Important, Snoozed, Reminders, Drafts, Sent, Done, All Mail, Spam, Trash and your labels. IMAP accounts keep one inbox.
 - **Snooze and reminders.** Quick times, or any day and time from the calendar; “Only if nobody replies” turns a snooze into a reminder. Works for Gmail and IMAP.
 - **Block senders.** Their mail goes straight to a Blocked label and never notifies. It uses the same label as Spark, so a list kept there carries on.
 - **Every account in one place.** Several Gmail and IMAP accounts, All inboxes merged newest first, and replies that go out from the right address.

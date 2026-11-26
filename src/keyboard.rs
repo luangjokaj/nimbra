@@ -95,7 +95,7 @@ pub fn arrange(
 }
 
 /// The most labels the sidebar lists.
-pub const LABELS_SHOWN: usize = 40;
+pub use nimbra_core::listing::LABELS_SHOWN;
 
 impl Sidebar<'_> {
     pub fn several(&self) -> bool {
@@ -106,14 +106,7 @@ impl Sidebar<'_> {
     fn defaults(&self, section: &str) -> Vec<View> {
         match section {
             "split" if self.demo => vec![View::Inbox],
-            "split" if self.folders => Vec::new(),
-            "split" => vec![
-                View::Inbox,
-                View::Primary,
-                View::Updates,
-                View::Promotions,
-                View::Social,
-            ],
+            "split" => nimbra_core::listing::split_mailboxes(self.folders),
             "mailbox" if self.demo => vec![
                 View::Starred,
                 View::Snoozed,
@@ -122,27 +115,7 @@ impl Sidebar<'_> {
                 View::Sent,
                 View::Done,
             ],
-            "mailbox" => {
-                let mut views = Vec::new();
-                if self.folders {
-                    views.push(View::Inbox);
-                }
-                views.push(View::Starred);
-                if !self.folders {
-                    views.push(View::Important);
-                }
-                views.extend([
-                    View::Snoozed,
-                    View::Reminders,
-                    View::Drafts,
-                    View::Sent,
-                    View::Done,
-                    View::AllMail,
-                    View::Spam,
-                    View::Trash,
-                ]);
-                views
-            }
+            "mailbox" => nimbra_core::listing::mailboxes(self.folders),
             "labels" if self.demo || self.folders => Vec::new(),
             "labels" => (0..self.labels.min(LABELS_SHOWN))
                 .map(View::Label)

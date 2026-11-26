@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use futures::channel::mpsc::UnboundedSender;
 use serde::Deserialize;
 
-use nimbra_core::rich::escape;
 pub use nimbra_core::rich::text_to_html;
 
 /// What the editor page tells the app.
@@ -159,91 +158,8 @@ fn page(nonce: &str) -> String {
         .replace("__BOLD__", &STANDARD.encode(BOLD))
 }
 
-/// The class of the block a signature is sent in, which is how a draft's signature is told
-/// from what was written when it is opened again.
-const SIGNATURE_CLASS: &str = "nimbra-signature";
-
-/// The HTML part of an outgoing message: what was written, the signature (already
-/// `signature::clean`), then the quoted earlier message (kept as text) in Gmail's usual
-/// quote block.
-pub fn message_html(written: &str, signature: Option<&str>, quoted: Option<&str>) -> String {
-    let signature = signature
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| format!("<br><div class=\"{SIGNATURE_CLASS}\">{s}</div>"))
-        .unwrap_or_default();
-    let mut html = format!("<div dir=\"ltr\">{written}{signature}</div>");
-    if let Some(quoted) = quoted.filter(|q| !q.trim().is_empty()) {
-        let mut lines = quoted.lines().peekable();
-        html.push_str("<br><div class=\"nimbra-quote\">");
-        // A reply: "On …, … wrote:" then the quoted lines (without their "> ").
-        if let Some(intro) = lines.next_if(|l| l.trim_end().ends_with("wrote:")) {
-            html.push_str(&format!("<div>{}</div>", escape(intro)));
-            html.push_str(
-                "<blockquote style=\"margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex\">",
-            );
-            for line in lines {
-                let line = line
-                    .strip_prefix("> ")
-                    .or(line.strip_prefix('>'))
-                    .unwrap_or(line);
-                html.push_str(&escape(line));
-                html.push_str("<br>");
-            }
-            html.push_str("</blockquote>");
-        } else {
-            for line in lines {
-                html.push_str(&escape(line));
-                html.push_str("<br>");
-            }
-        }
-        html.push_str("</div>");
-    }
-    html
-}
-
-/// The part of a saved draft's HTML the user wrote: everything before the quote block.
-pub fn own_html(html: &str) -> Option<String> {
-    let marker = [
-        "class=\"gmail_quote",
-        "class=\"nimbra-quote",
-        "class=gmail_quote",
-    ]
-    .iter()
-    .filter_map(|m| html.find(m))
-    .min()?;
-    let start = html[..marker].rfind('<')?;
-    Some(html[..start].to_string())
-}
-
-/// A draft's own part split into what was written and the signature it was saved with
-/// (`message_html`). A draft from before signatures were kept apart has its signature in
-/// what was written, and stays as it is.
-pub fn split_signature(own: &str) -> (String, Option<String>) {
-    let mut fragment = scraper::Html::parse_fragment(own);
-    let found = fragment
-        .root_element()
-        .descendants()
-        .filter_map(scraper::ElementRef::wrap)
-        .find(|e| e.value().classes().any(|c| c == SIGNATURE_CLASS))
-        .map(|e| {
-            // The line break `message_html` puts before it goes with it.
-            let before = e
-                .prev_sibling()
-                .and_then(scraper::ElementRef::wrap)
-                .filter(|b| b.value().name() == "br")
-                .map(|b| b.id());
-            (e.id(), e.inner_html(), before)
-        });
-    let Some((id, signature, before)) = found else {
-        return (own.to_string(), None);
-    };
-    for id in std::iter::once(id).chain(before) {
-        if let Some(mut node) = fragment.tree.get_mut(id) {
-            node.detach();
-        }
-    }
-    (fragment.root_element().inner_html(), Some(signature))
-}
+// The HTML part sent and a draft's signature: the engine's (both apps send the same).
+pub use nimbra_core::composing::{message_html, own_html, split_signature};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod platform {
@@ -468,58 +384,5 @@ mod tests {
         assert!(parse(r#"{"t":"source","s":4}"#).is_none());
         assert!(parse(r#"{"t":"navigate","to":"https://x"}"#).is_none());
         assert!(parse("not json").is_none());
-    }
-
-    #[test]
-    fn outgoing_html_escapes_and_quotes() {
-        assert_eq!(
-            text_to_html("a<b>\n\nc"),
-            "<div>a&lt;b&gt;</div><div><br></div><div>c</div>"
-        );
-        let html = message_html(
-            "<div>Hi</div>",
-            None,
-            Some("On Tue, Ana <a@x.co> wrote:\n> old <tag>\n> more"),
-        );
-        assert!(html.starts_with("<div dir=\"ltr\"><div>Hi</div></div>"));
-        assert!(html.contains("On Tue, Ana &lt;a@x.co&gt; wrote:"));
-        assert!(html.contains("<blockquote") && html.contains("old &lt;tag&gt;<br>more<br>"));
-        assert_eq!(message_html("x", None, None), "<div dir=\"ltr\">x</div>");
-        assert_eq!(
-            message_html("x", Some("  "), None),
-            "<div dir=\"ltr\">x</div>"
-        );
-    }
-
-    #[test]
-    fn a_drafts_own_part_stops_at_the_quote() {
-        let html = "<div dir=\"ltr\"><b>Hi</b></div><br><div class=\"gmail_quote\">old</div>";
-        assert_eq!(
-            own_html(html).as_deref(),
-            Some("<div dir=\"ltr\"><b>Hi</b></div><br>")
-        );
-        assert_eq!(own_html("<div>no quote</div>"), None);
-    }
-
-    #[test]
-    fn a_signature_is_sent_apart_and_found_again_in_a_draft() {
-        let html = message_html(
-            "<div>Hi</div><div><br></div>",
-            Some("<div><b>Luan</b></div>"),
-            Some("On Tue, Ana wrote:\n> old"),
-        );
-        assert!(html.starts_with(
-            "<div dir=\"ltr\"><div>Hi</div><div><br></div><br><div class=\"nimbra-signature\"><div><b>Luan</b></div></div></div>"
-        ));
-        let own = own_html(&html).unwrap();
-        let (written, signature) = split_signature(&own);
-        assert_eq!(signature.as_deref(), Some("<div><b>Luan</b></div>"));
-        assert_eq!(
-            written,
-            "<div dir=\"ltr\"><div>Hi</div><div><br></div></div><br>"
-        );
-        // Older drafts keep their signature in what was written.
-        let old = "<div dir=\"ltr\"><div>Hi</div><div class=\"sig\">Luan</div></div>";
-        assert_eq!(split_signature(old), (old.to_string(), None));
     }
 }

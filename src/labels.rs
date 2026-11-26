@@ -33,7 +33,7 @@ impl Nimbra {
             _ => None,
         };
         change(&mut self.labels);
-        self.labels.sort_by_key(|l| l.name.to_lowercase());
+        nimbra_core::listing::sort_labels(&mut self.labels);
         // A list being fetched now may be from before this change (`refresh_labels`).
         self.labels_asked = None;
         // Label mailboxes in memory are kept by position, which may have moved.
@@ -311,10 +311,8 @@ impl Nimbra {
             }
             LabelSheet::New { apply } => apply,
         };
-        if let Some(existing) = self
-            .labels
-            .iter()
-            .position(|l| l.name.eq_ignore_ascii_case(&name))
+        if let Some(existing) = nimbra_core::listing::label_named(&self.labels, &name)
+            .and_then(|found| self.labels.iter().position(|l| l.id == found.id))
         {
             self.close_new_label(cx);
             let meant = self.label_for.clone();
@@ -452,11 +450,9 @@ impl Nimbra {
         let leaves = inbox_like(self.mailbox);
         match target {
             MoveTarget::Spam => self.remove_selected(mail::Change::Spam, cx),
-            MoveTarget::Inbox => match self.mailbox {
-                View::Spam => self.remove_selected(mail::Change::NotSpam, cx),
-                View::Trash => self.remove_selected(mail::Change::Untrash, cx),
-                _ => self.remove_selected(mail::Change::Unarchive, cx),
-            },
+            MoveTarget::Inbox => {
+                self.remove_selected(nimbra_core::listing::to_inbox(self.mailbox), cx)
+            }
             MoveTarget::Label(label_id) => {
                 let Some(index) = self.labels.iter().position(|l| l.id == label_id) else {
                     return;
@@ -554,16 +550,13 @@ impl Nimbra {
                 .background_executor()
                 .spawn(async move {
                     let _working = working;
-                    if !crate::blocking::set(&store, &address, !unblock)? {
-                        anyhow::bail!("That sender has no address to block.");
-                    }
                     if unblock {
+                        if !crate::blocking::set(&store, &address, false)? {
+                            anyhow::bail!("That sender has no address to block.");
+                        }
                         return Ok(None);
                     }
-                    // Their other threads in the inbox go too.
-                    let label = crate::blocking::label_id(&*client)?;
-                    let moved = crate::blocking::sweep(&*client, &store);
-                    Ok(Some((label, moved)))
+                    crate::blocking::block(&*client, &store, &address).map(Some)
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -730,37 +723,4 @@ impl Nimbra {
     }
 }
 
-/// The same labels under the same names, in any order.
-fn same_labels(a: &[mail::Label], b: &[mail::Label]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .all(|x| b.iter().any(|y| y.id == x.id && y.name == x.name))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn label(id: &str, name: &str) -> mail::Label {
-        mail::Label {
-            id: id.into(),
-            name: name.into(),
-        }
-    }
-
-    #[test]
-    fn a_label_made_or_renamed_elsewhere_is_a_change() {
-        let here = [label("Label_1", "Blocked"), label("Label_2", "Later")];
-        let reordered = [label("Label_2", "Later"), label("Label_1", "Blocked")];
-        assert!(same_labels(&here, &reordered));
-        let more = [
-            label("Label_1", "Blocked"),
-            label("Label_2", "Later"),
-            label("Label_3", "Flights"),
-        ];
-        assert!(!same_labels(&here, &more));
-        let renamed = [label("Label_1", "Blocked"), label("Label_2", "Soon")];
-        assert!(!same_labels(&here, &renamed));
-        assert!(!same_labels(&here, &here[..1]));
-    }
-}
+use nimbra_core::listing::same_labels;
