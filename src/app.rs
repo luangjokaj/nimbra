@@ -92,6 +92,9 @@ use reading::*;
 #[path = "palette.rs"]
 mod palette;
 
+#[path = "shortcuts_sheet.rs"]
+mod shortcuts_sheet;
+use shortcuts_sheet::ShortcutsSheet;
 #[path = "snooze_menu.rs"]
 mod snooze_menu;
 use snooze_menu::SnoozeMenu;
@@ -632,6 +635,8 @@ pub struct Nimbra {
     /// NIMBRA_SCREEN=snooze opens the Snooze menu once the window is drawn, and
     /// snooze-time its calendar with the hours open (screenshots).
     snooze_on_start: Option<bool>,
+    /// NIMBRA_SCREEN=shortcuts opens the shortcuts sheet once the window is drawn.
+    shortcuts_on_start: bool,
     /// The open toolbar menu, if any.
     menu: Option<Menu>,
     /// The menu a click outside just closed, and when. Lets a click on the menu's own
@@ -693,6 +698,8 @@ pub struct Nimbra {
     reveal_cursor: std::rc::Rc<std::cell::Cell<bool>>,
     /// The shortcuts sheet (?).
     shortcuts: bool,
+    /// The shortcuts sheet's window, while it is open.
+    shortcuts_window: Option<gpui::WindowHandle<ShortcutsSheet>>,
     /// What the conversation is scrolled to, for Space.
     reader_scroll: gpui::ScrollHandle,
     /// The message list: shown or hidden, its width, and an in-progress resize
@@ -957,6 +964,7 @@ impl Nimbra {
             snooze_alert: false,
             snooze_time: (9, 0),
             snooze_day: None,
+            shortcuts_on_start: screen == "shortcuts",
             snooze_on_start: match screen.as_str() {
                 "snooze" => Some(false),
                 "snooze-time" => Some(true),
@@ -1036,6 +1044,7 @@ impl Nimbra {
             reveal_row: Default::default(),
             reveal_cursor: Default::default(),
             shortcuts: false,
+            shortcuts_window: None,
             reader_scroll: gpui::ScrollHandle::new(),
             reload_gen: 0,
             images: HashMap::new(),
@@ -1252,102 +1261,6 @@ impl Nimbra {
             },
             other => record(other),
         }
-    }
-
-    /// ?: every shortcut, grouped. Escape, ? or a click outside closes it.
-    fn shortcuts_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let group = |(title, keys): &(&'static str, &'static [keyboard::Shortcut])| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(div().pb(px(2.)).child(overline(*title, t.text3)))
-                .children(keys.iter().map(|(chips, what)| {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .h(px(22.))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .truncate()
-                                .text_color(t.text2)
-                                .child(*what),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_none()
-                                .gap(px(4.))
-                                .children(chips.iter().map(|k| kbd(t, k))),
-                        )
-                }))
-        };
-        let columns = keyboard::SHORTCUT_COLUMNS.iter().map(|column| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(20.))
-                .w(px(228.))
-                .children(column.iter().map(|i| group(&keyboard::SHORTCUTS[*i])))
-        });
-        div()
-            .id("shortcuts-scrim")
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .p(px(16.))
-            .bg(t.scrim)
-            .occlude()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.shortcuts = false;
-                    cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .id("shortcuts")
-                    .max_w(px(3. * 228. + 2. * 32. + 2. * 24. + 2.))
-                    .max_h_full()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .gap(px(16.))
-                    .p(px(24.))
-                    .rounded(px(18.))
-                    .bg(t.raised)
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![shadow(
-                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
-                        30.,
-                        80.,
-                        -10.,
-                    )])
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(
-                        div()
-                            .flex()
-                            .items_end()
-                            .justify_between()
-                            .child(serif("Keyboard shortcuts", 28., t.text))
-                            .child(meta("esc to close".to_string(), t.text3)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_x(px(32.))
-                            .gap_y(px(20.))
-                            .children(columns),
-                    ),
-            )
     }
 
     /// The yes-or-no sheet for permanent actions.
@@ -1868,7 +1781,7 @@ impl Nimbra {
         if self.window_covered() {
             return;
         }
-        self.shortcuts = false;
+        self.close_shortcuts(cx);
         self.leave_sidebar(cx);
         self.select_mailbox(view, cx);
     }
@@ -1884,7 +1797,7 @@ impl Nimbra {
         else {
             return;
         };
-        self.shortcuts = false;
+        self.close_shortcuts(cx);
         self.leave_sidebar(cx);
         self.go_to_row(row, cx);
     }
@@ -2194,6 +2107,9 @@ impl Nimbra {
 
 impl Render for Nimbra {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.shortcuts_on_start) {
+            cx.defer_in(window, |this, window, cx| this.toggle_shortcuts(window, cx));
+        }
         if let Some(hours) = self.snooze_on_start.take() {
             cx.defer_in(window, move |this, window, cx| {
                 let mode = if hours {
@@ -2378,9 +2294,8 @@ impl Render for Nimbra {
             }))
             .on_action(cx.listener(|this, _: &PageDown, _, cx| this.page_message(true, cx)))
             .on_action(cx.listener(|this, _: &PageUp, _, cx| this.page_message(false, cx)))
-            .on_action(cx.listener(|this, _: &ToggleShortcuts, _, cx| {
-                this.shortcuts = !this.shortcuts && !this.window_covered();
-                cx.notify();
+            .on_action(cx.listener(|this, _: &ToggleShortcuts, window, cx| {
+                this.toggle_shortcuts(window, cx)
             }))
             .on_action(cx.listener(|this, _: &GoInbox, _, cx| this.go_to(View::Inbox, cx)))
             .on_action(cx.listener(|this, _: &GoStarred, _, cx| this.go_to(View::Starred, cx)))
@@ -2397,10 +2312,7 @@ impl Render for Nimbra {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                    if this.shortcuts {
-                        this.shortcuts = false;
-                        cx.notify();
-                    }
+                    this.close_shortcuts(cx);
                     if f32::from(event.position.x) > this.side_w() + FLOAT_INSET {
                         this.leave_sidebar(cx);
                     }
@@ -2504,8 +2416,7 @@ impl Render for Nimbra {
                 } else if this.account_sheet_over_main() {
                     this.close_account_sheet(cx);
                 } else if this.shortcuts {
-                    this.shortcuts = false;
-                    cx.notify();
+                    this.close_shortcuts(cx);
                 } else if this.pane == Pane::Sidebar && !this.palette {
                     this.leave_sidebar(cx);
                 } else if !this.picked.is_empty() && !this.palette {
@@ -2726,9 +2637,6 @@ impl Render for Nimbra {
                 d.child(self.confirm_view(&t, cx))
             })
             .when(self.finder_open, |d| d.child(self.finder_view(&t, cx)))
-            .when(self.shortcuts && !self.window_covered(), |d| {
-                d.child(self.shortcuts_view(&t, cx))
-            })
     }
 }
 

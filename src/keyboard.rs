@@ -167,71 +167,120 @@ pub fn extend(open: usize, end: usize, delta: isize, len: usize) -> (usize, Vec<
     (end, (open.min(end)..=open.max(end)).collect())
 }
 
-/// One line of the shortcuts sheet: the keys, and what they do.
-pub type Shortcut = (&'static [&'static str], &'static str);
+/// A piece of a shortcut on the sheet: a key cap, or a word between caps ("/", "then").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Cap {
+    Key(&'static str),
+    Word(&'static str),
+}
 
-/// The sheet's columns, as indexes into `SHORTCUTS`: about the same height each.
-pub const SHORTCUT_COLUMNS: &[&[usize]] = &[&[0, 2], &[1], &[3, 4]];
+const fn k(key: &'static str) -> Cap {
+    Cap::Key(key)
+}
 
-/// The shortcuts sheet, in groups.
-pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
+const fn w(word: &'static str) -> Cap {
+    Cap::Word(word)
+}
+
+/// One row of the shortcuts sheet: the keys, and what they do.
+pub type Shortcut = (&'static [Cap], &'static str);
+
+/// The shortcuts sheet (?), one tab each.
+pub const SHORTCUT_TABS: &[(&str, &[Shortcut])] = &[
     (
         "Move",
         &[
-            (&["↑", "↓"], "Previous or next thread"),
-            (&["←"], "To the sidebar"),
-            (&["→", "↩"], "Open the sidebar row"),
-            (&["Home", "End"], "First or last"),
-            (&["Space"], "Page through the message"),
-            (&["↩"], "Full view"),
-            (&["esc"], "Back"),
+            (
+                &[k("J"), w("/"), k("K"), w("or arrows")],
+                "Next / previous thread",
+            ),
+            (&[k("←")], "Move to the sidebar"),
+            (
+                &[
+                    k("Home"),
+                    w("/"),
+                    k("End"),
+                    w("(or"),
+                    k("⌘↑"),
+                    w("/"),
+                    k("⌘↓"),
+                    w(")"),
+                ],
+                "First / last thread",
+            ),
+            (&[k("X")], "Pick the open thread"),
+            (
+                &[
+                    k("⇧↑"),
+                    w("/"),
+                    k("⇧↓"),
+                    w("(or"),
+                    k("⇧K"),
+                    w("/"),
+                    k("⇧J"),
+                    w(")"),
+                ],
+                "Pick more threads",
+            ),
+            (&[k("O")], "Open in its own window"),
+            (&[k("Space"), w("/"), k("⇧Space")], "Page down / up"),
+            (
+                &[
+                    k("G"),
+                    w("then"),
+                    k("I"),
+                    k("S"),
+                    k("B"),
+                    k("T"),
+                    k("D"),
+                    k("A"),
+                ],
+                "Go to a mailbox",
+            ),
+            (&[k("⌘1"), w("…"), k("⌘9")], "Switch account"),
+            (&[k("⌘["), w("/"), k("⌘]")], "Back / forward"),
         ],
     ),
     (
-        "Act on mail",
+        "Triage",
         &[
-            (&["E"], "Done"),
-            (&["H"], "Snooze"),
-            (&["S"], "Star"),
-            (&["U"], "Mark unread"),
-            (&["Delete"], "Trash"),
-            (&["Z"], "Undo"),
-            (&["X"], "Pick"),
-            (&["⇧", "↑↓"], "Pick more"),
+            (&[k("E")], "Mark done"),
+            (&[k("H"), w("or"), k("⌘K")], "Snooze"),
+            (&[k("S")], "Star or unstar"),
+            (&[k("U")], "Mark unread or read"),
+            (&[k("⌫"), w("or"), k("⌘⌫")], "Move to trash"),
+            (&[k("Z")], "Undo"),
+            (&[k("/"), w("or"), k("⌘F")], "Search"),
+            (&[k("V")], "Original formatting or reader"),
+            (&[k("↩")], "Read in full view"),
+            (&[k("esc")], "Back to the list"),
         ],
     ),
     (
         "Write",
         &[
-            (&["C"], "New message"),
-            (&["R"], "Reply"),
-            (&["A"], "Reply all"),
-            (&["F"], "Forward"),
-            (&["⌘", "↩"], "Send"),
-        ],
-    ),
-    (
-        "Go to",
-        &[
-            (&["G", "I"], "Inbox"),
-            (&["G", "S"], "Starred"),
-            (&["G", "B"], "Snoozed"),
-            (&["G", "T"], "Sent"),
-            (&["G", "D"], "Drafts"),
-            (&["G", "A"], "All mail"),
-            (&["⌘", "1–9"], "Inboxes by account"),
-            (&["/"], "Search"),
+            (&[k("C"), w("or"), k("⌘N")], "New message"),
+            (&[k("R")], "Reply"),
+            (&[k("A")], "Reply all"),
+            (&[k("F")], "Forward"),
+            (&[k("⌘↩")], "Send"),
+            (&[k("⌘⇧F")], "Full-page composer"),
+            (&[k("⌘B"), k("⌘I"), k("⌘U")], "Bold, italic, underline"),
+            (&[k("⌘K")], "Add a link (in a message)"),
+            (&[k("⌘Z")], "Undo send"),
         ],
     ),
     (
         "Window",
         &[
-            (&["O"], "Thread in its own window"),
-            (&["V"], "Original formatting"),
-            (&["⌘", "B"], "Sidebar"),
-            (&["⌘", "⇧", "B"], "Message list"),
-            (&["⌘", "R"], "Check for mail"),
-            (&["?"], "These shortcuts"),
+            (&[k("⌘B")], "Show or hide the sidebar"),
+            (&[k("⌘⇧B")], "Show or hide the message list"),
+            (&[k("⌘R")], "Check for mail"),
+            (&[k("⌘⇧L")], "Light or dark"),
+            (&[k("⌘,")], "Settings"),
+            (&[k("⌘W")], "Close the window (Nimbra keeps checking mail)"),
+            (&[k("⌘Q")], "Quit"),
+            (&[k("?")], "These shortcuts"),
         ],
     ),
 ];
@@ -378,13 +427,14 @@ mod tests {
     }
 
     #[test]
-    fn the_sheet_shows_every_group_once() {
-        let mut shown: Vec<usize> = SHORTCUT_COLUMNS
-            .iter()
-            .flat_map(|c| c.iter().copied())
-            .collect();
-        shown.sort();
-        assert_eq!(shown, (0..SHORTCUTS.len()).collect::<Vec<_>>());
+    fn every_tab_has_rows_and_each_row_a_key() {
+        assert_eq!(SHORTCUT_TABS.len(), 4);
+        for (name, rows) in SHORTCUT_TABS {
+            assert!(!rows.is_empty(), "{name}");
+            for (caps, action) in *rows {
+                assert!(caps.iter().any(|c| matches!(c, Cap::Key(_))), "{action}");
+            }
+        }
     }
 
     #[test]
