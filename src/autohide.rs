@@ -49,6 +49,11 @@ impl Peek {
         *self = Peek::new();
     }
 
+    /// In place or away at once, without the slide (Reduce Motion).
+    pub fn settle(&mut self) {
+        self.since = None;
+    }
+
     /// How far in the panel is `ahead` seconds from now: 0 away, 1 in place, a little over
     /// as it springs in.
     pub fn progress(&self, ahead: f32) -> f32 {
