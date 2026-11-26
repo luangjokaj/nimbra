@@ -7,7 +7,7 @@ rules, and the things review keeps asking for, written down so you don't have to
 ## What we take
 
 Bug fixes are always welcome. For anything else (a new feature, a setting, a shortcut, a restyle, a new provider),
-open a [discussion](https://github.com/luangjokaj/nimbra/discussions) first and wait for a yes. Reviewing a pull
+open a [discussion](https://github.com/nimbra-mail/desktop/discussions) first and wait for a yes. Reviewing a pull
 request takes longer than writing one, and a feature that doesn't fit gets declined however good the code is.
 
 A crash, a regression, and something that shipped and behaves wrong are bugs. A new setting, a new shortcut and a
@@ -150,7 +150,7 @@ Conventional Commit too. CI checks it.
 ## Reporting a bug
 
 Use the bug report form; blank issues are off, and feature ideas go to
-[Discussions](https://github.com/luangjokaj/nimbra/discussions). The fastest bug to fix is one with a screen
+[Discussions](https://github.com/nimbra-mail/desktop/discussions). The fastest bug to fix is one with a screen
 recording. Include:
 
 - the commit or version (Settings › About shows the version),

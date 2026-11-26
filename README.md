@@ -62,7 +62,7 @@ git clone https://github.com/nimbra-mail/core ../core
 cargo run
 ```
 
-Or download a signed build from [Releases](https://github.com/luangjokaj/nimbra/releases) (see [CHANGELOG.md](CHANGELOG.md) for what's new). Nimbra is in alpha: expect rough edges.
+Or download a signed build from [Releases](https://github.com/nimbra-mail/desktop/releases) (see [CHANGELOG.md](CHANGELOG.md) for what's new). Nimbra is in alpha: expect rough edges.
 
 Without an account set up, or with `NIMBRA_DEMO=1`, Nimbra runs on built-in sample data and never touches the network.
 

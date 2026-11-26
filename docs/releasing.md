@@ -123,13 +123,16 @@ The draft from commits is a starting point. Rewrite its lines the way you'd tell
 
 ## Downloads
 
-Every release has `Nimbra.dmg`, so this link always gets the newest version, for the website's download button:
+Every release has `Nimbra.dmg`. For a link that always gets the newest version, alphas and
+betas included, use the website's:
 
 ```
-https://github.com/luangjokaj/nimbra/releases/latest/download/Nimbra.dmg
+https://nimbra.me/download
 ```
 
-While the repository is private, only people with access can download from it.
+It redirects to the newest release's DMG, found the same way as the update feed. GitHub's
+`/releases/latest/download/Nimbra.dmg` skips pre-releases, so it only works once there is a
+stable release.
 
 ## When something goes wrong
 

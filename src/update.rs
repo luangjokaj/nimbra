@@ -23,7 +23,11 @@ use sha2::{Digest, Sha256};
 /// Where release builds read the newest version from (set by `scripts/bundle-macos.sh`).
 const FEED: Option<&str> = option_env!("NIMBRA_UPDATE_FEED");
 /// Only downloads from Nimbra's own GitHub releases are fetched.
-const DOWNLOADS: &str = "https://github.com/luangjokaj/nimbra/releases/download/";
+const DOWNLOADS: &str = "https://github.com/nimbra-mail/desktop/releases/download/";
+/// Where the releases were before the repo moved to the nimbra-mail organization. GitHub
+/// redirects it to `DOWNLOADS`, and 0.1.4 and older only accept it, so feeds keep using it
+/// until those versions are gone.
+const LEGACY_DOWNLOADS: &str = "https://github.com/luangjokaj/nimbra/releases/download/";
 /// The signature an update must carry: Apple's Developer ID chain, this team's leaf.
 const REQUIREMENT: &str = "anchor apple generic and certificate leaf[subject.OU] = \"62TSR9B3L6\"";
 /// A disk image bigger than this is not Nimbra.
@@ -150,7 +154,10 @@ fn checked(manifest: Manifest) -> Result<Manifest> {
     if !numbers {
         bail!("the update's version is not a version");
     }
-    if !manifest.url.starts_with(DOWNLOADS) || manifest.url.contains("..") {
+    let ours = [DOWNLOADS, LEGACY_DOWNLOADS]
+        .iter()
+        .any(|base| manifest.url.starts_with(base));
+    if !ours || manifest.url.contains("..") {
         bail!("the update is not from Nimbra's releases");
     }
     if manifest.sha256.len() != 64 || !manifest.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -391,7 +398,7 @@ mod tests {
             version: version.into(),
             url: url.into(),
             sha256: sha.into(),
-            notes: "https://github.com/luangjokaj/nimbra/releases/tag/v0.1.1".into(),
+            notes: "https://github.com/nimbra-mail/desktop/releases/tag/v0.1.1".into(),
         }
     }
 
@@ -444,11 +451,15 @@ mod tests {
     fn only_nimbras_own_releases_are_fetched() {
         let good = format!("{DOWNLOADS}v0.1.1/Nimbra-0.1.1.dmg");
         assert!(checked(manifest("0.1.1", &good, SHA)).is_ok());
+        let legacy = format!("{LEGACY_DOWNLOADS}v0.1.1/Nimbra-0.1.1.dmg");
+        assert!(checked(manifest("0.1.1", &legacy, SHA)).is_ok());
         for url in [
             "https://example.com/Nimbra.dmg",
+            "http://github.com/nimbra-mail/desktop/releases/download/v0.1.1/Nimbra.dmg",
             "http://github.com/luangjokaj/nimbra/releases/download/v0.1.1/Nimbra.dmg",
+            "https://github.com/nimbra-mail/desktop-x/releases/download/v0.1.1/Nimbra.dmg",
             "https://github.com/someone/nimbra/releases/download/v0.1.1/Nimbra.dmg",
-            "https://github.com/luangjokaj/nimbra/releases/download/../../x/Nimbra.dmg",
+            "https://github.com/nimbra-mail/desktop/releases/download/../../x/Nimbra.dmg",
         ] {
             assert!(checked(manifest("0.1.1", url, SHA)).is_err(), "{url}");
         }

@@ -2,9 +2,9 @@
 //! shows the app), its version, a line on its license, and links to the source.
 
 /// Where the links in the panel go.
-const SOURCE: &str = "https://github.com/luangjokaj/nimbra";
-const LICENSE: &str = "https://github.com/luangjokaj/nimbra/blob/main/LICENSE";
-const CHANGELOG: &str = "https://github.com/luangjokaj/nimbra/blob/main/CHANGELOG.md";
+const SOURCE: &str = "https://github.com/nimbra-mail/desktop";
+const LICENSE: &str = "https://github.com/nimbra-mail/desktop/blob/main/LICENSE";
+const CHANGELOG: &str = "https://github.com/nimbra-mail/desktop/blob/main/CHANGELOG.md";
 
 /// The paragraph under the version, and the links after it (label, address).
 fn credits() -> (String, Vec<(&'static str, &'static str)>) {
