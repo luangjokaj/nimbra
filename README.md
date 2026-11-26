@@ -235,17 +235,9 @@ Offline, archive, star, read and the like still work: changes are kept (encrypte
 
 </details>
 
-## Design
+## App icon
 
-The design lives in the [Mail Client Figma file](https://www.figma.com/design/s6tsR2l2X4MKmoA1dNlm4I/Mail-Client?node-id=7313-2):
-
-- **Nimbra — App UI:** the screens as built (the inbox in dark and light, the Snooze menu, Compose, Inbox zero), the colour variables and text styles, and the component kit.
-- **Landing:** the landing page.
-- **Brand · App icon:** the icon and its Icon Composer layers.
-
-### App icon
-
-The icon source is `assets/AppIcon.icon`, an Icon Composer document (SVG layers plus `icon.json`); the same file works for iOS. Its layers are designed in the Figma file's “Icon Composer layers · 1024” board (one 1024×1024 frame per layer, inside the Light, Eclipse and Flap groups) and exported from there as SVG into `assets/AppIcon.icon/Assets`.
+The icon source is `assets/AppIcon.icon`, an Icon Composer document (SVG layers plus `icon.json`); the same file works for iOS. Its layers are designed in Figma as one 1024×1024 frame per layer, inside the Light, Eclipse and Flap groups, and exported as SVG into `assets/AppIcon.icon/Assets`.
 
 `icon.json` gives it all of macOS's appearances: Default is the light icon (a cream-to-lavender background, the flap and disc in ink, a softer glow), Dark is the violet-to-black one with the paper-white flap, and Clear and Tinted hide the glow and the dark disc, so the mark is a ring over an envelope flap. Layers that use glass must be filled shapes: outline strokes in Figma before exporting, because an open stroke is filled as a closed shape.
 
@@ -271,7 +263,7 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 
 ### Live tests
 
-The IMAP and SMTP code has live tests against local Dovecot and Mailpit servers (OrbStack or Docker); see `tasks/todo.md` for the setup. Run them with `NIMBRA_TEST_CA=certs/ca.pem cargo test live -- --ignored`.
+The IMAP and SMTP code has live tests against local Dovecot and Mailpit servers (OrbStack or Docker); [docs/testing.md](docs/testing.md) has the setup.
 
 ### Sidebar blur
 

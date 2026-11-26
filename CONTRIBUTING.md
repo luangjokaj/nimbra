@@ -112,7 +112,7 @@ cargo test
 ```
 
 The IMAP and SMTP code also has live tests against local Dovecot and Mailpit servers. If you touch `imap_mail.rs`,
-`smtp.rs` or `mime.rs`, run them (setup in [Live tests](README.md#live-tests)):
+`smtp.rs` or `mime.rs`, run them (setup in [docs/testing.md](docs/testing.md)):
 
 ```sh
 NIMBRA_TEST_CA=certs/ca.pem cargo test live -- --ignored
