@@ -181,6 +181,9 @@ impl ShortcutsSheet {
                     .h(px(TABLE_HEAD))
                     .px(px(14.))
                     .bg(t.hover)
+                    // GPUI clips to a rectangle, not the table's rounded corners: the band
+                    // rounds its own, inside the border (12 less its 1).
+                    .rounded_t(px(11.))
                     .child(cell_head("KEY"))
                     .child(cell_head("ACTION")),
             )
