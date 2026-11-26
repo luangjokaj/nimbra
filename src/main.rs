@@ -13,7 +13,6 @@ mod input;
 mod inspiration;
 mod integration;
 mod keyboard;
-mod leaving;
 mod listing;
 mod notify;
 mod quitting;
@@ -32,8 +31,8 @@ mod window_frame;
 
 // The engine, as it was before it moved to its own crate: `crate::mail` and the like.
 use nimbra_core::{
-    blocking, contacts, discover, gmail, imap_mail, mail, mailto, microsoft, rich, scheduled,
-    sending, servers, settings, signature, smtp, store,
+    blocking, contacts, discover, gmail, imap_mail, leaving, mail, mailto, microsoft, outbox, rich,
+    scheduled, sending, servers, settings, signature, smtp, store,
 };
 
 use std::borrow::Cow;

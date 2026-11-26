@@ -53,7 +53,6 @@ use composer::*;
 
 #[path = "outgoing.rs"]
 mod outgoing;
-use outgoing::*;
 
 #[path = "menus.rs"]
 mod menus;
@@ -214,15 +213,8 @@ enum Ask {
     DeleteLabel(String, String),
 }
 
-/// Changes and messages made while offline, sent once Gmail can be reached again.
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Outbox {
-    pub(crate) changes: Vec<(String, mail::Change)>,
-    /// Only as earlier versions saved it: waiting mail has records of its own now (see
-    /// `sending`), and these become such records when the store opens.
-    #[serde(default)]
-    mail: Vec<QueuedMail>,
-}
+// Changes and messages made while offline, sent once the server can be reached again.
+pub(crate) use crate::outbox::Outbox;
 
 /// What Google answered about an account's photo.
 #[derive(Clone, Copy, PartialEq)]
@@ -244,20 +236,12 @@ const QUIT_WOULD_LOSE: &str = "Nimbra can’t keep your unsent mail: it can’t 
 /// The store record of an account's profile photo.
 const PHOTO: &str = "profile-photo";
 const STORE_UNAVAILABLE: &str = "Nimbra could not open what it keeps on this Mac. Nothing was deleted. Allow Keychain access and reopen Nimbra.";
-/// The account and sidebar state saved alongside the mailboxes.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Saved {
-    account: String,
-    initials: String,
-    counts: HashMap<String, (u32, u32)>,
-    labels: Vec<mail::Label>,
-    #[serde(default)]
-    synced_to: HashMap<String, String>,
-}
+/// The account and sidebar state saved alongside the mailboxes (the engine's record).
+type Saved = nimbra_core::listing::Meta;
 
 /// The store record a mailbox is saved under.
 fn record(view: View) -> String {
-    format!("view-{}", view_key(view))
+    nimbra_core::listing::record(view, None)
 }
 
 /// A thread, wherever it is in a list: its key and its account.
@@ -1374,21 +1358,11 @@ impl Nimbra {
     /// The store record (and sync point) of a mailbox. Labels are kept by their Gmail id,
     /// so creating or deleting a label never mixes up what another label holds.
     fn record_for(&self, view: View) -> String {
-        match view {
-            View::Label(index) => match self.labels.get(index) {
-                Some(label) => format!(
-                    "label-{}",
-                    label
-                        .id
-                        .chars()
-                        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-                        .take(50)
-                        .collect::<String>()
-                ),
-                None => record(view),
-            },
-            other => record(other),
-        }
+        let label_id = match view {
+            View::Label(index) => self.labels.get(index).map(|label| label.id.as_str()),
+            _ => None,
+        };
+        nimbra_core::listing::record(view, label_id)
     }
 
     /// The yes-or-no sheet for permanent actions.
@@ -1596,7 +1570,7 @@ impl Nimbra {
                 gpui::WindowOptions {
                     window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some(mail.subject.clone()),
+                        title: Some(mail.subject.clone().into()),
                         appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(18.), px(18.))),
                     }),
@@ -2169,39 +2143,12 @@ fn text_width(text: &str, size: f32, family: &'static str, cx: &App) -> f32 {
 /// The mailboxes that are an inbox, one account's or every account's: Done archives there,
 /// Snooze and Move to take the thread out.
 fn inbox_like(view: View) -> bool {
-    matches!(
-        view,
-        View::Inbox
-            | View::AllInboxes
-            | View::Primary
-            | View::Updates
-            | View::Promotions
-            | View::Social
-    )
+    nimbra_core::listing::inbox_like(view)
 }
 
-/// A stable number per mailbox, for element ids.
+/// A stable number per mailbox, for element ids (the one its store record goes by).
 fn view_key(view: View) -> usize {
-    match view {
-        View::AllInboxes => 99,
-        View::Inbox => 0,
-        View::Primary => 1,
-        View::Updates => 2,
-        View::Promotions => 3,
-        View::Social => 4,
-        View::Starred => 5,
-        View::Snoozed => 6,
-        View::Reminders => 15,
-        View::Drafts => 7,
-        View::Sent => 8,
-        View::Done => 9,
-        View::Search => 10,
-        View::AllMail => 11,
-        View::Important => 12,
-        View::Spam => 13,
-        View::Trash => 14,
-        View::Label(index) => 100 + index,
-    }
+    nimbra_core::listing::view_number(view)
 }
 
 fn card(t: &Theme) -> Div {

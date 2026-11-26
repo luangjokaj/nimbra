@@ -403,108 +403,46 @@ impl Nimbra {
         if kind != ComposeKind::New
             && let Some(source) = source
         {
-            let prefix = if kind == ComposeKind::Forward {
-                "Fwd: "
-            } else {
-                "Re: "
-            };
-            let subject = if source
-                .subject
-                .to_lowercase()
-                .starts_with(&prefix.trim().to_lowercase())
-            {
-                source.subject.clone()
-            } else {
-                format!("{prefix}{}", source.subject)
-            };
+            use nimbra_core::composing::{self, Answer};
+            let answered = composing::answer(
+                match kind {
+                    ComposeKind::Forward => Answer::Forward,
+                    ComposeKind::ReplyAll => Answer::ReplyAll,
+                    _ => Answer::Reply,
+                },
+                &composing::Source {
+                    subject: &source.subject,
+                    sender: &source.sender,
+                    header: &source.header,
+                    body: &source.body,
+                    reply_to: source.reply_to.clone(),
+                    fallback_to: source.fallback_to.clone(),
+                    fallback_all: &source.fallback_all,
+                },
+                &self.account,
+                &long_date(source.header.date_ms),
+                self.settings.quote_replies,
+            );
             composer
                 .subject
-                .update(cx, |input, cx| input.set(subject, usize::MAX, cx));
-            let header = &source.header;
-            let when = long_date(header.date_ms);
-            let from = if header.from.address.is_empty() {
-                source.sender.clone()
-            } else if header.from.name.is_empty() {
-                header.from.address.clone()
-            } else {
-                format!("{} <{}>", header.from.name, header.from.address)
-            };
-            let body: Vec<String> = source
-                .body
-                .iter()
-                .flat_map(|block| {
-                    block
-                        .text
-                        .lines()
-                        .map(str::to_string)
-                        .chain([String::new()])
-                })
-                .take(2000)
-                .collect();
+                .update(cx, |input, cx| input.set(answered.subject, usize::MAX, cx));
             if kind == ComposeKind::Forward {
-                // The forwarded message is folded behind "•••" and added when sent.
-                let to = header
-                    .to
-                    .iter()
-                    .map(|p| p.address.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let mut quoted = vec![
-                    "---------- Forwarded message ----------".to_string(),
-                    format!("From: {from}"),
-                ];
-                if !when.is_empty() {
-                    quoted.push(format!("Date: {when}"));
-                }
-                quoted.push(format!("Subject: {}", source.subject));
-                if !to.is_empty() {
-                    quoted.push(format!("To: {to}"));
-                }
-                quoted.push(String::new());
-                quoted.extend(body);
-                composer.quoted = Some(quoted.join("\n").trim_end().to_string());
-                // Its files go along: read from Gmail when it is saved or sent, and shown
-                // as chips, each with a button to leave it out.
-                composer.kept = header.attachments.clone();
+                // The forwarded message is folded behind "•••" and added when sent. Its
+                // files go along: read from Gmail when it is saved or sent, and shown as
+                // chips, each with a button to leave it out.
+                composer.quoted = answered.quoted;
+                composer.kept = answered.kept;
             } else {
-                let address = if header.from.address.is_empty() {
-                    source.fallback_to.clone()
-                } else {
-                    Some(header.reply_address().to_string())
-                };
-                if let Some(address) = address {
-                    let mut to = vec![address];
-                    if kind == ComposeKind::ReplyAll {
-                        let others = if header.from.address.is_empty() {
-                            source.fallback_all.clone()
-                        } else {
-                            header.everyone()
-                        };
-                        for other in others {
-                            let me = other.eq_ignore_ascii_case(&self.account);
-                            if !me && !to.iter().any(|known| known.eq_ignore_ascii_case(&other)) {
-                                to.push(other);
-                            }
-                        }
-                    }
+                if !answered.to.is_empty() {
+                    let to = answered.to.join(", ");
                     composer
                         .to
-                        .update(cx, |input, cx| input.set(to.join(", "), usize::MAX, cx));
+                        .update(cx, |input, cx| input.set(to, usize::MAX, cx));
                     composer.chipify(Field::To, true, cx);
                 }
-                composer.reply = source.reply_to.clone();
+                composer.reply = answered.reply;
                 // The message being answered is quoted below, folded behind "•••".
-                let intro = if when.is_empty() {
-                    format!("{from} wrote:")
-                } else {
-                    format!("On {when}, {from} wrote:")
-                };
-                let quoted: Vec<String> = std::iter::once(intro)
-                    .chain(body.iter().map(|line| format!("> {line}")))
-                    .collect();
-                if self.settings.quote_replies {
-                    composer.quoted = Some(quoted.join("\n").trim_end().to_string());
-                }
+                composer.quoted = answered.quoted;
                 focus = composer.lines[0].read(cx).focus_handle(cx);
             }
         }
@@ -1575,60 +1513,27 @@ impl Nimbra {
             .chain(std::iter::once(self.account.to_lowercase()))
             .filter(|a| !a.is_empty())
             .collect();
-        let mut found: HashMap<String, (mail::Person, f64)> = HashMap::new();
-        let mut add = |person: mail::Person, score: f64| {
-            let key = person.address.to_lowercase();
-            if key.is_empty() || mine.contains(&key) || present.contains(&key) {
-                return;
-            }
-            let entry = found.entry(key).or_insert_with(|| (person.clone(), 0.0));
-            entry.1 += score;
-            if entry.0.name.is_empty() && !person.name.is_empty() {
-                entry.0.name = person.name;
-            }
-        };
         let connections = self
             .connection
             .iter()
             .map(|c| (self.account_id.as_str(), c))
             .chain(self.others.iter().map(|(id, c)| (id.as_str(), c)));
-        for (account, client) in connections {
-            let weight = if account == from { 2.0 } else { 1.0 };
-            for (person, score) in client
-                .contacts()
-                .map(|c| c.suggest(token))
-                .unwrap_or_default()
-            {
-                add(person, score * weight);
-            }
-        }
+        let books = connections
+            .filter_map(|(account, client)| client.contacts().map(|book| (account, book.as_ref())));
         // The mail on screen (and the sample mail, which no connection has).
-        for mail in self.mails.iter().chain(self.cache.values().flatten()) {
-            for header in
+        let seen = self
+            .mails
+            .iter()
+            .chain(self.cache.values().flatten())
+            .flat_map(|mail| {
                 std::iter::once(&mail.header).chain(mail.earlier.iter().map(|e| &e.header))
-            {
-                for person in std::iter::once(&header.from)
+            })
+            .flat_map(|header| {
+                std::iter::once(&header.from)
                     .chain(&header.to)
                     .chain(&header.cc)
-                {
-                    if crate::contacts::matches(person, token)
-                        && !crate::contacts::automated(&person.address)
-                    {
-                        add(person.clone(), 0.25);
-                    }
-                }
-            }
-        }
-        let mut found: Vec<(mail::Person, f64)> = found.into_values().collect();
-        found.sort_by(|a, b| {
-            b.1.total_cmp(&a.1)
-                .then_with(|| a.0.address.cmp(&b.0.address))
-        });
-        found
-            .into_iter()
-            .take(crate::contacts::SHOWN)
-            .map(|(p, _)| p)
-            .collect()
+            });
+        crate::contacts::rank(token, &from, books, seen, &mine, present)
     }
 
     /// Puts the chosen suggestion in place of what was being typed.

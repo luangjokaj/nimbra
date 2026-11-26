@@ -39,22 +39,8 @@ pub(super) fn flipped(shown_dark: bool, mac_dark: bool) -> ThemeChoice {
     }
 }
 
-/// The shown account's inbox count (None while it is not connected) and each other
-/// connected account's. The shown account is never counted twice, whatever its id ("" for
-/// the first one).
-pub(super) fn inbox_badge(
-    shown: &str,
-    shown_unread: Option<u32>,
-    account_unread: &HashMap<String, u32>,
-    connected: impl Fn(&str) -> bool,
-) -> u32 {
-    account_unread
-        .iter()
-        .filter(|(id, _)| id.as_str() != shown && connected(id))
-        .fold(shown_unread.unwrap_or(0), |sum, (_, unread)| {
-            sum.saturating_add(*unread)
-        })
-}
+// The Dock badge's number: the engine's (both apps count the same).
+pub(super) use nimbra_core::notifying::inbox_badge;
 
 pub(super) fn theme_label(choice: ThemeChoice) -> &'static str {
     match choice {
@@ -743,38 +729,6 @@ pub(super) fn update_notice(version: &str) -> SharedString {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn unread(pairs: &[(&str, u32)]) -> HashMap<String, u32> {
-        pairs.iter().map(|(id, n)| (id.to_string(), *n)).collect()
-    }
-
-    #[test]
-    fn the_badge_sums_every_connected_inbox() {
-        let others = unread(&[("b", 3), ("c", 4)]);
-        assert_eq!(inbox_badge("", Some(2), &others, |_| true), 9);
-    }
-
-    #[test]
-    fn the_first_account_is_counted_once_and_as_another_account() {
-        // The first account's id is "": shown, its own entry is not added again.
-        let all = unread(&[("", 5), ("b", 3)]);
-        assert_eq!(inbox_badge("", Some(5), &all, |_| true), 8);
-        // Another account shown: the first one counts like any other.
-        assert_eq!(inbox_badge("b", Some(3), &all, |_| true), 8);
-    }
-
-    #[test]
-    fn signed_out_accounts_do_not_count() {
-        let others = unread(&[("b", 3), ("c", 4)]);
-        assert_eq!(inbox_badge("a", None, &others, |id| id == "c"), 4);
-        assert_eq!(inbox_badge("a", None, &HashMap::new(), |_| true), 0);
-    }
-
-    #[test]
-    fn the_badge_does_not_overflow() {
-        let others = unread(&[("b", u32::MAX)]);
-        assert_eq!(inbox_badge("a", Some(1), &others, |_| true), u32::MAX);
-    }
 
     #[test]
     fn a_flip_to_what_the_mac_shows_follows_the_mac() {

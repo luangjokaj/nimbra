@@ -2,7 +2,7 @@
 //! a switch to come back only if nobody has replied. A small window of its own, like the
 //! toolbar menus, so it floats above the email's web view.
 
-use chrono::{Datelike, Duration as Days, Local, NaiveDate, TimeZone, Timelike, Weekday};
+use chrono::{Datelike, Duration as Days, Local, NaiveDate};
 
 use super::*;
 
@@ -60,13 +60,6 @@ impl Mode {
     }
 }
 
-/// A local time on a day, if the clock has it (not inside a daylight-saving jump).
-fn at(date: NaiveDate, hour: u32) -> Option<chrono::DateTime<Local>> {
-    Local
-        .from_local_datetime(&date.and_hms_opt(hour, 0, 0)?)
-        .single()
-}
-
 /// How a time reads in the menu: the weekday and time within the week, the date after that.
 fn when_text(when: chrono::DateTime<Local>) -> String {
     let days = (when.date_naive() - Local::now().date_naive()).num_days();
@@ -88,100 +81,35 @@ fn choice(icon: &'static str, label: &str, when: chrono::DateTime<Local>) -> Sno
     }
 }
 
-/// The quick times: later today, tomorrow morning and evening, the weekend, next week.
+/// The quick times: later today, tomorrow morning and evening, the weekend, next week
+/// (`snooze::quick_times`), as the menu shows them.
 pub(super) fn quick_times() -> Vec<SnoozeChoice> {
-    let now = Local::now();
-    let today = now.date_naive();
-    let tomorrow = today + Days::days(1);
-    let mut choices = Vec::new();
-    if now.hour() < 17 {
-        choices.extend(at(today, 18).map(|w| choice("clock", "Later today", w)));
-    } else {
-        choices.push(choice("clock", "In three hours", now + Days::hours(3)));
-    }
-    choices.extend(at(tomorrow, 9).map(|w| choice("calendar", "Tomorrow", w)));
-    choices.extend(at(tomorrow, 18).map(|w| choice("calendar", "Tomorrow evening", w)));
-    // The coming Saturday, unless it is already the weekend.
-    if !matches!(now.weekday(), Weekday::Sat | Weekday::Sun) {
-        let mut saturday = today + Days::days(1);
-        while saturday.weekday() != Weekday::Sat {
-            saturday += Days::days(1);
-        }
-        choices.extend(at(saturday, 9).map(|w| choice("calendar", "This weekend", w)));
-    }
-    let mut monday = today + Days::days(1);
-    while monday.weekday() != Weekday::Mon {
-        monday += Days::days(1);
-    }
-    choices.extend(at(monday, 9).map(|w| choice("calendar", "Next week", w)));
-    // On a Friday the weekend is tomorrow, on a Sunday next week is: each time once.
-    choices.sort_by_key(|c| c.until_ms);
-    choices.dedup_by_key(|c| c.until_ms);
-    choices
+    use nimbra_core::snooze::Quick;
+    nimbra_core::snooze::quick_times(Local::now())
+        .into_iter()
+        .map(|(kind, when)| match kind {
+            Quick::LaterToday => choice("clock", "Later today", when),
+            Quick::InThreeHours => choice("clock", "In three hours", when),
+            Quick::Tomorrow => choice("calendar", "Tomorrow", when),
+            Quick::TomorrowEvening => choice("calendar", "Tomorrow evening", when),
+            Quick::ThisWeekend => choice("calendar", "This weekend", when),
+            Quick::NextWeek => choice("calendar", "Next week", when),
+        })
+        .collect()
 }
 
 /// When a day picked in the calendar comes back: at the time chosen under it. None for a
 /// time already gone by.
-fn day_time(date: NaiveDate, (hour, minute): (u32, u32)) -> Option<chrono::DateTime<Local>> {
-    let when = Local
-        .from_local_datetime(&date.and_hms_opt(hour, minute, 0)?)
-        .single()?;
-    (when > Local::now()).then_some(when)
+fn day_time(date: NaiveDate, time: (u32, u32)) -> Option<chrono::DateTime<Local>> {
+    nimbra_core::snooze::day_time(date, time, Local::now())
 }
 
-/// A time typed in: "4:30 PM", "4:30pm", "16:30", "430p", "4", "noon". Without AM or PM,
-/// 1 to 7 is the afternoon (nobody snoozes to 5 in the morning by typing "5"), unless it is
-/// written with a leading zero ("07:00").
-fn parse_time(text: &str) -> Option<(u32, u32)> {
-    let s: String = text
-        .trim()
-        .to_lowercase()
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '.')
-        .collect();
-    match s.as_str() {
-        "noon" => return Some((12, 0)),
-        "midnight" => return Some((0, 0)),
-        _ => {}
-    }
-    let (body, half) = if let Some(b) = s.strip_suffix("am").or_else(|| s.strip_suffix('a')) {
-        (b, Some(false))
-    } else if let Some(b) = s.strip_suffix("pm").or_else(|| s.strip_suffix('p')) {
-        (b, Some(true))
-    } else {
-        (s.as_str(), None)
-    };
-    if body.is_empty() || !body.chars().all(|c| c.is_ascii_digit() || c == ':') {
-        return None;
-    }
-    let (hour, minute): (&str, &str) = match body.split_once(':') {
-        Some(split) => split,
-        None if body.len() <= 2 => (body, "0"),
-        None if body.len() <= 4 => body.split_at(body.len() - 2),
-        None => return None,
-    };
-    let (h, m): (u32, u32) = (hour.parse().ok()?, minute.parse().ok()?);
-    if m > 59 || hour.is_empty() {
-        return None;
-    }
-    let h = match half {
-        Some(pm) if (1..=12).contains(&h) => h % 12 + if pm { 12 } else { 0 },
-        Some(_) => return None,
-        None if (1..=7).contains(&h) && !hour.starts_with('0') => h + 12,
-        None if h <= 23 => h,
-        None => return None,
-    };
-    Some((h, m))
-}
+// A time typed in (the engine's: both apps read them the same way).
+use nimbra_core::snooze::parse_time;
 
 /// The day the calendar starts on: today if the time is still ahead today, else tomorrow.
 fn first_open_day(time: (u32, u32)) -> NaiveDate {
-    let today = Local::now().date_naive();
-    if day_time(today, time).is_some() {
-        today
-    } else {
-        today + Days::days(1)
-    }
+    nimbra_core::snooze::first_open_day(time, Local::now())
 }
 
 /// "9:00 AM".
@@ -977,42 +905,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_quick_times_are_ahead_and_in_order() {
-        let now = Local::now().timestamp_millis();
-        let times = quick_times();
-        assert!(times.len() >= 4);
-        assert!(times.iter().all(|c| c.until_ms > now && !c.no_reply));
-        assert!(times.windows(2).all(|w| w[0].until_ms <= w[1].until_ms));
-    }
-
-    #[test]
-    fn a_day_gone_by_cannot_be_picked() {
-        let today = Local::now().date_naive();
-        assert!(day_time(today - Days::days(1), (9, 0)).is_none());
-        let tomorrow = day_time(today + Days::days(1), (15, 0)).unwrap();
-        assert_eq!((tomorrow.hour(), tomorrow.minute()), (15, 0));
-        // Today at a time already gone.
-        assert!(day_time(today, (0, 0)).is_none());
+    fn a_time_reads_on_the_twelve_hour_clock() {
         assert_eq!(time_text((21, 0)), "9:00 PM");
-    }
-
-    #[test]
-    fn any_time_can_be_typed() {
-        assert_eq!(parse_time("4:30 PM"), Some((16, 30)));
-        assert_eq!(parse_time("4:30pm"), Some((16, 30)));
-        assert_eq!(parse_time(" 9:15 a.m. "), Some((9, 15)));
-        assert_eq!(parse_time("16:45"), Some((16, 45)));
-        assert_eq!(parse_time("430p"), Some((16, 30)));
-        assert_eq!(parse_time("1015"), Some((10, 15)));
-        assert_eq!(parse_time("12am"), Some((0, 0)));
-        assert_eq!(parse_time("12 pm"), Some((12, 0)));
-        assert_eq!(parse_time("noon"), Some((12, 0)));
-        // Without AM or PM, 1 to 7 is the afternoon; a leading zero is the morning.
-        assert_eq!(parse_time("5"), Some((17, 0)));
-        assert_eq!(parse_time("07:00"), Some((7, 0)));
-        assert_eq!(parse_time("8:20"), Some((8, 20)));
-        for bad in ["", "25:00", "4:60", "13pm", "soon", "4:3:0", "12345"] {
-            assert_eq!(parse_time(bad), None, "{bad}");
-        }
     }
 }

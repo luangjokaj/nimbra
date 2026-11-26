@@ -4,59 +4,7 @@
 
 use super::*;
 
-/// What a catch-up got done.
-#[derive(Default)]
-pub(super) struct CaughtUp {
-    pub(super) changes: usize,
-    pub(super) sent: usize,
-    /// Not sent by itself: the subject, whether it may have arrived all the same, and
-    /// whether Drafts has it.
-    pub(super) kept: Vec<(String, bool, bool)>,
-}
-
-/// Sends what waited for the connection, in order. Blocking.
-pub(super) fn catch_up(
-    client: &mail::Client,
-    changes: &[(String, mail::Change)],
-    queue: &[Arc<Job>],
-) -> anyhow::Result<CaughtUp> {
-    // Is Gmail reachable again?
-    client.profile()?;
-    let mut done = CaughtUp::default();
-    for (id, change) in changes {
-        match client.change(id, *change) {
-            Err(error) if error.is::<mail::Offline>() => return Ok(done),
-            // Anything else (the thread is gone, say) is dropped.
-            _ => done.changes += 1,
-        }
-    }
-    for job in queue {
-        match job.send() {
-            None => {}
-            Some(Ok(())) => done.sent += 1,
-            Some(Err(_)) => {
-                let unsure = match job.stage() {
-                    Stage::Held => break, // still offline
-                    stage => stage == Stage::Unsure,
-                };
-                done.kept.push((job.subject(), unsure, job.to_drafts()));
-            }
-        }
-    }
-    Ok(done)
-}
-
-/// The offline queue read from a store, without the `caught_up` changes at its start that
-/// were made since it was read, and with what was queued meanwhile after it.
-fn with_caught_up(
-    mut read: Outbox,
-    caught_up: usize,
-    mut meanwhile: Vec<(String, mail::Change)>,
-) -> Outbox {
-    read.changes.drain(..caught_up.min(read.changes.len()));
-    read.changes.append(&mut meanwhile);
-    read
-}
+use crate::outbox::{CaughtUp, catch_up, with_caught_up};
 
 /// Send, while From is changing and the files are still being read from the old account.
 const MOVING_ATTACHMENTS: &str =
@@ -225,8 +173,10 @@ impl Nimbra {
         cx.spawn(async move |this, cx| {
             loop {
                 // Sooner when the Mac wakes or the network comes back.
-                crate::integration::pause(cx.background_executor().timer(Duration::from_secs(15)))
-                    .await;
+                crate::integration::pause(
+                    cx.background_executor().timer(crate::outbox::RETRY_EVERY),
+                )
+                .await;
                 let next = this.update(cx, |this, _| {
                     if this.retry_gen != attempt {
                         return Err(()); // another loop's turn, or none's
@@ -381,7 +331,7 @@ impl Nimbra {
             Err(error) => error,
         };
         let offline = error.is::<mail::Offline>();
-        let unsure = error.is::<mail::MayHaveArrived>();
+        let unsure = crate::outbox::failed(&error) == crate::outbox::Failed::Unsure;
         let room = parked.is_some() && self.compose.is_none();
         if self.shown_signed_out(&error) {
             self.compose = None;
@@ -489,37 +439,40 @@ impl Nimbra {
 
     /// A message found in the store: quit, a crash or a switch of accounts got in its way.
     pub(super) fn pick_up_send(&mut self, job: Arc<Job>, cx: &mut Context<Self>) {
+        use crate::outbox::PickUp;
         let subject = short(&job.subject(), 40);
-        match job.stage() {
-            Stage::Held => {
+        let what = if subject.trim().is_empty() {
+            "A message".to_string()
+        } else {
+            format!("“{subject}”")
+        };
+        match crate::outbox::pick_up(job.stage()) {
+            PickUp::Send => {
                 self.sends.push(job.clone());
                 self.send_job(job, cx);
             }
-            Stage::Out | Stage::Unsure => self.send_to_drafts(
+            PickUp::MaybeSent => self.send_to_drafts(
                 job,
                 format!("“{subject}” may already be sent: check Sent before sending it again."),
                 cx,
             ),
-            Stage::Refused => self.send_to_drafts(job, format!("“{subject}” was not sent."), cx),
-            Stage::Writing | Stage::Unscheduled => {
-                let what = if subject.trim().is_empty() {
-                    "A message".to_string()
-                } else {
-                    format!("“{subject}”")
-                };
-                let why = if job.stage() == Stage::Writing {
-                    format!("{what} was being written when Nimbra quit.")
-                } else {
-                    format!("{what} was not scheduled before Nimbra quit.")
-                };
-                self.send_to_drafts(job, why, cx);
-            }
-            Stage::Discarded => {
+            PickUp::Refused => self.send_to_drafts(job, format!("“{subject}” was not sent."), cx),
+            PickUp::Writing => self.send_to_drafts(
+                job,
+                format!("{what} was being written when Nimbra quit."),
+                cx,
+            ),
+            PickUp::Unscheduled => self.send_to_drafts(
+                job,
+                format!("{what} was not scheduled before Nimbra quit."),
+                cx,
+            ),
+            PickUp::Discard => {
                 cx.background_executor()
                     .spawn(async move { job.discard() })
                     .detach();
             }
-            Stage::Over => job.forget(),
+            PickUp::Forget => job.forget(),
         }
     }
 
@@ -732,47 +685,25 @@ impl Nimbra {
         }
     }
 
-    /// The times offered by Send later, with their labels.
+    /// The times offered by Send later (`scheduled::later_times`), with their labels.
     pub(super) fn send_later_choices() -> Vec<(String, i64)> {
-        use chrono::{Datelike, Duration as Days, Local, TimeZone, Timelike, Weekday};
-        let now = Local::now();
-        let at = |date: chrono::NaiveDate, hour: u32| {
-            Local
-                .from_local_datetime(&date.and_hms_opt(hour, 0, 0).unwrap_or_default())
-                .single()
-                .map(|t| t.timestamp_millis())
-        };
-        let mut choices = Vec::new();
-        let hour = (now + Days::hours(1)).with_second(0).unwrap_or(now);
-        choices.push((
-            format!("In an hour · {}", hour.format("%H:%M")),
-            hour.timestamp_millis(),
-        ));
-        if now.hour() < 17
-            && let Some(ms) = at(now.date_naive(), 18)
-        {
-            choices.push(("This evening · 18:00".into(), ms));
-        }
-        let tomorrow = now.date_naive() + Days::days(1);
-        if let Some(ms) = at(tomorrow, 8) {
-            choices.push((
-                format!("Tomorrow morning · {} 8:00", tomorrow.format("%a")),
-                ms,
-            ));
-        }
-        let mut monday = now.date_naive() + Days::days(1);
-        while monday.weekday() != Weekday::Mon {
-            monday += Days::days(1);
-        }
-        if monday != tomorrow
-            && let Some(ms) = at(monday, 8)
-        {
-            choices.push((
-                format!("Monday morning · {} 8:00", monday.format("%b %-d")),
-                ms,
-            ));
-        }
-        choices
+        use crate::scheduled::Later;
+        crate::scheduled::later_times(chrono::Local::now())
+            .into_iter()
+            .map(|(kind, when)| {
+                let label = match kind {
+                    Later::InAnHour => format!("In an hour · {}", when.format("%H:%M")),
+                    Later::ThisEvening => "This evening · 18:00".into(),
+                    Later::TomorrowMorning => {
+                        format!("Tomorrow morning · {} 8:00", when.format("%a"))
+                    }
+                    Later::MondayMorning => {
+                        format!("Monday morning · {} 8:00", when.format("%b %-d"))
+                    }
+                };
+                (label, when.timestamp_millis())
+            })
+            .collect()
     }
 
     /// Send later: saves the draft, then sends it from this Mac at `at`.
@@ -1005,21 +936,12 @@ impl Nimbra {
             return;
         }
         let outgoing = composer.outgoing(cx);
-        if let Err(error) = outgoing.recipients() {
-            composer.error = Some(error.to_string().into());
-            cx.notify();
-            return;
-        }
-        if outgoing.subject.trim().is_empty()
-            && outgoing.body.trim().is_empty()
-            && outgoing.files.is_empty()
-        {
-            composer.error = Some("Write a subject or a message first.".into());
-            cx.notify();
-            return;
-        }
-        if outgoing.attachment_size() > mail::ATTACHMENT_LIMIT {
-            composer.error = Some("Attachments can be 25 MB in total.".into());
+        if let Err(not_ready) = crate::outbox::ready(&outgoing) {
+            composer.error = Some(match not_ready {
+                crate::outbox::NotReady::Recipients(error) => error.into(),
+                crate::outbox::NotReady::Empty => "Write a subject or a message first.".into(),
+                crate::outbox::NotReady::TooLarge => "Attachments can be 25 MB in total.".into(),
+            });
             cx.notify();
             return;
         }
@@ -1061,7 +983,7 @@ impl Nimbra {
         self.parked.push((Parked::Sending, composer));
         self.pending_focus = Some(self.focus.clone());
         // Settings › Composing: how long a sent message can still be taken back.
-        let hold = Duration::from_secs(self.settings.undo_send.min(60) as u64);
+        let hold = crate::outbox::undo_delay(self.settings.undo_send);
         if hold.is_zero() {
             self.finish_parked(serial, cx);
         } else {
@@ -1069,101 +991,5 @@ impl Nimbra {
             self.finish_parked_later(serial, hold, cx);
         }
         cx.notify();
-    }
-}
-
-/// For an account that is not shown: wakes its due snoozes (back to the inbox, unread) and
-/// sends its due scheduled messages, as kept in its own store. One set from All inboxes can
-/// be another account's: it goes through that account's connection. Runs off the main thread.
-/// Gives back the snoozes it brought back, to notify about.
-pub(super) fn carry_out_due(
-    account: &str,
-    store: &crate::store::Store,
-    connected: &HashMap<String, Arc<mail::Client>>,
-    writes: &Underway,
-) -> Vec<Snooze> {
-    let now = chrono::Utc::now().timestamp_millis();
-    let mut back = Vec::new();
-    let client_of = |whose: Option<&str>| connected.get(whose.unwrap_or(account));
-    for snooze in store.load::<Vec<Snooze>>("snoozed").unwrap_or_default() {
-        if snooze.until_ms > now {
-            continue;
-        }
-        let Some(client) = client_of(snooze.mail.account.as_deref()) else {
-            continue; // that account is not connected: later
-        };
-        let _working = writes.begin();
-        // Brought back, or not needed any more: either way it is done.
-        let woken = super::threads::wake(
-            &**client,
-            &snooze.thread_id,
-            snooze.since_ms,
-            snooze.no_reply,
-        );
-        let done = woken.as_ref().map_or_else(mail::is_gone, |_| true);
-        // The list as it is by now: the account may have been opened and changed meanwhile.
-        if done
-            && store
-                .update("snoozed", |list: &mut Vec<Snooze>| {
-                    list.retain(|s| {
-                        s.thread_id != snooze.thread_id || s.until_ms != snooze.until_ms
-                    });
-                })
-                .is_err()
-        {
-            eprintln!("nimbra: could not save the snoozed list");
-        }
-        if matches!(woken, Ok(true)) {
-            back.push(snooze);
-        }
-    }
-    for item in scheduled::list(store) {
-        if item.at_ms > now {
-            continue;
-        }
-        if let Some(client) = client_of(item.account.as_deref()) {
-            let _working = writes.begin();
-            scheduled::send(store, &**client, &item.draft_id);
-        }
-    }
-    back
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn change(id: &str) -> (String, mail::Change) {
-        (id.to_string(), mail::Change::Archive)
-    }
-
-    #[test]
-    fn the_queue_read_as_the_store_opens_loses_what_was_caught_up_and_keeps_the_rest() {
-        let read = Outbox {
-            changes: vec![change("a"), change("b"), change("c")],
-            ..Outbox::default()
-        };
-        let merged = with_caught_up(read, 2, vec![change("d")]);
-        let ids: Vec<&str> = merged.changes.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, ["c", "d"]);
-    }
-
-    #[test]
-    fn a_queue_handed_to_the_writer_is_on_disk_once_quitting_has_flushed() {
-        let (store, release) = crate::store::Store::temp_held();
-        let outbox = Outbox {
-            changes: vec![change("a"), change("b")],
-            ..Outbox::default()
-        };
-        store.save_soon("outbox", outbox.clone());
-        drop(release);
-        // What a later launch reads, through a store of its own.
-        let reader = crate::store::Store::temp_like(&store);
-        assert!(crate::store::flush_store(
-            &store,
-            std::time::Instant::now() + Duration::from_secs(30)
-        ));
-        let back: Outbox = reader.load("outbox").unwrap();
-        assert_eq!(back.changes.len(), 2);
     }
 }
