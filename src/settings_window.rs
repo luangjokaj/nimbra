@@ -1669,15 +1669,6 @@ impl SettingsWindow {
                                 .id("about-homepage")
                                 .press_soft()
                                 .on_click(|_, _, cx| cx.open_url(HOMEPAGE)),
-                        )
-                        .child(
-                            button(t, ButtonKind::Secondary, "Keyboard shortcuts", None)
-                                .id("about-shortcuts")
-                                .press_soft()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.tab = Tab::Shortcuts;
-                                    cx.notify();
-                                })),
                         ),
                 )
                 // The site's policies, as small links.
