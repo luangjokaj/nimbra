@@ -1268,18 +1268,31 @@ impl Nimbra {
                 .child(kbd(&Theme::dark(), "Z"))
                 .child(meta("to undo", c(0xffffff, 0.5)))
         } else {
+            // The day's line, under a small label like the date's above. A quote has its
+            // author set apart below it.
+            let (line, author) = crate::inspiration::split(crate::inspiration::line_for(
+                chrono::Local::now().date_naive(),
+            ));
             div()
                 .w_full()
                 .px(px(32.))
-                .text_center()
-                .font_family(SERIF)
-                .italic()
-                .text_size(px(24.))
-                .line_height(px(30.))
-                .text_color(soft)
-                .child(crate::inspiration::line_for(
-                    chrono::Local::now().date_naive(),
-                ))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(12.))
+                .child(overline("FOR TODAY".to_string(), c(0xffffff, 0.45)))
+                .child(
+                    div()
+                        .max_w(px(620.))
+                        .text_center()
+                        .font_family(SERIF)
+                        .italic()
+                        .text_size(px(28.))
+                        .line_height(px(34.))
+                        .text_color(soft)
+                        .child(line),
+                )
+                .children(author.map(|author| overline(author.to_uppercase(), c(0xffffff, 0.55))))
         };
 
         div().flex_1().min_w(px(0.)).h_full().bg(t.surface).child(
@@ -1340,13 +1353,23 @@ impl Nimbra {
                             )
                         }),
                 )
-                // Drawn out from the middle.
+                // Drawn out from the middle, and fading towards both ends.
                 .child(
                     div()
+                        .flex()
                         .flex_none()
                         .w(relative(arrival.horizon()))
                         .h(px(1.))
-                        .bg(c(0xffffff, 0.22)),
+                        .child(div().flex_1().h_full().bg(gradient(
+                            90.,
+                            c(0xffffff, 0.),
+                            c(0xffffff, 0.28),
+                        )))
+                        .child(div().flex_1().h_full().bg(gradient(
+                            90.,
+                            c(0xffffff, 0.28),
+                            c(0xffffff, 0.),
+                        ))),
                 )
                 .child(
                     div()
