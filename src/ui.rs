@@ -217,7 +217,7 @@ pub fn shadow(color: Hsla, y: f32, blur: f32, spread: f32) -> BoxShadow {
 pub enum Elevation {
     /// Menus, tooltips, toasts.
     Pop,
-    /// Palette, finder, confirm, shortcuts, composer: lifted, with a faint violet aura.
+    /// Finder, confirm, shortcuts, composer: lifted, with a faint violet aura.
     Sheet,
     /// The primary action or the focused field: accent light without lift.
     Glow,

@@ -84,11 +84,11 @@ pub mod radius {
     pub const CHIP: f32 = 6.;
     /// Buttons, icon buttons, nav rows, menu items, tooltips, the search field.
     pub const CONTROL: f32 = 8.;
-    /// List, palette and finder rows, inputs.
+    /// List and finder rows, inputs.
     pub const ROW: f32 = 10.;
     /// Cards, menus, toasts, settings groups.
     pub const CARD: f32 = 14.;
-    /// Palette, finder, confirm, shortcuts, composer, the floating sidebar.
+    /// Finder, confirm, shortcuts, composer, the floating sidebar.
     pub const SHEET: f32 = 18.;
 }
 
@@ -129,7 +129,7 @@ pub struct Theme {
     pub kbd_border: Hsla,
     /// The `Elevation::Pop` shadow: menus, tooltips, toasts.
     pub shadow: Hsla,
-    /// The `Elevation::Sheet` shadow: palette, finder, confirm, shortcuts, composer.
+    /// The `Elevation::Sheet` shadow: finder, confirm, shortcuts, composer.
     pub shadow_sheet: Hsla,
     pub scrim: Hsla,
 }
