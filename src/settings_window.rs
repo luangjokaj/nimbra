@@ -9,6 +9,9 @@ use crate::settings::{MarkRead, TextSize, ThemeChoice};
 
 /// The app's icon on About, in points.
 const ABOUT_ICON: f32 = 96.;
+/// The Default mail app row's control, in every state (the Make default button, the badge,
+/// or nothing yet): the height that keeps it a 48 pt row like the others (see `row`).
+const MAIL_APP_CONTROL: f32 = 28.;
 
 /// The app's icon in its light (Default) and Dark appearances, rendered from
 /// `assets/AppIcon.icon` (README: how to render them again).
@@ -770,7 +773,35 @@ impl SettingsWindow {
     fn mail_app_row(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let control = match &self.mail_app {
             None => div(),
-            Some(app) if app.ours => div().child(meta("Nimbra", t.text2)),
+            // Done: a soft mint badge, a check in a filled circle and the name.
+            Some(app) if app.ours => div()
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .h(px(28.))
+                .pl(px(5.))
+                .pr(px(12.))
+                .rounded_full()
+                .bg(t.mint.opacity(0.1))
+                .border_1()
+                .border_color(t.mint.opacity(0.28))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(18.))
+                        .rounded_full()
+                        .bg(t.mint)
+                        .child(icon("done", 11., t.surface)),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(t.text)
+                        .child("Nimbra"),
+                ),
             Some(app) => div()
                 .flex()
                 .items_center()
@@ -781,11 +812,18 @@ impl SettingsWindow {
                 .child(
                     button(t, ButtonKind::Secondary, "Make default", None)
                         .id("default-mail-app")
+                        .h(px(MAIL_APP_CONTROL))
                         .press_soft()
                         .when(self.making_default, |b| b.opacity(0.5))
                         .on_click(cx.listener(|this, _, _, cx| this.make_default_mail_app(cx))),
                 ),
         };
+        // As tall as the button in every state, so the row keeps its height when it goes.
+        let control = div()
+            .flex()
+            .items_center()
+            .h(px(MAIL_APP_CONTROL))
+            .child(control);
         row(t, "Default mail app", "", control)
     }
 
