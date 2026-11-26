@@ -441,7 +441,7 @@ impl Nimbra {
         if empty {
             let recent = &self.settings.recent_searches;
             if recent.is_empty() {
-                rows.push(section("SEARCH TIPS").into_any_element());
+                rows.push(section("Search Tips").into_any_element());
                 for (i, (tip, what)) in SEARCH_TIPS.iter().enumerate() {
                     rows.push(
                         row_base(i, self.finder_sel == i)
@@ -475,7 +475,7 @@ impl Nimbra {
                         .flex()
                         .items_end()
                         .pr(px(6.))
-                        .child(section("RECENT").flex_1())
+                        .child(section("Recent").flex_1())
                         .child(
                             div()
                                 .id("finder-clear-recent")
@@ -565,7 +565,7 @@ impl Nimbra {
                     .into_any_element(),
             );
             if !self.finder_hits.is_empty() {
-                rows.push(section("CONVERSATIONS").into_any_element());
+                rows.push(section("Conversations").into_any_element());
             }
             for (k, hit) in self.finder_hits.iter().enumerate() {
                 let i = k + 1;

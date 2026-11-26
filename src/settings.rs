@@ -53,6 +53,8 @@ pub struct Settings {
     pub dock_badge: bool,
     /// The size of text in the reader.
     pub reader_text: TextSize,
+    /// The Zero Streak shows in the sidebar and on Inbox Zero.
+    pub show_streak: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -130,6 +132,7 @@ impl Default for Settings {
             notify_sound: true,
             dock_badge: true,
             reader_text: TextSize::Default,
+            show_streak: true,
         }
     }
 }
@@ -471,6 +474,24 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_settings_file_from_before_the_streak_switch_shows_the_streak() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"signature":"Luan","reader_text":"large"}"#).unwrap();
+        assert!(settings.show_streak);
+    }
+
+    #[test]
+    fn a_hidden_streak_stays_hidden_after_a_save() {
+        let hidden = Settings {
+            show_streak: false,
+            ..Settings::default()
+        };
+        let again: Settings =
+            serde_json::from_str(&serde_json::to_string(&hidden).unwrap()).unwrap();
+        assert!(!again.show_streak);
     }
 
     #[test]

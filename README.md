@@ -213,7 +213,7 @@ The design lives in the [Mail Client Figma file](https://www.figma.com/design/s6
 
 ### Look and feel
 
-Nimbra is dark first with a violet accent and a violet-to-pink gradient, and the night sky of Inbox Zero; light mode follows the Mac. Every window is a set of floating panels a gutter apart over a still nebula: the sidebar (glass), the list and the reader in the main window, and likewise the composer at full page, message windows and Settings. Each panel has a light edge, brighter along its top, and a soft neutral shadow. Glow is a signal, not decoration: only the open row, the one primary action of a surface (Compose, Send, a sheet's confirm) and keyboard focus give off light. All text is set in Sora: titles use it as a display face, larger and lighter as they grow, and Geist Mono is kept for sparse details such as times and counts. Motion runs at the display's refresh rate, is timed by the clock rather than by frames, stops as soon as nothing moves, and drops travel under Reduce Motion. Key hints never sit on screen: they appear in tooltips, menus, right-click menus, the `?` sheet and Settings › Shortcuts.
+Quiet glass, one colour: Nimbra is dark first, light mode follows the Mac, and violet is its only accent, always solid. There are no gradients and nothing glows. Panes fill the window edge to edge, a 1pt hairline between them: the sidebar (glass), the list and the reader in the main window, and likewise Settings; the composer at full page and message windows fill their window. Sheets, menus and toasts float as solid cards with a hairline edge and a faint neutral shadow. The primary action of a surface (Compose, Send, a sheet's confirm) is flat solid violet; selection is a violet tint with a violet hairline; keyboard focus is a crisp 2pt violet ring. Inbox Zero, stars and one shooting star on a solid night, is the one expressive moment. Spacing is on a 4pt grid (4, 8, 12, 16, 20, 24, 32, 40). All text is set in Sora: titles use it as a display face, larger and lighter as they grow, and Geist Mono is kept for sparse details such as times and counts. Motion runs at the display's refresh rate, is timed by the clock rather than by frames, stops as soon as nothing moves, and drops travel under Reduce Motion. Key hints never sit on screen: they appear in tooltips, menus, right-click menus, the `?` sheet and Settings › Shortcuts.
 
 ### App icon
 
@@ -247,7 +247,7 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 
 ### Layout
 
-- `src/theme.rs`: colours for dark and light, fonts, gradients
+- `src/theme.rs`: colours for dark and light, fonts, spacing and radii
 - `src/mail.rs`: the mail model every provider gives the app (threads, messages, labels, changes, errors, building a message to send), and the `Provider` interface the app calls
 - `src/gmail.rs`: OAuth sign-in (PKCE, loopback redirect), keychain storage, Gmail REST calls
 - `src/imap_mail.rs`: accounts that are not Gmail: IMAP folders as labels, threads from reply headers, a local index as the change feed, SMTP for sending

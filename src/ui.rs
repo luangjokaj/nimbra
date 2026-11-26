@@ -1,14 +1,10 @@
 //! Small stateless building blocks shared by every pane.
 
 use gpui::{
-    AnimationExt, BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point,
-    prelude::*, px, relative, svg,
+    BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point, prelude::*, px, svg,
 };
 
-use crate::theme::{
-    GRADIENT_GLOW, GRADIENT_PRIMARY, GRADIENT_PRIMARY_PRESSED, MONO, SANS, Theme, Tone, c, fade,
-    gradient, over, radius, space,
-};
+use crate::theme::{MONO, SANS, Theme, Tone, over, radius, space};
 
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg()
@@ -22,106 +18,26 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
 /// it on y = 25, the line of the traffic lights, with the same space above and below.
 pub const TOP_BAR: f32 = 51.;
 
-/// The backdrop showing between the main window's panels and around them.
-pub const GUTTER: f32 = 8.;
+/// The line the top row of every window is centred on: a top bar's centre, level with the
+/// traffic lights.
+pub const TOP_LINE: f32 = 25.;
 
-/// The line the main window's top row is centred on: a top bar's centre, inside a panel
-/// that starts a gutter down.
-pub const TOP_LINE: f32 = GUTTER + 25.;
-
-/// The still nebula the main window's panels float over. Clouds are blurred shadows, as
-/// GPUI has no radial gradient or blur filter.
-pub fn backdrop(t: &Theme) -> Div {
-    let n = t.nebula;
-    div()
-        .absolute()
-        .inset_0()
-        .overflow_hidden()
-        .bg(c(n.ground, 1.))
-        .children(n.washes.map(|(angle, hex, alpha, end)| {
-            div().absolute().inset_0().bg(fade(angle, hex, alpha, end))
-        }))
-        .children(n.blooms.map(|b| {
-            div()
-                .absolute()
-                .left(relative(b.x))
-                .top(relative(b.y))
-                .ml(px(-b.reach))
-                .mt(px(-b.reach))
-                .size(px(2. * b.reach))
-                .rounded_full()
-                .shadow(vec![shadow(c(b.hex, b.alpha), 0., 2. * b.reach, 0.)])
-        }))
-}
-
-/// How far forward a floating panel sits: the reader is in front of the list.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Depth {
-    Back,
-    Front,
-}
-
-/// A floating panel of the main window: a calm surface over the nebula, lifted by a soft
-/// neutral shadow. Finish it with `rim` as its last child.
-pub fn panel(t: &Theme, depth: Depth) -> Div {
-    div()
-        .relative()
-        .rounded(px(radius::SHEET))
-        .bg(match depth {
-            Depth::Back => t.panel,
-            Depth::Front => t.surface,
-        })
-        .shadow(lift(t, depth))
-}
-
-/// The shadow under a floating panel: a wide soft one for depth and a close one that sets
-/// its edge down. Neutral, so the panel reads as a surface and not as a light.
-pub fn lift(t: &Theme, depth: Depth) -> Vec<BoxShadow> {
-    let strength = match depth {
-        Depth::Back => 0.8,
-        Depth::Front => 1.,
-    } * if t.dark { 1. } else { 0.7 };
-    vec![
-        shadow(t.shadow.opacity(t.shadow.a * strength), 16., 40., -14.),
-        shadow(t.shadow.opacity(t.shadow.a * 0.5 * strength), 1., 3., 0.),
-    ]
-}
-
-/// A panel's light edge, laid over it so it takes no room: a hairline all round, brighter
-/// along the top where the light catches it.
-pub fn rim(t: &Theme, corner: f32) -> Div {
-    div()
-        .absolute()
-        .inset_0()
-        .rounded(px(corner))
-        .border_1()
-        .border_color(t.rim)
-        .child(sheen(t, corner))
-}
-
-/// The light along the top edge of a panel or sheet: brightest in the middle, gone before
-/// the corners. Laid over the top hairline, so it takes no room.
-pub fn sheen(t: &Theme, corner: f32) -> Div {
-    let sheen = t.sheen;
-    let half = |angle: f32| {
-        div()
-            .flex_1()
-            .h_full()
-            .bg(gradient(angle, sheen.opacity(0.), sheen))
-    };
+/// The hairline between two panes side by side, full height, laid over the right edge of
+/// the pane on its left. It is see-through, so that pane keeps the 1pt clear for it under its
+/// own colour (`.pr(px(1.))`) and its content ends where the line begins.
+pub fn pane_divider(t: &Theme) -> Div {
     div()
         .absolute()
         .top_0()
-        .left(px(corner))
-        .right(px(corner))
-        .h(px(1.))
-        .flex()
-        .child(half(90.))
-        .child(half(270.))
+        .right_0()
+        .w(px(1.))
+        .h_full()
+        .bg(t.rim)
 }
 
-/// A floating sheet (the composer, Add Account, a question over either): raised glass with
-/// a light edge and a neutral shadow. Its `t.edge` border is where a drop target lights up.
+/// A floating sheet (the composer, Add Account, a question over either): a raised solid
+/// surface with a hairline edge and a neutral shadow. Its `t.edge` border is where a drop
+/// target lights up.
 pub fn sheet(t: &Theme) -> Div {
     div()
         .relative()
@@ -130,25 +46,12 @@ pub fn sheet(t: &Theme) -> Div {
         .border_1()
         .border_color(t.edge)
         .shadow(elevation(t, Elevation::Sheet))
-        .child(sheen(t, radius::SHEET))
 }
 
-/// A window drawn as the main one is: panels a gutter apart over the nebula. Lay its panels
-/// out as children, in a row.
-pub fn panels(t: &Theme) -> Div {
-    div()
-        .relative()
-        .flex()
-        .size_full()
-        .p(px(GUTTER))
-        .gap(px(GUTTER))
-        .child(backdrop(t))
-}
-
-/// Where a window of panels puts its traffic lights: the close button's top-left, so that
-/// they are centred on the top line, as far into the first panel as its content.
+/// Where a window puts its traffic lights: the close button's top-left, so that they are
+/// centred on the top line.
 pub fn traffic_lights() -> gpui::Point<gpui::Pixels> {
-    point(px(18. + GUTTER), px(TOP_LINE - 7.))
+    point(px(18.), px(TOP_LINE - 7.))
 }
 
 /// Timestamps, counts and keys: Geist Mono 11/14 medium.
@@ -163,13 +66,13 @@ pub fn caption(text: impl Into<SharedString>, color: Hsla) -> Div {
         .child(text.into())
 }
 
-/// A section head: Geist Mono 10/12 medium in `text3`.
+/// A section head: Sora 11/16 semibold in `text3`.
 pub fn overline(t: &Theme, text: impl Into<SharedString>) -> Div {
     div()
-        .font_family(MONO)
-        .font_weight(FontWeight::MEDIUM)
-        .text_size(px(10.))
-        .line_height(px(12.))
+        .font_family(SANS)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_size(px(11.))
+        .line_height(px(16.))
         .text_color(t.text3)
         .child(text.into())
 }
@@ -249,10 +152,7 @@ pub fn avatar(tone: Tone, initials: &str, size: f32) -> Div {
         .justify_center()
         .size(px(size))
         .rounded_full()
-        .bg(tone.gradient())
-        // A thin ring, so that avatars side by side stay apart.
-        .border_1()
-        .border_color(c(0xffffff, 0.24))
+        .bg(tone.fill())
         .text_size(px(size * 0.37))
         .line_height(px(size * 0.5))
         .font_weight(FontWeight::SEMIBOLD)
@@ -314,8 +214,8 @@ impl Press for Stateful<Div> {
     }
 }
 
-/// Keyboard focus as a 1pt ring laid over its element (which needs `.relative()`), so
-/// gaining or losing focus never moves anything.
+/// Keyboard focus as a crisp 2pt ring laid over its element (which needs `.relative()`),
+/// so gaining or losing focus never moves anything.
 pub fn focus_ring(t: &Theme, corner: f32) -> Div {
     div()
         .absolute()
@@ -323,7 +223,7 @@ pub fn focus_ring(t: &Theme, corner: f32) -> Div {
         .left_0()
         .size_full()
         .rounded(px(corner))
-        .border_1()
+        .border_2()
         .border_color(t.focus)
 }
 
@@ -336,8 +236,7 @@ pub fn shadow(color: Hsla, y: f32, blur: f32, spread: f32) -> BoxShadow {
     }
 }
 
-/// Depth: neutral shadows for lift, and accent light only where the eye should go (the
-/// primary action, focus). Pair a raised surface with a `t.edge` hairline border.
+/// Depth: neutral shadows only. Pair a raised surface with a `t.edge` hairline border.
 #[derive(Clone, Copy)]
 pub enum Elevation {
     /// Menus, tooltips, toasts.
@@ -350,127 +249,75 @@ pub fn elevation(t: &Theme, level: Elevation) -> Vec<BoxShadow> {
     match level {
         Elevation::Pop => vec![shadow(t.shadow, 6., 16., -4.)],
         Elevation::Sheet => vec![
-            shadow(t.shadow_sheet, 24., 64., -16.),
-            shadow(t.shadow_sheet.opacity(t.shadow_sheet.a * 0.5), 2., 6., 0.),
+            shadow(t.shadow_sheet, 16., 40., -12.),
+            shadow(t.shadow_sheet.opacity(t.shadow_sheet.a * 0.5), 1., 3., 0.),
         ],
     }
 }
 
 pub enum ButtonKind {
-    /// The one main action of a surface. Wrap it in `glow` for its hover and press.
-    Primary,
+    /// A hairline outline with no fill.
     Secondary,
     Ghost,
 }
 
-/// A text button. Its key, if it has one, goes in its tooltip (`tip`).
-pub fn button(t: &Theme, kind: ButtonKind, label: &str) -> Div {
-    let base = div()
+fn button_base(label: &str) -> Div {
+    div()
         .flex()
         .flex_none()
         .items_center()
+        .justify_center()
         .gap(px(space::S))
-        .px(px(14.))
-        .py(px(6.))
+        .h(px(BUTTON_H))
+        .px(px(space::L))
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .font_weight(FontWeight::SEMIBOLD)
-        .child(label.to_string());
-    let (hover, strong, selected) = (t.hover, t.border_strong, t.selected);
+        .child(label.to_string())
+}
+
+/// The height of every text button.
+pub const BUTTON_H: f32 = 32.;
+
+/// A text button. Its key, if it has one, goes in its tooltip (`tip`).
+pub fn button(t: &Theme, kind: ButtonKind, label: &str) -> Div {
+    let (hover, strong) = (t.hover, t.border_strong);
     match kind {
-        ButtonKind::Primary => base
-            .bg(GRADIENT_PRIMARY.along(90.))
-            .shadow(vec![glow_shadow(0.)])
-            .text_color(gpui::white()),
-        ButtonKind::Secondary => base
-            .bg(t.hover)
+        ButtonKind::Secondary => button_base(label)
             .border_1()
             .border_color(t.border_strong)
-            .hover(move |s| s.bg(selected).border_color(strong))
+            .hover(move |s| s.bg(hover).border_color(strong))
             .text_color(t.text),
-        ButtonKind::Ghost => base.hover(move |s| s.bg(hover)).text_color(t.text),
+        ButtonKind::Ghost => button_base(label)
+            .hover(move |s| s.bg(hover))
+            .text_color(t.text),
     }
 }
 
-/// The primary button's glow, from at rest (0) to hovered (1).
-fn glow_shadow(level: f32) -> BoxShadow {
-    let mix = |a: f32, b: f32| a + (b - a) * level;
-    shadow(
-        c(GRADIENT_GLOW.from, mix(0.35, 0.6)),
-        mix(6., 8.),
-        mix(18., 24.),
-        mix(-4., -2.),
+/// The one main action of a surface: flat solid violet under a white label, a touch lighter
+/// on hover and darker while held.
+pub fn primary(t: &Theme, id: impl Into<gpui::ElementId>, label: &str) -> Stateful<Div> {
+    solid(
+        button_base(label).id(id),
+        t.primary,
+        t.primary_hover,
+        t.primary_pressed,
     )
 }
 
-/// Each primary button's glow, by key: (hovered, times it changed, level shown last).
-#[derive(Clone, Copy, Default)]
-struct Glow {
-    hovered: bool,
-    turns: usize,
-    level: f32,
+/// A destructive confirmation: solid rose under a white label.
+pub fn destructive(t: &Theme, id: impl Into<gpui::ElementId>, label: &str) -> Stateful<Div> {
+    let held = over(gpui::black().opacity(0.12), t.danger);
+    let hover = over(gpui::white().opacity(0.08), t.danger);
+    solid(button_base(label).id(id), t.danger, hover, held)
 }
 
-thread_local! {
-    static GLOWS: std::cell::RefCell<std::collections::HashMap<&'static str, Glow>> =
-        Default::default();
-}
-
-fn glow_hovered(key: &'static str, hovered: bool, window: &mut gpui::Window) {
-    GLOWS.with_borrow_mut(|glows| {
-        let glow = glows.entry(key).or_default();
-        if glow.hovered != hovered {
-            glow.hovered = hovered;
-            glow.turns += 1;
-        }
-    });
-    window.refresh();
-}
-
-/// A primary button whose glow brightens and fades over a moment instead of jumping, from
-/// wherever it is when the pointer comes or goes, and that darkens while held. `key` names
-/// it for its whole life.
-pub fn glow(button: Stateful<Div>, key: &'static str) -> gpui::AnimationElement<Stateful<Div>> {
-    let now = GLOWS.with_borrow(|glows| glows.get(key).copied().unwrap_or_default());
-    let to = if now.hovered { 1. } else { 0. };
-    let from = now.level;
-    let button = button
-        .active(|s| s.bg(GRADIENT_PRIMARY_PRESSED.along(90.)))
-        .on_hover(move |hovered, window, _| glow_hovered(key, *hovered, window));
-    // A button gone while hovered (Send closes the message) is not hovered when it is back:
-    // whenever it is drawn, where the pointer really is wins.
-    let button = button.relative().child(
-        gpui::canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
-                let hovered = now.hovered;
-                if hovered && !bounds.contains(&window.mouse_position()) {
-                    GLOWS.with_borrow_mut(|glows| {
-                        let glow = glows.entry(key).or_default();
-                        // At rest at once: nobody saw it leave.
-                        *glow = Glow {
-                            turns: glow.turns + 1,
-                            ..Glow::default()
-                        };
-                    });
-                    window.refresh();
-                }
-            },
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full(),
-    );
-    button.with_animation(
-        (key, now.turns),
-        gpui::Animation::new(motion::GLOW).with_easing(motion::ease_out),
-        move |button, delta| {
-            let level = from + (to - from) * delta;
-            GLOWS.with_borrow_mut(|glows| glows.entry(key).or_default().level = level);
-            button.shadow(vec![glow_shadow(level)])
-        },
-    )
+/// A solid fill with its hover and pressed steps, under a white label.
+pub fn solid(d: Stateful<Div>, rest: Hsla, hover: Hsla, held: Hsla) -> Stateful<Div> {
+    d.bg(rest)
+        .text_color(gpui::white())
+        .hover(move |s| s.bg(hover))
+        .active(move |s| s.bg(held))
 }
 
 /// Builds the tooltip for a button. Pass an empty `key` when there is no shortcut, and a
@@ -504,7 +351,6 @@ pub mod motion {
     pub const SWITCH: Duration = Duration::from_millis(150);
     pub const TOAST_IN: Duration = Duration::from_millis(220);
     pub const TOAST_OUT: Duration = Duration::from_millis(150);
-    pub const GLOW: Duration = Duration::from_millis(220);
     /// A crossfade between two states of the same thing.
     pub const FADE: Duration = Duration::from_millis(180);
 
@@ -752,15 +598,16 @@ pub mod motion {
 mod tests {
     use super::*;
 
-    /// Glow is kept for the open row, the primary action and focus: what lifts a panel or a
-    /// sheet is the theme's own neutral shadow, never the accent's light.
+    /// What lifts a sheet or a pop-up is the theme's own neutral shadow, never the accent.
     #[test]
-    fn panels_and_sheets_cast_only_neutral_shadows() {
+    fn sheets_cast_only_neutral_shadows() {
         for t in [Theme::dark(), Theme::light()] {
-            let shadows = [lift(&t, Depth::Back), lift(&t, Depth::Front)]
-                .into_iter()
-                .flatten()
-                .chain(elevation(&t, Elevation::Sheet));
+            let shadows = [
+                elevation(&t, Elevation::Pop),
+                elevation(&t, Elevation::Sheet),
+            ]
+            .into_iter()
+            .flatten();
             for s in shadows {
                 let neutral = [t.shadow, t.shadow_sheet]
                     .iter()

@@ -20,14 +20,11 @@ use crate::mail::{self, View};
 use crate::rich::{self, Block, Kind};
 use crate::scheduled::{self, Outcome, Scheduled};
 use crate::sending::{Job, QueuedMail, Stage};
-use crate::theme::{
-    Accent, GRADIENT_GLOW, SANS, Theme, Tone, c, fade, gradient, over, radius, space,
-};
+use crate::theme::{Accent, SANS, Theme, Tone, c, over, radius, space};
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Depth, GUTTER, Press, TOP_BAR, TOP_LINE, avatar, button, caption, display,
-    focus_ring, hero, icon, icon_button, kbd, lift, meta, overline, panel, pill, rim, shadow, tip,
-    title_l, title_s,
+    ButtonKind, Press, TOP_BAR, TOP_LINE, avatar, button, caption, display, focus_ring, hero, icon,
+    icon_button, kbd, meta, overline, pane_divider, pill, shadow, tip, title_l, title_s,
 };
 use crate::webview::HtmlView;
 
@@ -577,6 +574,10 @@ pub struct Nimbra {
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
+    /// What the More menu showed when it opened, in its order.
+    more_actions: Vec<MoreAction>,
+    /// Where the toolbar buttons that drop menus were last drawn (by `Anchor`).
+    menu_anchors: std::rc::Rc<std::cell::Cell<[Option<gpui::Bounds<gpui::Pixels>>; 3]>>,
     /// What the open menu, the Snooze menu and the label sheet were opened for. A refresh
     /// can move or remove rows under each, so they check before acting (see `still_meant`).
     menu_for: Option<MeantFor>,
@@ -920,6 +921,8 @@ impl Nimbra {
             checks: Checks::default(),
             menu_at: (0., 0.),
             row_actions: Vec::new(),
+            more_actions: Vec::new(),
+            menu_anchors: Default::default(),
             menu_for: None,
             snooze_for: None,
             label_for: None,
@@ -1395,35 +1398,9 @@ impl Nimbra {
                                 let yes = if lit {
                                     primary_button(t, "confirm-yes", yes)
                                 } else {
-                                    // Rose text needs a dark ground to read; light mode has
-                                    // a white label on solid rose instead.
-                                    let (rest, hover, held, label) = if t.dark {
-                                        let wash = |a: f32| t.rose.opacity(a);
-                                        (wash(0.14), wash(0.18), wash(0.24), t.rose)
-                                    } else {
-                                        let shade = |a: f32| over(c(0x000000, a), t.rose);
-                                        (t.rose, shade(0.08), shade(0.16), gpui::white())
-                                    };
-                                    // Shaped like `button`, which sets its own hover.
-                                    div()
-                                        .flex()
-                                        .flex_none()
-                                        .items_center()
-                                        .px(px(14.))
-                                        .py(px(6.))
-                                        .rounded(px(radius::CONTROL))
-                                        .border_1()
-                                        .border_color(t.rose.opacity(0.32))
-                                        .bg(rest)
-                                        .cursor_pointer()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(label)
-                                        .hover(move |s| s.bg(hover))
-                                        .child(yes.to_string())
-                                        .id("confirm-yes")
-                                        .active(move |s| s.bg(held))
+                                    crate::ui::destructive(t, "confirm-yes", yes)
                                 };
-                                let yes = yes.on_click(cx.listener(|this, _, _, cx| {
+                                yes.on_click(cx.listener(|this, _, _, cx| {
                                     match this.confirm.take() {
                                         Some(Ask::DeleteForever(ids)) => {
                                             this.delete_forever(ids, cx)
@@ -1435,8 +1412,7 @@ impl Nimbra {
                                         None => {}
                                     }
                                     cx.notify();
-                                }));
-                                yes
+                                }))
                             }),
                     )
                     .child(edge(t, radius::SHEET)),
@@ -1464,14 +1440,11 @@ impl Nimbra {
                 _ => size * to,
             }
         };
-        // Each panel brings the gutter on its right; the window's own is on the left.
-        let side = self.side_w() + GUTTER;
-        let list = self.list_width + GUTTER;
-        let side_now = part(self.sidebar_open, self.sidebar_toggled, side);
-        let list_now = part(self.list_open, self.list_toggled, list);
-        let end =
-            if self.sidebar_open { side } else { 0. } + if self.list_open { list } else { 0. };
-        (GUTTER + side_now + list_now, GUTTER + end)
+        let side_now = part(self.sidebar_open, self.sidebar_toggled, self.side_w());
+        let list_now = part(self.list_open, self.list_toggled, self.list_width);
+        let end = if self.sidebar_open { self.side_w() } else { 0. }
+            + if self.list_open { self.list_width } else { 0. };
+        (side_now + list_now, end)
     }
 
     /// How far the reading pane's left edge will move during the next frame of a sidebar or
@@ -1490,10 +1463,9 @@ impl Nimbra {
         self.pane_layout().0
     }
 
-    /// The reading pane's width right now: the window less what is left of it and the
-    /// gutter on its right.
+    /// The reading pane's width right now: the window less what is left of it.
     fn pane_width(&self) -> f32 {
-        self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left() - GUTTER
+        self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left()
     }
 
     /// Full view: the open message across the whole window, without the sidebar and list
@@ -2142,14 +2114,6 @@ fn view_key(view: View) -> usize {
     }
 }
 
-fn card(t: &Theme) -> Div {
-    div()
-        .bg(t.hover)
-        .border_1()
-        .border_color(t.border)
-        .rounded(px(radius::CARD))
-}
-
 // ---------------------------------------------------------------- panes
 
 impl Nimbra {
@@ -2189,7 +2153,7 @@ impl Nimbra {
             }
             _ => ("Loading", SharedString::default(), None),
         };
-        panel(t, Depth::Front)
+        div()
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -2198,6 +2162,7 @@ impl Nimbra {
             .items_center()
             .justify_center()
             .gap(px(space::M))
+            .bg(t.surface)
             .child(title_l(title, t.text))
             .child(
                 div()
@@ -2236,7 +2201,6 @@ impl Nimbra {
                         )
                     })
             }))
-            .child(rim(t, radius::SHEET))
     }
 }
 
@@ -2363,15 +2327,15 @@ impl Render for Nimbra {
         let place = self.sidebar_place(0.);
         // 1 while the sidebar floats, down to 0 as it docks.
         let afloat = place.map_or(0., |place| place.inset / FLOAT_INSET);
-        // The traffic lights travel with the sidebar. A full-page composer has room for them
-        // on its header's line, as far in as the sidebar would put them.
+        // The traffic lights travel with the sidebar. A full-page composer has room of its
+        // own for them in its header.
         let full_compose = !composing_elsewhere && self.compose.as_ref().is_some_and(|c| c.full);
         crate::autohide::place_traffic_lights(
             window,
             if full_compose {
-                Some((18. + GUTTER, TOP_LINE))
+                Some(18.)
             } else {
-                place.map(|place| (18. + place.x, TOP_LINE))
+                place.map(|place| 18. + place.x)
             },
         );
         if self.peek.moving() || self.sidebar_sliding() {
@@ -2602,35 +2566,23 @@ impl Render for Nimbra {
             .relative()
             .flex()
             .size_full()
-            .pt(px(GUTTER))
-            .pb(px(GUTTER))
-            .pr(px(GUTTER))
             .font_family(crate::theme::SANS)
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
-            .child(crate::ui::backdrop(&t))
-            // The gutter above the panels moves the window, as a title bar would.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .w_full()
-                    .h(px(GUTTER))
-                    .on_mouse_down(MouseButton::Left, drag_or_zoom),
-            )
-            // The room the docked sidebar takes, with the gutters either side of it. The
-            // sidebar itself is drawn over it, so floating in does not move or re-wrap anything.
+            // The room the docked sidebar takes. The sidebar itself is drawn over it, so
+            // floating in does not move or re-wrap anything. As it docks, what is around the
+            // floating sidebar is filled (its own shape is erased out of it).
             .child(
                 div()
                     .flex_none()
                     .h_full()
-                    .w(px(GUTTER + self.sidebar_width(0.))),
+                    .w(px(self.sidebar_width(0.)))
+                    .when(afloat > 0., |d| d.bg(t.surface)),
             )
             .map(|d| match self.status {
                 _ if zero_shown => d.child(self.zero(&t)),
-                Status::Ready if empty && self.next_page_coming() => d.child(self.skeleton(&t)),
+                Status::Ready if empty && self.next_page_coming() => d.child(self.skeleton(&t, cx)),
                 Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t, cx)),
                 Status::Demo | Status::Ready => d.children(self.list_slot(&t, cx)).map(|d| {
                     if self.picked.len() >= 2 {
@@ -2642,7 +2594,7 @@ impl Render for Nimbra {
                 Status::Loading if self.waiting_for_keychain() => {
                     d.child(self.status_screen(&t, cx))
                 }
-                Status::Loading => d.child(self.skeleton(&t)),
+                Status::Loading => d.child(self.skeleton(&t, cx)),
                 _ => d.child(self.status_screen(&t, cx)),
             })
             .when(self.offline && !list_shown && place.is_none(), |d| {
@@ -2660,47 +2612,68 @@ impl Render for Nimbra {
                 )
             })
             .when_some(place, |d, place| {
-                let radius = FLOAT_RADIUS;
-                let height = viewport.1 - 2. * GUTTER;
-                let mut shadows = lift(&t, Depth::Back);
-                // Floating over the list, it is lifted further.
-                shadows.push(shadow(t.shadow.opacity(afloat), 10., 30., -6.));
-                // The panel is see-through to the blurred desktop, docked or floating. The
-                // window's blur is only of what is behind the window, so what is painted under
-                // the panel is erased in its exact shape: its shadow (which is filled) too,
-                // leaving it only around the outside.
-                d.child(
-                    div()
-                        .absolute()
-                        .left(px(place.x))
-                        .top(px(GUTTER))
-                        .w(px(self.side_w()))
-                        .h(px(height))
-                        .rounded(px(radius))
-                        .shadow(shadows),
-                )
+                let floating = afloat > 0.;
+                let radius = FLOAT_RADIUS * afloat;
+                let height = viewport.1 - 2. * place.inset;
+                d.when(floating, |d| {
+                    // Floating, it keeps the docked sidebar's material, see-through to the
+                    // blurred desktop. The window's blur is only of what is behind the window,
+                    // so what is painted under it is erased in its exact shape: its shadow
+                    // (which is filled) too, leaving it only around the outside.
+                    d.child(
+                        div()
+                            .absolute()
+                            .left(px(place.x))
+                            .top(px(place.inset))
+                            .w(px(self.side_w()))
+                            .h(px(height))
+                            .rounded(px(radius))
+                            .shadow(vec![shadow(t.shadow.opacity(afloat), 10., 30., -6.)]),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(place.x))
+                            .top(px(place.inset))
+                            .w(px(self.side_w()))
+                            .h(px(height))
+                            .child(crate::erase::rounded(radius, t.surface)),
+                    )
+                })
                 .child(
                     div()
                         .absolute()
                         .left(px(place.x))
-                        .top(px(GUTTER))
-                        .w(px(self.side_w()))
-                        .h(px(height))
-                        .child(crate::erase::rounded(radius, gpui::transparent_black())),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(place.x))
-                        .top(px(GUTTER))
+                        .top(px(place.inset))
                         .w(px(self.side_w()))
                         .h(px(height))
                         .overflow_hidden()
                         .occlude()
                         .rounded(px(radius))
                         .bg(t.sidebar)
-                        .child(self.sidebar(&t, cx))
-                        .child(rim(&t, radius)),
+                        // Moved up by the gap, so that docking shifts nothing vertically.
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top(px(-place.inset))
+                                .w(px(self.side_w()))
+                                .h(px(viewport.1 - place.inset))
+                                .child(self.sidebar(&t, cx)),
+                        )
+                        // Docked, the hairline between it and the pane beside it; floating, an
+                        // edge all round. Over the contents, so they take no room.
+                        .child(pane_divider(&t).opacity(1. - afloat))
+                        .when(floating, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(px(radius))
+                                    .border_1()
+                                    .border_color(t.edge.opacity(afloat)),
+                            )
+                        }),
                 )
                 // Its right edge: drag to resize, docked or floating; double-click for the
                 // usual width. Out here, over the sidebar and the pane beside it, where
@@ -2869,20 +2842,18 @@ mod header_tests {
 
     #[test]
     fn the_list_header_fits_at_every_width() {
-        let used = |fit: HeaderFit, switch: f32, offline: Option<f32>| {
-            let pill = offline.map_or(0., |w| HEADER_GAP + if fit.words { w } else { 22. });
-            switch + pill + HEADER_GAP + fit.compose.width()
-        };
         for list in 300..=720 {
             let room = list as f32 - 1. - LIST_LEFT - LIST_RIGHT;
             for digits in 1..=4 {
                 let switch = 124. + 7. * digits as f32;
                 for offline in [None, Some(67.), Some(140.)] {
-                    let fit = HeaderFit::new(room, switch, offline);
-                    assert!(
-                        used(fit, switch, offline) <= room,
-                        "{list} {digits} {offline:?}"
-                    );
+                    for compose in [false, true] {
+                        let fit = HeaderFit::new(room, switch, offline, compose);
+                        assert!(
+                            fit.used(switch, offline, compose) <= room,
+                            "{list} {digits} {offline:?} {compose}"
+                        );
+                    }
                 }
             }
         }

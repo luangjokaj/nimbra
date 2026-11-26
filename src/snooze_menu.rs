@@ -862,10 +862,7 @@ impl Nimbra {
         let (x, y) = match at.or(self.snooze_anchor.get()) {
             Some(point) => (f32::from(point.x), f32::from(point.y)),
             // Under the reading pane's toolbar.
-            None => (
-                self.pane_layout().1 + 110.,
-                crate::ui::GUTTER + TOP_BAR - 4.,
-            ),
+            None => (self.pane_layout().1 + 110., TOP_BAR - 4.),
         };
         let left = x.min(vw - WIDTH - 8.).max(8.);
         let top = y.min(vh - height - 8.).max(8.);

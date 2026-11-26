@@ -1,4 +1,4 @@
-//! Inbox Zero coming up as Nimbra opens: the glows rise, the stars come out, the horizon
+//! Inbox Zero coming up as Nimbra opens: the stars come out, the horizon
 //! draws out, then the words settle into place. Timed by the wall clock from the first
 //! frame it is drawn in, so late frames never slow it down.
 
@@ -44,10 +44,6 @@ impl Arrival {
         }
         let left = 1. - ((self.seconds - start) / length).clamp(0., 1.);
         1. - left * left * left
-    }
-
-    pub fn glow(self, index: usize) -> f32 {
-        self.part(index as f32 * 0.08, 1.2)
     }
 
     pub fn star(self, index: usize) -> f32 {
@@ -96,7 +92,6 @@ mod tests {
             at.line(),
             at.below(),
         ];
-        all.extend((0..4).map(|i| at.glow(i)));
         all.extend((0..48).map(|i| at.star(i)));
         all
     }

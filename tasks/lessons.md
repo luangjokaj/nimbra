@@ -5,14 +5,16 @@
 - The window controls and traffic lights travel with the sidebar (and are gone while it is
   hidden) and fill its 236pt up to the reload button. Never append to that row: anything wider than a badge lands on the pane beside it.
   Status goes inside the pane's own header.
-- The panels float `ui::GUTTER` (8pt) in from the window's edges and from each other, so
-  everything in the top row is centred on `ui::TOP_LINE`, y = 33 (traffic lights, window
+- Everything in the top row is centred on `ui::TOP_LINE`, y = 25 (traffic lights, window
   controls, list header, reading toolbar, the full-page composer's header, the message
   window's toolbar, the Settings section title). A new header element goes on that line.
-  A window of panels takes its traffic lights from `ui::traffic_lights()`.
-- A bar is `ui::TOP_BAR - 1` tall inside its panel with its content centred. Never reach
-  that line with uneven top and bottom padding: the gaps show as soon as a button has a
-  background. A panel with a real 1pt border (not `ui::rim`) starts its bar 1pt lower.
+  A window takes its traffic lights from `ui::traffic_lights()`.
+- A bar is `ui::TOP_BAR` tall with its content centred in the 50pt above its 1pt hairline.
+  Never reach that line with uneven top and bottom padding: the gaps show as soon as a
+  button has a background.
+- Panes meet edge to edge: the hairline between two is `ui::pane_divider`, laid over the
+  right edge of the left pane, which keeps that 1pt clear (`.pr(px(1.))`). Never a border
+  on one side of a pane.
 - Check a header change with the sidebar and the list each open and closed, an empty
   mailbox, loading, both themes, and the list at its 300pt minimum.
 
@@ -161,6 +163,10 @@
   only (From: the address and its chevron), as in the fields below.
 - A menu opened from the header is placed by fixed offsets in `toggle_menu`: moving
   or resizing its button means moving those too, in floating, full page and its own window.
+
+- The reader's and the bulk pane's Label, Move To and More menus drop from where their
+  button was last drawn (`menu_anchor`). A new button that opens one of them lays the same
+  anchor over itself; do not go back to fixed offsets.
 
 ## Every way into a feature goes through one function
 - The reader's Snooze button opened the palette without loading its times, so it was empty, while H and the list buttons loaded them. When a feature has several openers (button, key, menu, row), give it one entry point (`open_snooze`) that prepares its state, and make every opener call it.

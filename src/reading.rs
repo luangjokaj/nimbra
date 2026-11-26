@@ -937,50 +937,46 @@ impl Nimbra {
         }
     }
 
+    /// The thread in a few lines, set into the page under the header rather than boxed.
     fn brief(&self, t: &Theme, m: &Mail) -> impl IntoElement {
         let todo = |text: &str, due: &str| {
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(space::M))
+                .h(px(24.))
                 .child(
                     div()
                         .size(px(16.))
                         .flex_none()
-                        .rounded(px(radius::CHIP))
+                        .rounded(px(radius::CHIP - 2.))
                         .border_1()
                         .border_color(t.border_strong),
                 )
-                .child(div().flex_1().child(text.to_string()))
-                .child(caption(due.to_string(), t.amber_text))
+                .child(div().flex_none().text_color(t.text).child(text.to_string()))
+                .child(caption(due.to_string(), t.text3))
         };
         div()
             .flex()
             .flex_col()
             .gap(px(space::M))
-            .px(px(20.))
-            .py(px(space::L))
-            .rounded(px(radius::CARD))
-            .bg(t.hover)
-            .border_1()
-            .border_color(t.edge)
+            // As long a line as the message's own. A definite width, so the text wraps
+            // where it is measured.
+            .w_full()
+            .max_w(px(self.settings.reader_text.metrics().0 * 44. + BODY_INSET))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(space::S))
-                    .child(icon("sparkles", 15., t.violet))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(t.text)
-                            .child("Brief"),
-                    ),
+                    .h(px(16.))
+                    .child(icon("sparkles", 14., t.violet))
+                    .child(overline(t, "Brief").text_color(t.violet)),
             )
             .child(
                 div()
-                    .text_size(px(15.))
-                    .line_height(px(24.))
+                    .text_size(px(16.))
+                    .line_height(px(26.))
                     .text_color(t.text2)
                     .child(m.brief.clone()),
             )
@@ -989,30 +985,46 @@ impl Nimbra {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(space::S))
+                        .gap(px(space::XS))
                         .child(todo("Confirm pricing tiers on slide 14", "Fri"))
                         .child(todo("Sign off on the press embargo date", "Fri")),
                 )
             })
     }
 
-    /// The reading pane's bar: what to do with the thread, in groups, and where to go next.
-    /// Keys are in the tooltips, only while they would do something.
+    /// The reading pane's bar, grouped by how often each is used: the triage actions people
+    /// take on almost every thread, labelled, then the quieter ones that file a thread away,
+    /// then where to go next. Keys are in the tooltips, only while they would do something.
     fn reading_toolbar(
         &self,
         t: &Theme,
         m: &Mail,
-        original: bool,
         is_draft: bool,
         width: f32,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        // A narrow pane drops what has another way in, so that the rest stays on the bar:
-        // the arrows first (the list, J and K), then reply, reply all and forward (each
-        // message's own, and R, A and F). In points: the whole bar, and what the arrows take.
-        let whole = if is_draft { 680. } else { 600. };
-        let arrows = width >= whole;
-        let answers = width >= whole - 64.;
+        let done = self.done_change().map(|change| match change {
+            mail::Change::Archive => ("done", "Done", "Mark Done"),
+            mail::Change::NotSpam => ("inbox", "Not Spam", "Not Spam"),
+            mail::Change::Untrash => ("inbox", "Restore", "Restore"),
+            _ => ("inbox", "To Inbox", "Move to Inbox"),
+        });
+        let snoozable = inbox_like(self.mailbox) || self.mailbox == View::Snoozed;
+        let snooze = snoozable || self.is_demo();
+        let words: Vec<&str> = done
+            .iter()
+            .map(|(_, label, _)| *label)
+            .chain(snooze.then_some("Snooze"))
+            .chain((!is_draft).then_some("Reply"))
+            .collect();
+        let fit = ToolbarFit::new(
+            width,
+            &words
+                .iter()
+                .map(|w| label_width(w, FontWeight::MEDIUM, cx))
+                .collect::<Vec<_>>(),
+            is_draft.then(|| label_width("Edit Draft", FontWeight::SEMIBOLD, cx)),
+        );
         let visible = self.visible();
         let pos = visible.iter().position(|i| *i == self.selected);
         let has_prev = pos.is_some_and(|p| p > 0);
@@ -1031,12 +1043,18 @@ impl Nimbra {
                 .press(t)
                 .tooltip(tip(t.dark, label, key))
         };
-        let done = self.done_change().map(|change| match change {
-            mail::Change::Archive => ("done", "Mark Done"),
-            mail::Change::NotSpam => ("inbox", "Not Spam"),
-            mail::Change::Untrash => ("inbox", "Restore"),
-            _ => ("inbox", "Move to Inbox"),
-        });
+        let anchor = |which| self.menu_anchor(which);
+        // A triage action: labelled while the bar has room, its icon alone when not.
+        let triage =
+            |name: &str, id: &'static str, label: &str, hint: &'static str, key: &'static str| {
+                if fit.words {
+                    action(t, name, label).id(id)
+                } else {
+                    icon_button(t, name).id(id)
+                }
+                .press(t)
+                .tooltip(tip(t.dark, hint, key))
+            };
         let in_trash = self.mailbox == View::Trash;
         div()
             .id("reading-toolbar")
@@ -1044,81 +1062,72 @@ impl Nimbra {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(2.))
-            // Nothing to clear: the window controls leave with the sidebar.
-            .px(px(20.))
+            .gap(px(TOOLBAR_GAP))
+            .px(px(TOOLBAR_PAD))
             // Its hairline is the line under it (`edge`).
             .h(px(TOP_BAR - 1.))
             .on_mouse_down(MouseButton::Left, drag_or_zoom)
-            .child(
-                tool(
-                    "list",
-                    "toggle-list",
-                    if self.list_open {
-                        "Hide Message List"
-                    } else {
-                        "Show Message List"
-                    }
-                    .into(),
-                    "⌘⇧B",
-                )
-                .when(!self.list_open, |d| d.bg(t.selected))
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
-            )
-            .child(rule())
-            .when(is_draft, |d| {
-                d.child(crate::ui::glow(
-                    button(t, ButtonKind::Primary, "Edit Draft")
-                        .id("edit-draft")
-                        .press(t)
-                        .on_click(cx.listener(|this, _, _, cx| this.open_draft(this.selected, cx))),
-                    "edit-draft",
-                ))
-                .child(div().w(px(space::S)))
-            })
-            .when_some(done, |d, (name, label)| {
+            .when(fit.list, |d| {
                 d.child(
-                    tool(name, "mark-done", label.into(), "E")
+                    tool(
+                        "list",
+                        "toggle-list",
+                        if self.list_open {
+                            "Hide Message List"
+                        } else {
+                            "Show Message List"
+                        }
+                        .into(),
+                        "⌘⇧B",
+                    )
+                    .when(!self.list_open, |d| d.bg(t.selected))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
+                )
+                .child(rule())
+            })
+            .when(is_draft, |d| {
+                d.child(
+                    crate::ui::primary(t, "edit-draft", "Edit Draft")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_draft(this.selected, cx))),
+                )
+                .child(div().w(px(DRAFT_SPACE)))
+            })
+            .when_some(done, |d, (name, label, hint)| {
+                d.child(
+                    triage(name, "mark-done", label, hint, "E")
                         .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
                 )
             })
-            .child({
+            .when(snooze, |d| {
                 // Where the Snooze menu drops from, also when opened with H.
                 let anchor = self.snooze_anchor.clone();
-                tool("clock", "snooze", "Snooze".into(), "H")
-                    .relative()
-                    .child(
-                        gpui::canvas(
-                            move |bounds, _, _| {
-                                anchor
-                                    .set(Some(gpui::point(bounds.left(), bounds.bottom() + px(6.))))
-                            },
-                            |_, _, _, _| {},
+                d.child(
+                    triage("clock", "snooze", "Snooze", "Snooze", "H")
+                        .relative()
+                        .child(
+                            gpui::canvas(
+                                move |bounds, _, _| {
+                                    anchor.set(Some(gpui::point(
+                                        bounds.left(),
+                                        bounds.bottom() + px(6.),
+                                    )))
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .size_full(),
                         )
-                        .absolute()
-                        .size_full(),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_snooze(this.snooze_anchor.get(), window, cx)
-                    }))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_snooze(this.snooze_anchor.get(), window, cx)
+                        })),
+                )
             })
-            .when(answers, |d| {
-                d.child(rule())
-                    .child(tool("reply", "reply", "Reply".into(), "R").on_click(
-                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx)),
-                    ))
-                    .child(
-                        tool("reply-all", "reply-all", "Reply All".into(), "A").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.open_compose(ComposeKind::ReplyAll, cx)
-                            }),
-                        ),
-                    )
-                    .child(tool("forward", "forward", "Forward".into(), "F").on_click(
-                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Forward, cx)),
-                    ))
+            .when(fit.reply && !is_draft, |d| {
+                d.child(triage("reply", "reply", "Reply", "Reply", "R").on_click(
+                    cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx)),
+                ))
             })
-            .child(rule())
+            .child(div().flex_1())
             .child(
                 tool(
                     "star",
@@ -1130,31 +1139,23 @@ impl Nimbra {
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
             )
             .child(
-                tool(
-                    "mail",
-                    "toggle-unread",
-                    if m.unread {
-                        "Mark as Read"
-                    } else {
-                        "Mark as Unread"
-                    }
-                    .into(),
-                    "U",
-                )
-                // Lit while the open thread is unread.
-                .when(m.unread, |d| d.bg(t.selected))
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
-            )
-            .child(
                 tool("tag", "label", "Label".into(), "")
+                    .relative()
+                    .child(anchor(Anchor::Labels))
                     .when(self.menu == Some(Menu::Labels), |d| d.bg(t.selected))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_menu(Menu::Labels, window, cx)
                     })),
             )
-            .child(tool("folder", "move-to", "Move To".into(), "").on_click(
-                cx.listener(|this, _, window, cx| this.toggle_menu(Menu::MoveTo, window, cx)),
-            ))
+            .child(
+                tool("folder", "move-to", "Move To".into(), "")
+                    .relative()
+                    .child(anchor(Anchor::MoveTo))
+                    .when(self.menu == Some(Menu::MoveTo), |d| d.bg(t.selected))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_menu(Menu::MoveTo, window, cx)
+                    })),
+            )
             .child(
                 tool(
                     "trash",
@@ -1169,54 +1170,38 @@ impl Nimbra {
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
             )
-            .child(div().flex_1())
-            .when(m.html.is_some() && !is_draft, |d| {
-                d.child(
-                    tool(
-                        "eye",
-                        "original",
-                        if original {
-                            "Reader View"
-                        } else {
-                            "Show Original"
-                        }
-                        .into(),
-                        "V",
-                    )
-                    .when(original, |d| d.bg(t.selected))
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
-                )
-                .child(rule())
-            })
-            .when(arrows, |d| {
-                d.child(
-                    tool(
-                        "up",
-                        "prev",
-                        "Previous Thread".into(),
-                        if has_prev { "K" } else { "" },
-                    )
-                    .when(!has_prev, |d| d.opacity(0.4))
-                    .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
-                )
-                .child(
-                    tool(
-                        "down",
-                        "next",
-                        "Next Thread".into(),
-                        if has_next { "J" } else { "" },
-                    )
-                    .when(!has_next, |d| d.opacity(0.4))
-                    .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
-                )
-            })
             .child(
                 tool("more", "more", "More".into(), "")
+                    .relative()
+                    .child(anchor(Anchor::More))
                     .when(self.menu == Some(Menu::More), |d| d.bg(t.selected))
                     .on_click(
                         cx.listener(|this, _, window, cx| this.toggle_menu(Menu::More, window, cx)),
                     ),
             )
+            .when(fit.arrows, |d| {
+                d.child(rule())
+                    .child(
+                        tool(
+                            "up",
+                            "prev",
+                            "Previous Thread".into(),
+                            if has_prev { "K" } else { "" },
+                        )
+                        .when(!has_prev, |d| d.opacity(0.4))
+                        .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
+                    )
+                    .child(
+                        tool(
+                            "down",
+                            "next",
+                            "Next Thread".into(),
+                            if has_next { "J" } else { "" },
+                        )
+                        .when(!has_next, |d| d.opacity(0.4))
+                        .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
+                    )
+            })
     }
 
     pub(super) fn reading(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1225,7 +1210,7 @@ impl Nimbra {
         // reader gives it.
         let pane_w = self.pane_width();
         let column = if self.focus_restore.is_some() {
-            pane_w.min(980.)
+            pane_w.min(FULL_COLUMN)
         } else {
             pane_w
         };
@@ -1245,14 +1230,20 @@ impl Nimbra {
             div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
-                .h(px(44.))
+                .gap(px(space::M))
+                .h(px(40.))
                 // The hover fill reaches past the column; the content stays on it.
-                .mx(px(-10.))
-                .px(px(10.))
+                .mx(px(-space::S))
+                .px(px(space::S))
                 .rounded(px(radius::ROW))
                 .hover(move |s| s.bg(hover))
-                .child(avatar(tone, initials, 24.))
+                .child(
+                    div()
+                        .w(px(AVATAR))
+                        .flex()
+                        .justify_center()
+                        .child(avatar(tone, initials, 24.)),
+                )
                 .child(
                     div()
                         .flex_none()
@@ -1282,22 +1273,21 @@ impl Nimbra {
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .pl(px(8.))
-                .pr(px(14.))
-                .py(px(8.))
+                .gap(px(space::M))
+                .pl(px(space::S))
+                .pr(px(space::L))
+                .py(px(space::S))
                 .rounded(px(radius::CARD))
-                .bg(t.hover)
                 .border_1()
-                .border_color(t.border)
+                .border_color(t.border_strong)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(30.))
+                        .size(px(32.))
                         .rounded(px(radius::CONTROL))
-                        .bg(tone.gradient())
+                        .bg(tone.fill())
                         .child(icon("file", 16., gpui::white())),
                 )
                 .child(
@@ -1317,17 +1307,39 @@ impl Nimbra {
             place: super::selection::Place::Main(self.thread_key(m)),
             layouts: self.reader_layouts.clone(),
         };
-        let pills = m.rich || m.tag.is_some();
-        panel(t, Depth::Front)
+
+        // Who is in it, how many messages, and its labels: one calm line under the subject.
+        let labels: Vec<(SharedString, Hsla)> = m
+            .rich
+            .then(|| (SharedString::from("Product"), t.violet))
+            .into_iter()
+            .chain(m.tag.clone().map(|(label, a)| (label, t.accent(a))))
+            .chain(m.rich.then(|| (SharedString::from("Due Fri"), t.amber)))
+            .collect();
+        let several = !m.earlier.is_empty();
+        let meta_line = (several || !labels.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(space::M))
+                .min_h(px(24.))
+                .when(several, |d| d.child(meta(m.participants.clone(), t.text2)))
+                .children(labels.into_iter().map(|(label, dot)| pill(t, &label, dot)))
+        });
+
+        div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_w(px(0.))
             .h_full()
+            .bg(t.surface)
             .child(self.selection_watch(self.reader_layouts.clone(), cx))
             // While a panel slides, the email keeps one width and the extra is cut off here.
             .overflow_hidden()
-            .child(self.reading_toolbar(t, m, original, is_draft, pane_w, cx))
+            .child(self.reading_toolbar(t, m, is_draft, pane_w, cx))
             // Under the bar: there while something is under it, as the reader is once it
             // scrolls, and always over an email in its own formatting.
             .child(divider().when(!(original || loading || scrolled), |d| d.opacity(0.)))
@@ -1365,205 +1377,235 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(space::XL))
-                                .px(px(64.))
+                                .gap(px(SECTION_GAP))
+                                .px(px(COLUMN_PAD))
                                 // Full view keeps lines a comfortable length.
-                                .when(self.focus_restore.is_some(), |d| d.w_full().max_w(px(980.)))
-                                .pt(px(40.))
-                                .pb(px(48.))
-                                .when(pills, |d| {
-                                    d.child(
-                                        div()
-                                            .flex()
-                                            .flex_wrap()
-                                            .gap(px(6.))
-                                            .when(m.rich, |d| d.child(pill(t, "Product", t.violet)))
-                                            .children(
-                                                m.tag
-                                                    .clone()
-                                                    .map(|(label, a)| pill(t, &label, t.accent(a))),
-                                            )
-                                            .when(m.rich, |d| d.child(pill(t, "Due Fri", t.amber))),
-                                    )
+                                .when(self.focus_restore.is_some(), |d| {
+                                    d.w_full().max_w(px(FULL_COLUMN))
                                 })
-                                .child(self.subject_row(t, m, 40., column - 128., cx))
-                                .children(self.thread_banners(t, m, cx))
-                                // Who is in a conversation of several messages.
-                                .when(!m.earlier.is_empty(), |d| {
-                                    let people = [
-                                        Some((m.tone, m.initials.clone())),
-                                        m.rich.then(|| (Tone::Mint, SharedString::from("JR"))),
-                                        Some((Tone::Graphite, self.me_initials.clone())),
-                                    ];
-                                    let count = people.iter().flatten().count();
-                                    d.child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(10.))
-                                            .child(
-                                                div()
-                                                    .relative()
-                                                    .flex_none()
-                                                    .h(px(28.))
-                                                    .w(px(28. + 23. * (count - 1) as f32))
-                                                    .children(
-                                                        people
-                                                            .into_iter()
-                                                            .flatten()
-                                                            .enumerate()
-                                                            .map(|(n, (tone, initials))| {
-                                                                // A ring of the page between them, clear of the initials.
-                                                                avatar(tone, &initials, 28.)
-                                                                    .absolute()
-                                                                    .top_0()
-                                                                    .left(px(n as f32 * 23.))
-                                                                    .border_2()
-                                                                    .border_color(t.surface)
-                                                            }),
-                                                    ),
-                                            )
-                                            .child(meta(m.participants.clone(), t.text3).flex_1()),
-                                    )
-                                })
+                                .pt(px(space::XXL))
+                                .pb(px(space::XXXL))
+                                // The header: the subject, and one line about it.
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(space::M))
+                                        .child(self.subject_row(
+                                            t,
+                                            m,
+                                            TITLE_SIZE,
+                                            column - 2. * COLUMN_PAD,
+                                            cx,
+                                        ))
+                                        .children(meta_line)
+                                        .children(self.thread_banners(t, m, cx)),
+                                )
                                 .when(!m.brief.is_empty(), |d| d.child(self.brief(t, m)))
-                                .when(!m.earlier.is_empty(), |d| {
-                                    d.child(div().flex().flex_col().gap(px(space::XS)).children(
-                                        m.earlier.iter().enumerate().map(|(k, e)| {
-                                            // Click a collapsed message to read it in full.
-                                            div()
-                                                .child(
-                                                    earlier(
-                                                        e.tone,
-                                                        &e.initials,
-                                                        &e.sender,
-                                                        if e.expanded { "" } else { &e.snippet },
-                                                        &e.when,
-                                                    )
-                                                    .id(("earlier", k))
-                                                    .cursor_pointer()
-                                                    .press(t)
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        let selected = this.selected;
-                                                        if let Some(e) = this
-                                                            .mails
-                                                            .get_mut(selected)
-                                                            .and_then(|m| m.earlier.get_mut(k))
-                                                        {
-                                                            e.expanded = !e.expanded;
-                                                            cx.notify();
-                                                        }
-                                                    })),
-                                                )
-                                                .when(e.expanded, |d| {
-                                                    d.child(
-                                                        div()
-                                                            .flex()
-                                                            .flex_col()
-                                                            .gap(px(space::M))
-                                                            .pt(px(space::S))
-                                                            .pb(px(space::L))
-                                                            .child(self.message_header(
-                                                                t,
-                                                                m,
-                                                                k + 1,
-                                                                true,
-                                                                cx,
-                                                            ))
-                                                            .child(
-                                                                self.message_body(
-                                                                    t,
-                                                                    &e.blocks,
-                                                                    (k + 1) * 1000,
-                                                                    images,
-                                                                    &selectable,
-                                                                    self.account_of(m),
-                                                                    cx,
-                                                                )
-                                                                .ml(px(40.)),
-                                                            )
-                                                            .when(
-                                                                !e.header.attachments.is_empty(),
-                                                                |d| {
-                                                                    d.child(
-                                                                        self.attachment_row(
-                                                                            t,
-                                                                            &e.header.attachments,
-                                                                            (k + 1) * 100,
-                                                                            m.account.as_deref(),
-                                                                            cx,
-                                                                        )
-                                                                        .pl(px(40.)),
-                                                                    )
-                                                                },
-                                                            ),
-                                                    )
-                                                })
-                                        }),
-                                    ))
-                                })
-                                .child(divider())
                                 .child(
                                     div()
                                         .flex()
                                         .flex_col()
                                         .gap(px(space::L))
-                                        .child(self.message_header(t, m, 0, true, cx))
-                                        .child(
-                                            self.message_body(
-                                                t,
-                                                &m.body,
-                                                0,
-                                                images,
-                                                &selectable,
-                                                self.account_of(m),
-                                                cx,
-                                            )
-                                            .ml(px(40.)),
-                                        )
-                                        .when(!m.loaded, |d| {
+                                        .when(several, |d| {
                                             d.child(
-                                                self.unloaded_body(t, m, cx.entity()).ml(px(40.)),
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(px(space::XS))
+                                                    .children(m.earlier.iter().enumerate().map(
+                                                        |(k, e)| {
+                                                            self.earlier_message(
+                                                                t,
+                                                                m,
+                                                                k,
+                                                                earlier(
+                                                                    e.tone,
+                                                                    &e.initials,
+                                                                    &e.sender,
+                                                                    if e.expanded {
+                                                                        ""
+                                                                    } else {
+                                                                        &e.snippet
+                                                                    },
+                                                                    &e.when,
+                                                                ),
+                                                                images,
+                                                                &selectable,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )),
                                             )
-                                        }),
+                                            .child(divider())
+                                        })
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(HEADER_TO_BODY))
+                                                .child(self.message_header(t, m, 0, true, cx))
+                                                .child(
+                                                    self.message_body(
+                                                        t,
+                                                        &m.body,
+                                                        0,
+                                                        images,
+                                                        &selectable,
+                                                        self.account_of(m),
+                                                        cx,
+                                                    )
+                                                    .ml(px(BODY_INSET)),
+                                                )
+                                                .when(!m.loaded, |d| {
+                                                    d.child(
+                                                        self.unloaded_body(t, m, cx.entity())
+                                                            .ml(px(BODY_INSET)),
+                                                    )
+                                                })
+                                                .when(!m.header.attachments.is_empty(), |d| {
+                                                    d.child(
+                                                        self.attachment_row(
+                                                            t,
+                                                            &m.header.attachments,
+                                                            0,
+                                                            m.account.as_deref(),
+                                                            cx,
+                                                        )
+                                                        .pl(px(BODY_INSET)),
+                                                    )
+                                                })
+                                                .when(m.rich, |d| {
+                                                    d.child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_wrap()
+                                                            .gap(px(space::M))
+                                                            .pl(px(BODY_INSET))
+                                                            .child(attachment(
+                                                                "Q4-Launch-Plan.pdf",
+                                                                "PDF · 4.2 MB",
+                                                                Tone::Rose,
+                                                            ))
+                                                            .child(attachment(
+                                                                "Pricing-tiers.fig",
+                                                                "Figma · 1.1 MB",
+                                                                Tone::Violet,
+                                                            )),
+                                                    )
+                                                }),
+                                        ),
                                 )
-                                .when(!m.header.attachments.is_empty(), |d| {
-                                    d.child(
-                                        self.attachment_row(
-                                            t,
-                                            &m.header.attachments,
-                                            0,
-                                            m.account.as_deref(),
-                                            cx,
-                                        )
-                                        .pl(px(40.)),
-                                    )
-                                })
-                                .when(m.rich, |d| {
-                                    d.child(
-                                        div()
-                                            .flex()
-                                            .flex_wrap()
-                                            .gap(px(10.))
-                                            .pl(px(40.))
-                                            .child(attachment(
-                                                "Q4-Launch-Plan.pdf",
-                                                "PDF · 4.2 MB",
-                                                Tone::Rose,
-                                            ))
-                                            .child(attachment(
-                                                "Pricing-tiers.fig",
-                                                "Figma · 1.1 MB",
-                                                Tone::Violet,
-                                            )),
-                                    )
-                                }),
+                                .when(!is_draft, |d| d.child(self.reply_bar(t, cx))),
                         ),
                 )
             })
             .when(original, |d| d.child(self.original_pane(t, m, cx)))
-            .child(rim(t, radius::SHEET))
             .children(self.menu_view(t, cx))
+    }
+
+    /// An earlier message of the thread: a row to click, and the message under it once open.
+    #[allow(clippy::too_many_arguments)]
+    fn earlier_message(
+        &self,
+        t: &Theme,
+        m: &Mail,
+        k: usize,
+        row: Div,
+        images: bool,
+        selectable: &super::selection::Selectable,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let e = &m.earlier[k];
+        div()
+            .child(
+                row.id(("earlier", k))
+                    .cursor_pointer()
+                    .press(t)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let selected = this.selected;
+                        if let Some(e) = this
+                            .mails
+                            .get_mut(selected)
+                            .and_then(|m| m.earlier.get_mut(k))
+                        {
+                            e.expanded = !e.expanded;
+                            cx.notify();
+                        }
+                    })),
+            )
+            .when(e.expanded, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(HEADER_TO_BODY))
+                        .pt(px(space::S))
+                        .pb(px(space::L))
+                        .child(self.message_header(t, m, k + 1, true, cx))
+                        .child(
+                            self.message_body(
+                                t,
+                                &e.blocks,
+                                (k + 1) * 1000,
+                                images,
+                                selectable,
+                                self.account_of(m),
+                                cx,
+                            )
+                            .ml(px(BODY_INSET)),
+                        )
+                        .when(!e.header.attachments.is_empty(), |d| {
+                            d.child(
+                                self.attachment_row(
+                                    t,
+                                    &e.header.attachments,
+                                    (k + 1) * 100,
+                                    m.account.as_deref(),
+                                    cx,
+                                )
+                                .pl(px(BODY_INSET)),
+                            )
+                        }),
+                )
+            })
+    }
+
+    /// Reply, Reply All and Forward where the reading ends.
+    fn reply_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let reply = |id: &'static str, name: &'static str, label: &'static str, key, kind| {
+            labelled(t, name, label)
+                .id(id)
+                .press(t)
+                .tooltip(tip(t.dark, label, key))
+                .on_click(cx.listener(move |this, _, _, cx| this.open_compose(kind, cx)))
+        };
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(px(space::S))
+            .pl(px(BODY_INSET))
+            .child(reply(
+                "reply-end",
+                "reply",
+                "Reply",
+                "R",
+                ComposeKind::Reply,
+            ))
+            .child(reply(
+                "reply-all-end",
+                "reply-all",
+                "Reply All",
+                "A",
+                ComposeKind::ReplyAll,
+            ))
+            .child(reply(
+                "forward-end",
+                "forward",
+                "Forward",
+                "F",
+                ComposeKind::Forward,
+            ))
     }
 
     /// Shown in place of an email while its content is on its way (its outline), or could
@@ -1688,13 +1730,14 @@ impl Nimbra {
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(px(space::S))
             .child(
                 div()
+                    .group("message-header")
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .child(avatar(tone, &initials, 28.))
+                    .gap(px(space::M))
+                    .child(avatar(tone, &initials, AVATAR))
                     .child(
                         div()
                             .flex_1()
@@ -1744,25 +1787,34 @@ impl Nimbra {
                                     .child(icon(if open { "up" } else { "down" }, 12., t.text3)),
                             ),
                     )
+                    // Replying to this message in particular: there while the pointer is on it.
                     .when(actions, |d| {
-                        d.child(reply_button(
-                            "reply",
-                            "Reply",
-                            ComposeKind::Reply,
-                            index * 3,
-                        ))
-                        .child(reply_button(
-                            "reply-all",
-                            "Reply All",
-                            ComposeKind::ReplyAll,
-                            index * 3 + 1,
-                        ))
-                        .child(reply_button(
-                            "forward",
-                            "Forward",
-                            ComposeKind::Forward,
-                            index * 3 + 2,
-                        ))
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .gap(px(2.))
+                                .invisible()
+                                .group_hover("message-header", |s| s.visible())
+                                .child(reply_button(
+                                    "reply",
+                                    "Reply",
+                                    ComposeKind::Reply,
+                                    index * 3,
+                                ))
+                                .child(reply_button(
+                                    "reply-all",
+                                    "Reply All",
+                                    ComposeKind::ReplyAll,
+                                    index * 3 + 1,
+                                ))
+                                .child(reply_button(
+                                    "forward",
+                                    "Forward",
+                                    ComposeKind::Forward,
+                                    index * 3 + 2,
+                                )),
+                        )
                     })
                     // The latest message of a snoozed thread says when it comes back.
                     .children(
@@ -1925,7 +1977,7 @@ impl Nimbra {
         // the avatar and the email itself in the original view (which starts at the left).
         let flush = self.original_target().is_some();
         div()
-            .ml(px(if flush { 0. } else { 40. }))
+            .ml(px(if flush { 0. } else { BODY_INSET }))
             .flex()
             .flex_col()
             .gap(px(6.))
@@ -2051,7 +2103,7 @@ impl Nimbra {
                             .justify_center()
                             .size(px(30.))
                             .rounded(px(radius::CONTROL))
-                            .bg(Tone::Violet.gradient())
+                            .bg(Tone::Violet.fill())
                             .child(icon("file", 16., gpui::white())),
                     )
                     .child(
@@ -2318,8 +2370,6 @@ impl Nimbra {
             .flex_col()
             .flex_1()
             .min_h(px(0.))
-            // The web view is square: it stops short of the panel's round corners.
-            .when(m.header.attachments.is_empty(), |d| d.pb(px(radius::SHEET)))
             // Subject, sender, recipients and attachments stay native above the email.
             .child(
                 div()
@@ -2410,6 +2460,145 @@ impl Nimbra {
 
 /// A message's text before it arrives: lines of ink at the reader's line height, with a few
 /// slow passes of light, then still.
+/// A message's avatar, and where its body starts: under the sender's name.
+pub(super) const AVATAR: f32 = 32.;
+pub(super) const BODY_INSET: f32 = AVATAR + space::M;
+
+/// From a message's header to its first line: more than a paragraph's gap, so the body
+/// reads as the header's and not as one more paragraph.
+pub(super) const HEADER_TO_BODY: f32 = space::XL;
+
+/// Between the reader's sections: the header, the Brief, the conversation, the reply bar.
+const SECTION_GAP: f32 = space::XXL;
+
+/// The reader's column: its side padding, and its width in full view.
+pub(super) const COLUMN_PAD: f32 = 48.;
+const FULL_COLUMN: f32 = 980.;
+
+/// The subject's size.
+pub(super) const TITLE_SIZE: f32 = 32.;
+
+/// The toolbar's padding left and right.
+pub(super) const TOOLBAR_PAD: f32 = space::L;
+const TOOLBAR_GAP: f32 = 2.;
+const TOOL: f32 = 30.;
+const RULE: f32 = 1. + 2. * space::S;
+const DRAFT_SPACE: f32 = space::XS;
+/// A labelled action's padding, icon and gap around its words.
+const ACTION_CHROME: f32 = space::S + 16. + 6. + space::M - 2.;
+/// Star, Label, Move To, Trash and More: always on the bar.
+const ORGANISE: usize = 5;
+/// The least room between the two clusters.
+const CLUSTER_GAP: f32 = space::S;
+
+/// What stays on the reader's bar. A narrow pane lets go of what has another way in,
+/// in this order: the arrows (the list, J and K), then the triage actions' words (each
+/// keeps its icon and tooltip), then Reply (the reply bar under the thread, each
+/// message's own, R), then the list toggle (View menu, ⌘⇧B).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ToolbarFit {
+    pub(super) arrows: bool,
+    pub(super) words: bool,
+    pub(super) reply: bool,
+    pub(super) list: bool,
+}
+
+impl ToolbarFit {
+    const STEPS: [ToolbarFit; 5] = [
+        ToolbarFit::new_unchecked(true, true, true, true),
+        ToolbarFit::new_unchecked(false, true, true, true),
+        ToolbarFit::new_unchecked(false, false, true, true),
+        ToolbarFit::new_unchecked(false, false, false, true),
+        ToolbarFit::new_unchecked(false, false, false, false),
+    ];
+
+    const fn new_unchecked(arrows: bool, words: bool, reply: bool, list: bool) -> Self {
+        ToolbarFit {
+            arrows,
+            words,
+            reply,
+            list,
+        }
+    }
+
+    /// `labels` are the triage actions' words, measured, with Reply's last; `draft` is
+    /// Edit Draft's words, for a draft (which has no Reply).
+    pub(super) fn new(room: f32, labels: &[f32], draft: Option<f32>) -> Self {
+        Self::STEPS
+            .into_iter()
+            .find(|fit| fit.width(labels, draft) <= room)
+            .unwrap_or(Self::STEPS[Self::STEPS.len() - 1])
+    }
+
+    fn width(self, labels: &[f32], draft: Option<f32>) -> f32 {
+        let triage = match labels.split_last() {
+            Some((_, rest)) if draft.is_none() && !self.reply => rest,
+            _ => labels,
+        };
+        let mut items: Vec<f32> = Vec::with_capacity(16);
+        if self.list {
+            items.extend([TOOL, RULE]);
+        }
+        if let Some(words) = draft {
+            items.extend([words + 2. * space::L, DRAFT_SPACE]);
+        }
+        items.extend(triage.iter().map(|&words| {
+            if self.words {
+                words + ACTION_CHROME
+            } else {
+                TOOL
+            }
+        }));
+        items.push(CLUSTER_GAP);
+        items.extend([TOOL; ORGANISE]);
+        if self.arrows {
+            items.extend([RULE, TOOL, TOOL]);
+        }
+        2. * TOOLBAR_PAD
+            + items.iter().sum::<f32>()
+            + TOOLBAR_GAP * items.len().saturating_sub(1) as f32
+    }
+}
+
+/// The width of a toolbar label in Sora at the bar's 13pt.
+fn label_width(text: &str, weight: FontWeight, cx: &App) -> f32 {
+    let system = cx.text_system();
+    let font = system.resolve_font(&gpui::Font {
+        weight,
+        ..gpui::font(crate::theme::SANS)
+    });
+    text.chars()
+        .map(|c| {
+            system
+                .advance(font, px(13.), c)
+                .map_or(13. * 0.6, |a| f32::from(a.width))
+        })
+        .sum()
+}
+
+/// A toolbar action named in words: for the few used on nearly every thread.
+fn action(t: &Theme, name: &str, label: &str) -> Div {
+    let (hover, bright) = (t.hover, t.text);
+    div()
+        .group("toolbar-action")
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .h(px(30.))
+        .pl(px(space::S))
+        .pr(px(space::M - 2.))
+        .rounded(px(radius::CONTROL))
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(t.text2)
+        .hover(move |s| s.bg(hover).text_color(bright))
+        .child(
+            icon(name, 16., t.text2).group_hover("toolbar-action", move |s| s.text_color(bright)),
+        )
+        .child(label.to_string())
+}
+
 fn message_outline(t: &Theme, line: f32) -> AnyElement {
     const PARAGRAPHS: [&[f32]; 3] = [&[0.22], &[0.97, 0.92, 0.99, 0.58], &[0.94, 0.98, 0.41]];
     let ink = t.border;
@@ -2442,7 +2631,7 @@ fn message_outline(t: &Theme, line: f32) -> AnyElement {
 
 /// The reading pane's bar as the loading screen draws it: the same controls, in the same
 /// places, out of reach.
-pub(super) fn toolbar_outline(t: &Theme, original: bool) -> Div {
+pub(super) fn toolbar_outline(t: &Theme) -> Div {
     let rule = || {
         div()
             .flex_none()
@@ -2457,23 +2646,62 @@ pub(super) fn toolbar_outline(t: &Theme, original: bool) -> Div {
         .gap(px(2.))
         .size_full()
         .overflow_hidden()
-        .px(px(20.))
+        .px(px(TOOLBAR_PAD))
         .child(icon_button(t, "list"))
         .child(rule())
-        .children(["done", "clock"].map(|name| icon_button(t, name)))
-        .child(rule())
-        .children(["reply", "reply-all", "forward"].map(|name| icon_button(t, name)))
-        .child(rule())
-        .children(["star", "mail", "tag", "folder", "trash"].map(|name| icon_button(t, name)))
+        .child(action(t, "done", "Done"))
+        .child(action(t, "clock", "Snooze"))
+        .child(action(t, "reply", "Reply"))
         .child(div().flex_1())
-        .child(icon_button(t, "eye").when(original, |d| d.bg(t.selected)))
+        .children(["star", "tag", "folder", "trash", "more"].map(|name| icon_button(t, name)))
         .child(rule())
-        .children(["up", "down", "more"].map(|name| icon_button(t, name)))
+        .children(["up", "down"].map(|name| icon_button(t, name)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LABELS: [f32; 3] = [33., 47., 35.];
+
+    #[test]
+    fn a_wide_reader_keeps_the_whole_bar() {
+        let fit = ToolbarFit::new(900., &LABELS, None);
+        assert_eq!(fit, ToolbarFit::STEPS[0]);
+    }
+
+    #[test]
+    fn the_bar_lets_go_one_step_at_a_time() {
+        let fits: Vec<_> = ToolbarFit::STEPS
+            .iter()
+            .map(|step| ToolbarFit::new(step.width(&LABELS, None), &LABELS, None))
+            .collect();
+        assert_eq!(fits, ToolbarFit::STEPS);
+    }
+
+    #[test]
+    fn each_step_is_narrower_than_the_last() {
+        let widths: Vec<f32> = ToolbarFit::STEPS
+            .iter()
+            .map(|step| step.width(&LABELS, None))
+            .collect();
+        assert!(widths.windows(2).all(|w| w[1] < w[0]), "{widths:?}");
+    }
+
+    #[test]
+    fn the_narrowest_bar_still_holds_every_triage_and_filing_action() {
+        let fit = ToolbarFit::new(0., &LABELS, None);
+        assert_eq!(
+            (fit.arrows, fit.words, fit.reply, fit.list),
+            (false, false, false, false)
+        );
+    }
+
+    #[test]
+    fn a_draft_has_no_reply_to_drop() {
+        let draft = ToolbarFit::STEPS[2].width(&LABELS[..2], Some(60.));
+        assert_eq!(ToolbarFit::STEPS[3].width(&LABELS[..2], Some(60.)), draft);
+    }
 
     fn scratch() -> std::path::PathBuf {
         let mut id = [0u8; 8];

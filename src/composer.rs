@@ -2009,7 +2009,7 @@ impl Nimbra {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use crate::theme::{radius, space};
-        use crate::ui::{Depth, Elevation, elevation, sheen, sheet};
+        use crate::ui::{Elevation, elevation, sheet};
 
         let Some(composer) = &self.compose else {
             return div().into_any_element();
@@ -2304,16 +2304,17 @@ impl Nimbra {
                     .press(t)
                     .tooltip(tip(t.dark, label, key))
             };
-        // Full page, a panel of the window (its edge a border, so a drop can light it); floating,
-        // a sheet over it.
+        // Full page, the whole window (its edge a clear border, so a drop can light it);
+        // floating, a sheet over it.
         let card = if full {
-            panel(t, Depth::Front)
+            div()
+                .relative()
                 .size_full()
+                .bg(t.surface)
                 // Clear of the traffic lights however narrow the window is.
                 .px(px(FULL_INSET))
                 .border_1()
-                .border_color(t.rim)
-                .child(sheen(t, radius::SHEET))
+                .border_color(gpui::transparent_black())
         } else {
             sheet(t)
                 .absolute()
@@ -2792,19 +2793,14 @@ impl Nimbra {
                         )
                         .child({
                             let ready = !composer.sending && !loading;
-                            crate::ui::glow(
-                                button(t, ButtonKind::Primary, "Send")
-                                    .id("send")
-                                    .press(t)
-                                    .when(!ready, |d| d.opacity(0.5))
-                                    .when(ready, |d| d.tooltip(tip(t.dark, "Send", "⌘↵")))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if this.compose_ready() {
-                                            this.send_mail(cx)
-                                        }
-                                    })),
-                                "send",
-                            )
+                            crate::ui::primary(t, "send", "Send")
+                                .when(!ready, |d| d.opacity(0.5))
+                                .when(ready, |d| d.tooltip(tip(t.dark, "Send", "⌘↵")))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.compose_ready() {
+                                        this.send_mail(cx)
+                                    }
+                                }))
                         }),
                 ),
             )
@@ -2901,15 +2897,12 @@ impl Nimbra {
                                                     this.request_close_compose(cx)
                                                 })),
                                         )
-                                        .child(crate::ui::glow(
-                                            button(t, ButtonKind::Primary, "Save Draft")
-                                                .id("ask-save")
-                                                .press(t)
+                                        .child(
+                                            crate::ui::primary(t, "ask-save", "Save Draft")
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.answer_close_compose(true, cx)
                                                 })),
-                                            "ask-save",
-                                        )),
+                                        ),
                                 ),
                         ),
                 )
@@ -2921,10 +2914,6 @@ impl Nimbra {
             .flex()
             .items_start()
             .justify_center()
-            // Full page, it is the window's one panel, over the window's nebula.
-            .when(full, |d| {
-                d.p(px(crate::ui::GUTTER)).child(crate::ui::backdrop(t))
-            })
             // Dimmed in the main window; over a message window the email stays readable.
             .when(!full && self.compose_host.is_none(), |d| d.bg(t.scrim))
             // A grabbed composer follows the mouse anywhere in the window.
@@ -2947,10 +2936,10 @@ impl Nimbra {
     }
 }
 
-/// The composer's header: centred on the top line inside the full-page panel's 1pt border.
-const HEADER: f32 = 2. * (crate::ui::TOP_LINE - crate::ui::GUTTER - 1.);
+/// The composer's header: centred on the top line inside the full-page composer's 1pt border.
+const HEADER: f32 = 2. * (crate::ui::TOP_LINE - 1.);
 
-/// How far a full-page composer keeps its content in from the panel's sides: past the
+/// How far a full-page composer keeps its content in from the window's sides: past the
 /// traffic lights, which sit on its header's line.
 const FULL_INSET: f32 = 52.;
 

@@ -104,32 +104,31 @@ fn shield() -> Div {
 }
 
 impl Nimbra {
-    pub(super) fn skeleton(&self, t: &Theme) -> impl IntoElement {
+    pub(super) fn skeleton(&self, t: &Theme, cx: &App) -> impl IntoElement {
         div()
             .flex()
             .flex_1()
             .min_w(px(0.))
             .h_full()
-            .gap(px(GUTTER))
-            .when(self.list_open, |d| {
-                d.child(self.skeleton_list(t).child(rim(t, radius::SHEET)))
-            })
-            .child(self.skeleton_reading(t).child(rim(t, radius::SHEET)))
+            .when(self.list_open, |d| d.child(self.skeleton_list(t, cx)))
+            .child(self.skeleton_reading(t))
     }
 
-    fn skeleton_list(&self, t: &Theme) -> Div {
+    fn skeleton_list(&self, t: &Theme, cx: &App) -> Div {
         let (strong, soft) = inks(t);
         // All, and Unread with room for a count of one digit.
-        let options = [("All", 44.), ("Unread", 77.)];
-        let switch_w = options.iter().map(|(_, w)| w).sum::<f32>() + 2. + 8.;
+        let widths = segment_widths("0", cx);
+        let options = [("All", widths[0]), ("Unread", widths[1])];
+        let switch_w = switch_width(widths);
         let room = self.list_width - 1. - LIST_LEFT - LIST_RIGHT;
-        let compose = HeaderFit::new(room, switch_w, None).compose;
+        let compose = !self.sidebar_open;
+        let fit = HeaderFit::new(room, switch_w, None, compose);
         let switch = div()
             .flex()
             .flex_none()
-            .gap(px(2.))
-            .p(px(3.))
-            .rounded(px(radius::ROW))
+            .gap(px(SEGMENT_GAP))
+            .p(px(SWITCH_INSET - 1.))
+            .rounded(px(radius::CONTROL))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
@@ -140,9 +139,9 @@ impl Nimbra {
                     .justify_center()
                     .w(px(width))
                     .h(px(SEGMENT_H))
-                    .rounded(px(radius::CONTROL))
+                    .rounded(px(radius::CHIP))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(if label == "All" { t.text } else { t.text3 })
+                    .text_color(if label == "All" { t.text } else { t.text2 })
                     .when(label == "All", |d| d.bg(t.raised))
                     .child(label)
             }));
@@ -152,8 +151,8 @@ impl Nimbra {
                 .flex_none()
                 .h(px(GROUP_H))
                 .pl(px(ROW_PAD))
-                .pt(px(16.))
-                .child(ink(px(width), 6., 12., soft))
+                .pt(px(space::L2))
+                .child(ink(px(width), 6., 16., soft))
         };
         // Only those that fit: the wave draws each one again every frame.
         let height = self.frame.map_or(920., |f| f32::from(f.size.height));
@@ -164,8 +163,8 @@ impl Nimbra {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .h(px(22.))
-                .child(ink(relative(mail.sender), 10., 22., strong))
+                .h(px(20.))
+                .child(ink(relative(mail.sender), 10., 20., strong))
                 .children(mail.label.map(|width| {
                     div()
                         .flex()
@@ -182,39 +181,25 @@ impl Nimbra {
                         .child(ink(px(width), 6., 16., soft))
                 }))
                 .child(div().flex_1())
-                .child(ink(px(26.), 7., 22., soft).flex_none());
+                .child(ink(px(26.), 7., 20., soft).flex_none());
             let row = div()
                 .relative()
                 .flex()
+                .flex_col()
                 .flex_none()
+                .justify_center()
+                .gap(px(2.))
                 .h(px(ROW_H))
-                .gap(px(ROW_PAD))
                 .px(px(ROW_PAD))
-                .py(px(11.))
                 .rounded(px(radius::ROW))
+                .child(top_line)
                 .child(
                     div()
                         .flex()
-                        .flex_none()
-                        .items_center()
-                        .child(div().size(px(28.)).rounded_full().bg(soft)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .gap(px(3.))
-                        .child(top_line)
-                        .child(
-                            div()
-                                .flex()
-                                .gap(px(6.))
-                                .h(px(18.))
-                                .child(ink(relative(mail.subject), 8., 18., strong))
-                                .child(ink(relative(mail.snippet), 8., 18., soft)),
-                        ),
+                        .gap(px(6.))
+                        .h(px(18.))
+                        .child(ink(relative(mail.subject), 8., 18., strong))
+                        .child(ink(relative(mail.snippet), 8., 18., soft)),
                 );
             let before = match i {
                 0 => Some(heading(34.).into_any_element()),
@@ -224,13 +209,17 @@ impl Nimbra {
             before.into_iter().chain([wave(i, i as f32 / 14., row)])
         });
 
-        panel(t, Depth::Back)
+        div()
+            .relative()
             .flex()
             .flex_col()
             .flex_none()
             .w(px(self.list_width))
             .h_full()
             .overflow_hidden()
+            .pr(px(1.))
+            .bg(t.panel)
+            .child(pane_divider(t))
             .child(
                 div()
                     .relative()
@@ -244,9 +233,17 @@ impl Nimbra {
                             .size_full()
                             .pl(px(LIST_LEFT))
                             .pr(px(LIST_RIGHT))
+                            .gap(px(HEADER_GAP))
                             .opacity(WAITING)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .when(fit.title, |d| d.child(ink(px(72.), 8., 20., strong))),
+                            )
                             .child(switch)
-                            .child(compose_button(compose)),
+                            .when(compose, |d| {
+                                d.child(compose_button(t, ComposeLook::Icon, "compose-outline"))
+                            }),
                     )
                     .child(shield()),
             )
@@ -260,21 +257,23 @@ impl Nimbra {
                     .min_h(px(0.))
                     .overflow_hidden()
                     .gap(px(ROW_GAP))
-                    .px(px(10.))
+                    .px(px(LIST_SIDE))
                     .children(rows),
             )
     }
 
     fn skeleton_reading(&self, t: &Theme) -> Div {
-        let tools = toolbar_outline(t, self.original).opacity(WAITING);
+        let tools = toolbar_outline(t).opacity(WAITING);
 
-        panel(t, Depth::Front)
+        div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_w(px(0.))
             .h_full()
             .overflow_hidden()
+            .bg(t.surface)
             .child(
                 div()
                     .relative()
@@ -290,8 +289,15 @@ impl Nimbra {
                     d.child(self.skeleton_original_head(t))
                         .child(self.skeleton_email(t, 28., 20.))
                 } else {
-                    d.child(self.skeleton_reader_head(t))
-                        .child(self.skeleton_email(t, 64., 8.))
+                    d.child(self.skeleton_reader_head(t)).child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .pl(px(BODY_INSET))
+                            .child(self.skeleton_email(t, COLUMN_PAD, 0.)),
+                    )
                 }
             })
     }
@@ -340,26 +346,48 @@ impl Nimbra {
     /// Label, subject and people, as they are in the reader.
     fn skeleton_reader_head(&self, t: &Theme) -> Div {
         let (strong, soft) = inks(t);
+        let title_line = (TITLE_SIZE * 1.2).round();
         div()
             .flex()
             .flex_col()
             .flex_none()
-            .gap(px(22.))
-            .px(px(64.))
-            .pt(px(40.))
-            .pb(px(24.))
-            .child(wave(100, 0.1, ink(relative(0.62), 30., 55., strong)))
-            .child(div())
+            .px(px(COLUMN_PAD))
+            .pt(px(space::XXL))
+            .pb(px(HEADER_TO_BODY))
+            .child(wave(
+                100,
+                0.1,
+                ink(relative(0.62), TITLE_SIZE * 0.6, title_line, strong),
+            ))
+            .child(div().h(px(space::M)))
             .child(wave(
                 101,
                 0.18,
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .child(div().flex_none().size(px(28.)).rounded_full().bg(soft))
-                    .child(ink(px(180.), 8., 18., soft))
-                    .child(div().flex_1())
+                    .gap(px(space::M))
+                    .h(px(24.))
+                    .child(ink(px(180.), 8., 16., soft)),
+            ))
+            .child(div().h(px(space::XXL)))
+            .child(wave(
+                102,
+                0.24,
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::M))
+                    .child(div().flex_none().size(px(AVATAR)).rounded_full().bg(soft))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(ink(px(112.), 10., 20., strong))
+                            .child(ink(px(160.), 7., 16., soft)),
+                    )
                     .child(ink(px(28.), 7., 16., soft).flex_none()),
             ))
     }
