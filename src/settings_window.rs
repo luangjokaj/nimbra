@@ -75,23 +75,9 @@ impl Tab {
             Tab::Reading => "mail",
             Tab::Composing => "draft",
             Tab::Notifications => "bell",
-            Tab::Privacy => "ban",
+            Tab::Privacy => "lock",
             Tab::Shortcuts => "list",
             Tab::About => "sparkles",
-        }
-    }
-
-    fn blurb(self) -> &'static str {
-        match self {
-            Tab::General => "How Nimbra starts, checks for mail and treats what you open.",
-            Tab::Accounts => "The accounts signed in on this Mac: Gmail, and any other address.",
-            Tab::Appearance => "Light or dark, and how mail reads.",
-            Tab::Reading => "How messages are shown.",
-            Tab::Composing => "What goes out with what you write.",
-            Tab::Notifications => "When and how Nimbra tells you about new mail.",
-            Tab::Privacy => "What Nimbra keeps on this Mac, and how.",
-            Tab::Shortcuts => "Everything you can do from the keyboard.",
-            Tab::About => "",
         }
     }
 }
@@ -374,14 +360,7 @@ impl Render for SettingsWindow {
                                 _ => d.max_w(px(680.)).pt(px(44.)).pb(px(40.)),
                             })
                             .when(tab != Tab::About, |d| {
-                                d.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(6.))
-                                        .child(serif(tab.label(), 34., t.text))
-                                        .child(meta(tab.blurb(), t.text3)),
-                                )
+                                d.child(serif(tab.label(), 34., t.text))
                             })
                             .children(content),
                     ),
@@ -426,8 +405,10 @@ fn row(t: &Theme, label: &str, detail: &str, control: impl IntoElement) -> AnyEl
         .flex()
         .items_center()
         .gap(px(16.))
+        // One height for every row of a card, whatever its control.
+        .min_h(px(48.))
         .px(px(16.))
-        .py(px(12.))
+        .py(px(10.))
         .child(
             div()
                 .flex_1()
@@ -509,7 +490,7 @@ impl SettingsWindow {
         pick: impl Fn(&mut Nimbra, usize) + Clone + 'static,
     ) -> Div {
         const SIZE: f32 = 12.5;
-        const H: f32 = 26.;
+        const H: f32 = 22.;
         const GAP: f32 = 2.;
         const SLIDE: Duration = Duration::from_millis(260);
         // Each option is as wide as its label (measured) plus padding, so the highlight
@@ -525,9 +506,9 @@ impl SettingsWindow {
         let (to_x, to_w) = spot(selected.min(options.len() - 1));
         let pill = div()
             .absolute()
-            .top(px(3.))
+            .top(px(2.))
             .h(px(H))
-            .rounded(px(7.))
+            .rounded(px(6.))
             .bg(t.raised)
             .border_1()
             .border_color(t.border_strong)
@@ -546,13 +527,13 @@ impl SettingsWindow {
                     (id, n),
                     Animation::new(SLIDE).with_easing(ease_out_quint()),
                     move |d, delta| {
-                        d.left(px(3. + from_x + (to_x - from_x) * delta))
+                        d.left(px(2. + from_x + (to_x - from_x) * delta))
                             .w(px(from_w + (to_w - from_w) * delta))
                     },
                 )
                 .into_any_element()
             }
-            _ => pill.left(px(3. + to_x)).w(px(to_w)).into_any_element(),
+            _ => pill.left(px(2. + to_x)).w(px(to_w)).into_any_element(),
         };
         let hover = t.hover;
         div()
@@ -560,8 +541,8 @@ impl SettingsWindow {
             .flex()
             .flex_none()
             .gap(px(GAP))
-            .p(px(3.))
-            .rounded(px(9.))
+            .p(px(2.))
+            .rounded(px(8.))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
@@ -577,7 +558,7 @@ impl SettingsWindow {
                     .justify_center()
                     .w(px(widths[i]))
                     .h(px(H))
-                    .rounded(px(7.))
+                    .rounded(px(6.))
                     .cursor_pointer()
                     .text_size(px(SIZE))
                     .font_weight(FontWeight::MEDIUM)
@@ -603,7 +584,7 @@ impl SettingsWindow {
         let login_row = row(
             t,
             "Open Nimbra at login",
-            "New mail is checked and notified from the moment you sign in to your Mac.",
+            "",
             switch(t, login)
                 .id("login")
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -619,7 +600,7 @@ impl SettingsWindow {
         let mark_row = row(
             t,
             "Mark as read",
-            "When an opened conversation stops being unread.",
+            "",
             self.choice(
                 t,
                 "mark",
@@ -636,7 +617,7 @@ impl SettingsWindow {
         let every_row = row(
             t,
             "Check for new mail",
-            "Nimbra asks the mail server what changed this often while it runs.",
+            "",
             self.choice(
                 t,
                 "every",
@@ -669,7 +650,7 @@ impl SettingsWindow {
                     d.child(meta(app.name.clone(), t.text3))
                 })
                 .child(
-                    button(t, ButtonKind::Secondary, "Make Default", None)
+                    button(t, ButtonKind::Secondary, "Make default", None)
                         .id("default-mail-app")
                         .press_soft()
                         .when(self.making_default, |b| b.opacity(0.5))
@@ -792,12 +773,7 @@ impl SettingsWindow {
             })
             .collect();
         if rows.is_empty() {
-            rows.push(row(
-                t,
-                "No account yet",
-                "Connect an account from the main window to start.",
-                div(),
-            ));
+            rows.push(row(t, "No account yet", "", div()));
         }
         let armed = self.is_armed("sign-out");
         let actions = div()
@@ -849,7 +825,7 @@ impl SettingsWindow {
             Some(PhotoAnswer::NotAllowed) => rows.push(row(
                 t,
                 "Show your Google photo",
-                "This sign-in predates profile photos. Allow your basic profile once in your browser, choosing this same account.",
+                "Allow your basic profile once in your browser, with this same account.",
                 button(t, ButtonKind::Secondary, "Allow", None)
                     .id("allow-photo")
                     .press_soft()
@@ -860,13 +836,13 @@ impl SettingsWindow {
             Some(PhotoAnswer::Unchecked) => rows.push(row(
                 t,
                 "A letter instead of your photo?",
-                "This is the picture Google gives every app. To look for your own photo, Nimbra needs the People API turned on in its Google Cloud project. Then check again.",
+                "Google gives every app this picture. Your own needs the People API on in Nimbra's Google Cloud project.",
                 check_again(cx),
             )),
             Some(PhotoAnswer::None) => rows.push(row(
                 t,
                 "Google has no photo for this account",
-                "Google only offers a drawn letter. If you did set a photo, your Workspace admin may be keeping it from apps.",
+                "If you set one, your Workspace admin may be keeping it from apps.",
                 check_again(cx),
             )),
             Some(PhotoAnswer::Theirs) | None => {}
@@ -878,11 +854,12 @@ impl SettingsWindow {
                 .flex_col()
                 .gap(px(8.))
                 .child(actions)
-                .when(connected, |d| {
+                // The consequence, at the moment it matters.
+                .when(connected && armed, |d| {
                     d.child(meta(
                         format!(
-                            "Signing out of {} removes its sign-in and the mail kept for it on this Mac. Other accounts stay.",
-                            if active_email.is_empty() { "an account".to_string() } else { active_email }
+                            "Signing out of {} removes its mail from this Mac. Other accounts stay.",
+                            if active_email.is_empty() { "this account".to_string() } else { active_email }
                         ),
                         t.text3,
                     ))
@@ -988,8 +965,8 @@ impl SettingsWindow {
             .into_any_element();
         let size_row = row(
             t,
-            "Text size in the reader",
-            "For messages shown in Nimbra's reader.",
+            "Reader text size",
+            "",
             self.choice(
                 t,
                 "text-size",
@@ -1020,30 +997,30 @@ impl SettingsWindow {
             n.settings.dark_emails,
         );
         let mut rows = vec![
-                    self.toggle(
-                        t,
-                        "original",
-                        "Open mail in its original formatting",
-                        "Off shows every message in Nimbra's reader. V switches either way.",
-                        original,
-                        cx,
-                        |n| {
-                            n.settings.original_view = !n.settings.original_view;
-                            n.original = n.settings.original_view;
-                        },
-                    ),
-                    self.toggle(
-                        t,
-                        "images",
-                        "Load remote images",
-                        "Off keeps images from the web out until you ask. They can tell a sender that you opened the mail.",
-                        images,
-                        cx,
-                        |n| {
-                            n.settings.load_images = !n.settings.load_images;
-                            n.original_images = n.settings.load_images;
-                        },
-                    ),
+            self.toggle(
+                t,
+                "original",
+                "Show original formatting",
+                "Press V to switch one message.",
+                original,
+                cx,
+                |n| {
+                    n.settings.original_view = !n.settings.original_view;
+                    n.original = n.settings.original_view;
+                },
+            ),
+            self.toggle(
+                t,
+                "images",
+                "Load remote images",
+                "Images can tell senders you opened their mail.",
+                images,
+                cx,
+                |n| {
+                    n.settings.load_images = !n.settings.load_images;
+                    n.original_images = n.settings.load_images;
+                },
+            ),
         ];
         // Darkening needs WebKit (see webview.rs), so the switch is only where it works.
         if cfg!(target_os = "macos") {
@@ -1053,27 +1030,14 @@ impl SettingsWindow {
                     t,
                     "dark-emails",
                     "Darken emails in dark theme",
-                    "Light emails get a dark page and light text. Pictures keep their colours. Off shows mail as sent.",
+                    "Pictures keep their colours.",
                     dark_emails,
                     cx,
                     |n| n.settings.dark_emails = !n.settings.dark_emails,
                 ),
             );
         }
-        vec![
-            group(t, None, rows),
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .px(px(4.))
-                .child(icon("ban", 14., t.text3))
-                .child(meta(
-                    "Original formatting always runs with the sender's scripts off, and links open in your browser.",
-                    t.text3,
-                ))
-                .into_any_element(),
-        ]
+        vec![group(t, None, rows)]
     }
 
     fn composing(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1090,15 +1054,10 @@ impl SettingsWindow {
             .gap(px(8.))
             .p(px(16.))
             .child(div().font_weight(FontWeight::MEDIUM).child("Signature"))
-            .child(meta(
-                "Added below new messages, replies and forwards.",
-                t.text3,
-            ))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .mt(px(4.))
                     .px(px(12.))
                     .py(px(8.))
                     .rounded(px(10.))
@@ -1113,7 +1072,7 @@ impl SettingsWindow {
         let undo_row = row(
             t,
             "Undo send",
-            "How long a sent message can still be taken back.",
+            "",
             self.choice(
                 t,
                 "undo",
@@ -1133,7 +1092,7 @@ impl SettingsWindow {
             t,
             "quote",
             "Include the original in replies",
-            "Folded behind ••• below what you write.",
+            "",
             quote,
             cx,
             |n| n.settings.quote_replies = !n.settings.quote_replies,
@@ -1151,58 +1110,51 @@ impl SettingsWindow {
             n.settings.notify_sound,
             n.settings.dock_badge,
         );
-        vec![
-            group(
-                t,
-                None,
-                vec![
-                    self.toggle(
-                        t,
-                        "notify",
-                        "Notify me about new mail",
-                        "New unread mail in the inbox, while Nimbra is running.",
-                        on,
-                        cx,
-                        |n| n.settings.notifications = !n.settings.notifications,
-                    ),
-                    self.toggle(
-                        t,
-                        "sound",
-                        "Play a sound",
-                        "macOS's notification sound.",
-                        sound,
-                        cx,
-                        |n| n.settings.notify_sound = !n.settings.notify_sound,
-                    ),
-                    self.toggle(t, "dock-badge", "Badge app icon", "", badge, cx, |n| {
-                        n.settings.dock_badge = !n.settings.dock_badge
-                    }),
-                    row(
-                        t,
-                        "Try it",
-                        "Shows a sample notification.",
-                        button(t, ButtonKind::Secondary, "Send a test", None)
-                            .id("notify-test")
-                            .press_soft()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let sound = this.owner.read(cx).settings.notify_sound;
-                                crate::notify::show(
-                                    "test",
-                                    "Nimbra",
-                                    "This is how new mail looks.",
-                                    sound,
-                                );
-                            })),
-                    ),
-                ],
-            ),
-            meta(
-                "If nothing appears, allow Nimbra in System Settings › Notifications.",
-                t.text3,
-            )
-            .px(px(4.))
-            .into_any_element(),
-        ]
+        // Said only when macOS is the reason nothing shows (read again on activation).
+        const BLOCKED: &str = "Turned off for Nimbra in System Settings › Notifications.";
+        let notify_row = self.toggle(
+            t,
+            "notify",
+            "Notify me about new mail",
+            if crate::notify::alerts_allowed() {
+                ""
+            } else {
+                BLOCKED
+            },
+            on,
+            cx,
+            |n| n.settings.notifications = !n.settings.notifications,
+        );
+        // A sound belongs to a notification: with none, the switch is there but inert.
+        let sound_row = if on {
+            self.toggle(t, "sound", "Play a sound", "", sound, cx, |n| {
+                n.settings.notify_sound = !n.settings.notify_sound
+            })
+        } else {
+            div()
+                .opacity(0.45)
+                .child(row(
+                    t,
+                    "Play a sound",
+                    "",
+                    switch(t, sound).cursor_default(),
+                ))
+                .into_any_element()
+        };
+        let badge_row = self.toggle(
+            t,
+            "dock-badge",
+            "Badge app icon",
+            if crate::notify::badges_allowed() {
+                ""
+            } else {
+                BLOCKED
+            },
+            badge,
+            cx,
+            |n| n.settings.dock_badge = !n.settings.dock_badge,
+        );
+        vec![group(t, None, vec![notify_row, sound_row, badge_row])]
     }
 
     fn privacy(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1213,7 +1165,8 @@ impl SettingsWindow {
                 .gap(px(12.))
                 .px(px(16.))
                 .py(px(12.))
-                .child(icon(name, 16., t.violet))
+                // Level with the title's 18pt line.
+                .child(div().pt(px(1.)).child(icon(name, 16., t.violet)))
                 .child(
                     div()
                         .flex_1()
@@ -1232,24 +1185,24 @@ impl SettingsWindow {
                 None,
                 vec![
                     fact(
-                        "ban",
+                        "lock",
                         "Encrypted on disk",
-                        "Mail kept on this Mac is encrypted (ChaCha20-Poly1305) with a key that lives only in your Keychain.",
+                        "Mail on this Mac is locked with a key kept only in your Keychain.",
                     ),
                     fact(
-                        "users",
-                        "Sign-in in the Keychain",
-                        "Google's sign-in is stored in the macOS Keychain, never in a file.",
+                        "key",
+                        "Sign-ins in the Keychain",
+                        "Passwords and sign-ins are never written to a file.",
                     ),
                     fact(
                         "mail",
                         "Only what it needs",
-                        "Nimbra asks Google to read, organise and send mail. Deleting forever needs your one-time permission.",
+                        "Nimbra asks to read, organise and send. Deleting forever asks once.",
                     ),
                     fact(
-                        "image",
+                        "eye",
                         "Mail is shown safely",
-                        "Scripts never run in email, remote content stays out unless allowed, and links open in your browser.",
+                        "Scripts never run, images wait until allowed, links open in your browser.",
                     ),
                 ],
             ),
@@ -1259,7 +1212,7 @@ impl SettingsWindow {
                 vec![row(
                     t,
                     "Clear mail kept on this Mac",
-                    "Removes the copies Nimbra keeps for speed. Your mail in Gmail is not touched; it is downloaded again as needed.",
+                    "Your mail stays on the server and downloads again as needed.",
                     button(
                         t,
                         ButtonKind::Secondary,
@@ -1381,14 +1334,10 @@ impl SettingsWindow {
                         ),
                 )
                 .child(serif("Nimbra", 44., t.text))
-                .child(meta(format!("Version {}", env!("CARGO_PKG_VERSION")), t.text3))
-                .child(
-                    div()
-                        .max_w(px(380.))
-                        .text_center()
-                        .text_color(t.text2)
-                        .child("A calm, fast Gmail client for the Mac. Your mail stays in Gmail; this Mac keeps an encrypted copy so it opens instantly."),
-                )
+                .child(meta(
+                    format!("Version {}", env!("CARGO_PKG_VERSION")),
+                    t.text3,
+                ))
                 .child(
                     button(t, ButtonKind::Secondary, "Keyboard shortcuts", None)
                         .id("about-shortcuts")

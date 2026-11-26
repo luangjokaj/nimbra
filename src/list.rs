@@ -154,6 +154,7 @@ impl Nimbra {
                 .press_soft()
                 .child(icon(name, 14., t.text2))
         };
+        let row_of_actions = || div().flex().flex_wrap().justify_center().gap(px(8.));
         let inbox_like = inbox_like(self.mailbox);
         div()
             .flex_1()
@@ -170,75 +171,77 @@ impl Nimbra {
                 44.,
                 t.text,
             ))
-            .child(meta(
-                "⌘-click adds or removes one, Shift-click picks a range, Esc clears.",
-                t.text3,
-            ))
+            // Two rows, what it is and where it goes, so a wrap never strands one button.
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
-                    .justify_center()
+                    .flex_col()
+                    .items_center()
                     .gap(px(8.))
-                    .max_w(px(620.))
-                    .when(
-                        inbox_like
-                            || matches!(
-                                self.mailbox,
-                                View::Done
-                                    | View::Spam
-                                    | View::Trash
-                                    | View::Snoozed
-                                    | View::Reminders
-                            ),
-                        |d| {
-                            d.child(
-                                action(
-                                    "bulk-done",
-                                    "done",
-                                    if inbox_like {
-                                        "Mark done"
-                                    } else {
-                                        "Move to inbox"
-                                    },
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
-                            )
-                        },
-                    )
                     .child(
-                        action("bulk-read", "mail", "Read or unread")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
-                    )
-                    .child(
-                        action("bulk-star", "star", "Star")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
-                    )
-                    .child(action("bulk-label", "tag", "Label").on_click(cx.listener(
-                        |this, _, window, cx| this.toggle_menu(Menu::Labels, window, cx),
-                    )))
-                    .child(
-                        action("bulk-move", "folder", "Move to").on_click(cx.listener(
-                            |this, _, window, cx| this.toggle_menu(Menu::MoveTo, window, cx),
-                        )),
-                    )
-                    .when(inbox_like && !self.is_demo(), |d| {
-                        d.child(
-                            action("bulk-snooze", "clock", "Snooze").on_click(cx.listener(
-                                |this, event: &gpui::ClickEvent, window, cx| {
-                                    this.open_snooze(Some(event.position()), window, cx)
+                        row_of_actions()
+                            .when(
+                                inbox_like
+                                    || matches!(
+                                        self.mailbox,
+                                        View::Done
+                                            | View::Spam
+                                            | View::Trash
+                                            | View::Snoozed
+                                            | View::Reminders
+                                    ),
+                                |d| {
+                                    d.child(
+                                        action(
+                                            "bulk-done",
+                                            "done",
+                                            if inbox_like {
+                                                "Mark done"
+                                            } else {
+                                                "Move to inbox"
+                                            },
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
+                                    )
                                 },
-                            )),
-                        )
-                    })
-                    .when(self.mailbox != View::Spam && !self.is_demo(), |d| {
-                        d.child(action("bulk-spam", "ban", "Spam").on_click(cx.listener(
-                            |this, _, _, cx| this.remove_selected(mail::Change::Spam, cx),
-                        )))
-                    })
+                            )
+                            .child(
+                                action("bulk-read", "mail", "Read or unread")
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
+                            )
+                            .child(
+                                action("bulk-star", "star", "Star")
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
+                            ),
+                    )
                     .child(
-                        action("bulk-trash", "trash", "Trash")
-                            .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
+                        row_of_actions()
+                            .child(action("bulk-label", "tag", "Label").on_click(cx.listener(
+                                |this, _, window, cx| this.toggle_menu(Menu::Labels, window, cx),
+                            )))
+                            .child(
+                                action("bulk-move", "folder", "Move to").on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.toggle_menu(Menu::MoveTo, window, cx)
+                                    },
+                                )),
+                            )
+                            .when(inbox_like && !self.is_demo(), |d| {
+                                d.child(action("bulk-snooze", "clock", "Snooze").on_click(
+                                    cx.listener(|this, event: &gpui::ClickEvent, window, cx| {
+                                        this.open_snooze(Some(event.position()), window, cx)
+                                    }),
+                                ))
+                            })
+                            .when(self.mailbox != View::Spam && !self.is_demo(), |d| {
+                                d.child(action("bulk-spam", "ban", "Spam").on_click(cx.listener(
+                                    |this, _, _, cx| this.remove_selected(mail::Change::Spam, cx),
+                                )))
+                            })
+                            .child(
+                                action("bulk-trash", "trash", "Trash")
+                                    .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
+                            ),
                     ),
             )
             .child(
@@ -501,6 +504,7 @@ impl Nimbra {
 
         div()
             .id(("row", row_id(m, self.account_of(m))))
+            .group("row")
             .press(t)
             .relative()
             .flex()
@@ -581,15 +585,23 @@ impl Nimbra {
                             .when(m.starred, |d| d.child(icon("star", 13., t.amber)))
                             .children(tag.map(|(label, a)| pill(t, &label, t.accent(a))))
                             .child(div().flex_1())
-                            // Snoozed: when it comes back, in place of when it came (and
-                            // beside the quick actions on the open row).
-                            .children(snoozed.as_ref().map(|(name, when)| {
-                                super::threads::snooze_chip(t, name, when.clone())
-                            }))
-                            .when(!selected && snoozed.is_none(), |d| {
-                                d.child(mono(m.time.clone(), t.text3))
-                            })
-                            // Quick actions on the open row: done, snooze, remind me.
+                            // Snoozed: when it comes back, in place of when it came. On the
+                            // open row the quick actions take this place while it is hovered.
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .children(snoozed.as_ref().map(|(name, when)| {
+                                        super::threads::snooze_chip(t, name, when.clone())
+                                    }))
+                                    .when(snoozed.is_none(), |d| {
+                                        d.child(mono(m.time.clone(), t.text3))
+                                    })
+                                    .when(selected, |d| d.group_hover("row", |s| s.invisible())),
+                            )
+                            // Quick actions on the open row, under the pointer: done, snooze,
+                            // remind me. (The keyboard has E and H.)
                             .when(selected, |d| {
                                 let quick = |id: &'static str, name: &'static str| {
                                     let (hover, bright) = (t.hover, t.text);
@@ -612,10 +624,15 @@ impl Nimbra {
                                         )
                                 };
                                 let archivable = self.done_change().is_some();
-                                d.child(
+                                d.relative().child(
                                     div()
+                                        .absolute()
+                                        .right_0()
+                                        .top(px(-1.))
                                         .flex()
                                         .gap(px(2.))
+                                        .invisible()
+                                        .group_hover("row", |s| s.visible())
                                         .when(archivable, |d| {
                                             d.child(
                                                 quick("quick-done", "done")
@@ -1300,12 +1317,9 @@ impl Nimbra {
                                 .text_size(px(17.))
                                 .line_height(px(26.))
                                 .text_color(soft)
-                                .child(if self.is_demo() {
-                                    "Every important thread is handled. Go make something wonderful."
-                                } else if self.mailbox == View::AllInboxes {
-                                    "Your inboxes are empty. Go make something wonderful."
-                                } else {
-                                    "Your inbox is empty. Go make something wonderful."
+                                // The headline says it; the line below brings the day's thought.
+                                .when(self.is_demo(), |d| {
+                                    d.child("Every important thread is handled.")
                                 }),
                         )
                         // Sample content: real mail shows the headline only.
@@ -1324,7 +1338,7 @@ impl Nimbra {
                                     .child(stat("clock", t.sky, "time in inbox", "38m"))
                                     .child(stat("zap", t.amber, "zero streak", "8 days")),
                             )
-                        })
+                        }),
                 )
                 // Drawn out from the middle.
                 .child(

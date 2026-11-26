@@ -125,6 +125,8 @@ static ICONS: &[(&str, &[u8])] = icons![
     "archive",
     "pulse",
     "eye",
+    "lock",
+    "key",
 ];
 
 struct Assets;
