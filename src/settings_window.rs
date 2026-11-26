@@ -258,13 +258,10 @@ impl Render for SettingsWindow {
                                 .h(px(32.))
                                 .rounded(px(radius::CONTROL))
                                 .cursor_pointer()
-                                .when(on, |d| {
-                                    d.bg(t.selected)
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .press_selected(&t)
-                                })
+                                // As the main sidebar shows its open mailbox: a quiet pill.
+                                .when(on, |d| d.bg(t.glass).font_weight(FontWeight::MEDIUM))
                                 .when(!on, |d| d.hover(move |s| s.bg(hover)).press(&t))
-                                .child(icon(item.icon(), 16., if on { t.violet } else { t.text2 }))
+                                .child(icon(item.icon(), 16., if on { t.text } else { t.text2 }))
                                 .child(
                                     div()
                                         .text_color(if on { t.text } else { t.text2 })
@@ -343,7 +340,7 @@ fn group(t: &Theme, title: Option<&str>, rows: Vec<AnyElement>) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(8.))
-        .children(title.map(|title| div().pl(px(4.)).child(overline(t, title.to_uppercase()))))
+        .children(title.map(|title| div().pl(px(4.)).child(overline(t, title.to_string()))))
         .child(
             div()
                 .flex()
@@ -513,8 +510,7 @@ impl SettingsWindow {
             .rounded(px(radius::CHIP))
             .bg(t.raised)
             .border_1()
-            .border_color(t.edge)
-            .shadow(vec![shadow(t.shadow.opacity(0.5), 1., 3., 0.)]);
+            .border_color(t.edge);
         let pill = match self.slides.get(id) {
             Some(&(from, at, n))
                 if at.elapsed() < SLIDE && from != selected && !motion::reduced() =>
@@ -578,6 +574,7 @@ impl SettingsWindow {
     fn general(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let n = self.owner.read(cx);
         let (login, mark, every) = (n.login_item, n.settings.mark_read, n.settings.check_every);
+        let streak = n.settings.show_streak;
         let login_row = row(
             t,
             "Open at Login",
@@ -639,7 +636,20 @@ impl SettingsWindow {
                 |n, i| n.settings.check_every = [30, 60, 300][i],
             ),
         );
-        vec![group(t, None, vec![login_row, mark_row, every_row])]
+        let streak_row = self.toggle(
+            t,
+            "show-streak",
+            "Show Zero Streak",
+            "",
+            streak,
+            cx,
+            |n| n.settings.show_streak = !n.settings.show_streak,
+        );
+        vec![group(
+            t,
+            None,
+            vec![login_row, mark_row, every_row, streak_row],
+        )]
     }
 
     fn accounts(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {

@@ -381,7 +381,7 @@ impl Render for MessageWindow {
                                     &selectable,
                                     cx,
                                 )
-                                .ml(px(40.)),
+                                .ml(px(super::reading::BODY_INSET)),
                             )
                             .when(!e.header.attachments.is_empty(), |d| {
                                 d.child(
@@ -392,7 +392,7 @@ impl Render for MessageWindow {
                                         m.account.as_deref(),
                                         cx,
                                     )
-                                    .pl(px(40.)),
+                                    .pl(px(super::reading::BODY_INSET)),
                                 )
                             }),
                     );
@@ -405,7 +405,7 @@ impl Render for MessageWindow {
                         .child(n.message_header(&t, &m, 0, false, cx))
                         .child(
                             n.message_body(&t, &m.body, 0, images, &selectable, cx)
-                                .ml(px(40.)),
+                                .ml(px(super::reading::BODY_INSET)),
                         )
                         .when(!m.header.attachments.is_empty(), |d| {
                             d.child(
@@ -416,7 +416,7 @@ impl Render for MessageWindow {
                                     m.account.as_deref(),
                                     cx,
                                 )
-                                .pl(px(40.)),
+                                .pl(px(super::reading::BODY_INSET)),
                             )
                         }),
                 )

@@ -51,6 +51,43 @@ impl RowAction {
     }
 }
 
+/// What the reader's More menu can do to the open thread.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum MoreAction {
+    MarkRead,
+    MarkUnread,
+    ShowOriginal,
+    ReaderView,
+    OpenInGmail,
+    ReportSpam,
+    Block,
+    Unblock,
+}
+
+impl MoreAction {
+    /// Icon, label and the key that does the same.
+    pub(super) fn label(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            MoreAction::MarkRead => ("mail", "Mark as Read", "U"),
+            MoreAction::MarkUnread => ("mail", "Mark as Unread", "U"),
+            MoreAction::ShowOriginal => ("eye", "Show Original", "V"),
+            MoreAction::ReaderView => ("eye", "Reader View", "V"),
+            MoreAction::OpenInGmail => ("link", "Open in Gmail", ""),
+            MoreAction::ReportSpam => ("ban", "Report Spam", ""),
+            MoreAction::Block => ("ban", "Block Sender", ""),
+            MoreAction::Unblock => ("ban", "Unblock Sender", ""),
+        }
+    }
+}
+
+/// Which toolbar button a menu drops from, for `Nimbra::menu_anchors`.
+#[derive(Clone, Copy)]
+pub(super) enum Anchor {
+    Labels,
+    MoveTo,
+    More,
+}
+
 /// A small menu dropped from the reading toolbar.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Menu {
@@ -138,33 +175,15 @@ pub(super) fn lit_edge(t: &Theme, corner: f32) -> Div {
         .border_color(t.violet.opacity(0.32))
 }
 
-/// Solid violet for what is chosen or is the one main action, deep enough under a white
-/// label in both themes: (at rest, hovered, held).
+/// Solid violet for what is chosen or is the one main action, under a white label:
+/// (at rest, hovered, held).
 pub(super) fn solid_violet(t: &Theme) -> (Hsla, Hsla, Hsla) {
-    let depth = if t.dark { 0.28 } else { 0.1 };
-    let shade = |a: f32| over(c(0x000000, a), t.violet);
-    (shade(depth), shade(depth - 0.08), shade(depth + 0.08))
+    (t.primary, t.primary_hover, t.primary_pressed)
 }
 
-/// A sheet's one main action: flat solid violet with a white label, lighter on hover and
-/// darker while held. Shaped like `ui::button`.
+/// A sheet's one main action.
 pub(super) fn primary_button(t: &Theme, id: &'static str, label: &str) -> Stateful<Div> {
-    let (rest, hover, held) = solid_violet(t);
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .px(px(14.))
-        .py(px(6.))
-        .rounded(px(radius::CONTROL))
-        .bg(rest)
-        .cursor_pointer()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(gpui::white())
-        .hover(move |s| s.bg(hover))
-        .child(label.to_string())
-        .id(id)
-        .active(move |s| s.bg(held))
+    crate::ui::primary(t, id, label)
 }
 
 /// How a pop-up's card comes and goes: fading in while it travels `from` points (up when
@@ -725,30 +744,20 @@ impl Nimbra {
                     .collect()
             }
             Menu::More => {
-                // U marks the open thread unread too, while it is read.
-                let unread_key = if self.picked.len() < 2
-                    && self.mails.get(self.selected).is_some_and(|m| !m.unread)
-                {
-                    "U"
-                } else {
-                    ""
-                };
-                let mut items = vec![MenuItem {
-                    key: unread_key,
-                    ..item("mail", "Mark as Unread", t.text2)
-                }];
-                if !self.is_demo() {
-                    if !self.own_servers() {
-                        items.push(item("link", "Open in Gmail", t.text2));
-                    }
-                    items.push(item("ban", "Report Spam", t.text2));
-                    let block = if self.sender_blocked(self.selected) {
-                        "Unblock Sender"
-                    } else {
-                        "Block Sender"
-                    };
-                    items.push(item("ban", block, t.text2));
-                }
+                let actions = self.more_actions();
+                // Keys act on the open thread: shown while that is what the menu is for.
+                let keyed = self.picked.len() < 2;
+                let items = actions
+                    .iter()
+                    .map(|action| {
+                        let (name, label, key) = action.label();
+                        MenuItem {
+                            key: if keyed { key } else { "" },
+                            ..item(name, label, t.text2)
+                        }
+                    })
+                    .collect();
+                self.more_actions = actions;
                 items
             }
             Menu::Row(index) => {
@@ -819,12 +828,26 @@ impl Nimbra {
             MENU_WIDTH
         };
         let height = items.len() as f32 * 32. + 14.;
+        // Under the button it drops from, as last drawn: left-aligned with it, or for More
+        // (at the toolbar's end) right-aligned.
+        let anchored = |anchor: Anchor, fallback: (f32, f32)| {
+            self.menu_anchors.get()[anchor as usize].map_or(fallback, |b| {
+                let left = match anchor {
+                    Anchor::More => f32::from(b.right()) - width,
+                    Anchor::Labels | Anchor::MoveTo => f32::from(b.left()),
+                };
+                (left, f32::from(b.bottom()) + 6.)
+            })
+        };
         let (left, top) = match menu {
-            Menu::Labels => (pane_left + 150., crate::ui::GUTTER + 50.),
-            Menu::MoveTo => (pane_left + 186., crate::ui::GUTTER + 50.),
-            Menu::More => (
-                f32::from(viewport.width) - crate::ui::GUTTER - 20. - width,
-                crate::ui::GUTTER + 50.,
+            Menu::Labels => anchored(Anchor::Labels, (pane_left + 150., crate::ui::GUTTER + 50.)),
+            Menu::MoveTo => anchored(Anchor::MoveTo, (pane_left + 186., crate::ui::GUTTER + 50.)),
+            Menu::More => anchored(
+                Anchor::More,
+                (
+                    f32::from(viewport.width) - crate::ui::GUTTER - 20. - width,
+                    crate::ui::GUTTER + 50.,
+                ),
             ),
             // Under the composer's From: beside the title of a draft, and in the fields'
             // value column on a new message, which has no title.
@@ -977,13 +1000,11 @@ impl Nimbra {
                     self.move_selected(target, cx);
                 }
             }
-            (Menu::More, 0) => self.mark_unread(cx),
-            (Menu::More, 1) if !self.own_servers() => self.open_in_gmail(cx),
-            // The last one.
-            (Menu::More, index) if index == if self.own_servers() { 2 } else { 3 } => {
-                self.toggle_block(cx)
+            (Menu::More, index) => {
+                if let Some(action) = self.more_actions.get(index).copied() {
+                    self.run_more(action, cx);
+                }
             }
-            (Menu::More, _) => self.remove_selected(mail::Change::Spam, cx),
             (Menu::From, index) => {
                 if let Some(id) = self.settings.accounts.get(index).map(|a| a.id.clone()) {
                     self.set_compose_account(id, cx);
@@ -1023,6 +1044,62 @@ impl Nimbra {
             Some(menu)
         };
         cx.notify();
+    }
+
+    /// Laid over a button that drops a menu: records where it is, so the menu drops from it.
+    pub(super) fn menu_anchor(&self, which: Anchor) -> impl IntoElement + use<> {
+        let anchors = self.menu_anchors.clone();
+        gpui::canvas(
+            move |bounds, _, _| {
+                let mut all = anchors.get();
+                all[which as usize] = Some(bounds);
+                anchors.set(all);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
+    }
+
+    /// What the More menu offers for the open thread, in its order.
+    pub(super) fn more_actions(&self) -> Vec<MoreAction> {
+        let mail = self.mails.get(self.selected);
+        let is_draft = self.mailbox == View::Drafts && !self.is_demo();
+        let mut actions = vec![if mail.is_some_and(|m| m.unread) {
+            MoreAction::MarkRead
+        } else {
+            MoreAction::MarkUnread
+        }];
+        if mail.is_some_and(|m| m.html.is_some()) && !is_draft && self.picked.len() < 2 {
+            actions.push(if self.original {
+                MoreAction::ReaderView
+            } else {
+                MoreAction::ShowOriginal
+            });
+        }
+        if !self.is_demo() {
+            if !self.own_servers() {
+                actions.push(MoreAction::OpenInGmail);
+            }
+            actions.push(MoreAction::ReportSpam);
+            actions.push(if self.sender_blocked(self.selected) {
+                MoreAction::Unblock
+            } else {
+                MoreAction::Block
+            });
+        }
+        actions
+    }
+
+    pub(super) fn run_more(&mut self, action: MoreAction, cx: &mut Context<Self>) {
+        match action {
+            MoreAction::MarkUnread => self.mark_unread(cx),
+            MoreAction::MarkRead => self.toggle_unread(cx),
+            MoreAction::ShowOriginal | MoreAction::ReaderView => self.toggle_original(cx),
+            MoreAction::OpenInGmail => self.open_in_gmail(cx),
+            MoreAction::ReportSpam => self.remove_selected(mail::Change::Spam, cx),
+            MoreAction::Block | MoreAction::Unblock => self.toggle_block(cx),
+        }
     }
 
     /// Opens the right-click menu for a row of the list.
@@ -1286,18 +1363,20 @@ impl Nimbra {
                             }),
                     )
             }
-            Menu::More => {
-                panel
-                    .right(px(20.))
-                    .child(item(0, "mail", "Mark as Unread".into(), t.text2).on_click(
-                        cx.listener(|this, _, _, cx| this.menu_choice(Menu::More, 0, cx)),
-                    ))
-                    .when(!self.is_demo() && !self.own_servers(), |d| {
-                        d.child(item(1, "link", "Open in Gmail".into(), t.text2).on_click(
-                            cx.listener(|this, _, _, cx| this.menu_choice(Menu::More, 1, cx)),
+            Menu::More => panel.right(px(20.)).children(
+                self.more_actions()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, action)| {
+                        let (name, label, _) = action.label();
+                        item(index, name, label.into(), t.text2).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                this.menu = None;
+                                this.run_more(action, cx)
+                            },
                         ))
-                    })
-            }
+                    }),
+            ),
         })
     }
 }

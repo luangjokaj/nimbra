@@ -4,7 +4,6 @@
 use std::hash::{Hash, Hasher};
 
 use super::*;
-use crate::theme::GRADIENT_PRIMARY;
 use crate::ui::motion;
 
 /// Pull-to-refresh distances, in points: where a release triggers a refresh, where the
@@ -42,15 +41,16 @@ pub(super) const CLOSE_SECONDS: f32 = 0.22;
 
 pub(super) const SETTLE_SECONDS: f32 = 0.7;
 
-/// A row's height: its padding (11 above and below) and two lines of text (22 + 3 + 18).
-pub(super) const ROW_H: f32 = 65.;
+/// A row's height: its padding (12 above and below) and two lines of text (20 + 2 + 18).
+pub(super) const ROW_H: f32 = 64.;
 /// The space under each row.
 pub(super) const ROW_GAP: f32 = 2.;
-/// A group head (TODAY, EARLIER): 16 above its 12pt line, 6 below.
-pub(super) const GROUP_H: f32 = 34.;
-/// The list's own margin left and right of the rows, and under the last.
-const LIST_SIDE: f32 = 10.;
-const LIST_BOTTOM: f32 = 10.;
+/// A group head (Today, Earlier): 20 above its 16pt line, 4 below, as the sidebar's.
+pub(super) const GROUP_H: f32 = 40.;
+/// The list's own margin left and right of the rows, and under the last: the gutter, so a
+/// row's card sits as far in from the panel's edge as the panels sit from each other.
+pub(super) const LIST_SIDE: f32 = 8.;
+const LIST_BOTTOM: f32 = 8.;
 /// How far past the visible rows the virtual list lays out, so a fast scroll finds them.
 const OVERDRAW: f32 = 480.;
 /// The least room a sender keeps beside a label pill; with less, the pill gives way.
@@ -343,14 +343,12 @@ impl Nimbra {
                     .flex_wrap()
                     .justify_center()
                     .gap(px(space::S))
-                    .max_w(px(620.))
+                    .max_w(px(760.))
                     .when(inbox_like, |d| {
-                        d.child(crate::ui::glow(
-                            button(t, ButtonKind::Primary, "Mark Done")
-                                .id("bulk-done")
+                        d.child(
+                            crate::ui::primary(t, "bulk-done", "Mark Done")
                                 .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
-                            "bulk-done",
-                        ))
+                        )
                     })
                     .when(back_to_inbox, |d| {
                         d.child(
@@ -366,13 +364,21 @@ impl Nimbra {
                         action("bulk-star", "star", "Star")
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
                     )
-                    .child(action("bulk-label", "tag", "Label").on_click(cx.listener(
-                        |this, _, window, cx| this.toggle_menu(Menu::Labels, window, cx),
-                    )))
                     .child(
-                        action("bulk-move", "folder", "Move To").on_click(cx.listener(
-                            |this, _, window, cx| this.toggle_menu(Menu::MoveTo, window, cx),
-                        )),
+                        action("bulk-label", "tag", "Label")
+                            .relative()
+                            .child(self.menu_anchor(Anchor::Labels))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_menu(Menu::Labels, window, cx)
+                            })),
+                    )
+                    .child(
+                        action("bulk-move", "folder", "Move To")
+                            .relative()
+                            .child(self.menu_anchor(Anchor::MoveTo))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_menu(Menu::MoveTo, window, cx)
+                            })),
                     )
                     .when(inbox_like && !self.is_demo(), |d| {
                         d.child(
@@ -590,10 +596,9 @@ impl Nimbra {
         ))
     }
 
-    /// The width the row's text has: the list, less its margins, the row's padding, the
-    /// avatar and the gap after it.
+    /// The width the row's text has: the list, less its margins and the row's padding.
     fn row_room(&self) -> f32 {
-        self.list_width - 2. * LIST_SIDE - 3. * ROW_PAD - AVATAR
+        self.list_width - 2. * LIST_SIDE - 2. * ROW_PAD
     }
 
     /// Sender, label, subject and snippet, each cut where its real width runs out.
@@ -666,9 +671,13 @@ impl Nimbra {
         let right = match &snoozed {
             Some((_, when)) => 27. + text_width(when, 11., crate::theme::MONO, cx),
             None => text_width(&m.time, 11., crate::theme::MONO, cx),
-        };
+        } + if m.unread { UNREAD_DOT + UNREAD_GAP } else { 0. };
         let text = self.row_text(m, right, cx);
-        let ground = if lit { t.card } else { over(t.hover, t.panel) };
+        let ground = if lit {
+            over(t.selected, t.panel)
+        } else {
+            over(t.hover, t.panel)
+        };
         let (primary, secondary) = if m.unread {
             (t.text, t.text)
         } else {
@@ -676,42 +685,30 @@ impl Nimbra {
         };
 
         let (key, account) = self.thread_key(m);
-        let held = over(t.pressed, t.card);
         div()
             .id(SharedString::from(format!("row:{account}:{key}")))
             .group("thread-row")
-            .map(|d| {
-                if lit {
-                    d.active(move |s| s.bg(held))
-                } else {
-                    d.press(t)
-                }
-            })
+            .map(|d| if lit { d.press_selected(t) } else { d.press(t) })
             .relative()
             .flex()
+            .flex_col()
             .flex_none()
+            .justify_center()
+            .gap(px(2.))
             .h(px(ROW_H))
-            .gap(px(ROW_PAD))
             .px(px(ROW_PAD))
-            .py(px(11.))
             .rounded(px(radius::ROW))
             .cursor_pointer()
-            // The open row is a card raised off the panel, lit from inside.
-            .when(lit, |d| d.bg(t.card).shadow(card_glow(t)))
-            // Its edge is drawn over the row rather than as its border, which would take up
-            // space and make the row (and those below it) jump.
+            // The open row: a tint of the accent, with its hairline drawn over the row rather
+            // than as its border, which would take up space and make the rows jump.
             .when(lit, |d| {
-                d.child(
+                d.bg(t.selected).child(
                     div()
                         .absolute()
                         .inset_0()
                         .rounded(px(radius::ROW))
                         .border_1()
-                        .border_color(if picked {
-                            t.violet.opacity(0.5)
-                        } else {
-                            t.card_edge
-                        }),
+                        .border_color(t.selected_edge),
                 )
             })
             .when(!lit, |d| {
@@ -727,96 +724,80 @@ impl Nimbra {
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 this.click_row(i, event.modifiers(), event.click_count(), cx)
             }))
-            // In the padding, so the avatar has the same space either side, and level with
-            // the first line, which is the sender it is about.
-            .when(m.unread, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .left(px((ROW_PAD - UNREAD_DOT) / 2.))
-                        .top(px(11. + (22. - UNREAD_DOT) / 2.))
-                        .size(px(UNREAD_DOT))
-                        .rounded_full()
-                        .bg(t.violet),
-                )
-            })
-            .child(div().flex().flex_none().items_center().child(avatar(
-                m.tone,
-                &m.initials,
-                AVATAR,
-            )))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .gap(px(3.))
+                    .items_center()
+                    .gap(px(space::S))
+                    .h(px(20.))
+                    .child(
+                        div()
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .font_weight(if m.unread {
+                                FontWeight::SEMIBOLD
+                            } else {
+                                FontWeight::MEDIUM
+                            })
+                            .text_color(primary)
+                            .child(text.sender),
+                    )
+                    .children(m.thread.clone().map(|n| caption(n, t.text3)))
+                    .when(m.starred, |d| d.child(icon("star", 13., t.amber)))
+                    .children(text.tag.map(|(label, a)| pill(t, &label, t.accent(a))))
+                    .child(div().flex_1())
+                    // When it came (or comes back), led by the unread dot. The quick actions
+                    // take its place under the pointer and on the open row.
                     .child(
                         div()
                             .flex()
+                            .flex_none()
                             .items_center()
-                            .gap(px(space::S))
-                            .h(px(22.))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .whitespace_nowrap()
-                                    .font_weight(if m.unread {
-                                        FontWeight::SEMIBOLD
-                                    } else {
-                                        FontWeight::MEDIUM
-                                    })
-                                    .text_color(primary)
-                                    .child(text.sender),
-                            )
-                            .children(m.thread.clone().map(|n| caption(n, t.text3)))
-                            .when(m.starred, |d| d.child(icon("star", 13., t.amber)))
-                            .children(text.tag.map(|(label, a)| pill(t, &label, t.accent(a))))
-                            .child(div().flex_1())
-                            .children(snoozed.as_ref().map(|(name, when)| {
-                                super::threads::snooze_chip(t, name, when.clone())
-                                    .when(!selected, |d| {
-                                        d.group_hover("thread-row", |s| s.invisible())
-                                    })
-                                    .when(selected, |d| d.invisible())
-                            }))
-                            .when(snoozed.is_none(), |d| {
+                            .gap(px(UNREAD_GAP))
+                            .when(!selected, |d| d.group_hover("thread-row", |s| s.invisible()))
+                            .when(selected, |d| d.invisible())
+                            .when(m.unread, |d| {
                                 d.child(
-                                    caption(m.time.clone(), t.text3)
-                                        .when(!selected, |d| {
-                                            d.group_hover("thread-row", |s| s.invisible())
-                                        })
-                                        .when(selected, |d| d.invisible()),
+                                    div()
+                                        .flex_none()
+                                        .size(px(UNREAD_DOT))
+                                        .rounded_full()
+                                        .bg(t.violet),
                                 )
+                            })
+                            .map(|d| match &snoozed {
+                                Some((name, when)) => {
+                                    d.child(super::threads::snooze_chip(t, name, when.clone()))
+                                }
+                                None => d.child(caption(m.time.clone(), t.text3)),
                             }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(6.))
+                    .h(px(18.))
+                    .child(
+                        div()
+                            .flex_none()
+                            .whitespace_nowrap()
+                            .font_weight(if m.unread {
+                                FontWeight::MEDIUM
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(secondary)
+                            .child(text.subject),
                     )
                     .child(
                         div()
-                            .flex()
-                            .gap(px(6.))
-                            .h(px(18.))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .whitespace_nowrap()
-                                    .font_weight(if m.unread {
-                                        FontWeight::MEDIUM
-                                    } else {
-                                        FontWeight::NORMAL
-                                    })
-                                    .text_color(secondary)
-                                    .child(text.subject),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .text_color(t.text3)
-                                    .child(text.snippet),
-                            ),
+                            .flex_1()
+                            .min_w(px(0.))
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_color(t.text3)
+                            .child(text.snippet),
                     ),
             )
             .child(self.quick_actions(t, i, selected, ground, cx))
@@ -878,34 +859,23 @@ impl Nimbra {
                     }),
                 )
         });
+        // On the row's own colour, so what it covers is hidden, not crossed.
         div()
             .absolute()
-            .top(px(10.))
+            .top(px((ROW_H - 40.) / 2. - 2.))
             .right(px(ROW_PAD - 4.))
             .h(px(24.))
             .flex()
             .items_center()
+            .gap(px(2.))
+            .pl(px(space::S))
+            .bg(ground)
+            .rounded(px(radius::CHIP))
             .when(!selected, |d| {
                 d.invisible().group_hover("thread-row", |s| s.visible())
             })
-            // The row's own colour, fading in from the left over what it covers.
-            .child(
-                div()
-                    .w(px(20.))
-                    .h_full()
-                    .bg(gradient(90., ground.opacity(0.), ground)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.))
-                    .h_full()
-                    .bg(ground)
-                    .rounded_r(px(radius::CHIP))
-                    .children(done)
-                    .children(snooze),
-            )
+            .children(done)
+            .children(snooze)
     }
 
     /// One item of the virtual list, built only while it is in view (or about to be).
@@ -918,12 +888,12 @@ impl Nimbra {
         match item {
             Item::Group(group) => item_box()
                 .pl(px(LIST_SIDE + ROW_PAD))
-                .pt(px(16.))
+                .pt(px(space::L2))
                 .child(overline(
                     &t,
                     match group {
-                        Group::Today => "TODAY",
-                        Group::Earlier => "EARLIER",
+                        Group::Today => "Today",
+                        Group::Earlier => "Earlier",
                     },
                 ))
                 .into_any_element(),
@@ -941,36 +911,25 @@ impl Nimbra {
         let bar = |w: f32, h: f32| div().h(px(h)).w(px(w)).rounded_full().bg(t.hover);
         let row = div()
             .flex()
+            .flex_col()
             .flex_none()
+            .justify_center()
+            .gap(px(2.))
             .h(px(ROW_H))
-            .gap(px(ROW_PAD))
             .px(px(ROW_PAD))
-            .py(px(11.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .child(div().size(px(AVATAR)).rounded_full().bg(t.hover)),
+                    .h(px(20.))
+                    .child(bar(if n == 0 { 120. } else { 96. }, 10.)),
             )
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .h(px(22.))
-                            .child(bar(if n == 0 { 120. } else { 96. }, 10.)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .h(px(18.))
-                            .child(bar(if n == 0 { 220. } else { 180. }, 8.)),
-                    ),
+                    .items_center()
+                    .h(px(18.))
+                    .child(bar(if n == 0 { 220. } else { 180. }, 8.)),
             );
         if !self.loading_more || motion::reduced() {
             return row.opacity(0.7).into_any_element();
@@ -997,37 +956,52 @@ impl Nimbra {
         // Each option has a fixed width, so the highlight behind them can slide from one to
         // the other (and nothing shifts when it does).
         let unread_text = unread.to_string();
-        let widths = [44., 70. + 7. * unread_text.len() as f32];
-        // The switch: its options, the 2pt between them, its padding and its border.
-        let switch_w = widths[0] + widths[1] + 2. + 8.;
+        let widths = segment_widths(&unread_text, cx);
+        let switch_w = switch_width(widths);
         // Dot, gap, padding and border around the pill's words.
         let offline_w = self
             .offline
             .then(|| 30. + text_width(&self.offline_label(), 12., crate::theme::SANS, cx));
+        // Compose is the sidebar's; with the sidebar hidden it comes here, as an icon.
+        let compose = !self.sidebar_open;
         let fit = HeaderFit::new(
             self.list_width - 1. - LIST_LEFT - LIST_RIGHT,
             switch_w,
             offline_w,
+            compose,
         );
+        let title = fit.title.then(|| {
+            let room = self.list_width - 1. - LIST_LEFT - LIST_RIGHT
+                - fit.used(switch_w, offline_w, compose)
+                + TITLE_MIN;
+            let font = gpui::Font {
+                weight: FontWeight::SEMIBOLD,
+                ..gpui::font(crate::theme::SANS)
+            };
+            super::fit(&self.inbox_name(), room, &font, 16., cx).0
+        });
         let segment = |label: &str, count: Option<&str>, active: bool, width: f32| {
             div()
                 .flex()
                 .flex_none()
                 .items_center()
-                .justify_center()
-                .gap(px(6.))
+                .gap(px(SEGMENT_COUNT_GAP))
                 .w(px(width))
                 .h(px(SEGMENT_H))
-                .rounded(px(radius::CONTROL))
+                .px(px(SEGMENT_PAD))
+                // Its words' baseline on the mailbox name's (`TITLE_LIFT`), which also centres
+                // the capitals in the option.
+                .pt(px(2. * TITLE_LIFT))
+                .rounded(px(radius::CHIP))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(if active { t.text } else { t.text3 })
+                .text_color(if active { t.text } else { t.text2 })
                 .child(label.to_string())
                 .children(count.map(|n| caption(n.to_string(), t.text3)))
         };
         // The highlight: where it is, and where it was before the last switch.
         let spot = |unread: bool| {
             if unread {
-                (widths[0] + 2., widths[1])
+                (widths[0] + SEGMENT_GAP, widths[1])
             } else {
                 (0., widths[0])
             }
@@ -1036,25 +1010,24 @@ impl Nimbra {
         let (from_x, from_w) = spot(!self.unread_only);
         let pill = div()
             .absolute()
-            .top(px(3.))
+            .top(px(SWITCH_INSET))
             .h(px(SEGMENT_H))
-            .rounded(px(radius::CONTROL))
+            .rounded(px(radius::CHIP))
             .bg(t.raised)
             .border_1()
-            .border_color(t.edge)
-            .shadow(vec![shadow(t.shadow.opacity(0.5), 1., 3., 0.)]);
+            .border_color(t.edge);
         // Only right after a switch (not again each time the list is drawn anew).
         let switching = self
             .filter_switched
             .is_some_and(|at| at.elapsed() < motion::PILL);
         let pill = if self.filter_gen == 0 || !switching || motion::reduced() {
-            pill.left(px(3. + to_x)).w(px(to_w)).into_any_element()
+            pill.left(px(SWITCH_INSET + to_x)).w(px(to_w)).into_any_element()
         } else {
             pill.with_animation(
                 ("filter-pill", self.filter_gen),
                 Animation::new(motion::PILL).with_easing(motion::ease_out),
                 move |d, delta| {
-                    d.left(px(3. + from_x + (to_x - from_x) * delta))
+                    d.left(px(SWITCH_INSET + from_x + (to_x - from_x) * delta))
                         .w(px(from_w + (to_w - from_w) * delta))
                 },
             )
@@ -1101,7 +1074,8 @@ impl Nimbra {
                     )
             })
             .child(
-                // One row on the top line (y = 25): the filters, then Offline and Compose.
+                // One row on the top line: the mailbox's name, then Offline, the filters and
+                // (with the sidebar hidden) Compose.
                 div()
                     .flex()
                     .flex_none()
@@ -1113,12 +1087,19 @@ impl Nimbra {
                     .on_mouse_down(MouseButton::Left, drag_or_zoom)
                     .child(
                         div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .children(title.map(|title| pane_title(t, title))),
+                    )
+                    .when(self.offline, |d| d.child(self.offline_pill(t, fit.words)))
+                    .child(
+                        div()
                             .relative()
                             .flex()
                             .flex_none()
-                            .gap(px(2.))
-                            .p(px(3.))
-                            .rounded(px(radius::ROW))
+                            .gap(px(SEGMENT_GAP))
+                            .p(px(SWITCH_INSET - 1.))
+                            .rounded(px(radius::CONTROL))
                             .bg(t.hover)
                             .border_1()
                             .border_color(t.border)
@@ -1142,17 +1123,15 @@ impl Nimbra {
                                     ),
                             ),
                     )
-                    .child(div().flex_1().min_w(px(0.)).mx(px(-HEADER_GAP / 2.)))
-                    .when(self.offline, |d| d.child(self.offline_pill(t, fit.words)))
-                    .child(crate::ui::glow(
-                        compose_button(fit.compose)
-                            .id("compose")
-                            .tooltip(tip(t.dark, "New Message", "C"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_compose(ComposeKind::New, cx)
-                            })),
-                        "compose",
-                    )),
+                    .when(compose, |d| {
+                        d.child(
+                            compose_button(t, ComposeLook::Icon, "compose")
+                                .tooltip(tip(t.dark, "New Message", "C"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.open_compose(ComposeKind::New, cx)
+                                })),
+                        )
+                    }),
             )
             // While mail is checked, a thin bar glides along the top of the list. Its 2px
             // strip is always there, so nothing below it moves.
@@ -1185,8 +1164,7 @@ impl Nimbra {
     /// The light gliding along the top of the list while mail is checked, fading out once
     /// the check is done. With Reduce Motion it holds still.
     fn checking_bar(&self, t: &Theme) -> AnyElement {
-        let light = gradient(90., c(GRADIENT_GLOW.from, 0.), c(GRADIENT_GLOW.to, 1.));
-        let glide = div().absolute().top_0().h_full().rounded_full().bg(light);
+        let glide = div().absolute().top_0().h_full().rounded_full().bg(t.violet);
         let glide = if motion::reduced() {
             glide
                 .left(relative(0.))
@@ -1309,31 +1287,30 @@ impl Nimbra {
 
     pub(super) fn zero(&self, t: &Theme) -> impl IntoElement {
         let corner = radius::SHEET;
-        let ink = c(0xf5f3ef, 1.);
-        let soft = c(0xffffff, 0.7);
-        let glass = |d: Div| {
-            d.bg(c(0xffffff, 0.07))
+        let sky = Sky::of(t);
+        let quiet = |d: Div| {
+            d.bg(sky.card)
                 .border_1()
-                .border_color(c(0xffffff, 0.14))
+                .border_color(sky.edge)
                 .rounded(px(radius::CARD))
         };
-        let stat = |name: &str, color: Hsla, label: &str, value: &str| {
-            glass(div())
+        let stat = |name: &str, label: &str, value: &str| {
+            quiet(div())
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .pl(px(20.))
-                .pr(px(28.))
-                .py(px(16.))
+                .gap(px(space::S))
+                .px(px(space::L2))
+                .py(px(space::L))
+                .min_w(px(168.))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .child(icon(name, 16., color))
-                        .child(meta(label.to_string(), soft)),
+                        .gap(px(space::S))
+                        .child(icon(name, 14., sky.soft))
+                        .child(meta(label.to_string(), sky.soft)),
                 )
-                .child(display(value.to_string(), 40., ink))
+                .child(display(value.to_string(), 32., sky.ink))
         };
         let arrival = self.arrival.unwrap_or(Arrival::SETTLED);
         let settle = |d: Div, shown: f32| d.relative().top(px(drop_for(shown))).opacity(shown);
@@ -1353,7 +1330,7 @@ impl Nimbra {
                     .top(relative(y))
                     .size(px(size))
                     .rounded_full()
-                    .bg(c(0xffffff, a * arrival.star(i)))
+                    .bg(sky.star.opacity(sky.star.a * a * arrival.star(i)))
             })
             .collect();
         let now = std::time::Instant::now();
@@ -1373,28 +1350,14 @@ impl Nimbra {
                             .top(px(dot.y - dot.size / 2.))
                             .size(px(dot.size))
                             .rounded_full()
-                            .bg(c(0xfffaf0, dot.alpha))
+                            .bg(sky.star.opacity(sky.star.a * dot.alpha))
                     }))
             });
         // The sample inbox keeps the day its mail is from.
         let today = if self.is_demo() {
-            "THURSDAY, NOVEMBER 20".to_string()
+            "Thursday, November 20".to_string()
         } else {
-            chrono::Local::now()
-                .format("%A, %B %-d")
-                .to_string()
-                .to_uppercase()
-        };
-        let layer = |index: usize, angle: f32, color: u32, alpha: f32, end: f32| {
-            let shown = arrival.glow(index);
-            // Each reaches further from its edge as it brightens, so the light rises.
-            let reach = end * (0.6 + 0.4 * shown);
-            div().absolute().inset_0().rounded(px(corner)).bg(fade(
-                angle,
-                color,
-                alpha * shown,
-                reach,
-            ))
+            chrono::Local::now().format("%A, %B %-d").to_string()
         };
 
         let below = div()
@@ -1402,9 +1365,9 @@ impl Nimbra {
             .px(px(space::XXL))
             .text_center()
             .font_weight(FontWeight::LIGHT)
-            .text_size(px(22.))
-            .line_height(px(30.))
-            .text_color(soft)
+            .text_size(px(20.))
+            .line_height(px(28.))
+            .text_color(sky.soft)
             .child(crate::inspiration::line_for(
                 chrono::Local::now().date_naive(),
             ));
@@ -1419,12 +1382,7 @@ impl Nimbra {
                 .overflow_hidden()
                 .rounded(px(corner))
                 .shadow(lift(t, Depth::Front))
-                .bg(c(0x0a0912, 1.))
-                // Aurora: GPUI has no blur filter, so the glow is layered two-stop gradients.
-                .child(layer(0, 45., 0x6b4dff, 0.9, 0.62))
-                .child(layer(2, 315., 0xffa94d, 0.6, 0.5))
-                .child(layer(1, 0., 0xff4fa0, 0.55, 0.42))
-                .child(layer(3, 300., 0x3fa9ff, 0.22, 0.4))
+                .bg(sky.ground)
                 .children(stars)
                 .children(falling)
                 // Two halves with the horizon between: each holds its content in its middle.
@@ -1438,26 +1396,27 @@ impl Nimbra {
                         .w_full()
                         .h(relative(HORIZON))
                         .child(settle(
-                            overline(t, today).text_color(c(0xffffff, 0.55)),
+                            meta(today, sky.soft).font_weight(FontWeight::MEDIUM),
                             arrival.date(),
                         ))
-                        .child(div().h(px(18.)).flex_none())
-                        .child(settle(hero("Inbox zero.", ink), arrival.headline()))
+                        .child(div().h(px(space::L)).flex_none())
+                        .child(settle(hero("Inbox Zero", sky.ink), arrival.headline()))
                         // Sample content: real mail shows the headline only.
                         .when(self.is_demo(), |d| {
                             d.child(
                                 settle(div(), arrival.line())
                                     .flex()
-                                    .mt(px(40.))
+                                    .mt(px(space::XXXL))
                                     .gap(px(space::M))
                                     .child(stat(
                                         "done",
-                                        t.mint,
-                                        "threads handled",
+                                        "Threads handled",
                                         &(32 + self.history.len()).to_string(),
                                     ))
-                                    .child(stat("clock", t.sky, "time in inbox", "38m"))
-                                    .child(stat("zap", t.amber, "zero streak", "8 days")),
+                                    .child(stat("clock", "Time in inbox", "38m"))
+                                    .when(self.settings.show_streak, |d| {
+                                        d.child(stat("zap", "Zero streak", "8 days"))
+                                    }),
                             )
                         }),
                 )
@@ -1467,7 +1426,7 @@ impl Nimbra {
                         .flex_none()
                         .w(relative(arrival.horizon()))
                         .h(px(1.))
-                        .bg(c(0xffffff, 0.22)),
+                        .bg(sky.edge),
                 )
                 .child(
                     div()
@@ -1477,59 +1436,79 @@ impl Nimbra {
                         .items_center()
                         .justify_center()
                         .w_full()
-                        .gap(px(18.))
+                        .gap(px(space::L2))
                         .when(self.is_demo(), |d| {
                             d.child(
-                                glass(div())
-                                    .bg(c(0x14131c, 0.72))
+                                quiet(div())
                                     .flex()
                                     .items_center()
-                                    .gap(px(14.))
-                                    .pl(px(14.))
-                                    .pr(px(10.))
-                                    .py(px(10.))
-                                    .text_color(ink)
+                                    .gap(px(space::M))
+                                    .pl(px(space::M))
+                                    .pr(px(space::M))
+                                    .py(px(space::M))
+                                    .text_color(sky.ink)
                                     .child(
                                         div()
                                             .flex()
                                             .items_center()
                                             .justify_center()
-                                            .size(px(34.))
+                                            .size(px(32.))
                                             .rounded(px(radius::CONTROL))
-                                            .bg(Tone::Sky.gradient())
+                                            .bg(Tone::Sky.fill())
                                             .child(icon("calendar", 16., gpui::white())),
                                     )
                                     .child(
                                         div()
-                                            .mr(px(40.))
+                                            .mr(px(space::XXXL))
                                             .child(
                                                 div()
                                                     .font_weight(FontWeight::SEMIBOLD)
                                                     .child("Design Crit"),
                                             )
-                                            .child(meta("2:00 PM · Studio B", c(0xffffff, 0.55))),
+                                            .child(meta("2:00 PM · Studio B", sky.soft)),
                                     )
-                                    .child(button(&Theme::dark(), ButtonKind::Secondary, "Join")),
+                                    .child(button(t, ButtonKind::Secondary, "Join")),
                             )
                         })
                         .child(settle(below, arrival.below())),
                 )
-                .child(rim(&Theme::dark(), corner)),
+                .child(rim(t, corner)),
         )
     }
 }
 
-/// The open row's card: lifted, and lit from inside.
-fn card_glow(t: &Theme) -> Vec<gpui::BoxShadow> {
-    vec![
-        shadow(
-            t.shadow.opacity(if t.dark { 0.5 } else { 0.25 }),
-            4.,
-            12.,
-            -6.,
-        ),
-        shadow(t.lit, 0., 20., -4.),
-    ]
+/// Inbox Zero's colours: a solid night in the dark theme, a quiet pale ground in the light.
+struct Sky {
+    ground: Hsla,
+    star: Hsla,
+    ink: Hsla,
+    soft: Hsla,
+    card: Hsla,
+    edge: Hsla,
+}
+
+impl Sky {
+    fn of(t: &Theme) -> Self {
+        if t.dark {
+            Sky {
+                ground: c(0x07070c, 1.),
+                star: c(0xffffff, 1.),
+                ink: t.text,
+                soft: c(0xffffff, 0.62),
+                card: c(0xffffff, 0.04),
+                edge: c(0xffffff, 0.12),
+            }
+        } else {
+            Sky {
+                ground: c(0xf4f4f8, 1.),
+                star: c(0x2b2a3a, 0.55),
+                ink: t.text,
+                soft: t.text2,
+                card: c(0xffffff, 1.),
+                edge: c(0x000000, 0.09),
+            }
+        }
+    }
 }
 
 /// A turning reload arrow, for as long as it is drawn.
@@ -1543,120 +1522,162 @@ pub(super) fn spinning(arrow: gpui::Svg, id: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-/// A secondary button with its icon before its label.
+/// A secondary button with its icon before its label: a hairline outline, no fill.
 pub(super) fn labelled(t: &Theme, name: &str, label: &str) -> Div {
-    let (selected, strong) = (t.selected, t.border_strong);
+    let hover = t.hover;
     div()
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
-        .h(px(34.))
-        .pl(px(10.))
-        .pr(px(14.))
+        .gap(px(space::S))
+        .h(px(crate::ui::BUTTON_H))
+        .pl(px(space::M))
+        .pr(px(space::L - 2.))
         .rounded(px(radius::CONTROL))
-        .bg(t.hover)
         .border_1()
         .border_color(t.border_strong)
         .cursor_pointer()
-        .hover(move |s| s.bg(selected).border_color(strong))
-        .font_weight(FontWeight::SEMIBOLD)
+        .hover(move |s| s.bg(hover))
+        .font_weight(FontWeight::MEDIUM)
         .text_color(t.text)
-        .child(icon(name, 14., t.text2))
+        .child(icon(name, 15., t.text2))
         .child(label.to_string())
 }
 
-/// Compose, as wide as the header lets it be: the main window's one primary action. Wrap it
-/// in `glow` for its hover and press.
-pub(super) fn compose_button(look: ComposeLook) -> Div {
+/// Compose, the main window's one primary action: labelled across the sidebar, or an icon
+/// in the list's header while the sidebar is hidden.
+pub(super) fn compose_button(t: &Theme, look: ComposeLook, id: &'static str) -> Stateful<Div> {
     let base = div()
+        .id(id)
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .h(px(34.))
+        .h(px(COMPOSE_H))
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
-        .bg(GRADIENT_PRIMARY.along(90.))
-        .text_color(gpui::white())
-        .child(icon("draft", 14., gpui::white()));
+        .child(icon("draft", 15., gpui::white()));
+    let base = crate::ui::solid(base, t.primary, t.primary_hover, t.primary_pressed);
     match look {
         ComposeLook::Labelled => base
-            .gap(px(6.))
-            .pl(px(12.))
-            .pr(px(14.))
+            .gap(px(space::S))
+            .px(px(space::L))
             .font_weight(FontWeight::SEMIBOLD)
             .child("Compose"),
-        ComposeLook::Icon => base.w(px(34.)),
+        ComposeLook::Icon => base.w(px(COMPOSE_H)),
     }
 }
 
-/// The space either side of a row's avatar, and at the row's right. With the list's own
-/// 10pt margin it puts the avatars on `LIST_LEFT`.
-pub(super) const ROW_PAD: f32 = 14.;
+/// A pane's name on the top line.
+pub(super) fn pane_title(t: &Theme, title: SharedString) -> Div {
+    div()
+        .relative()
+        .top(px(-TITLE_LIFT))
+        .whitespace_nowrap()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_size(px(16.))
+        .line_height(px(20.))
+        .text_color(t.text)
+        .child(title)
+}
 
-const AVATAR: f32 = 28.;
+pub(super) const COMPOSE_H: f32 = 32.;
 
-const UNREAD_DOT: f32 = 7.;
+/// How far the list's title sits above the top line, so that its baseline is the All /
+/// Unread switch's (whose words sit as far below it).
+const TITLE_LIFT: f32 = 2.;
+
+/// A row's padding left and right. With the list's own margin it puts the rows' text on
+/// `LIST_LEFT`.
+pub(super) const ROW_PAD: f32 = 20.;
+
+const UNREAD_DOT: f32 = 6.;
+const UNREAD_GAP: f32 = 6.;
 
 /// What a label pill adds around its words: padding, dot, gap and border.
 const PILL_CHROME: f32 = 7. + 6. + 6. + 9. + 2.;
 
 /// The list header's margins: the list's text starts and ends on them.
-pub(super) const LIST_LEFT: f32 = 24.;
+pub(super) const LIST_LEFT: f32 = LIST_SIDE + ROW_PAD;
 
-pub(super) const LIST_RIGHT: f32 = 18.;
+pub(super) const LIST_RIGHT: f32 = LIST_LEFT;
 
 pub(super) const HEADER_GAP: f32 = 8.;
 
-/// How Compose is drawn, as the room for it shrinks.
+/// How Compose is drawn: labelled in the sidebar, an icon in the list's header.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ComposeLook {
     Labelled,
     Icon,
 }
 
-impl ComposeLook {
-    pub(super) fn width(self) -> f32 {
-        match self {
-            ComposeLook::Labelled => 112.,
-            ComposeLook::Icon => 34.,
-        }
-    }
-}
-
-/// What fits in the list's one-row header. The list can be 300pt narrow, so first the
-/// Offline pill loses its words, then Compose its label.
+/// What fits in the list's one-row header. The list can be 300pt narrow: the filters and
+/// Compose always stay, then the Offline pill loses its words, then the mailbox's name goes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct HeaderFit {
     pub(super) words: bool,
-    pub(super) compose: ComposeLook,
+    pub(super) title: bool,
 }
 
+/// The least room the mailbox's name is shown in.
+pub(super) const TITLE_MIN: f32 = 64.;
+
 impl HeaderFit {
-    pub(super) fn new(room: f32, switch: f32, offline: Option<f32>) -> Self {
-        use ComposeLook::{Icon, Labelled};
-        for words in [true, false] {
-            let pill = offline.map_or(0., |wide| HEADER_GAP + if words { wide } else { 22. });
-            if switch + pill + HEADER_GAP + Labelled.width() <= room {
-                return HeaderFit {
-                    words,
-                    compose: Labelled,
-                };
-            }
+    pub(super) fn new(room: f32, switch: f32, offline: Option<f32>, compose: bool) -> Self {
+        let fixed = switch + if compose { HEADER_GAP + COMPOSE_H } else { 0. };
+        let left = |words: bool| {
+            room - fixed - offline.map_or(0., |wide| HEADER_GAP + if words { wide } else { 22. })
+        };
+        if left(true) - HEADER_GAP >= TITLE_MIN {
+            return HeaderFit {
+                words: true,
+                title: true,
+            };
         }
         HeaderFit {
             words: false,
-            compose: Icon,
+            title: left(false) - HEADER_GAP >= TITLE_MIN,
         }
+    }
+
+    /// The room taken by what is shown other than the name.
+    pub(super) fn used(self, switch: f32, offline: Option<f32>, compose: bool) -> f32 {
+        switch
+            + if compose { HEADER_GAP + COMPOSE_H } else { 0. }
+            + offline.map_or(0., |wide| HEADER_GAP + if self.words { wide } else { 22. })
+            + if self.title { HEADER_GAP + TITLE_MIN } else { 0. }
     }
 }
 
 /// How far down Inbox Zero's horizon is.
 pub(super) const HORIZON: f32 = 0.72;
 
-/// The height of an option in the All / Unread switch.
-pub(super) const SEGMENT_H: f32 = 26.;
+/// The All / Unread switch: an option's height, its padding each side of its words, the
+/// gap before Unread's count, the gap between options, and from the switch's outer edge to
+/// an option (its 1pt border and 2pt of padding). 24 + 2 × 4 = 32 tall.
+pub(super) const SEGMENT_H: f32 = 24.;
+pub(super) const SEGMENT_PAD: f32 = 10.;
+pub(super) const SEGMENT_COUNT_GAP: f32 = 6.;
+pub(super) const SEGMENT_GAP: f32 = 2.;
+pub(super) const SWITCH_INSET: f32 = 4.;
+
+/// All's and Unread's widths, from their words (Unread with its count).
+pub(super) fn segment_widths(count: &str, cx: &App) -> [f32; 2] {
+    let words = |text: &str| text_width(text, 13., crate::theme::SANS, cx) + 1.;
+    [
+        (words("All") + 2. * SEGMENT_PAD).ceil(),
+        (words("Unread")
+            + SEGMENT_COUNT_GAP
+            + text_width(count, 11., crate::theme::MONO, cx)
+            + 2. * SEGMENT_PAD)
+            .ceil(),
+    ]
+}
+
+/// The switch's whole width: its options, the gap between them, and its insets.
+pub(super) fn switch_width(widths: [f32; 2]) -> f32 {
+    widths[0] + widths[1] + SEGMENT_GAP + 2. * SWITCH_INSET
+}
 
 #[cfg(test)]
 mod tests {
@@ -1739,10 +1760,12 @@ mod tests {
     }
 
     #[test]
-    fn compose_loses_its_label_only_when_it_must() {
-        let wide = HeaderFit::new(452. - 1. - LIST_LEFT - LIST_RIGHT, 131., Some(126.));
-        assert_eq!((wide.words, wide.compose), (true, ComposeLook::Labelled));
-        let narrow = HeaderFit::new(300. - 1. - LIST_LEFT - LIST_RIGHT, 131., Some(126.));
-        assert_eq!(narrow.compose, ComposeLook::Icon);
+    fn the_mailbox_name_gives_way_only_when_it_must() {
+        let wide = HeaderFit::new(452. - 1. - LIST_LEFT - LIST_RIGHT, 131., Some(126.), true);
+        assert_eq!((wide.words, wide.title), (true, true));
+        let narrow = HeaderFit::new(300. - 1. - LIST_LEFT - LIST_RIGHT, 131., Some(126.), true);
+        assert_eq!((narrow.words, narrow.title), (false, false));
+        let quiet = HeaderFit::new(300. - 1. - LIST_LEFT - LIST_RIGHT, 131., None, false);
+        assert!(quiet.title);
     }
 }

@@ -2009,7 +2009,7 @@ impl Nimbra {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use crate::theme::{radius, space};
-        use crate::ui::{Depth, Elevation, elevation, sheen, sheet};
+        use crate::ui::{Depth, Elevation, elevation, sheet};
 
         let Some(composer) = &self.compose else {
             return div().into_any_element();
@@ -2313,7 +2313,6 @@ impl Nimbra {
                 .px(px(FULL_INSET))
                 .border_1()
                 .border_color(t.rim)
-                .child(sheen(t, radius::SHEET))
         } else {
             sheet(t)
                 .absolute()
@@ -2792,19 +2791,14 @@ impl Nimbra {
                         )
                         .child({
                             let ready = !composer.sending && !loading;
-                            crate::ui::glow(
-                                button(t, ButtonKind::Primary, "Send")
-                                    .id("send")
-                                    .press(t)
-                                    .when(!ready, |d| d.opacity(0.5))
-                                    .when(ready, |d| d.tooltip(tip(t.dark, "Send", "⌘↵")))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if this.compose_ready() {
-                                            this.send_mail(cx)
-                                        }
-                                    })),
-                                "send",
-                            )
+                            crate::ui::primary(t, "send", "Send")
+                                .when(!ready, |d| d.opacity(0.5))
+                                .when(ready, |d| d.tooltip(tip(t.dark, "Send", "⌘↵")))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.compose_ready() {
+                                        this.send_mail(cx)
+                                    }
+                                }))
                         }),
                 ),
             )
@@ -2901,15 +2895,12 @@ impl Nimbra {
                                                     this.request_close_compose(cx)
                                                 })),
                                         )
-                                        .child(crate::ui::glow(
-                                            button(t, ButtonKind::Primary, "Save Draft")
-                                                .id("ask-save")
-                                                .press(t)
+                                        .child(
+                                            crate::ui::primary(t, "ask-save", "Save Draft")
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.answer_close_compose(true, cx)
                                                 })),
-                                            "ask-save",
-                                        )),
+                                        ),
                                 ),
                         ),
                 )
@@ -2921,7 +2912,7 @@ impl Nimbra {
             .flex()
             .items_start()
             .justify_center()
-            // Full page, it is the window's one panel, over the window's nebula.
+            // Full page, it is the window's one panel, on the window's ground.
             .when(full, |d| {
                 d.p(px(crate::ui::GUTTER)).child(crate::ui::backdrop(t))
             })

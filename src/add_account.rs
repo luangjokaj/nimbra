@@ -540,7 +540,7 @@ impl Nimbra {
                             .when(self.microsoft.is_some(), |d| {
                                 d.child(self.microsoft_button(t, cx).w_full())
                             })
-                            .child(div().pt(px(6.)).child(overline(t, "OTHER ADDRESS")))
+                            .child(div().pt(px(6.)).child(overline(t, "Other Address")))
                     })
                     .child(self.account_fields(t, cx)),
             )
@@ -558,7 +558,7 @@ impl Nimbra {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(div().pl(px(4.)).child(overline(t, title.to_uppercase())))
+                .child(div().pl(px(4.)).child(overline(t, title.to_string())))
                 .child(
                     div()
                         .flex()
@@ -841,10 +841,10 @@ impl Nimbra {
                             .tooltip(tip(t.dark, "Cancel", "esc"))
                             .on_click(cx.listener(|this, _, _, cx| this.close_account_sheet(cx))),
                     )
-                    .child(crate::ui::glow(
-                        button(
+                    .child(
+                        crate::ui::primary(
                             t,
-                            ButtonKind::Primary,
+                            "account-continue",
                             if sheet.busy {
                                 "Checking…"
                             } else if asking_again {
@@ -853,12 +853,9 @@ impl Nimbra {
                                 "Add"
                             },
                         )
-                        .id("account-continue")
-                        .press(t)
                         .when(sheet.busy, |d| d.opacity(0.5))
                         .on_click(cx.listener(|this, _, _, cx| this.account_sheet_continue(cx))),
-                        "account-continue",
-                    )),
+                    ),
             )
     }
 }

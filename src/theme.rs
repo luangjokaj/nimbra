@@ -1,25 +1,8 @@
-use gpui::{Background, Hsla, Rgba, linear_color_stop, linear_gradient, rgb};
+use gpui::{Hsla, Rgba, rgb};
 
 /// Hex colour with alpha.
 pub fn c(hex: u32, a: f32) -> Hsla {
     Rgba { a, ..rgb(hex) }.into()
-}
-
-pub fn gradient(angle: f32, from: Hsla, to: Hsla) -> Background {
-    linear_gradient(
-        angle,
-        linear_color_stop(from, 0.),
-        linear_color_stop(to, 1.),
-    )
-}
-
-/// A colour that fades to transparent part-way along the gradient line.
-pub fn fade(angle: f32, hex: u32, alpha: f32, end: f32) -> Background {
-    linear_gradient(
-        angle,
-        linear_color_stop(c(hex, alpha), 0.),
-        linear_color_stop(c(hex, 0.), end),
-    )
 }
 
 /// `top` laid over `bottom`, both possibly see-through, as one colour.
@@ -39,43 +22,16 @@ pub fn over(top: Hsla, bottom: Hsla) -> Hsla {
     .into()
 }
 
-/// A two-stop gradient by its end colours.
-#[derive(Clone, Copy)]
-pub struct Ramp {
-    pub from: u32,
-    pub to: u32,
-}
-
-impl Ramp {
-    pub fn along(self, angle: f32) -> Background {
-        gradient(angle, c(self.from, 1.), c(self.to, 1.))
-    }
-}
-
-/// The single primary action per surface. Dark enough at both ends for a white label.
-pub const GRADIENT_PRIMARY: Ramp = Ramp {
-    from: 0x6e5cf6,
-    to: 0xc93a76,
-};
-pub const GRADIENT_PRIMARY_PRESSED: Ramp = Ramp {
-    from: 0x6350e8,
-    to: 0xb9336b,
-};
-/// Light rather than surface: the primary button's glow, streaks, Inbox zero. Never under
-/// text.
-pub const GRADIENT_GLOW: Ramp = Ramp {
-    from: 0x8b7cff,
-    to: 0xff7ab6,
-};
-
 /// Spacing, on a 4pt grid.
 pub mod space {
     pub const XS: f32 = 4.;
     pub const S: f32 = 8.;
     pub const M: f32 = 12.;
     pub const L: f32 = 16.;
+    pub const L2: f32 = 20.;
     pub const XL: f32 = 24.;
     pub const XXL: f32 = 32.;
+    pub const XXXL: f32 = 40.;
 }
 
 /// Corner radii, by what is rounded.
@@ -92,55 +48,28 @@ pub mod radius {
     pub const SHEET: f32 = 18.;
 }
 
-/// A soft cloud of light in the backdrop, at a point given as a fraction of the window.
-#[derive(Clone, Copy)]
-pub struct Bloom {
-    pub x: f32,
-    pub y: f32,
-    pub hex: u32,
-    pub alpha: f32,
-    /// The cloud's radius before it is blurred by as much again.
-    pub reach: f32,
-}
-
-/// What the panels float over: a still nebula. A ground colour, two washes of light from
-/// the window's edges and three clouds.
-#[derive(Clone, Copy)]
-pub struct Nebula {
-    pub ground: u32,
-    /// (angle, colour, alpha, where along the line it has faded out).
-    pub washes: [(f32, u32, f32, f32); 2],
-    pub blooms: [Bloom; 3],
-}
-
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub dark: bool,
-    pub nebula: Nebula,
+    /// The window's ground, around and between the panels: one solid colour.
+    pub ground: Hsla,
     pub sidebar: Hsla,
     /// The message list's panel: a step back from the reader.
     pub panel: Hsla,
     /// The reader's panel, the frontmost.
     pub surface: Hsla,
-    /// The open row: a card raised off the list's panel.
-    pub card: Hsla,
-    /// The hairline around the open row's card.
-    pub card_edge: Hsla,
-    /// The hairline around each floating panel, and the brighter light along its top.
+    /// The hairline around each floating panel.
     pub rim: Hsla,
-    pub sheen: Hsla,
-    /// The light the open row gives off into its panel: with the primary action and focus,
-    /// the only things that glow.
-    pub lit: Hsla,
     pub raised: Hsla,
     pub hover: Hsla,
+    /// What is picked or open: a tint of the accent, with `selected_edge` around it.
     pub selected: Hsla,
-    /// What is held under the pointer: a deeper wash of the accent than selection.
+    pub selected_edge: Hsla,
+    /// What is held under the pointer: a deeper tint of the accent than selection.
     pub pressed: Hsla,
+    /// The keyboard focus ring: solid accent.
     pub focus: Hsla,
-    /// Soft accent light around what has focus or is the primary action.
-    pub glow: Hsla,
-    /// The luminous hairline around raised glass (tooltips, menus, sheets, cards).
+    /// The hairline around raised surfaces (tooltips, menus, sheets, cards).
     pub edge: Hsla,
     /// The open mailbox's pill in the sidebar, and how opaque it comes out: less than the
     /// sidebar around it, so that more of the blurred desktop shows through.
@@ -154,6 +83,12 @@ pub struct Theme {
     /// Disabled icons and hairline glyphs only: too light for text in light mode.
     pub faint: Hsla,
     pub violet: Hsla,
+    /// The primary button's fill at rest, hovered and held: solid, under a white label.
+    pub primary: Hsla,
+    pub primary_hover: Hsla,
+    pub primary_pressed: Hsla,
+    /// A destructive button's fill, under a white label.
+    pub danger: Hsla,
     pub rose: Hsla,
     pub amber: Hsla,
     /// Amber that text can be set in (light amber is for icons and dots).
@@ -173,57 +108,31 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            nebula: Nebula {
-                ground: 0x08070e,
-                washes: [(20., 0x34279a, 0.72, 0.7), (200., 0x5e2160, 0.55, 0.55)],
-                blooms: [
-                    Bloom {
-                        x: 0.08,
-                        y: 0.0,
-                        hex: 0x6a4cff,
-                        alpha: 0.36,
-                        reach: 240.,
-                    },
-                    Bloom {
-                        x: 0.66,
-                        y: 0.0,
-                        hex: 0x3b68ff,
-                        alpha: 0.3,
-                        reach: 180.,
-                    },
-                    Bloom {
-                        x: 0.95,
-                        y: 1.0,
-                        hex: 0xd2489f,
-                        alpha: 0.48,
-                        reach: 240.,
-                    },
-                ],
-            },
-            sidebar: c(0x0f0e18, 0.86),
-            panel: c(0x0f0e17, 1.),
-            surface: c(0x14131d, 1.),
-            card: c(0x221e36, 1.),
-            card_edge: c(0xb9adff, 0.26),
-            rim: c(0xd4ccff, 0.11),
-            sheen: c(0xe9e4ff, 0.34),
-            lit: c(0x7a68ff, 0.42),
-            raised: c(0x17171f, 1.),
+            ground: c(0x0a0a0e, 1.),
+            sidebar: c(0x121218, 0.86),
+            panel: c(0x111116, 1.),
+            surface: c(0x16161c, 1.),
+            rim: c(0xffffff, 0.08),
+            raised: c(0x1c1c23, 1.),
             hover: c(0xffffff, 0.045),
-            selected: c(0x8b7cff, 0.16),
-            pressed: c(0x8b7cff, 0.24),
-            focus: c(0x8b7cff, 0.6),
-            glow: c(0x8b7cff, 0.35),
-            edge: c(0xc9c2ff, 0.14),
-            glass: c(0xffffff, 0.12),
+            selected: c(0x8b7cff, 0.14),
+            selected_edge: c(0x8b7cff, 0.34),
+            pressed: c(0x8b7cff, 0.22),
+            focus: c(0x8b7cff, 1.),
+            edge: c(0xffffff, 0.1),
+            glass: c(0xffffff, 0.1),
             glass_opacity: 0.75,
             border: c(0xffffff, 0.07),
             border_strong: c(0xffffff, 0.13),
-            text: c(0xf5f3ef, 1.),
-            text2: c(0xc6c4ce, 1.),
-            text3: c(0x918f9a, 1.),
-            faint: c(0x817f8c, 1.),
+            text: c(0xf2f2f5, 1.),
+            text2: c(0xc4c4cc, 1.),
+            text3: c(0x91919b, 1.),
+            faint: c(0x80808a, 1.),
             violet: c(0x8b7cff, 1.),
+            primary: c(0x6450ea, 1.),
+            primary_hover: c(0x6e5cf6, 1.),
+            primary_pressed: c(0x5a46d8, 1.),
+            danger: c(0xc23a6e, 1.),
             rose: c(0xff7ab6, 1.),
             amber: c(0xffb86b, 1.),
             amber_text: c(0xffb86b, 1.),
@@ -231,66 +140,40 @@ impl Theme {
             sky: c(0x6cc4ff, 1.),
             kbd_bg: c(0xffffff, 0.06),
             kbd_border: c(0xffffff, 0.10),
-            shadow: c(0x000000, 0.5),
-            shadow_sheet: c(0x000000, 0.6),
-            scrim: c(0x050508, 0.66),
+            shadow: c(0x000000, 0.45),
+            shadow_sheet: c(0x000000, 0.55),
+            scrim: c(0x050507, 0.66),
         }
     }
 
     pub fn light() -> Self {
         Self {
             dark: false,
-            nebula: Nebula {
-                ground: 0xf0ebf8,
-                washes: [(20., 0xd9cffd, 0.75, 0.7), (200., 0xfff0dc, 0.85, 0.6)],
-                blooms: [
-                    Bloom {
-                        x: 0.08,
-                        y: 0.0,
-                        hex: 0xb7a6ff,
-                        alpha: 0.48,
-                        reach: 240.,
-                    },
-                    Bloom {
-                        x: 0.66,
-                        y: 0.0,
-                        hex: 0xffbfdd,
-                        alpha: 0.36,
-                        reach: 180.,
-                    },
-                    Bloom {
-                        x: 0.95,
-                        y: 1.0,
-                        hex: 0xffd6a8,
-                        alpha: 0.55,
-                        reach: 240.,
-                    },
-                ],
-            },
-            sidebar: c(0xfbfaff, 0.86),
-            panel: c(0xf5f3fc, 1.),
+            ground: c(0xe9e9ee, 1.),
+            sidebar: c(0xf7f7f9, 0.86),
+            panel: c(0xf7f7f9, 1.),
             surface: c(0xffffff, 1.),
-            card: c(0xffffff, 1.),
-            card_edge: c(0x6e5cf6, 0.2),
-            rim: c(0x7c68e8, 0.14),
-            sheen: c(0xffffff, 1.),
-            lit: c(0x8a76ff, 0.36),
+            rim: c(0x000000, 0.08),
             raised: c(0xffffff, 1.),
             hover: c(0x000000, 0.035),
-            selected: c(0x6e5cf6, 0.10),
-            pressed: c(0x6e5cf6, 0.16),
-            focus: c(0x6e5cf6, 0.6),
-            glow: c(0x6e5cf6, 0.22),
-            edge: c(0x6e5cf6, 0.16),
-            glass: c(0x000000, 0.07),
+            selected: c(0x6e5cf6, 0.09),
+            selected_edge: c(0x6e5cf6, 0.3),
+            pressed: c(0x6e5cf6, 0.15),
+            focus: c(0x6e5cf6, 1.),
+            edge: c(0x000000, 0.09),
+            glass: c(0x000000, 0.06),
             glass_opacity: 0.78,
             border: c(0x000000, 0.07),
             border_strong: c(0x000000, 0.12),
-            text: c(0x17161c, 1.),
-            text2: c(0x45434d, 1.),
-            text3: c(0x6b6974, 1.),
-            faint: c(0x8a8893, 1.),
+            text: c(0x16161b, 1.),
+            text2: c(0x44444d, 1.),
+            text3: c(0x696973, 1.),
+            faint: c(0x8a8a94, 1.),
             violet: c(0x6e5cf6, 1.),
+            primary: c(0x6450ea, 1.),
+            primary_hover: c(0x6e5cf6, 1.),
+            primary_pressed: c(0x5a46d8, 1.),
+            danger: c(0xc23a6e, 1.),
             rose: c(0xc93a76, 1.),
             amber: c(0xe58a2e, 1.),
             amber_text: c(0x9e540b, 1.),
@@ -298,9 +181,9 @@ impl Theme {
             sky: c(0x1c74b8, 1.),
             kbd_bg: c(0x000000, 0.04),
             kbd_border: c(0x000000, 0.09),
-            shadow: c(0x1a1233, 0.16),
-            shadow_sheet: c(0x1a1233, 0.18),
-            scrim: c(0x1a1233, 0.18),
+            shadow: c(0x000000, 0.12),
+            shadow_sheet: c(0x000000, 0.16),
+            scrim: c(0x101014, 0.2),
         }
     }
 
@@ -335,18 +218,31 @@ pub enum Tone {
 }
 
 impl Tone {
-    pub fn gradient(self) -> Background {
-        let (a, b) = match self {
-            Tone::Violet => (0x9b8cff, 0x5b47e0),
-            Tone::Rose => (0xff9cc8, 0xe0457f),
-            Tone::Amber => (0xffd08a, 0xf07d2e),
-            Tone::Mint => (0x8bf0c7, 0x16a979),
-            Tone::Sky => (0x9dd8ff, 0x2f7fe0),
-            Tone::Graphite => (0x6d6c78, 0x2a2a33),
-        };
-        gradient(135., c(a, 1.), c(b, 1.))
+    /// An avatar's solid fill: muted, and dark enough for white initials.
+    pub fn fill(self) -> Hsla {
+        c(
+            match self {
+                Tone::Violet => 0x6457d6,
+                Tone::Rose => 0xa9446e,
+                Tone::Amber => 0x9a5f1f,
+                Tone::Mint => 0x23805f,
+                Tone::Sky => 0x3a6db0,
+                Tone::Graphite => 0x55535f,
+            },
+            1.,
+        )
     }
 }
+
+#[cfg(test)]
+const TONES: [Tone; 6] = [
+    Tone::Violet,
+    Tone::Rose,
+    Tone::Amber,
+    Tone::Mint,
+    Tone::Sky,
+    Tone::Graphite,
+];
 
 pub const SANS: &str = "Sora";
 pub const MONO: &str = "Geist Mono";
@@ -383,7 +279,7 @@ mod tests {
     #[test]
     fn light_text_tokens_are_legible_on_every_ground() {
         let t = Theme::light();
-        for ground in [t.surface, t.panel, t.card, t.raised, sidebar(&t)] {
+        for ground in [t.surface, t.panel, t.raised, sidebar(&t)] {
             for text in [t.text, t.text2, t.text3] {
                 assert!(contrast(text, ground) >= TEXT, "{}", contrast(text, ground));
             }
@@ -393,7 +289,7 @@ mod tests {
     #[test]
     fn dark_text_tokens_are_legible_on_every_ground() {
         let t = Theme::dark();
-        for ground in [t.surface, t.panel, t.card, t.raised, sidebar(&t)] {
+        for ground in [t.surface, t.panel, t.raised, sidebar(&t)] {
             for text in [t.text, t.text2, t.text3] {
                 assert!(contrast(text, ground) >= TEXT, "{}", contrast(text, ground));
             }
@@ -444,11 +340,38 @@ mod tests {
     }
 
     #[test]
-    fn white_label_is_legible_across_the_primary_gradient() {
-        for ramp in [GRADIENT_PRIMARY, GRADIENT_PRIMARY_PRESSED] {
-            for end in [ramp.from, ramp.to] {
-                let ratio = contrast(gpui::white(), c(end, 1.));
-                assert!(ratio >= TEXT, "{end:06x}: {ratio}");
+    fn white_label_is_legible_on_every_solid_button() {
+        for t in [Theme::light(), Theme::dark()] {
+            for fill in [t.primary, t.primary_hover, t.primary_pressed, t.danger] {
+                let ratio = contrast(gpui::white(), fill);
+                assert!(ratio >= TEXT, "{ratio}");
+            }
+        }
+    }
+
+    #[test]
+    fn white_initials_are_legible_on_every_avatar() {
+        for tone in TONES {
+            let ratio = contrast(gpui::white(), tone.fill());
+            assert!(ratio >= TEXT, "{ratio}");
+        }
+    }
+
+    #[test]
+    fn text_is_legible_on_the_selection_tint() {
+        for t in [Theme::light(), Theme::dark()] {
+            let picked = over(t.selected, t.panel);
+            for text in [t.text, t.text2, t.text3] {
+                assert!(contrast(text, picked) >= TEXT, "{}", contrast(text, picked));
+            }
+        }
+    }
+
+    #[test]
+    fn the_focus_ring_stands_out_from_every_ground() {
+        for t in [Theme::light(), Theme::dark()] {
+            for ground in [t.surface, t.panel, t.raised, t.ground] {
+                assert!(contrast(t.focus, ground) >= NON_TEXT, "{}", contrast(t.focus, ground));
             }
         }
     }

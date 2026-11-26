@@ -69,8 +69,8 @@ impl Nimbra {
             .items_center()
             .gap(px(4.))
             .pl(px(10.))
-            .pt(px(18.))
-            .pb(px(8.))
+            .pt(px(SECTION_ABOVE))
+            .pb(px(SECTION_BELOW))
             .cursor_pointer()
             .child(overline(t, label).group_hover("section", move |s| s.text_color(bright)))
             .child(
@@ -512,7 +512,7 @@ impl Nimbra {
             .map(|(_, total)| *total)
             .filter(|n| *n > 0)
             .map(|n| n.to_string());
-        let split_toggle = self.section_toggle(t, "split", "SPLIT INBOX", cx);
+        let split_toggle = self.section_toggle(t, "split", "Split Inbox", cx);
         // An IMAP account: its inbox heads MAILBOX, and its labels are folders.
         let folders = !demo && self.own_servers();
         // Several accounts: All inboxes, and each account on its own.
@@ -530,7 +530,7 @@ impl Nimbra {
             .iter()
             .map(|a| unread_of(&a.id))
             .sum();
-        let accounts_toggle = many.then(|| self.section_toggle(t, "accounts", "ACCOUNTS", cx));
+        let accounts_toggle = many.then(|| self.section_toggle(t, "accounts", "Accounts", cx));
         let account_rows: Vec<AnyElement> = if many {
             self.settings
                 .accounts
@@ -606,14 +606,14 @@ impl Nimbra {
         } else {
             Vec::new()
         };
-        let mailbox_toggle = self.section_toggle(t, "mailbox", "MAILBOX", cx);
+        let mailbox_toggle = self.section_toggle(t, "mailbox", "Mailbox", cx);
         let labels_toggle = self.section_toggle(
             t,
             "labels",
             if !demo && self.own_servers() {
-                "FOLDERS"
+                "Folders"
             } else {
-                "LABELS"
+                "Labels"
             },
             cx,
         );
@@ -674,7 +674,7 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .h(px(30.))
+                        .h(px(FIELD_H))
                         .px(px(10.))
                         .rounded(px(radius::CONTROL))
                         .bg(t.hover)
@@ -683,7 +683,7 @@ impl Nimbra {
                         .id("jump")
                         .cursor(gpui::CursorStyle::IBeam)
                         .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
-                        .when(self.mailbox == View::Search, |d| d.border_color(t.focus))
+                        .when(self.mailbox == View::Search, |d| d.border_color(t.selected_edge))
                         .when(cursor == Some(SidebarRow::Search), |d| {
                             d.border_color(t.focus).relative().child(reveal(
                                 self.sidebar_scroll.clone(),
@@ -691,7 +691,7 @@ impl Nimbra {
                                 SIDEBAR_CLEAR,
                             ))
                         })
-                        .child(icon("search", 16., t.text3))
+                        .child(icon("search", 15., t.text3))
                         .child(
                             div()
                                 .flex_1()
@@ -957,55 +957,19 @@ impl Nimbra {
                     }))
                 })
                 .child(div().flex_1())
-                // The streak card is sample content, so it only shows with the demo data.
-                .when(demo, |d| {
-                    d.child(
-                        card(t)
-                            .flex()
-                            .flex_col()
-                            .gap(px(10.))
-                            .p(px(12.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .child(icon("zap", 16., t.amber))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child("Zero Streak"),
-                                    )
-                                    .child(caption("7d", t.text3)),
-                            )
-                            .child(div().flex().items_end().gap(px(5.)).h(px(22.)).children(
-                                bars.map(|h: f32| {
-                                    div().flex_1().h(px(h)).rounded(px(2.)).bg(gradient(
-                                        180.,
-                                        c(GRADIENT_GLOW.to, 1.),
-                                        c(GRADIENT_GLOW.from, 1.),
-                                    ))
-                                }),
-                            ))
-                            .child(meta(
-                                if left == 0 {
-                                    "Done at 10:52".to_string()
-                                } else {
-                                    format!("{left} left")
-                                },
-                                t.text3,
-                            )),
-                    )
+                // The streak is sample content, so it only shows with the demo data.
+                .when(demo && self.settings.show_streak, |d| {
+                    d.child(self.streak(t, &bars, left, cx))
                 });
 
         // Settings stays at the bottom, whatever is scrolled above it.
-        let footer = div().flex_none().px(px(12.)).py(px(8.)).child(
+        let footer = div().flex_none().px(px(12.)).pt(px(4.)).pb(px(12.)).child(
             self.cursor_on(div(), t, &cursor, SidebarRow::Settings, false, radius::ROW)
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .p(px(6.))
+                .h(px(48.))
+                .px(px(8.))
                 .rounded(px(radius::ROW))
                 .child(
                     div()
@@ -1016,6 +980,7 @@ impl Nimbra {
                         .items_center()
                         .gap(px(10.))
                         .cursor_pointer()
+                        .rounded(px(radius::ROW))
                         .tooltip(tip(t.dark, "Settings", "⌘,"))
                         .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
                         .child({
@@ -1096,6 +1061,22 @@ impl Nimbra {
                     .flex_none()
                     .on_mouse_down(MouseButton::Left, drag_or_zoom),
             )
+            // The window's one primary action, always in the same place.
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(12.))
+                    .pt(px(COMPOSE_ABOVE))
+                    .on_mouse_down(MouseButton::Left, drag_or_zoom)
+                    .child(
+                        compose_button(t, ComposeLook::Labelled, "compose")
+                            .w_full()
+                            .tooltip(tip(t.dark, "New Message", "C"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_compose(ComposeKind::New, cx)
+                            })),
+                    ),
+            )
             .child(
                 div()
                     .relative()
@@ -1124,6 +1105,101 @@ impl Nimbra {
     }
 }
 
+impl Nimbra {
+    /// The Zero Streak: the last week's days at zero, and what is left today. Hidden from its
+    /// own close button (shown on hover) or in Settings › General.
+    fn streak(
+        &self,
+        t: &Theme,
+        bars: &[f32; 7],
+        left: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let tallest = bars.iter().copied().fold(0., f32::max);
+        let (hover, bright) = (t.hover, t.text);
+        div()
+            .id("streak")
+            .group("streak")
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(px(space::M))
+            .mt(px(space::L2))
+            .p(px(space::M))
+            .rounded(px(radius::CARD))
+            .border_1()
+            .border_color(t.border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S))
+                    .h(px(20.))
+                    .child(icon("zap", 14., t.violet))
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Zero Streak"),
+                    )
+                    .child(
+                        caption("7d", t.text3).group_hover("streak", |s| s.invisible()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_end()
+                    .gap(px(space::XS))
+                    .h(px(24.))
+                    .children(bars.iter().enumerate().map(|(day, h)| {
+                        let today = day + 1 == bars.len();
+                        div()
+                            .flex_1()
+                            .h(px(24. * h / tallest))
+                            .rounded(px(2.))
+                            .bg(if today { t.violet } else { t.violet.opacity(0.4) })
+                    })),
+            )
+            .child(meta(
+                if left == 0 {
+                    "Done at 10:52".to_string()
+                } else {
+                    format!("{left} left")
+                },
+                t.text3,
+            ))
+            .child(
+                div()
+                    .id("hide-streak")
+                    .group("hide-streak")
+                    .absolute()
+                    .top(px(space::M - 2.))
+                    .right(px(space::M - 4.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(24.))
+                    .rounded(px(radius::CHIP))
+                    .cursor_pointer()
+                    .invisible()
+                    .group_hover("streak", |s| s.visible())
+                    .hover(move |s| s.bg(hover))
+                    .press(t)
+                    .tooltip(tip(t.dark, "Hide Zero Streak", ""))
+                    .child(
+                        icon("x", 12., t.text3)
+                            .group_hover("hide-streak", move |s| s.text_color(bright)),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.settings.show_streak = false;
+                        this.save_settings(cx);
+                        cx.notify();
+                    })),
+            )
+    }
+}
+
 /// How narrow and how wide the sidebar can be dragged. No narrower than its usual width:
 /// the window controls beside the traffic lights end 8pt before that edge (the reload
 /// button), and a narrower sidebar would cut them off.
@@ -1133,14 +1209,24 @@ pub(super) const SIDEBAR_MAX: f32 = 380.;
 pub(super) const NAV_RADIUS: f32 = 8.;
 
 /// Between the search field and the first row under it.
-pub(super) const SEARCH_GAP: f32 = 10.;
+pub(super) const SEARCH_GAP: f32 = 8.;
 
 /// The sidebar's row of window controls. Nothing scrolls into it, so nothing shows through
 /// the buttons or outside the floating panel's round corners.
 pub(super) const SIDEBAR_TOP: f32 = 40.;
 
-/// The room from there to the search field.
-pub(super) const SIDEBAR_CLEAR: f32 = 12.;
+/// From the window controls to Compose.
+const COMPOSE_ABOVE: f32 = 12.;
+
+/// The room from Compose to the search field.
+pub(super) const SIDEBAR_CLEAR: f32 = 8.;
+
+/// The search field's height, Compose's too.
+const FIELD_H: f32 = 32.;
+
+/// A section head: the room above its 16pt line, and below it.
+const SECTION_ABOVE: f32 = 20.;
+const SECTION_BELOW: f32 = 4.;
 
 /// Below that row, where what scrolls up fades out.
 pub(super) const SIDEBAR_FADE: f32 = 28.;

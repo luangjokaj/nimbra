@@ -21,12 +21,12 @@ use crate::rich::{self, Block, Kind};
 use crate::scheduled::{self, Outcome, Scheduled};
 use crate::sending::{Job, QueuedMail, Stage};
 use crate::theme::{
-    Accent, GRADIENT_GLOW, SANS, Theme, Tone, c, fade, gradient, over, radius, space,
+    Accent, SANS, Theme, Tone, c, over, radius, space,
 };
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Depth, Elevation, GUTTER, Press, TOP_BAR, TOP_LINE, avatar, button, caption,
-    display, elevation, focus_ring, hero, icon, icon_button, kbd, lift, meta, overline, panel,
+    ButtonKind, Depth, GUTTER, Press, TOP_BAR, TOP_LINE, avatar, button, caption,
+    display, focus_ring, hero, icon, icon_button, kbd, lift, meta, overline, panel,
     pill, rim, shadow, tip, title_l, title_s,
 };
 use crate::webview::HtmlView;
@@ -556,6 +556,10 @@ pub struct Nimbra {
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
+    /// What the More menu showed when it opened, in its order.
+    more_actions: Vec<MoreAction>,
+    /// Where the toolbar buttons that drop menus were last drawn (by `Anchor`).
+    menu_anchors: std::rc::Rc<std::cell::Cell<[Option<gpui::Bounds<gpui::Pixels>>; 3]>>,
     /// What the open menu, the Snooze menu and the label sheet were opened for. A refresh
     /// can move or remove rows under each, so they check before acting (see `still_meant`).
     menu_for: Option<MeantFor>,
@@ -893,6 +897,8 @@ impl Nimbra {
             checks: Checks::default(),
             menu_at: (0., 0.),
             row_actions: Vec::new(),
+            more_actions: Vec::new(),
+            menu_anchors: Default::default(),
             menu_for: None,
             snooze_for: None,
             label_for: None,
@@ -1377,35 +1383,9 @@ impl Nimbra {
                                 let yes = if lit {
                                     primary_button(t, "confirm-yes", yes)
                                 } else {
-                                    // Rose text needs a dark ground to read; light mode has
-                                    // a white label on solid rose instead.
-                                    let (rest, hover, held, label) = if t.dark {
-                                        let wash = |a: f32| t.rose.opacity(a);
-                                        (wash(0.14), wash(0.18), wash(0.24), t.rose)
-                                    } else {
-                                        let shade = |a: f32| over(c(0x000000, a), t.rose);
-                                        (t.rose, shade(0.08), shade(0.16), gpui::white())
-                                    };
-                                    // Shaped like `button`, which sets its own hover.
-                                    div()
-                                        .flex()
-                                        .flex_none()
-                                        .items_center()
-                                        .px(px(14.))
-                                        .py(px(6.))
-                                        .rounded(px(radius::CONTROL))
-                                        .border_1()
-                                        .border_color(t.rose.opacity(0.32))
-                                        .bg(rest)
-                                        .cursor_pointer()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(label)
-                                        .hover(move |s| s.bg(hover))
-                                        .child(yes.to_string())
-                                        .id("confirm-yes")
-                                        .active(move |s| s.bg(held))
+                                    crate::ui::destructive(t, "confirm-yes", yes)
                                 };
-                                let yes = yes.on_click(cx.listener(|this, _, _, cx| {
+                                yes.on_click(cx.listener(|this, _, _, cx| {
                                     match this.confirm.take() {
                                         Some(Ask::DeleteForever(ids)) => {
                                             this.delete_forever(ids, cx)
@@ -1417,8 +1397,7 @@ impl Nimbra {
                                         None => {}
                                     }
                                     cx.notify();
-                                }));
-                                yes
+                                }))
                             }),
                     )
                     .child(edge(t, radius::SHEET)),
@@ -2124,14 +2103,6 @@ fn view_key(view: View) -> usize {
     }
 }
 
-fn card(t: &Theme) -> Div {
-    div()
-        .bg(t.hover)
-        .border_1()
-        .border_color(t.border)
-        .rounded(px(radius::CARD))
-}
-
 // ---------------------------------------------------------------- panes
 
 impl Nimbra {
@@ -2620,7 +2591,7 @@ impl Render for Nimbra {
             )
             .map(|d| match self.status {
                 _ if zero_shown => d.child(self.zero(&t)),
-                Status::Ready if empty && self.next_page_coming() => d.child(self.skeleton(&t)),
+                Status::Ready if empty && self.next_page_coming() => d.child(self.skeleton(&t, cx)),
                 Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t, cx)),
                 Status::Demo | Status::Ready => d.children(self.list_slot(&t, cx)).map(|d| {
                     if self.picked.len() >= 2 {
@@ -2632,7 +2603,7 @@ impl Render for Nimbra {
                 Status::Loading if self.waiting_for_keychain() => {
                     d.child(self.status_screen(&t, cx))
                 }
-                Status::Loading => d.child(self.skeleton(&t)),
+                Status::Loading => d.child(self.skeleton(&t, cx)),
                 _ => d.child(self.status_screen(&t, cx)),
             })
             .when(self.offline && !list_shown && place.is_none(), |d| {
@@ -2859,20 +2830,18 @@ mod header_tests {
 
     #[test]
     fn the_list_header_fits_at_every_width() {
-        let used = |fit: HeaderFit, switch: f32, offline: Option<f32>| {
-            let pill = offline.map_or(0., |w| HEADER_GAP + if fit.words { w } else { 22. });
-            switch + pill + HEADER_GAP + fit.compose.width()
-        };
         for list in 300..=720 {
             let room = list as f32 - 1. - LIST_LEFT - LIST_RIGHT;
             for digits in 1..=4 {
                 let switch = 124. + 7. * digits as f32;
                 for offline in [None, Some(67.), Some(140.)] {
-                    let fit = HeaderFit::new(room, switch, offline);
-                    assert!(
-                        used(fit, switch, offline) <= room,
-                        "{list} {digits} {offline:?}"
-                    );
+                    for compose in [false, true] {
+                        let fit = HeaderFit::new(room, switch, offline, compose);
+                        assert!(
+                            fit.used(switch, offline, compose) <= room,
+                            "{list} {digits} {offline:?} {compose}"
+                        );
+                    }
                 }
             }
         }
