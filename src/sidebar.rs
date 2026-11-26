@@ -670,6 +670,7 @@ impl Nimbra {
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .gap(px(8.))
                     .h(px(FIELD_H))
