@@ -722,6 +722,10 @@ pub struct Nimbra {
     counted: Option<Asked>,
     /// How often the change feeds have brought something.
     feed_changes: u64,
+    /// The open mailbox has to be brought up to date from the shown account's change feed,
+    /// and that has not been done yet: it was busy loading, a message was being written, or
+    /// the account was only just opened. Kept until it is done, so no new mail is left out.
+    sync_owed: bool,
     /// The mailboxes whose next page is known, or known not to exist.
     paged: HashSet<View>,
     /// The search panel's results, kept scrolled to the highlighted one.
@@ -1028,6 +1032,7 @@ impl Nimbra {
             checked: HashMap::new(),
             counted: None,
             feed_changes: 0,
+            sync_owed: false,
             paged: HashSet::new(),
             finder_scroll: gpui::ScrollHandle::new(),
             pull: 0.,

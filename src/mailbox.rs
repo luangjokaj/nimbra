@@ -504,6 +504,37 @@ impl Nimbra {
         true
     }
 
+    /// Brings the open mailbox up to date from the shown account's change feed, if that is
+    /// owed and can be done now. Not while a list is loading (its answer may be from before
+    /// the change) or a message is being written; then it stays owed, and the next look
+    /// does it.
+    fn keep_up(&mut self, cx: &mut Context<Self>) {
+        if !self.sync_owed || self.compose.is_some() || self.fetching() {
+            return;
+        }
+        self.sync_owed = false;
+        // All inboxes cannot be patched from one feed: list it again.
+        if self.mailbox == View::AllInboxes {
+            self.fetch_all_inboxes(cx);
+            self.checks.quiet();
+            return;
+        }
+        if self.sync_view(cx) {
+            self.checks.quiet();
+            return;
+        }
+        // An empty list (Inbox Zero) or one with no starting point is listed again, as long
+        // as the feed can tell what is in it: a search is not run again by itself.
+        let label_id = match self.mailbox {
+            View::Label(index) => self.labels.get(index).map(|label| label.id.clone()),
+            _ => None,
+        };
+        if self.connection.is_some() && self.mailbox.syncs(label_id.as_deref()) {
+            self.fetch_inbox(cx);
+            self.checks.quiet();
+        }
+    }
+
     /// Fetches, in the background, the content of the newest threads on screen that have not
     /// been downloaded yet, and saves it, so opening them is instant now and after a restart.
     pub(super) fn prefetch(&mut self, cx: &mut Context<Self>) {
@@ -988,27 +1019,23 @@ impl Nimbra {
                             return (Vec::new(), store);
                         }
                         this.notify_from = Some(at);
+                        let changed = changes.as_ref().is_some_and(|c| !c.threads.is_empty());
+                        if changed {
+                            this.feed_changes += 1;
+                            this.sync_owed = true;
+                        }
+                        // First look, just after the account was opened: mail that arrived
+                        // while its list was loading is behind this point, and no later look
+                        // would bring it. All inboxes is listed afresh anyway.
+                        if changes.is_none() && this.mailbox != View::AllInboxes {
+                            this.sync_owed = true;
+                        }
+                        this.keep_up(cx);
                         let Some(changes) = changes else {
                             // First look: what blocked senders left in the inbox meanwhile.
                             this.sweep_blocked(this.account_id.clone(), cx);
                             return (Vec::new(), store);
                         };
-                        if !changes.threads.is_empty() {
-                            this.feed_changes += 1;
-                        }
-                        // Anything changed: bring the open mailbox up to date, cheaply.
-                        if !changes.threads.is_empty() && this.compose.is_none() {
-                            // All inboxes cannot be patched from one feed: list it again.
-                            if this.mailbox == View::AllInboxes {
-                                // Started again each time, a slow one would never finish.
-                                if !this.fetching() {
-                                    this.fetch_all_inboxes(cx);
-                                    this.checks.quiet();
-                                }
-                            } else if !this.fetching() && this.sync_view(cx) {
-                                this.checks.quiet();
-                            }
-                        }
                         (changes.new_unread_inbox, store)
                     })
                     .unwrap_or_default();
@@ -1319,7 +1346,9 @@ impl Nimbra {
                         if let Some(labels) = labels {
                             this.labels = labels;
                         }
-                        this.show_inbox(email, threads, cx)
+                        this.show_inbox(email, threads, cx);
+                        // A change seen while this was loading may have come after it.
+                        this.keep_up(cx);
                     }
                     Err(error) => this.fail(error, cx),
                 }
