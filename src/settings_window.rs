@@ -1126,6 +1126,16 @@ impl SettingsWindow {
 
     fn privacy(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let armed = self.is_armed("clear");
+        let counting = self.owner.read(cx).settings.usage_counts;
+        let usage_row = self.toggle(
+            t,
+            "usage-counts",
+            "Anonymous usage counts",
+            "Each launch sends one count with the app and macOS versions: no ID, no address, nothing about your mail. It tells us how many people use Nimbra.",
+            counting,
+            cx,
+            |n| n.settings.usage_counts = !n.settings.usage_counts,
+        );
         let fact = |name: &'static str, title: &'static str, text: &'static str| {
             div()
                 .flex()
@@ -1199,6 +1209,7 @@ impl SettingsWindow {
                     })),
                 )],
             ),
+            group(t, None, vec![usage_row]),
         ]
     }
 

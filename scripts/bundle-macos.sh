@@ -7,6 +7,16 @@ cd "$(dirname "$0")/.."
 APP="target/bundle/Nimbra.app"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 
+# Build-time settings for official builds (the usage-count key), kept outside the repo.
+# Without the file the build sends no usage counts.
+BUILD_ENV="${HOME}/.config/nimbra/build.env"
+if [ -f "$BUILD_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$BUILD_ENV"
+  set +a
+fi
+
 cargo build --release
 
 rm -rf "$APP"
