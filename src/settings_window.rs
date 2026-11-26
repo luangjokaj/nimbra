@@ -1856,10 +1856,24 @@ impl SettingsWindow {
                     .into_any_element()
             })
             .child(
-                button(t, ButtonKind::Ghost, "Delete", None)
+                div()
                     .id("sig-delete")
-                    .text_color(t.rose)
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(px(32.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(t.border)
+                    .cursor_pointer()
+                    .hover({
+                        let rose = t.rose;
+                        move |s| s.bg(rose.opacity(0.1)).border_color(rose.opacity(0.35))
+                    })
                     .press_soft()
+                    .tooltip(tip(t.dark, "Delete signature", ""))
+                    .child(icon("trash", 15., t.rose))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.confirm_delete = Some(delete.clone());
                         this.pending_focus = Some(this.dialog_focus.clone());
@@ -1981,7 +1995,7 @@ impl SettingsWindow {
                     .items_center()
                     .gap(px(12.))
                     .child(switch)
-                    .child(meta(hint, t.text3).flex_1().min_w(px(0.)))
+                    .child(div().flex_1())
                     .children(refresh),
             )
             .child(
@@ -1993,6 +2007,8 @@ impl SettingsWindow {
                     .overflow_hidden()
                     .child(body),
             )
+            // As far from the box as from the bottom of the group (16).
+            .child(meta(hint, t.text3).mt(px(6.)))
             .into_any_element()
     }
 
