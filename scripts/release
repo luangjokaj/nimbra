@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Releases Nimbra: ./scripts/release <version> [--dry-run] [--skip-ci]
+#
+# In order, stopping at the first problem:
+#   1. checks: on an up-to-date, clean main, CI green, the version new, gh and the notary ready
+#   2. CHANGELOG.md: uses its section for <version>, or drafts one from the commits since
+#      the last release (feat → New, fix/perf → Fixed) for you to review
+#   3. sets the version in Cargo.toml and Cargo.lock
+#   4. builds Nimbra.app, signs it for distribution, notarizes and staples it
+#   5. packs Nimbra-<version>.dmg, signs, notarizes and staples that too
+#   6. commits "chore(release): <version>", tags v<version>, pushes both
+#   7. publishes the GitHub Release with the DMG and the changelog section as its notes
+# Nothing is committed or pushed before the notarized DMG exists. --dry-run stops after
+# step 5 and puts Cargo.toml back. docs/releasing.md has the one-time setup.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+
+VERSION=""
+DRY_RUN=0
+SKIP_CI=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    --skip-ci) SKIP_CI=1 ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) fail "Unknown option: $arg" ;;
+    *) VERSION="$arg" ;;
+  esac
+done
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Usage: ./scripts/release <version like 0.2.0> [--dry-run] [--skip-ci]"
+TAG="v$VERSION"
+
+# Release settings (the usage-count key, the notary profile), kept outside the repo.
+BUILD_ENV="${HOME}/.config/nimbra/build.env"
+if [ -f "$BUILD_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$BUILD_ENV"
+  set +a
+fi
+export NIMBRA_NOTARY_PROFILE="${NIMBRA_NOTARY_PROFILE:-nimbra}"
+
+# 1. Checks.
+say "Checking"
+[ "$(git rev-parse --abbrev-ref HEAD)" = main ] || fail "Release from main."
+DIRTY="$(git status --porcelain | grep -v ' CHANGELOG.md$' || true)"
+[ -z "$DIRTY" ] || fail "Commit or stash your changes first (only CHANGELOG.md may differ):
+$DIRTY"
+git fetch --quiet origin main --tags
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || fail "main differs from origin/main: pull or push first."
+git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && fail "$TAG already exists."
+
+LAST_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+CURRENT="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+python3 - "$VERSION" "${LAST_TAG#v}" "$CURRENT" <<'PY' || fail "$VERSION is not newer than the last release (${LAST_TAG:-none}) and Cargo.toml ($CURRENT)."
+import sys
+new, last, current = (tuple(int(x) for x in v.split(".")) if v else None for v in sys.argv[1:])
+# A first release may keep the version already in Cargo.toml.
+ok = (last is None or new > last) and (new > current or (last is None and new == current))
+sys.exit(0 if ok else 1)
+PY
+
+gh auth status >/dev/null 2>&1 || fail "Sign in to GitHub first: gh auth login"
+[ -n "${NIMBRA_POSTHOG_KEY:-}" ] || fail "NIMBRA_POSTHOG_KEY is not set in $BUILD_ENV (see docs/releasing.md)."
+xcrun notarytool history --keychain-profile "$NIMBRA_NOTARY_PROFILE" >/dev/null 2>&1 \
+  || fail "The notary profile \"$NIMBRA_NOTARY_PROFILE\" doesn't work (see docs/releasing.md)."
+
+if [ "$SKIP_CI" = 0 ]; then
+  CI="$(gh run list --workflow CI --commit "$(git rev-parse HEAD)" --limit 1 --json status,conclusion \
+    -q '.[0] | "\(.status) \(.conclusion)"' 2>/dev/null || true)"
+  [ "$CI" = "completed success" ] || fail "CI hasn't passed for this commit (${CI:-no run yet}). Wait for it, or use --skip-ci."
+fi
+echo "Releasing $TAG (last release: ${LAST_TAG:-none})"
+
+# 2. The changelog.
+say "Changelog"
+if ! grep -q "^## \[$VERSION\]" CHANGELOG.md; then
+  python3 - "$VERSION" "$LAST_TAG" <<'PY'
+import datetime, re, subprocess, sys
+version, last = sys.argv[1], sys.argv[2]
+span = f"{last}..HEAD" if last else "HEAD"
+subjects = subprocess.run(["git", "log", "--format=%s", span], capture_output=True, text=True, check=True).stdout.splitlines()
+new, fixed = [], []
+for subject in subjects:
+    m = re.match(r"^(feat|fix|perf)(\([^)]*\))?(!)?: (.+)$", subject)
+    if not m:
+        continue
+    line = m.group(4).strip().rstrip(".")
+    line = line[:1].upper() + line[1:]
+    (new if m.group(1) == "feat" else fixed).append(f"- {line}")
+section = [f"## [{version}] - {datetime.date.today().isoformat()}", ""]
+if new:
+    section += ["### New", *new, ""]
+if fixed:
+    section += ["### Fixed", *fixed, ""]
+if not new and not fixed:
+    section += ["- Small improvements.", ""]
+text = open("CHANGELOG.md").read()
+head, sep, rest = text.partition("\n## ")
+open("CHANGELOG.md", "w").write(head.rstrip("\n") + "\n\n" + "\n".join(section) + "\n" + (sep.lstrip("\n") + rest if sep else ""))
+PY
+  echo "Drafted the $VERSION section of CHANGELOG.md from the commits since ${LAST_TAG:-the start}."
+  if [ -t 0 ]; then
+    if [ -n "${EDITOR:-}" ]; then
+      "$EDITOR" CHANGELOG.md
+    else
+      read -r -p "Review it in CHANGELOG.md (one line per change, in user words), then press Return… "
+    fi
+  fi
+fi
+mkdir -p dist
+python3 - "$VERSION" > dist/notes.md <<'PY'
+import re, sys
+text = open("CHANGELOG.md").read()
+m = re.search(rf"^## \[{re.escape(sys.argv[1])}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.S | re.M)
+print((m.group(1) if m else "").strip())
+PY
+[ -s dist/notes.md ] || fail "CHANGELOG.md has no notes for $VERSION."
+sed 's/^/  /' dist/notes.md
+
+# 3. The version.
+say "Version $VERSION"
+# Until the release commit, any stop (or a dry run) puts the version back.
+RESTORE=1
+restore_version() {
+  if [ "$RESTORE" = 1 ]; then
+    git checkout --quiet -- Cargo.toml Cargo.lock
+    echo "Cargo.toml is back at $CURRENT." >&2
+  fi
+}
+trap restore_version EXIT
+python3 - "$VERSION" <<'PY'
+import re, sys
+text = open("Cargo.toml").read()
+open("Cargo.toml", "w").write(re.sub(r'(?m)^version = "[^"]*"', f'version = "{sys.argv[1]}"', text, count=1))
+PY
+cargo metadata --offline --format-version 1 >/dev/null
+
+# 4. The app.
+say "Building, signing and notarizing Nimbra.app"
+NIMBRA_RELEASE=1 ./scripts/bundle-macos.sh
+APP=target/bundle/Nimbra.app
+grep -qa "$NIMBRA_POSTHOG_KEY" "$APP/Contents/MacOS/nimbra" || fail "The usage-count key isn't in the build."
+./scripts/notarize-macos.sh "$APP"
+
+# 5. The disk image.
+say "Packing, signing and notarizing the disk image"
+DMG="dist/Nimbra-$VERSION.dmg"
+./scripts/dmg-macos.sh "$APP" "$DMG"
+NIMBRA_RELEASE=1 ./scripts/sign-macos.sh "$DMG"
+./scripts/notarize-macos.sh "$DMG"
+spctl --assess --type execute "$APP"
+spctl --assess --type open --context context:primary-signature "$DMG"
+cp "$DMG" dist/Nimbra.dmg
+(cd dist && shasum -a 256 "Nimbra-$VERSION.dmg" Nimbra.dmg > SHA256SUMS.txt)
+echo "Ready: $DMG (notarized, stapled, Gatekeeper accepts it)"
+
+if [ "$DRY_RUN" = 1 ]; then
+  say "Dry run: nothing committed, tagged or published. The DMG is in dist/."
+  exit 0
+fi
+
+# 6. Commit, tag, push.
+say "Committing and tagging $TAG"
+RESTORE=0
+git add Cargo.toml Cargo.lock CHANGELOG.md
+git commit --quiet -m "chore(release): $VERSION"
+git tag -a "$TAG" -m "Nimbra $VERSION"
+git push --quiet origin main
+git push --quiet origin "$TAG"
+
+# 7. Publish.
+say "Publishing the GitHub Release"
+gh release create "$TAG" "$DMG" dist/Nimbra.dmg dist/SHA256SUMS.txt \
+  --title "Nimbra $VERSION" --notes-file dist/notes.md --verify-tag
+say "Released Nimbra $VERSION"
+echo "$(gh release view "$TAG" --json url -q .url)"

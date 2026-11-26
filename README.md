@@ -58,6 +58,8 @@
 cargo run
 ```
 
+Or download the latest signed build: [Nimbra.dmg](https://github.com/luangjokaj/nimbra/releases/latest/download/Nimbra.dmg) (see [CHANGELOG.md](CHANGELOG.md) for what's new).
+
 Without an account set up, or with `NIMBRA_DEMO=1`, Nimbra runs on built-in sample data and never touches the network.
 
 To build the Mac app:
@@ -262,6 +264,10 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 ### Screenshot states
 
 `NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose`, `compose-full`, `snooze` or `snooze-time` opens that screen directly on the sample data. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
+
+### Releases
+
+`./scripts/release <version>` builds, signs, notarizes and publishes a release; see [docs/releasing.md](docs/releasing.md). What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
 
 ### Live tests
 

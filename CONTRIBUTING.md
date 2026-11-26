@@ -176,8 +176,19 @@ Leave out real addresses, subjects and message text. Redact screenshots.
 - We don't owe a review or a merge, and a good pull request can still wait. Sometimes your work lands in a different
   shape; you stay on it as a `Co-authored-by:` trailer.
 
-Releases, version bumps and anything posted publicly are the maintainer's job. Don't bump the version in a pull
-request.
+Releases, version bumps and anything posted publicly are the maintainer's job. Don't bump the version or edit
+`CHANGELOG.md` in a pull request.
+
+## Releases
+
+Only the maintainer releases, with `./scripts/release <version>`: it builds, signs and notarizes Nimbra and
+publishes the disk image as a GitHub Release. Pushing to `main` never releases anything.
+[docs/releasing.md](docs/releasing.md) has the whole process.
+
+`CHANGELOG.md` gets a `## [x.y.z] - YYYY-MM-DD` section for every release, with `### New` and `### Fixed`, written
+at release time from the commits since the last one. One line per change, in user words (what a person notices,
+not code), with the issue or pull request number and `thanks @name` for contributors. Internal changes and fixes
+for bugs that never shipped are left out. That's why commit subjects matter: they're where the changelog starts.
 
 ## Working with a coding agent
 
