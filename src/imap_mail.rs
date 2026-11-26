@@ -285,7 +285,8 @@ fn token_refused(which: &str) -> anyhow::Error {
 }
 
 pub struct Client {
-    account: String,
+    /// `None` for a check made while setting an account up, which is no account's yet.
+    account: Option<String>,
     email: String,
     servers: Servers,
     credential: Credential,
@@ -371,7 +372,12 @@ impl Drop for Client {
 }
 
 impl Client {
-    pub fn new(account: String, email: String, servers: Servers, credential: Credential) -> Self {
+    pub fn new(
+        account: Option<String>,
+        email: String,
+        servers: Servers,
+        credential: Credential,
+    ) -> Self {
         Client {
             account,
             email,
@@ -424,7 +430,7 @@ impl Client {
     fn open(&self) -> Result<Connection> {
         let attempt = |secret: &Secret| {
             let stream = secure_stream(&self.servers)?;
-            sign_in(&self.servers, secret, &self.account, stream)
+            sign_in(&self.servers, secret, self.account.as_deref(), stream)
         };
         let secret = self.credential.secret()?;
         let mut session = match attempt(&secret) {
@@ -1955,7 +1961,7 @@ impl ::imap::Authenticator for XOAuth2 {
 fn sign_in<S: Read + Write>(
     servers: &Servers,
     secret: &Secret,
-    account: &str,
+    account: Option<&str>,
     stream: S,
 ) -> Result<::imap::Session<S>> {
     let mut client = ::imap::Client::new(stream);
@@ -2003,7 +2009,7 @@ fn sign_in<S: Read + Write>(
 /// `SignedOut`, which signs out and wipes: a busy server says NO as well.
 fn signed_in_or_refused<S: Read + Write>(
     signed_in: std::result::Result<::imap::Session<S>, (::imap::Error, ::imap::Client<S>)>,
-    account: &str,
+    account: Option<&str>,
 ) -> Result<::imap::Session<S>> {
     match signed_in {
         Ok(session) => Ok(session),
@@ -2013,7 +2019,7 @@ fn signed_in_or_refused<S: Read + Write>(
             let said = ServerSaid(said(without_code(&no.information)));
             Err(match refusal(&no.information) {
                 Refusal::Credentials => anyhow!(SignedOut {
-                    account: account.to_string(),
+                    account: account.map(str::to_string),
                 })
                 .context(said),
                 // Offline is what is shown and what is tried again later.
@@ -2195,7 +2201,7 @@ fn idle_session(
         }
         state.socket = Some(socket);
     }
-    let mut session = sign_in(servers, &secret, "", Idling(stream)).map_err(|error| {
+    let mut session = sign_in(servers, &secret, None, Idling(stream)).map_err(|error| {
         // A refused token: a new one at the next try, after a wait.
         if error.is::<SignedOut>() && credential.refused(&secret) {
             token_refused("IMAP")
@@ -2704,7 +2710,7 @@ fn decode_utf7(text: &str) -> String {
 /// Checks that an account's IMAP server takes its password (or token), for setting it up. The mail
 /// is not looked at.
 pub fn check_login(servers: &Servers, credential: Credential) -> Result<()> {
-    let client = Client::new(String::new(), String::new(), servers.clone(), credential);
+    let client = Client::new(None, String::new(), servers.clone(), credential);
     let mut connection = client.open()?;
     let _ = connection.session.logout();
     Ok(())
@@ -2778,7 +2784,7 @@ mod tests {
             imap: crate::servers::Server::new("imap.example.com", 143, Security::StartTls),
             smtp: crate::servers::Server::new("smtp.example.com", 587, Security::StartTls),
         };
-        let result = sign_in(&servers, secret, "acct", stream).map(|_| ());
+        let result = sign_in(&servers, secret, Some("acct"), stream).map(|_| ());
         let sent = String::from_utf8(sent.lock().unwrap().clone()).unwrap();
         (result, sent)
     }
@@ -2847,7 +2853,7 @@ mod tests {
         assert!(
             wrong
                 .downcast_ref::<SignedOut>()
-                .is_some_and(|out| out.account == "acct")
+                .is_some_and(|out| out.account.as_deref() == Some("acct"))
         );
         let disabled = refused("NO [CONTACTADMIN] Account disabled");
         assert!(!disabled.is::<SignedOut>() && !disabled.is::<Offline>());
@@ -2886,7 +2892,7 @@ mod tests {
         assert!(
             error
                 .downcast_ref::<SignedOut>()
-                .is_some_and(|e| e.account == "acct")
+                .is_some_and(|e| e.account.as_deref() == Some("acct"))
         );
         assert!(sent.ends_with(&format!("{initial}\r\n\r\n")), "{sent:?}");
         assert!(!format!("{error:#}").contains("EwBtoken"));
@@ -3112,7 +3118,7 @@ mod tests {
             smtp: crate::servers::Server::new("localhost", 1, Security::Tls),
         };
         Client::new(
-            String::new(),
+            None,
             String::new(),
             servers,
             Credential::Password(String::new()),
@@ -3186,7 +3192,7 @@ mod live {
             smtp: Server::new("localhost", 10587, Security::StartTls),
         };
         Client::new(
-            "acct".into(),
+            Some("acct".into()),
             user.to_string(),
             servers,
             Credential::Password("pass".into()),

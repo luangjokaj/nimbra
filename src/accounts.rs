@@ -16,7 +16,7 @@ fn stored_credential(
             Credential::Microsoft(Arc::new(crate::microsoft::Tokens::new(
                 config.clone(),
                 token,
-                id.to_string(),
+                Some(id.to_string()),
             )))
         }),
         None => crate::servers::stored_password(id)?.map(Credential::Password),
@@ -181,7 +181,7 @@ impl Nimbra {
         let account = self.settings.accounts.iter().find(|a| a.id == id)?;
         let servers = account.servers.clone()?;
         Some(Arc::new(crate::imap_mail::Client::new(
-            id.to_string(),
+            Some(id.to_string()),
             account.email.clone(),
             servers,
             credential?,
@@ -1080,8 +1080,6 @@ impl Nimbra {
     /// Whether an error ends the shown account's sign-in. Other accounts' connections are in
     /// use too (All inboxes, message windows, requests from before a switch): theirs do not.
     pub(super) fn shown_signed_out(&self, error: &anyhow::Error) -> bool {
-        error
-            .downcast_ref::<mail::SignedOut>()
-            .is_some_and(|e| e.account.is_empty() || e.account == self.account_id)
+        mail::SignedOut::ended(error, &self.account_id) == mail::SignInEnded::Shown
     }
 }

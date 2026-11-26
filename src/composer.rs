@@ -1198,7 +1198,7 @@ impl Nimbra {
     ) {
         let result = match result {
             Err(error) if self.shown_signed_out(&error) => {
-                self.compose = None;
+                self.drop_shown_accounts_composer();
                 self.fail(error, cx);
                 return;
             }
@@ -1822,6 +1822,14 @@ impl Nimbra {
                 self.focus_field(Field::Line(index - 1), None, cx);
             }
             _ => {}
+        }
+    }
+
+    /// The shown account's sign-in ended: its message cannot be saved or sent. One written
+    /// from another account stays.
+    pub(super) fn drop_shown_accounts_composer(&mut self) {
+        if self.compose_from().as_deref() == Some(self.account_id.as_str()) {
+            self.compose = None;
         }
     }
 

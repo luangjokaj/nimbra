@@ -1682,15 +1682,14 @@ impl Nimbra {
             return;
         }
         log_failure(&error);
-        if let Some(out) = error.downcast_ref::<mail::SignedOut>()
-            && !self.shown_signed_out(&error)
+        if let mail::SignInEnded::Other(account) = mail::SignedOut::ended(&error, &self.account_id)
         {
             // Another account's: the mail, snoozes and sign-in of the one shown are not its.
             let whose = self
                 .settings
                 .accounts
                 .iter()
-                .find(|a| a.id == out.account)
+                .find(|a| Some(a.id.as_str()) == account)
                 .map_or("another account".to_string(), |a| a.email.clone());
             self.notice = Some(
                 format!("The sign-in for {whose} expired. Switch to it to connect again.").into(),

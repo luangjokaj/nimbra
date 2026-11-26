@@ -386,7 +386,7 @@ impl Nimbra {
         let unsure = error.is::<mail::MayHaveArrived>();
         let room = parked.is_some() && self.compose.is_none();
         if self.shown_signed_out(&error) {
-            self.compose = None;
+            self.drop_shown_accounts_composer();
             self.fail(error, cx);
         } else if offline && !unsure && (shown || !room) {
             if let Some(at) = parked {

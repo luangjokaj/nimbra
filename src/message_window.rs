@@ -66,10 +66,6 @@ impl MessageWindow {
     /// The thread, fresh from the app when it still has it.
     fn mail(&mut self, cx: &App) -> Mail {
         let n = self.owner.read(cx);
-        // Opened before the account's id was known (a first sign-in): it is the one shown.
-        if self.account.is_empty() {
-            self.account = n.account_id.clone();
-        }
         if let Some(mail) = n
             .mails
             .iter()

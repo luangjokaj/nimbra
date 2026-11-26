@@ -89,8 +89,38 @@ impl View {
 #[derive(Debug)]
 pub struct SignedOut {
     /// Whose sign-in: several accounts are connected at once, and only the one named may
-    /// be signed out for it. Empty while a sign-in is not yet any account's.
-    pub account: String,
+    /// be signed out for it. `None` while a sign-in is not yet any account's; the first
+    /// account's id is "", so an empty id is never "nobody's".
+    pub account: Option<String>,
+}
+
+/// Whose sign-in an error ended, seen from the account shown.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SignInEnded<'a> {
+    No,
+    Shown,
+    /// Another account's, or (`None`) a sign-in that is not yet any account's.
+    Other(Option<&'a str>),
+}
+
+impl SignedOut {
+    pub fn of(account: &str) -> Self {
+        SignedOut {
+            account: Some(account.to_string()),
+        }
+    }
+
+    pub fn unclaimed() -> Self {
+        SignedOut { account: None }
+    }
+
+    pub fn ended<'a>(error: &'a anyhow::Error, shown: &str) -> SignInEnded<'a> {
+        match error.downcast_ref::<SignedOut>() {
+            None => SignInEnded::No,
+            Some(e) if e.account.as_deref() == Some(shown) => SignInEnded::Shown,
+            Some(e) => SignInEnded::Other(e.account.as_deref()),
+        }
+    }
 }
 
 impl std::fmt::Display for SignedOut {
@@ -1190,6 +1220,45 @@ pub type Client = dyn Provider;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_accounts_sign_in_ending_is_not_another_shown_accounts() {
+        let error = anyhow::Error::from(SignedOut::of(""));
+        assert_eq!(SignedOut::ended(&error, "b1"), SignInEnded::Other(Some("")));
+    }
+
+    #[test]
+    fn a_sign_in_that_is_no_accounts_yet_ends_neither_the_first_nor_another() {
+        let error = anyhow::Error::from(SignedOut::unclaimed());
+        assert_eq!(SignedOut::ended(&error, ""), SignInEnded::Other(None));
+        assert_eq!(SignedOut::ended(&error, "b1"), SignInEnded::Other(None));
+    }
+
+    #[test]
+    fn another_accounts_sign_in_ending_is_not_the_first_accounts() {
+        let error = anyhow::Error::from(SignedOut::of("b1"));
+        assert_eq!(SignedOut::ended(&error, ""), SignInEnded::Other(Some("b1")));
+    }
+
+    #[test]
+    fn the_shown_accounts_own_sign_in_ending_is_its_own() {
+        let first = anyhow::Error::from(SignedOut::of(""));
+        let other = anyhow::Error::from(SignedOut::of("b1"));
+        assert_eq!(SignedOut::ended(&first, ""), SignInEnded::Shown);
+        assert_eq!(SignedOut::ended(&other, "b1"), SignInEnded::Shown);
+    }
+
+    #[test]
+    fn a_sign_in_ending_under_context_is_still_found() {
+        let error = anyhow::Error::from(SignedOut::of("b1")).context("refused");
+        assert_eq!(SignedOut::ended(&error, "b1"), SignInEnded::Shown);
+    }
+
+    #[test]
+    fn other_errors_end_no_sign_in() {
+        let error = anyhow::Error::from(Offline);
+        assert_eq!(SignedOut::ended(&error, ""), SignInEnded::No);
+    }
 
     #[test]
     fn safe_file_name_drops_a_right_to_left_override() {

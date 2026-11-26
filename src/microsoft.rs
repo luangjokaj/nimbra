@@ -170,10 +170,7 @@ fn token_error(status: u16, body: &str) -> anyhow::Error {
         .unwrap_or_default()
         .error;
     if error == "invalid_grant" {
-        return SignedOut {
-            account: String::new(),
-        }
-        .into();
+        return SignedOut::unclaimed().into();
     }
     match sanitize(&error) {
         code if code.is_empty() => anyhow!("Microsoft refused the sign-in ({status})"),
@@ -228,9 +225,9 @@ fn address_from_id_token(id_token: &str) -> Result<String> {
 /// before it runs out. Shared by the account's connections (its IDLE thread too).
 pub struct Tokens {
     config: Config,
-    /// Which account's keychain entry holds the refresh token. Empty while the sign-in is
+    /// Which account's keychain entry holds the refresh token. `None` while the sign-in is
     /// not yet any account's (nothing is saved then).
-    account: String,
+    account: Option<String>,
     /// The long-lived sign-in. Held while renewing, so that two connections never renew at
     /// once and the one Microsoft hands back is never lost.
     refresh: Mutex<String>,
@@ -240,7 +237,7 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    pub fn new(config: Config, refresh_token: String, account: String) -> Self {
+    pub fn new(config: Config, refresh_token: String, account: Option<String>) -> Self {
         Tokens {
             config,
             account,
@@ -294,22 +291,22 @@ impl Tokens {
             if !error.is::<SignedOut>() {
                 return error;
             }
-            match stored_refresh_token(&self.account) {
+            let Some(account) = &self.account else {
+                return SignedOut::unclaimed().into();
+            };
+            match stored_refresh_token(account) {
                 // Signed in again since this client was made: that sign-in has not ended.
                 Ok(Some(stored)) if stored != *refresh => {
                     return anyhow!("The sign-in changed meanwhile. Try again.");
                 }
-                Ok(Some(_)) => forget_refresh_token(&self.account),
+                Ok(Some(_)) => forget_refresh_token(account),
                 _ => {}
             }
-            SignedOut {
-                account: self.account.clone(),
-            }
-            .into()
+            SignedOut::of(account).into()
         })?;
         if let Some(new) = self.take(&mut refresh, &reply)
-            && !self.account.is_empty()
-            && store_refresh_token(&self.account, &new).is_err()
+            && let Some(account) = &self.account
+            && store_refresh_token(account, &new).is_err()
         {
             // The old one still works for a while; this one is kept in memory meanwhile.
             eprintln!("nimbra: could not save the renewed Microsoft sign-in");
@@ -332,7 +329,7 @@ impl Tokens {
         store_refresh_token(account, &refresh)?;
         Ok(Tokens {
             config: self.config.clone(),
-            account: account.to_string(),
+            account: Some(account.to_string()),
             refresh: Mutex::new(refresh),
             access: Mutex::new(self.access.lock().unwrap().clone()),
         })
@@ -485,7 +482,7 @@ impl SignIn {
             .clone()
             .filter(|r| !r.is_empty())
             .ok_or_else(|| anyhow!("Microsoft did not return a long-lived sign-in"))?;
-        let tokens = Tokens::new(config.clone(), refresh, String::new());
+        let tokens = Tokens::new(config.clone(), refresh, None);
         tokens.remember(&reply.access_token, reply.expires_in);
         Ok((email, tokens))
     }
@@ -694,7 +691,7 @@ mod tests {
             assert!(!error.to_string().contains("html"));
         }
 
-        let tokens = Tokens::new(config(), "M.R1".into(), String::new());
+        let tokens = Tokens::new(config(), "M.R1".into(), None);
         let mut refresh = tokens.refresh.lock().unwrap();
         // Rotated: the new one is handed back to be saved, and used from now on.
         assert_eq!(tokens.take(&mut refresh, &reply).as_deref(), Some("M.R2"));

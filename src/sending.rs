@@ -721,7 +721,7 @@ pub(crate) mod tests {
         let server =
             |port| crate::servers::Server::new("localhost", port, crate::servers::Security::Tls);
         Arc::new(crate::imap_mail::Client::new(
-            String::new(),
+            None,
             String::new(),
             crate::servers::Servers {
                 username: "me".into(),

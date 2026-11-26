@@ -239,10 +239,7 @@ fn token_request(form: &[(&str, &str)]) -> Result<TokenResponse> {
             }
             let error = response.into_json::<OAuthError>().unwrap_or_default().error;
             if error == "invalid_grant" {
-                return Err(SignedOut {
-                    account: String::new(),
-                }
-                .into());
+                return Err(SignedOut::unclaimed().into());
             }
             bail!("Google rejected the sign-in ({code} {error})")
         }
@@ -500,10 +497,7 @@ impl Client {
     }
 
     fn signed_out(&self) -> anyhow::Error {
-        SignedOut {
-            account: self.account.clone(),
-        }
-        .into()
+        SignedOut::of(&self.account).into()
     }
 
     fn access_token(&self) -> Result<String> {

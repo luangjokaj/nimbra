@@ -545,7 +545,10 @@ impl Nimbra {
         {
             self.reset_account(id.clone(), cx);
             self.connection = Some(Arc::new(crate::imap_mail::Client::new(
-                id, email, servers, credential,
+                Some(id),
+                email,
+                servers,
+                credential,
             )));
             self.status = Status::Loading;
             self.open_store(cx);
