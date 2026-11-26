@@ -1,8 +1,7 @@
 //! Small stateless building blocks shared by every pane.
 
 use gpui::{
-    BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point, prelude::*, px,
-    svg,
+    BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point, prelude::*, px, svg,
 };
 
 use crate::theme::{MONO, SANS, Theme, Tone, over, radius, space};
@@ -19,56 +18,21 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
 /// it on y = 25, the line of the traffic lights, with the same space above and below.
 pub const TOP_BAR: f32 = 51.;
 
-/// The backdrop showing between the main window's panels and around them.
-pub const GUTTER: f32 = 8.;
+/// The line the top row of every window is centred on: a top bar's centre, level with the
+/// traffic lights.
+pub const TOP_LINE: f32 = 25.;
 
-/// The line the main window's top row is centred on: a top bar's centre, inside a panel
-/// that starts a gutter down.
-pub const TOP_LINE: f32 = GUTTER + 25.;
-
-/// What the main window's panels float over: the theme's ground, one solid colour.
-pub fn backdrop(t: &Theme) -> Div {
-    div().absolute().inset_0().bg(t.ground)
-}
-
-/// How far forward a floating panel sits: the reader is in front of the list.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Depth {
-    Back,
-    Front,
-}
-
-/// A floating panel of the main window: a solid surface on the ground, set down by a faint
-/// neutral shadow. Finish it with `rim` as its last child.
-pub fn panel(t: &Theme, depth: Depth) -> Div {
-    div()
-        .relative()
-        .rounded(px(radius::SHEET))
-        .bg(match depth {
-            Depth::Back => t.panel,
-            Depth::Front => t.surface,
-        })
-        .shadow(lift(t, depth))
-}
-
-/// The shadow under a floating panel: close and faint, so the panel sits on the ground
-/// rather than hovering over it.
-pub fn lift(t: &Theme, depth: Depth) -> Vec<BoxShadow> {
-    let strength = match depth {
-        Depth::Back => 0.6,
-        Depth::Front => 0.8,
-    };
-    vec![shadow(t.shadow.opacity(t.shadow.a * strength), 1., 4., 0.)]
-}
-
-/// A panel's edge: a hairline all round, laid over it so it takes no room.
-pub fn rim(t: &Theme, corner: f32) -> Div {
+/// The hairline between two panes side by side, full height, laid over the right edge of
+/// the pane on its left. It is see-through, so that pane keeps the 1pt clear for it under its
+/// own colour (`.pr(px(1.))`) and its content ends where the line begins.
+pub fn pane_divider(t: &Theme) -> Div {
     div()
         .absolute()
-        .inset_0()
-        .rounded(px(corner))
-        .border_1()
-        .border_color(t.rim)
+        .top_0()
+        .right_0()
+        .w(px(1.))
+        .h_full()
+        .bg(t.rim)
 }
 
 /// A floating sheet (the composer, Add Account, a question over either): a raised solid
@@ -84,22 +48,10 @@ pub fn sheet(t: &Theme) -> Div {
         .shadow(elevation(t, Elevation::Sheet))
 }
 
-/// A window drawn as the main one is: panels a gutter apart on the ground. Lay its panels
-/// out as children, in a row.
-pub fn panels(t: &Theme) -> Div {
-    div()
-        .relative()
-        .flex()
-        .size_full()
-        .p(px(GUTTER))
-        .gap(px(GUTTER))
-        .child(backdrop(t))
-}
-
-/// Where a window of panels puts its traffic lights: the close button's top-left, so that
-/// they are centred on the top line, as far into the first panel as its content.
+/// Where a window puts its traffic lights: the close button's top-left, so that they are
+/// centred on the top line.
 pub fn traffic_lights() -> gpui::Point<gpui::Pixels> {
-    point(px(18. + GUTTER), px(TOP_LINE - 7.))
+    point(px(18.), px(TOP_LINE - 7.))
 }
 
 /// Timestamps, counts and keys: Geist Mono 11/14 medium.
@@ -641,14 +593,16 @@ pub mod motion {
 mod tests {
     use super::*;
 
-    /// What lifts a panel or a sheet is the theme's own neutral shadow, never the accent.
+    /// What lifts a sheet or a pop-up is the theme's own neutral shadow, never the accent.
     #[test]
-    fn panels_and_sheets_cast_only_neutral_shadows() {
+    fn sheets_cast_only_neutral_shadows() {
         for t in [Theme::dark(), Theme::light()] {
-            let shadows = [lift(&t, Depth::Back), lift(&t, Depth::Front)]
-                .into_iter()
-                .flatten()
-                .chain(elevation(&t, Elevation::Sheet));
+            let shadows = [
+                elevation(&t, Elevation::Pop),
+                elevation(&t, Elevation::Sheet),
+            ]
+            .into_iter()
+            .flatten();
             for s in shadows {
                 let neutral = [t.shadow, t.shadow_sheet]
                     .iter()

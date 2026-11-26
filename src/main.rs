@@ -44,7 +44,7 @@ use std::borrow::Cow;
 
 use gpui::{
     App, Application, AssetSource, Bounds, KeyBinding, SharedString, TitlebarOptions,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions, point, prelude::*, px, size,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, prelude::*, px, size,
 };
 
 use app::{
@@ -401,11 +401,7 @@ fn main() {
                     titlebar: Some(TitlebarOptions {
                         title: Some("Nimbra".into()),
                         appears_transparent: true,
-                        // Where `place_traffic_lights` keeps them: on the panels' top line.
-                        traffic_light_position: Some(point(
-                            px(18. + ui::GUTTER),
-                            px(ui::TOP_LINE - 7.),
-                        )),
+                        traffic_light_position: Some(ui::traffic_lights()),
                     }),
                     window_background: WindowBackgroundAppearance::Blurred,
                     window_min_size: Some(size(px(1120.), px(720.))),

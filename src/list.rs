@@ -47,8 +47,7 @@ pub(super) const ROW_H: f32 = 64.;
 pub(super) const ROW_GAP: f32 = 2.;
 /// A group head (Today, Earlier): 20 above its 16pt line, 4 below, as the sidebar's.
 pub(super) const GROUP_H: f32 = 40.;
-/// The list's own margin left and right of the rows, and under the last: the gutter, so a
-/// row's card sits as far in from the panel's edge as the panels sit from each other.
+/// The list's own margin left and right of the rows, and under the last.
 pub(super) const LIST_SIDE: f32 = 8.;
 const LIST_BOTTOM: f32 = 8.;
 /// How far past the visible rows the virtual list lays out, so a fast scroll finds them.
@@ -327,7 +326,7 @@ impl Nimbra {
             self.mailbox,
             View::Done | View::Spam | View::Trash | View::Snoozed | View::Reminders
         );
-        panel(t, Depth::Front)
+        div()
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -336,6 +335,7 @@ impl Nimbra {
             .items_center()
             .justify_center()
             .gap(px(space::XL))
+            .bg(t.surface)
             .child(title_l(format!("{count} Selected"), t.text))
             .child(
                 div()
@@ -409,7 +409,6 @@ impl Nimbra {
                         cx.notify();
                     })),
             )
-            .child(rim(t, radius::SHEET))
     }
 
     /// Pull to refresh, in the style of the system's: the list stretches with rubber-band
@@ -525,8 +524,7 @@ impl Nimbra {
         if !self.list_open && !moving {
             return None;
         }
-        // The panel and the gutter on its right.
-        let width = self.list_width + GUTTER;
+        let width = self.list_width;
         // The list keeps its width while the slot around it grows or shrinks, so its rows
         // slide instead of re-wrapping on every frame.
         let slot = div()
@@ -540,7 +538,6 @@ impl Nimbra {
                     .flex_none()
                     .w(px(width))
                     .h_full()
-                    .pr(px(GUTTER))
                     .child(self.list(t, cx)),
             );
         if !moving {
@@ -596,9 +593,10 @@ impl Nimbra {
         ))
     }
 
-    /// The width the row's text has: the list, less its margins and the row's padding.
+    /// The width the row's text has: the list, less its hairline, its margins and the row's
+    /// padding.
     fn row_room(&self) -> f32 {
-        self.list_width - 2. * LIST_SIDE - 2. * ROW_PAD
+        self.list_width - 1. - 2. * LIST_SIDE - 2. * ROW_PAD
     }
 
     /// Sender, label, subject and snippet, each cut where its real width runs out.
@@ -1042,23 +1040,27 @@ impl Nimbra {
         .w_full()
         .pb(px(LIST_BOTTOM));
 
-        panel(t, Depth::Back)
+        div()
+            .relative()
             .flex()
             .flex_col()
             .flex_none()
             .w(px(self.list_width))
             .h_full()
-            // Drag the gutter on the right to resize the list; double-click it to hide the list.
+            // Clear of the hairline on its right edge.
+            .pr(px(1.))
+            .bg(t.panel)
+            .child(pane_divider(t))
+            // Drag the right edge to resize the list; double-click it to hide the list.
             .child({
-                let hover = t.border_strong;
+                let hover = t.hover;
                 div()
                     .id("list-resize")
                     .absolute()
-                    .top(px(radius::SHEET))
-                    .bottom(px(radius::SHEET))
-                    .right(px(-GUTTER))
-                    .w(px(GUTTER))
-                    .rounded_full()
+                    .top_0()
+                    .bottom_0()
+                    .right(px(-3.))
+                    .w(px(7.))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .hover(move |s| s.bg(hover))
                     .on_mouse_down(
@@ -1158,13 +1160,17 @@ impl Nimbra {
                     .children(self.pull_indicator(t))
                     .child(rows),
             )
-            .child(rim(t, radius::SHEET))
     }
 
     /// The light gliding along the top of the list while mail is checked, fading out once
     /// the check is done. With Reduce Motion it holds still.
     fn checking_bar(&self, t: &Theme) -> AnyElement {
-        let glide = div().absolute().top_0().h_full().rounded_full().bg(t.violet);
+        let glide = div()
+            .absolute()
+            .top_0()
+            .h_full()
+            .rounded_full()
+            .bg(t.violet);
         let glide = if motion::reduced() {
             glide
                 .left(relative(0.))
@@ -1231,7 +1237,7 @@ impl Nimbra {
         } else {
             None
         };
-        panel(t, Depth::Front)
+        div()
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -1240,9 +1246,9 @@ impl Nimbra {
             .items_center()
             .justify_center()
             .gap(px(space::XL))
+            .bg(t.surface)
             .child(title_l(title, t.text2))
             .children(action)
-            .child(rim(t, radius::SHEET))
     }
 
     /// The night over Inbox Zero is still. Once it has come up, one star falls, drawn at the
@@ -1286,7 +1292,6 @@ impl Nimbra {
     }
 
     pub(super) fn zero(&self, t: &Theme) -> impl IntoElement {
-        let corner = radius::SHEET;
         let sky = Sky::of(t);
         let quiet = |d: Div| {
             d.bg(sky.card)
@@ -1380,8 +1385,6 @@ impl Nimbra {
                 .items_center()
                 .size_full()
                 .overflow_hidden()
-                .rounded(px(corner))
-                .shadow(lift(t, Depth::Front))
                 .bg(sky.ground)
                 .children(stars)
                 .children(falling)
@@ -1471,8 +1474,7 @@ impl Nimbra {
                             )
                         })
                         .child(settle(below, arrival.below())),
-                )
-                .child(rim(t, corner)),
+                ),
         )
     }
 }

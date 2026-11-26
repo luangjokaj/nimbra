@@ -1202,12 +1202,14 @@ impl Nimbra {
                 .children(labels.into_iter().map(|(label, dot)| pill(t, &label, dot)))
         });
 
-        panel(t, Depth::Front)
+        div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_w(px(0.))
             .h_full()
+            .bg(t.surface)
             .child(self.selection_watch(self.reader_layouts.clone(), cx))
             // While a panel slides, the email keeps one width and the extra is cut off here.
             .overflow_hidden()
@@ -1364,7 +1366,6 @@ impl Nimbra {
                 )
             })
             .when(original, |d| d.child(self.original_pane(t, m, cx)))
-            .child(rim(t, radius::SHEET))
             .children(self.menu_view(t, cx))
     }
 
@@ -2220,8 +2221,6 @@ impl Nimbra {
             .flex_col()
             .flex_1()
             .min_h(px(0.))
-            // The web view is square: it stops short of the panel's round corners.
-            .when(m.header.attachments.is_empty(), |d| d.pb(px(radius::SHEET)))
             // Subject, sender, recipients and attachments stay native above the email.
             .child(
                 div()

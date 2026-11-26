@@ -840,15 +840,9 @@ impl Nimbra {
             })
         };
         let (left, top) = match menu {
-            Menu::Labels => anchored(Anchor::Labels, (pane_left + 150., crate::ui::GUTTER + 50.)),
-            Menu::MoveTo => anchored(Anchor::MoveTo, (pane_left + 186., crate::ui::GUTTER + 50.)),
-            Menu::More => anchored(
-                Anchor::More,
-                (
-                    f32::from(viewport.width) - crate::ui::GUTTER - 20. - width,
-                    crate::ui::GUTTER + 50.,
-                ),
-            ),
+            Menu::Labels => anchored(Anchor::Labels, (pane_left + 150., 50.)),
+            Menu::MoveTo => anchored(Anchor::MoveTo, (pane_left + 186., 50.)),
+            Menu::More => anchored(Anchor::More, (f32::from(viewport.width) - 20. - width, 50.)),
             // Under the composer's From: beside the title of a draft, and in the fields'
             // value column on a new message, which has no title.
             Menu::From => match &self.compose {

@@ -222,7 +222,7 @@ impl Render for SettingsWindow {
             Tab::About => self.about(&t, cx),
         };
         let hover = t.hover;
-        // The top of each panel moves the window, as a title bar would.
+        // The top of each pane moves the window, as a title bar would.
         let title_bar = || {
             div()
                 .flex()
@@ -231,19 +231,25 @@ impl Render for SettingsWindow {
                 .h(px(TOP_BAR - 1.))
                 .on_mouse_down(MouseButton::Left, drag_or_zoom)
         };
-        crate::ui::panels(&t)
+        div()
+            .flex()
+            .size_full()
             .font_family(crate::theme::SANS)
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
             // The sections, under the traffic lights.
             .child(
-                panel(&t, crate::ui::Depth::Back)
+                div()
                     .flex()
                     .flex_col()
                     .flex_none()
+                    .relative()
                     .w(px(TABS_W))
                     .h_full()
+                    .pr(px(1.))
+                    .bg(t.panel)
+                    .child(pane_divider(&t))
                     .child(title_bar())
                     .child(div().flex().flex_col().gap(px(2.)).px(px(10.)).children(
                         Tab::ALL.iter().enumerate().map(|(i, item)| {
@@ -273,17 +279,17 @@ impl Render for SettingsWindow {
                                     cx.notify();
                                 }))
                         }),
-                    ))
-                    .child(rim(&t, radius::SHEET)),
+                    )),
             )
             // The section itself, its name on the top line.
             .child(
-                panel(&t, crate::ui::Depth::Front)
+                div()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_w(px(0.))
                     .h_full()
+                    .bg(t.surface)
                     .child(
                         title_bar()
                             .px(px(CONTENT_X))
@@ -309,26 +315,22 @@ impl Render for SettingsWindow {
                                         // size (and scrolling when it is too short). (A
                                         // percentage height does not resolve inside a scroll.)
                                         Tab::About => d
-                                            .min_h(
-                                                window.viewport_size().height
-                                                    - px(2. * crate::ui::GUTTER + TOP_BAR),
-                                            )
+                                            .min_h(window.viewport_size().height - px(TOP_BAR - 1.))
                                             .justify_center()
                                             .pb(px(TOP_BAR)),
                                         _ => d.max_w(px(680.)).pt(px(space::S)).pb(px(40.)),
                                     })
                                     .children(content),
                             ),
-                    )
-                    .child(rim(&t, radius::SHEET)),
+                    ),
             )
     }
 }
 
-/// The sections' panel.
+/// The sections' pane.
 const TABS_W: f32 = 210.;
 
-/// Where a section's title and content start in their panel.
+/// Where a section's title and content start in their pane.
 const CONTENT_X: f32 = 32.;
 
 // ---------------------------------------------------------------- building blocks

@@ -51,14 +51,12 @@ pub mod radius {
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub dark: bool,
-    /// The window's ground, around and between the panels: one solid colour.
-    pub ground: Hsla,
     pub sidebar: Hsla,
-    /// The message list's panel: a step back from the reader.
+    /// The message list's pane: a step back from the reader.
     pub panel: Hsla,
-    /// The reader's panel, the frontmost.
+    /// The reader's pane, the frontmost.
     pub surface: Hsla,
-    /// The hairline around each floating panel.
+    /// The hairline between panes, and around pop-ups' glass.
     pub rim: Hsla,
     pub raised: Hsla,
     pub hover: Hsla,
@@ -108,7 +106,6 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            ground: c(0x0a0a0e, 1.),
             sidebar: c(0x121218, 0.86),
             panel: c(0x111116, 1.),
             surface: c(0x16161c, 1.),
@@ -149,7 +146,6 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             dark: false,
-            ground: c(0xe9e9ee, 1.),
             sidebar: c(0xf7f7f9, 0.86),
             panel: c(0xf7f7f9, 1.),
             surface: c(0xffffff, 1.),
@@ -370,8 +366,12 @@ mod tests {
     #[test]
     fn the_focus_ring_stands_out_from_every_ground() {
         for t in [Theme::light(), Theme::dark()] {
-            for ground in [t.surface, t.panel, t.raised, t.ground] {
-                assert!(contrast(t.focus, ground) >= NON_TEXT, "{}", contrast(t.focus, ground));
+            for ground in [t.surface, t.panel, t.raised, sidebar(&t)] {
+                assert!(
+                    contrast(t.focus, ground) >= NON_TEXT,
+                    "{}",
+                    contrast(t.focus, ground)
+                );
             }
         }
     }

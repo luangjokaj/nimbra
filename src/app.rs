@@ -20,14 +20,11 @@ use crate::mail::{self, View};
 use crate::rich::{self, Block, Kind};
 use crate::scheduled::{self, Outcome, Scheduled};
 use crate::sending::{Job, QueuedMail, Stage};
-use crate::theme::{
-    Accent, SANS, Theme, Tone, c, over, radius, space,
-};
+use crate::theme::{Accent, SANS, Theme, Tone, c, over, radius, space};
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Depth, GUTTER, Press, TOP_BAR, TOP_LINE, avatar, button, caption,
-    display, focus_ring, hero, icon, icon_button, kbd, lift, meta, overline, panel,
-    pill, rim, shadow, tip, title_l, title_s,
+    ButtonKind, Press, TOP_BAR, TOP_LINE, avatar, button, caption, display, focus_ring, hero, icon,
+    icon_button, kbd, meta, overline, pane_divider, pill, shadow, tip, title_l, title_s,
 };
 use crate::webview::HtmlView;
 
@@ -1425,14 +1422,11 @@ impl Nimbra {
                 _ => size * to,
             }
         };
-        // Each panel brings the gutter on its right; the window's own is on the left.
-        let side = self.side_w() + GUTTER;
-        let list = self.list_width + GUTTER;
-        let side_now = part(self.sidebar_open, self.sidebar_toggled, side);
-        let list_now = part(self.list_open, self.list_toggled, list);
-        let end =
-            if self.sidebar_open { side } else { 0. } + if self.list_open { list } else { 0. };
-        (GUTTER + side_now + list_now, GUTTER + end)
+        let side_now = part(self.sidebar_open, self.sidebar_toggled, self.side_w());
+        let list_now = part(self.list_open, self.list_toggled, self.list_width);
+        let end = if self.sidebar_open { self.side_w() } else { 0. }
+            + if self.list_open { self.list_width } else { 0. };
+        (side_now + list_now, end)
     }
 
     /// How far the reading pane's left edge will move during the next frame of a sidebar or
@@ -1451,10 +1445,9 @@ impl Nimbra {
         self.pane_layout().0
     }
 
-    /// The reading pane's width right now: the window less what is left of it and the
-    /// gutter on its right.
+    /// The reading pane's width right now: the window less what is left of it.
     fn pane_width(&self) -> f32 {
-        self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left() - GUTTER
+        self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left()
     }
 
     /// Full view: the open message across the whole window, without the sidebar and list
@@ -2142,7 +2135,7 @@ impl Nimbra {
             }
             _ => ("Loading", SharedString::default(), None),
         };
-        panel(t, Depth::Front)
+        div()
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -2151,6 +2144,7 @@ impl Nimbra {
             .items_center()
             .justify_center()
             .gap(px(space::M))
+            .bg(t.surface)
             .child(title_l(title, t.text))
             .child(
                 div()
@@ -2189,7 +2183,6 @@ impl Nimbra {
                         )
                     })
             }))
-            .child(rim(t, radius::SHEET))
     }
 }
 
@@ -2338,15 +2331,15 @@ impl Render for Nimbra {
         let place = self.sidebar_place(0.);
         // 1 while the sidebar floats, down to 0 as it docks.
         let afloat = place.map_or(0., |place| place.inset / FLOAT_INSET);
-        // The traffic lights travel with the sidebar. A full-page composer has room for them
-        // on its header's line, as far in as the sidebar would put them.
+        // The traffic lights travel with the sidebar. A full-page composer has room of its
+        // own for them in its header.
         let full_compose = !composing_elsewhere && self.compose.as_ref().is_some_and(|c| c.full);
         crate::autohide::place_traffic_lights(
             window,
             if full_compose {
-                Some((18. + GUTTER, TOP_LINE))
+                Some(18.)
             } else {
-                place.map(|place| (18. + place.x, TOP_LINE))
+                place.map(|place| 18. + place.x)
             },
         );
         if self.peek.moving() || self.sidebar_sliding() {
@@ -2563,31 +2556,19 @@ impl Render for Nimbra {
             .relative()
             .flex()
             .size_full()
-            .pt(px(GUTTER))
-            .pb(px(GUTTER))
-            .pr(px(GUTTER))
             .font_family(crate::theme::SANS)
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
-            .child(crate::ui::backdrop(&t))
-            // The gutter above the panels moves the window, as a title bar would.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .w_full()
-                    .h(px(GUTTER))
-                    .on_mouse_down(MouseButton::Left, drag_or_zoom),
-            )
-            // The room the docked sidebar takes, with the gutters either side of it. The
-            // sidebar itself is drawn over it, so floating in does not move or re-wrap anything.
+            // The room the docked sidebar takes. The sidebar itself is drawn over it, so
+            // floating in does not move or re-wrap anything. As it docks, what is around the
+            // floating sidebar is filled (its own shape is erased out of it).
             .child(
                 div()
                     .flex_none()
                     .h_full()
-                    .w(px(GUTTER + self.sidebar_width(0.))),
+                    .w(px(self.sidebar_width(0.)))
+                    .when(afloat > 0., |d| d.bg(t.surface)),
             )
             .map(|d| match self.status {
                 _ if zero_shown => d.child(self.zero(&t)),
@@ -2621,47 +2602,68 @@ impl Render for Nimbra {
                 )
             })
             .when_some(place, |d, place| {
-                let radius = FLOAT_RADIUS;
-                let height = viewport.1 - 2. * GUTTER;
-                let mut shadows = lift(&t, Depth::Back);
-                // Floating over the list, it is lifted further.
-                shadows.push(shadow(t.shadow.opacity(afloat), 10., 30., -6.));
-                // The panel is see-through to the blurred desktop, docked or floating. The
-                // window's blur is only of what is behind the window, so what is painted under
-                // the panel is erased in its exact shape: its shadow (which is filled) too,
-                // leaving it only around the outside.
-                d.child(
-                    div()
-                        .absolute()
-                        .left(px(place.x))
-                        .top(px(GUTTER))
-                        .w(px(self.side_w()))
-                        .h(px(height))
-                        .rounded(px(radius))
-                        .shadow(shadows),
-                )
+                let floating = afloat > 0.;
+                let radius = FLOAT_RADIUS * afloat;
+                let height = viewport.1 - 2. * place.inset;
+                d.when(floating, |d| {
+                    // Floating, it keeps the docked sidebar's material, see-through to the
+                    // blurred desktop. The window's blur is only of what is behind the window,
+                    // so what is painted under it is erased in its exact shape: its shadow
+                    // (which is filled) too, leaving it only around the outside.
+                    d.child(
+                        div()
+                            .absolute()
+                            .left(px(place.x))
+                            .top(px(place.inset))
+                            .w(px(self.side_w()))
+                            .h(px(height))
+                            .rounded(px(radius))
+                            .shadow(vec![shadow(t.shadow.opacity(afloat), 10., 30., -6.)]),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(place.x))
+                            .top(px(place.inset))
+                            .w(px(self.side_w()))
+                            .h(px(height))
+                            .child(crate::erase::rounded(radius, t.surface)),
+                    )
+                })
                 .child(
                     div()
                         .absolute()
                         .left(px(place.x))
-                        .top(px(GUTTER))
-                        .w(px(self.side_w()))
-                        .h(px(height))
-                        .child(crate::erase::rounded(radius, gpui::transparent_black())),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(place.x))
-                        .top(px(GUTTER))
+                        .top(px(place.inset))
                         .w(px(self.side_w()))
                         .h(px(height))
                         .overflow_hidden()
                         .occlude()
                         .rounded(px(radius))
                         .bg(t.sidebar)
-                        .child(self.sidebar(&t, cx))
-                        .child(rim(&t, radius)),
+                        // Moved up by the gap, so that docking shifts nothing vertically.
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top(px(-place.inset))
+                                .w(px(self.side_w()))
+                                .h(px(viewport.1 - place.inset))
+                                .child(self.sidebar(&t, cx)),
+                        )
+                        // Docked, the hairline between it and the pane beside it; floating, an
+                        // edge all round. Over the contents, so they take no room.
+                        .child(pane_divider(&t).opacity(1. - afloat))
+                        .when(floating, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(px(radius))
+                                    .border_1()
+                                    .border_color(t.edge.opacity(afloat)),
+                            )
+                        }),
                 )
                 // Its right edge: drag to resize, docked or floating; double-click for the
                 // usual width. Out here, over the sidebar and the pane beside it, where

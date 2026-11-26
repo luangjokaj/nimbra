@@ -217,11 +217,10 @@ impl Nimbra {
             {
                 let left = 1. - panel_ease((at.elapsed().as_secs_f32() + ahead) / slide_seconds());
                 return Some(SidebarPlace {
-                    x: GUTTER + (from - GUTTER) * left,
+                    x: from * left,
                     inset: FLOAT_INSET * left,
                 });
             }
-            // Open, it sits a gutter in from the window's edge: the room ends a gutter past it.
             let width = self.sidebar_width(ahead);
             return (width > 0.).then_some(SidebarPlace {
                 x: width - self.side_w(),
@@ -235,10 +234,10 @@ impl Nimbra {
         })
     }
 
-    /// The room the panes leave for the sidebar and the gutter after it, following its slide.
+    /// The room the panes leave for the sidebar, following its slide.
     pub(super) fn sidebar_width(&self, ahead: f32) -> f32 {
         let to = if self.sidebar_open { 1. } else { 0. };
-        let room = self.side_w() + GUTTER;
+        let room = self.side_w();
         match self
             .sidebar_toggled
             .map(|at| at.elapsed().as_secs_f32() + ahead)
@@ -1054,6 +1053,9 @@ impl Nimbra {
             .flex_none()
             .w(px(self.side_w()))
             .h_full()
+            // Clear of the hairline on its right edge, docked or floating, so that docking
+            // moves nothing inside.
+            .pr(px(1.))
             // Space for the native traffic lights; dragging here moves the window.
             .child(
                 div()
@@ -1212,7 +1214,7 @@ pub(super) const NAV_RADIUS: f32 = 8.;
 pub(super) const SEARCH_GAP: f32 = 8.;
 
 /// The sidebar's row of window controls. Nothing scrolls into it, so nothing shows through
-/// the buttons or outside the floating panel's round corners.
+/// the buttons or outside the floating sidebar's round corners.
 pub(super) const SIDEBAR_TOP: f32 = 40.;
 
 /// From the window controls to Compose.
@@ -1231,11 +1233,10 @@ const SECTION_BELOW: f32 = 4.;
 /// Below that row, where what scrolls up fades out.
 pub(super) const SIDEBAR_FADE: f32 = 28.;
 
-/// The gap around the sidebar while it floats over the content: the gutter it keeps docked.
-pub(super) const FLOAT_INSET: f32 = GUTTER;
+/// The gap around the sidebar while it floats over the content.
+pub(super) const FLOAT_INSET: f32 = 6.;
 
-/// Its corners, docked or floating. The hole it cuts in the email's web view is rounded the
-/// same.
+/// Its corners then. The hole it cuts in the email's web view is rounded the same.
 pub(super) const FLOAT_RADIUS: f32 = radius::SHEET;
 
 /// Where the sidebar is drawn: its left edge, and its gap from the window's top and bottom
