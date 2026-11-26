@@ -16,12 +16,25 @@ jobs:
   check:
     name: Format, lint and test
     runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: desktop
     steps:
+      # The app and, next to it, the mail engine it builds from (`../core` in Cargo.toml).
+      # Once Cargo.toml takes nimbra-core from git at a tag, the second checkout goes.
       - uses: actions/checkout@v4
+        with:
+          path: desktop
+      - uses: actions/checkout@v4
+        with:
+          repository: nimbra-mail/core
+          path: core
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
       - name: Format
         run: cargo fmt --check
       - name: Lint

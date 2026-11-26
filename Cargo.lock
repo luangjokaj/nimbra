@@ -4007,19 +4007,13 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "block",
- "chacha20poly1305",
  "chrono",
  "futures",
  "getrandom 0.2.17",
  "gpui",
- "html2text",
- "imap",
- "imap-proto",
- "keyring",
- "mail-parser",
+ "nimbra-core",
  "objc",
  "raw-window-handle",
- "rustls",
  "scraper",
  "serde",
  "serde_json",
@@ -4027,10 +4021,34 @@ dependencies = [
  "unicode-segmentation",
  "ureq",
  "url",
- "webpki-roots 1.0.12",
  "webview2-com",
  "windows 0.62.2",
  "wry",
+]
+
+[[package]]
+name = "nimbra-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "chrono",
+ "futures",
+ "getrandom 0.2.17",
+ "html2text",
+ "imap",
+ "imap-proto",
+ "keyring",
+ "mail-parser",
+ "rustls",
+ "scraper",
+ "serde",
+ "serde_json",
+ "sha2 0.11.2",
+ "ureq",
+ "url",
+ "webpki-roots 1.0.12",
 ]
 
 [[package]]

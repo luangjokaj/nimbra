@@ -12,6 +12,9 @@ use std::path::PathBuf;
 use futures::channel::mpsc::UnboundedSender;
 use serde::Deserialize;
 
+use nimbra_core::rich::escape;
+pub use nimbra_core::rich::text_to_html;
+
 /// What the editor page tells the app.
 #[derive(Debug)]
 pub enum EditorEvent {
@@ -156,19 +159,6 @@ fn page(nonce: &str) -> String {
         .replace("__BOLD__", &STANDARD.encode(BOLD))
 }
 
-/// Text for the editor: escaped, one line per `<div>` (as the page itself writes them).
-pub fn text_to_html(text: &str) -> String {
-    text.lines()
-        .map(|line| {
-            if line.is_empty() {
-                "<div><br></div>".to_string()
-            } else {
-                format!("<div>{}</div>", escape(line))
-            }
-        })
-        .collect()
-}
-
 /// The class of the block a signature is sent in, which is how a draft's signature is told
 /// from what was written when it is opened again.
 const SIGNATURE_CLASS: &str = "nimbra-signature";
@@ -253,13 +243,6 @@ pub fn split_signature(own: &str) -> (String, Option<String>) {
         }
     }
     (fragment.root_element().inner_html(), Some(signature))
-}
-
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]

@@ -1070,23 +1070,8 @@ pub(super) fn snooze_day(until_ms: i64) -> SharedString {
         .into()
 }
 
-/// Brings a snoozed thread back if it is still away: into the inbox, unread. Whether it
-/// came back. A reminder is not needed once someone wrote, and a snooze is over by itself
-/// once a reply put the thread back in the inbox.
-pub(super) fn wake(
-    client: &mail::Client,
-    id: &str,
-    since_ms: i64,
-    no_reply: bool,
-) -> anyhow::Result<bool> {
-    let now = client.summary(id, false)?;
-    let answered = now.timestamp_ms > since_ms;
-    if answered && (no_reply || now.labels.iter().any(|l| l == "INBOX")) {
-        return Ok(false);
-    }
-    client.relabel(id, &["INBOX", "UNREAD"], &[])?;
-    Ok(true)
-}
+// `wake` moved to the core, with the snoozes the iOS app keeps.
+pub(super) use nimbra_core::snooze::wake;
 
 #[cfg(test)]
 mod tests {

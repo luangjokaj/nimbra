@@ -55,7 +55,10 @@
 
 ## Get started
 
+Nimbra's mail engine is its own repo, [nimbra-core](https://github.com/nimbra-mail/core), checked out next to this one:
+
 ```sh
+git clone https://github.com/nimbra-mail/core ../core
 cargo run
 ```
 
@@ -252,7 +255,7 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 
 ### Live tests
 
-The IMAP and SMTP code has live tests against local Dovecot and Mailpit servers (OrbStack or Docker); [docs/testing.md](docs/testing.md) has the setup.
+The IMAP and SMTP code, in [nimbra-core](https://github.com/nimbra-mail/core), has live tests against local Dovecot and Mailpit servers (OrbStack or Docker); its `docs/testing.md` has the setup.
 
 ### Sidebar blur
 
@@ -260,25 +263,22 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 
 ### Layout
 
+The mail engine (providers, MIME, discovery, the encrypted store, sending, contacts, signatures, snooze) is not in
+this repo: it is [nimbra-core](https://github.com/nimbra-mail/core), which the iOS app runs too. Cargo finds it in
+the sibling checkout `../core` (clone it next to this one); `crate::mail`, `crate::gmail` and the rest are its
+modules, brought in by name in `src/main.rs`. Changes to how mail is fetched, kept or sent go there.
+
+**The Mac app** (`src/`, GPUI):
+
 - `src/theme.rs`: colours for dark and light, fonts, gradients
-- `src/mail.rs`: the mail model every provider gives the app (threads, messages, labels, changes, errors, building a message to send), and the `Provider` interface the app calls
-- `src/gmail.rs`: OAuth sign-in (PKCE, loopback redirect), keychain storage, Gmail REST calls
-- `src/imap_mail.rs`: accounts that are not Gmail: IMAP folders as labels, threads from reply headers, a local index as the change feed, SMTP for sending
-- `src/smtp.rs`, `src/tls.rs`, `src/mime.rs`: SMTP sending, TLS for both (rustls, certificates always checked), and turning raw mail into the model
-- `src/microsoft.rs`: Microsoft sign-in (OAuth with PKCE, no secret) and its tokens
-- `src/servers.rs`, `src/discover.rs`, `src/dns.rs`: an account's servers and its password in the keychain; finding the servers from an address (presets, autoconfig, MX records)
-- `src/store.rs`: the encrypted on-disk mail store
-- `src/blocking.rs`: blocked senders and the Blocked label
 - `src/usage.rs`: the anonymous usage count
-- `src/scheduled.rs`, `src/sending.rs`: send later, and a message from Send until the server has it
 - `src/checking.rs`, `src/arrival.rs`, `src/quitting.rs`, `src/leaving.rs`: checks for mail, Inbox Zero at launch, and what quitting has to finish
-- `src/signature_images.rs`: the downloaded copies of signature images, so they can be shown
-- `src/signature.rs`: what a signature's HTML may hold (it is cleaned before it is kept, shown or sent), and its plain text
-- `src/rich.rs`, `src/webview.rs`: HTML or plain-text mail as styled blocks, and the locked-down web view behind Show original
+- `src/signature_images.rs`: signature images drawn natively, from the core's downloaded copies
+- `src/webview.rs`: the locked-down web view behind Show original
 - `src/app.rs`: the app's state, key actions and the window's layout; the rest of the `Nimbra` type continues in `accounts.rs`, `mailbox.rs`, `threads.rs`, `labels.rs`, `finder.rs`, `composer.rs`, `outgoing.rs` and `menus.rs`
 - `src/sidebar.rs`, `src/list.rs`, `src/reading.rs`, `src/snooze_menu.rs`, `src/palette.rs`: the sidebar, the thread list (with Inbox Zero), the reading pane, the Snooze menu and the command palette
 - `src/integration.rs`, `src/system_events.rs`, `src/notify.rs`, `src/system.rs`: what macOS tells the app (links, notification answers, wake, network, appearance, display options) and what the app does with it; notifications, the Dock badge and opening at login
-- `src/mailto.rs`, `src/window_frame.rs`: email links (RFC 6068), and the main window's place across launches
+- `src/window_frame.rs`: the main window's place across launches
 - `src/ui.rs`, `src/input.rs`: shared building blocks and the text field
 - `assets/`: the app icon, bundled Geist and Instrument Serif fonts (OFL) and Lucide-style icons
 

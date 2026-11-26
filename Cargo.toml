@@ -4,23 +4,18 @@ version = "0.1.4"
 edition = "2024"
 
 [dependencies]
+# The mail engine, shared with the iOS app (github.com/nimbra-mail/core). A path to the
+# sibling checkout for now; once that repo is on GitHub this becomes a git dependency
+# pinned to a release tag:
+#   nimbra-core = { git = "https://github.com/nimbra-mail/core", tag = "v0.1.0" }
+nimbra-core = { path = "../core/crates/nimbra-core" }
 anyhow = "1.0.105"
 base64 = "0.22"
-chacha20poly1305 = "0.10"
 chrono = "0.4.45"
 futures = "0.3"
 getrandom = "0.2"
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
-html2text = "0.17.4"
-keyring = { version = "3", features = ["apple-native", "windows-native"] }
-# IMAP for accounts that are not Gmail. Without its own TLS: `tls.rs` gives it rustls.
-imap = { version = "=3.0.0-alpha.15", default-features = false }
-# Its protocol types (folder attributes, appended UIDs), which it does not re-export.
-imap-proto = "0.16"
-mail-parser = { version = "0.11", features = ["full_encoding"] }
 raw-window-handle = "0.6"
-# The same TLS stack ureq uses, for IMAP and SMTP.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 scraper = "0.29.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -28,7 +23,10 @@ sha2 = "0.11.2"
 unicode-segmentation = "1.13.3"
 ureq = { version = "2", features = ["json"] }
 url = "2.5.9"
-webpki-roots = "1"
+
+[dev-dependencies]
+# The same engine with its test helpers (temporary stores), for the app's own tests.
+nimbra-core = { path = "../core/crates/nimbra-core", features = ["test-support"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"

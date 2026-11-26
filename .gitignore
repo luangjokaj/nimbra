@@ -2,3 +2,6 @@
 .DS_Store
 dist/
 tasks/
+
+# Local notes, kept outside the repo
+CLAUDE.md
