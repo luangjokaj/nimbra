@@ -166,7 +166,7 @@ pub fn extend(open: usize, end: usize, delta: isize, len: usize) -> (usize, Vec<
 pub type Shortcut = (&'static [&'static str], &'static str);
 
 /// The sheet's columns, as indexes into `SHORTCUTS`: about the same height each.
-pub const SHORTCUT_COLUMNS: &[&[usize]] = &[&[0, 2], &[1], &[3, 4]];
+pub const SHORTCUT_COLUMNS: &[&[usize]] = &[&[0, 2], &[1, 5], &[3, 4]];
 
 /// The shortcuts sheet, in groups.
 pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
@@ -203,6 +203,8 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
             (&["A"], "Reply all"),
             (&["F"], "Forward"),
             (&["⌘", "↩"], "Send"),
+            (&["⌘", "S"], "Save draft"),
+            (&["⌘", "⇧", "F"], "Full page"),
         ],
     ),
     (
@@ -226,7 +228,20 @@ pub const SHORTCUTS: &[(&str, &[Shortcut])] = &[
             (&["⌘", "B"], "Sidebar"),
             (&["⌘", "⇧", "B"], "Message list"),
             (&["⌘", "R"], "Check for mail"),
+            (&["⌘", "⇧", "L"], "Light or dark"),
+            (&["⌘", ","], "Settings"),
             (&["?"], "These shortcuts"),
+        ],
+    ),
+    (
+        "Format",
+        &[
+            (&["⌘", "B"], "Bold"),
+            (&["⌘", "I"], "Italic"),
+            (&["⌘", "U"], "Underline"),
+            (&["⌘", "K"], "Link"),
+            (&["⌘", "⇧", "7"], "Numbered list"),
+            (&["⌘", "⇧", "8"], "Bulleted list"),
         ],
     ),
 ];

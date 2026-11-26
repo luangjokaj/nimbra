@@ -55,7 +55,7 @@ use app::{
     MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenInWindow, OpenSettings,
     OpenSidebarRow, PageDown, PageUp, PickDown, PickThread, PickUp, Prev, Print, Quit, Reload,
     Reply, ReplyAll, SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList,
-    ToggleOriginal, TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash,
+    ToggleOriginal, ToggleShortcuts, ToggleSidebar, ToggleSnooze, ToggleStar, ToggleTheme, Trash,
     Undo,
 };
 
@@ -232,9 +232,9 @@ fn main() {
             KeyBinding::new("backspace", Trash, mail),
             KeyBinding::new("delete", Trash, mail),
             KeyBinding::new("ctrl-backspace", Trash, mail),
-            KeyBinding::new("cmd-k", TogglePalette, None),
-            KeyBinding::new("ctrl-k", TogglePalette, None),
-            KeyBinding::new("h", TogglePalette, mail),
+            KeyBinding::new("cmd-k", ToggleSnooze, None),
+            KeyBinding::new("ctrl-k", ToggleSnooze, None),
+            KeyBinding::new("h", ToggleSnooze, mail),
             KeyBinding::new("escape", Dismiss, None),
             KeyBinding::new("enter", Confirm, mail),
             KeyBinding::new("cmd-shift-l", ToggleTheme, None),

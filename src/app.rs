@@ -102,7 +102,7 @@ actions!(
         Prev,
         MarkDone,
         Undo,
-        TogglePalette,
+        ToggleSnooze,
         Dismiss,
         Confirm,
         ToggleTheme,
@@ -2428,7 +2428,7 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &ToggleStar, _, cx| this.toggle_star(cx)))
             .on_action(cx.listener(|this, _: &MarkUnread, _, cx| this.toggle_unread(cx)))
             .on_action(cx.listener(|this, _: &Trash, _, cx| this.trash(cx)))
-            .on_action(cx.listener(|this, _: &TogglePalette, window, cx| {
+            .on_action(cx.listener(|this, _: &ToggleSnooze, window, cx| {
                 if !this.visible().is_empty() {
                     this.leave_sidebar(cx);
                     this.open_snooze(None, window, cx);
