@@ -1235,7 +1235,8 @@ impl Nimbra {
                                 cx,
                             )
                         }))
-                        .when(original, |d| d.bg(t.selected))
+                        // Lit while the native reader view is on.
+                        .when(!original, |d| d.bg(t.selected))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
                     )
                     .child(div().flex_1())
