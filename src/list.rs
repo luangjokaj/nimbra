@@ -326,7 +326,7 @@ impl Nimbra {
             self.mailbox,
             View::Done | View::Spam | View::Trash | View::Snoozed | View::Reminders
         );
-        div()
+        panel(t, Depth::Front)
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -335,7 +335,6 @@ impl Nimbra {
             .items_center()
             .justify_center()
             .gap(px(space::XL))
-            .bg(t.surface)
             .child(title_l(format!("{count} Selected"), t.text))
             .child(
                 div()
@@ -403,6 +402,7 @@ impl Nimbra {
                         cx.notify();
                     })),
             )
+            .child(rim(t, radius::SHEET))
     }
 
     /// Pull to refresh, in the style of the system's: the list stretches with rubber-band
@@ -518,7 +518,8 @@ impl Nimbra {
         if !self.list_open && !moving {
             return None;
         }
-        let width = self.list_width;
+        // The panel and the gutter on its right.
+        let width = self.list_width + GUTTER;
         // The list keeps its width while the slot around it grows or shrinks, so its rows
         // slide instead of re-wrapping on every frame.
         let slot = div()
@@ -532,6 +533,7 @@ impl Nimbra {
                     .flex_none()
                     .w(px(width))
                     .h_full()
+                    .pr(px(GUTTER))
                     .child(self.list(t, cx)),
             );
         if !moving {
@@ -665,11 +667,7 @@ impl Nimbra {
             None => text_width(&m.time, 11., crate::theme::MONO, cx),
         };
         let text = self.row_text(m, right, cx);
-        let ground = if lit {
-            over(t.selected, t.surface)
-        } else {
-            over(t.hover, t.surface)
-        };
+        let ground = if lit { t.card } else { over(t.hover, t.panel) };
         let (primary, secondary) = if m.unread {
             (t.text, t.text)
         } else {
@@ -677,10 +675,17 @@ impl Nimbra {
         };
 
         let (key, account) = self.thread_key(m);
+        let held = over(t.pressed, t.card);
         div()
             .id(SharedString::from(format!("row:{account}:{key}")))
             .group("thread-row")
-            .map(|d| if lit { d.press_selected(t) } else { d.press(t) })
+            .map(|d| {
+                if lit {
+                    d.active(move |s| s.bg(held))
+                } else {
+                    d.press(t)
+                }
+            })
             .relative()
             .flex()
             .flex_none()
@@ -690,17 +695,22 @@ impl Nimbra {
             .py(px(11.))
             .rounded(px(radius::ROW))
             .cursor_pointer()
-            .when(lit, |d| d.bg(t.selected))
-            // Drawn over the row rather than as its border, which would take up space and
-            // make the row (and those below it) jump.
-            .when(picked, |d| {
+            // The open row is a card raised off the panel, lit from inside.
+            .when(lit, |d| d.bg(t.card).shadow(card_glow(t)))
+            // Its edge is drawn over the row rather than as its border, which would take up
+            // space and make the row (and those below it) jump.
+            .when(lit, |d| {
                 d.child(
                     div()
                         .absolute()
                         .inset_0()
                         .rounded(px(radius::ROW))
                         .border_1()
-                        .border_color(t.violet.opacity(0.5)),
+                        .border_color(if picked {
+                            t.violet.opacity(0.5)
+                        } else {
+                            t.card_edge
+                        }),
                 )
             })
             .when(!lit, |d| {
@@ -1058,26 +1068,23 @@ impl Nimbra {
         .w_full()
         .pb(px(LIST_BOTTOM));
 
-        div()
+        panel(t, Depth::Back)
             .flex()
             .flex_col()
             .flex_none()
-            .relative()
             .w(px(self.list_width))
             .h_full()
-            .bg(t.surface)
-            .border_r_1()
-            .border_color(t.border)
-            // Drag the right edge to resize the list; double-click it to hide the list.
+            // Drag the gutter on the right to resize the list; double-click it to hide the list.
             .child({
-                let hover = t.hover;
+                let hover = t.aura;
                 div()
                     .id("list-resize")
                     .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right(px(-3.))
-                    .w(px(7.))
+                    .top(px(radius::SHEET))
+                    .bottom(px(radius::SHEET))
+                    .right(px(-GUTTER))
+                    .w(px(GUTTER))
+                    .rounded_full()
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .hover(move |s| s.bg(hover))
                     .on_mouse_down(
@@ -1171,6 +1178,7 @@ impl Nimbra {
                     .children(self.pull_indicator(t))
                     .child(rows),
             )
+            .child(rim(t, radius::SHEET))
     }
 
     /// The light gliding along the top of the list while mail is checked, fading out once
@@ -1244,7 +1252,7 @@ impl Nimbra {
         } else {
             None
         };
-        div()
+        panel(t, Depth::Front)
             .flex_1()
             .min_w(px(0.))
             .h_full()
@@ -1253,9 +1261,9 @@ impl Nimbra {
             .items_center()
             .justify_center()
             .gap(px(space::XL))
-            .bg(t.surface)
             .child(title_l(title, t.text2))
             .children(action)
+            .child(rim(t, radius::SHEET))
     }
 
     /// The night over Inbox Zero is still. Once it has come up, one star falls, drawn at the
@@ -1299,6 +1307,7 @@ impl Nimbra {
     }
 
     pub(super) fn zero(&self, t: &Theme) -> impl IntoElement {
+        let corner = radius::SHEET;
         let ink = c(0xf5f3ef, 1.);
         let soft = c(0xffffff, 0.7);
         let glass = |d: Div| {
@@ -1379,10 +1388,12 @@ impl Nimbra {
             let shown = arrival.glow(index);
             // Each reaches further from its edge as it brightens, so the light rises.
             let reach = end * (0.6 + 0.4 * shown);
-            div()
-                .absolute()
-                .inset_0()
-                .bg(fade(angle, color, alpha * shown, reach))
+            div().absolute().inset_0().rounded(px(corner)).bg(fade(
+                angle,
+                color,
+                alpha * shown,
+                reach,
+            ))
         };
 
         let below = div()
@@ -1397,7 +1408,7 @@ impl Nimbra {
                 chrono::Local::now().date_naive(),
             ));
 
-        div().flex_1().min_w(px(0.)).h_full().bg(t.surface).child(
+        div().flex_1().min_w(px(0.)).h_full().child(
             div()
                 .relative()
                 .flex()
@@ -1405,6 +1416,8 @@ impl Nimbra {
                 .items_center()
                 .size_full()
                 .overflow_hidden()
+                .rounded(px(corner))
+                .shadow(aura(t, Depth::Front))
                 .bg(c(0x0a0912, 1.))
                 // Aurora: GPUI has no blur filter, so the glow is layered two-stop gradients.
                 .child(layer(0, 45., 0x6b4dff, 0.9, 0.62))
@@ -1499,9 +1512,23 @@ impl Nimbra {
                             )
                         })
                         .child(settle(below, arrival.below())),
-                ),
+                )
+                .child(rim(&Theme::dark(), corner)),
         )
     }
+}
+
+/// The light the open row's card gives off into the panel.
+fn card_glow(t: &Theme) -> Vec<gpui::BoxShadow> {
+    vec![
+        shadow(
+            t.shadow.opacity(if t.dark { 0.5 } else { 0.25 }),
+            4.,
+            12.,
+            -6.,
+        ),
+        shadow(t.aura.opacity((t.aura.a * 1.4).min(1.)), 0., 20., -4.),
+    ]
 }
 
 /// A turning reload arrow, for as long as it is drawn.

@@ -1122,7 +1122,7 @@ impl Nimbra {
         let m = &self.mails[self.selected];
         // The subject is broken into lines by hand (see `balance_title`), for the width the
         // reader gives it.
-        let pane_w = self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left();
+        let pane_w = self.pane_width();
         let column = if self.focus_restore.is_some() {
             pane_w.min(980.)
         } else {
@@ -1211,14 +1211,12 @@ impl Nimbra {
             layouts: self.reader_layouts.clone(),
         };
         let pills = m.rich || m.tag.is_some();
-        div()
+        panel(t, Depth::Front)
             .flex()
             .flex_col()
             .flex_1()
             .min_w(px(0.))
             .h_full()
-            .bg(t.surface)
-            .relative()
             .child(self.selection_watch(self.reader_layouts.clone(), cx))
             // While a panel slides, the email keeps one width and the extra is cut off here.
             .overflow_hidden()
@@ -1281,7 +1279,7 @@ impl Nimbra {
                                             .when(m.rich, |d| d.child(pill(t, "Due Fri", t.amber))),
                                     )
                                 })
-                                .child(self.subject_row(t, m, 30., column - 128., cx))
+                                .child(self.subject_row(t, m, 40., column - 128., cx))
                                 .children(self.thread_banners(t, m, cx))
                                 // Who is in a conversation of several messages.
                                 .when(!m.earlier.is_empty(), |d| {
@@ -1455,6 +1453,7 @@ impl Nimbra {
                 )
             })
             .when(original, |d| d.child(self.original_pane(t, m, cx)))
+            .child(rim(t, radius::SHEET))
             .children(self.menu_view(t, cx))
     }
 
@@ -2201,7 +2200,7 @@ impl Nimbra {
     /// The area the web view covers, with a strip above it explaining what is blocked.
     fn original_pane(&self, t: &Theme, m: &Mail, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.html_view.clone();
-        let pane_w = self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left();
+        let pane_w = self.pane_width();
         // The email is a native view: it is moved one frame ahead while a panel slides
         // (see `pane_lead`), so it keeps up with the rest of the window.
         let lead = self.pane_lead();
@@ -2210,6 +2209,8 @@ impl Nimbra {
             .flex_col()
             .flex_1()
             .min_h(px(0.))
+            // The web view is square: it stops short of the panel's round corners.
+            .when(m.header.attachments.is_empty(), |d| d.pb(px(radius::SHEET)))
             // Subject, sender, recipients and attachments stay native above the email.
             .child(
                 div()

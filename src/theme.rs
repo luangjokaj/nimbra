@@ -92,11 +92,45 @@ pub mod radius {
     pub const SHEET: f32 = 18.;
 }
 
+/// A soft cloud of light in the backdrop, at a point given as a fraction of the window.
+#[derive(Clone, Copy)]
+pub struct Bloom {
+    pub x: f32,
+    pub y: f32,
+    pub hex: u32,
+    pub alpha: f32,
+    /// The cloud's radius before it is blurred by as much again.
+    pub reach: f32,
+}
+
+/// What the panels float over: a still nebula. A ground colour, two washes of light from
+/// the window's edges and three clouds.
+#[derive(Clone, Copy)]
+pub struct Nebula {
+    pub ground: u32,
+    /// (angle, colour, alpha, where along the line it has faded out).
+    pub washes: [(f32, u32, f32, f32); 2],
+    pub blooms: [Bloom; 3],
+}
+
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub dark: bool,
+    pub nebula: Nebula,
     pub sidebar: Hsla,
+    /// The message list's panel: a step back from the reader.
+    pub panel: Hsla,
+    /// The reader's panel, the frontmost.
     pub surface: Hsla,
+    /// The open row: a card raised off the list's panel.
+    pub card: Hsla,
+    /// The hairline around the open row's card.
+    pub card_edge: Hsla,
+    /// The hairline around each floating panel, and the brighter light along its top.
+    pub rim: Hsla,
+    pub sheen: Hsla,
+    /// The light each panel gives off into the backdrop.
+    pub aura: Hsla,
     pub raised: Hsla,
     pub hover: Hsla,
     pub selected: Hsla,
@@ -138,8 +172,41 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            sidebar: c(0x101017, 0.88),
-            surface: c(0x0e0e14, 1.),
+            nebula: Nebula {
+                ground: 0x08070e,
+                washes: [(20., 0x34279a, 0.9, 0.7), (200., 0x5e2160, 0.7, 0.55)],
+                blooms: [
+                    Bloom {
+                        x: 0.08,
+                        y: 0.0,
+                        hex: 0x6a4cff,
+                        alpha: 0.62,
+                        reach: 240.,
+                    },
+                    Bloom {
+                        x: 0.66,
+                        y: 0.0,
+                        hex: 0x3b68ff,
+                        alpha: 0.4,
+                        reach: 180.,
+                    },
+                    Bloom {
+                        x: 0.95,
+                        y: 1.0,
+                        hex: 0xd2489f,
+                        alpha: 0.48,
+                        reach: 240.,
+                    },
+                ],
+            },
+            sidebar: c(0x0f0e18, 0.86),
+            panel: c(0x0f0e17, 1.),
+            surface: c(0x14131d, 1.),
+            card: c(0x221e36, 1.),
+            card_edge: c(0xb9adff, 0.26),
+            rim: c(0xd4ccff, 0.11),
+            sheen: c(0xe9e4ff, 0.34),
+            aura: c(0x7a68ff, 0.34),
             raised: c(0x17171f, 1.),
             hover: c(0xffffff, 0.045),
             selected: c(0x8b7cff, 0.16),
@@ -154,7 +221,7 @@ impl Theme {
             text: c(0xf5f3ef, 1.),
             text2: c(0xc6c4ce, 1.),
             text3: c(0x918f9a, 1.),
-            faint: c(0x7d7b88, 1.),
+            faint: c(0x817f8c, 1.),
             violet: c(0x8b7cff, 1.),
             rose: c(0xff7ab6, 1.),
             amber: c(0xffb86b, 1.),
@@ -172,8 +239,41 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             dark: false,
-            sidebar: c(0xf4f2ee, 0.88),
+            nebula: Nebula {
+                ground: 0xf0ebf8,
+                washes: [(20., 0xd9cffd, 0.9, 0.7), (200., 0xfff0dc, 1., 0.6)],
+                blooms: [
+                    Bloom {
+                        x: 0.08,
+                        y: 0.0,
+                        hex: 0xb7a6ff,
+                        alpha: 0.6,
+                        reach: 240.,
+                    },
+                    Bloom {
+                        x: 0.66,
+                        y: 0.0,
+                        hex: 0xffbfdd,
+                        alpha: 0.45,
+                        reach: 180.,
+                    },
+                    Bloom {
+                        x: 0.95,
+                        y: 1.0,
+                        hex: 0xffd6a8,
+                        alpha: 0.7,
+                        reach: 240.,
+                    },
+                ],
+            },
+            sidebar: c(0xfbfaff, 0.86),
+            panel: c(0xf5f3fc, 1.),
             surface: c(0xffffff, 1.),
+            card: c(0xffffff, 1.),
+            card_edge: c(0x6e5cf6, 0.2),
+            rim: c(0x7c68e8, 0.14),
+            sheen: c(0xffffff, 1.),
+            aura: c(0x8a76ff, 0.3),
             raised: c(0xffffff, 1.),
             hover: c(0x000000, 0.035),
             selected: c(0x6e5cf6, 0.10),
@@ -245,6 +345,19 @@ impl Tone {
         };
         gradient(135., c(a, 1.), c(b, 1.))
     }
+
+    /// The light end of its gradient: the glow around an avatar.
+    pub fn light(self) -> Hsla {
+        let hex = match self {
+            Tone::Violet => 0x9b8cff,
+            Tone::Rose => 0xff9cc8,
+            Tone::Amber => 0xffd08a,
+            Tone::Mint => 0x8bf0c7,
+            Tone::Sky => 0x9dd8ff,
+            Tone::Graphite => 0x9d9ca8,
+        };
+        c(hex, 1.)
+    }
 }
 
 pub const SANS: &str = "Sora";
@@ -282,7 +395,7 @@ mod tests {
     #[test]
     fn light_text_tokens_are_legible_on_every_ground() {
         let t = Theme::light();
-        for ground in [t.surface, t.raised, sidebar(&t)] {
+        for ground in [t.surface, t.panel, t.card, t.raised, sidebar(&t)] {
             for text in [t.text, t.text2, t.text3] {
                 assert!(contrast(text, ground) >= TEXT, "{}", contrast(text, ground));
             }
@@ -292,7 +405,7 @@ mod tests {
     #[test]
     fn dark_text_tokens_are_legible_on_every_ground() {
         let t = Theme::dark();
-        for ground in [t.surface, t.raised, sidebar(&t)] {
+        for ground in [t.surface, t.panel, t.card, t.raised, sidebar(&t)] {
             for text in [t.text, t.text2, t.text3] {
                 assert!(contrast(text, ground) >= TEXT, "{}", contrast(text, ground));
             }

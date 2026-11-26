@@ -110,9 +110,11 @@ impl Nimbra {
             .flex_1()
             .min_w(px(0.))
             .h_full()
-            .bg(t.surface)
-            .when(self.list_open, |d| d.child(self.skeleton_list(t)))
-            .child(self.skeleton_reading(t))
+            .gap(px(GUTTER))
+            .when(self.list_open, |d| {
+                d.child(self.skeleton_list(t).child(rim(t, radius::SHEET)))
+            })
+            .child(self.skeleton_reading(t).child(rim(t, radius::SHEET)))
     }
 
     fn skeleton_list(&self, t: &Theme) -> Div {
@@ -222,15 +224,13 @@ impl Nimbra {
             before.into_iter().chain([wave(i, i as f32 / 14., row)])
         });
 
-        div()
+        panel(t, Depth::Back)
             .flex()
             .flex_col()
             .flex_none()
             .w(px(self.list_width))
             .h_full()
             .overflow_hidden()
-            .border_r_1()
-            .border_color(t.border)
             .child(
                 div()
                     .relative()
@@ -268,7 +268,7 @@ impl Nimbra {
     fn skeleton_reading(&self, t: &Theme) -> Div {
         let tools = toolbar_outline(t, self.original).opacity(WAITING);
 
-        div()
+        panel(t, Depth::Front)
             .flex()
             .flex_col()
             .flex_1()
@@ -347,7 +347,7 @@ impl Nimbra {
             .px(px(64.))
             .pt(px(40.))
             .pb(px(24.))
-            .child(wave(100, 0.1, ink(relative(0.62), 24., 43., strong)))
+            .child(wave(100, 0.1, ink(relative(0.62), 30., 55., strong)))
             .child(div())
             .child(wave(
                 101,
