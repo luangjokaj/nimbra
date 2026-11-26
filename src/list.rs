@@ -1599,7 +1599,13 @@ pub(super) fn compose_button(t: &Theme, look: ComposeLook, id: &'static str) -> 
         .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .child(icon("draft", 15., gpui::white()));
-    let base = crate::ui::solid(base, t.primary, t.primary_hover, t.primary_pressed);
+    let [rest, hover, held] = crate::ui::primary_fills(t);
+    let base = crate::ui::solid(base, rest, hover, held).shadow(vec![crate::ui::shadow(
+        gpui::black().opacity(if t.dark { 0.5 } else { 0.12 }),
+        1.,
+        2.,
+        0.,
+    )]);
     match look {
         ComposeLook::Labelled => base
             .gap(px(space::S))

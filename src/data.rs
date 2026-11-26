@@ -168,7 +168,15 @@ pub struct Earlier {
     pub header: Header,
 }
 
+/// The tag of a thread waiting on your reply.
+pub const NEEDS_REPLY: &str = "Needs reply";
+
 impl Mail {
+    /// The thread is waiting on your reply.
+    pub fn waits_on_you(&self) -> bool {
+        self.tag.as_ref().is_some_and(|(tag, _)| tag == NEEDS_REPLY)
+    }
+
     /// A list row for a real Gmail thread. The messages are filled in by [`Mail::fill`].
     pub fn from_summary(summary: mail::Summary) -> Self {
         let (time, earlier) = format_time(summary.timestamp_ms);
@@ -414,7 +422,7 @@ pub fn inbox() -> Vec<Mail> {
         Mail {
             thread: Some("3".into()),
             unread: true,
-            tag: Some(("Needs reply".into(), Accent::Rose)),
+            tag: Some((NEEDS_REPLY.into(), Accent::Rose)),
             rich: true,
             header: Header {
                 from: person("Mira Kovač", "mira@northwind.studio"),

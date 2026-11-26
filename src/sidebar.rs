@@ -1079,11 +1079,12 @@ impl Nimbra {
                     .flex_1()
                     .min_h(px(0.))
                     .child(scrolled)
+                    // Each fade lays back the dusk as it is where the fade is.
                     .child(crate::erase::fade(
                         crate::erase::Edge::Top,
                         SIDEBAR_FADE,
                         SIDEBAR_CLEAR,
-                        t.sidebar,
+                        t.sidebar_at(0.12),
                         self.sidebar_scroll.clone(),
                     ))
                     // What scrolls under Settings fades out too, so no rule is needed there.
@@ -1091,7 +1092,7 @@ impl Nimbra {
                         crate::erase::Edge::Bottom,
                         SIDEBAR_FADE,
                         SIDEBAR_CLEAR,
-                        t.sidebar,
+                        t.sidebar_at(0.9),
                         self.sidebar_scroll.clone(),
                     )),
             )

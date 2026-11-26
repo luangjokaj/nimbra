@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::theme::{radius, space};
-use crate::ui::{Elevation, elevation};
+use crate::ui::{Elevation, elevation, status_chip, tag};
 
 /// "Fri, Nov 21, 2026 at 09:41", in local time; empty when unknown.
 pub(super) fn long_date(timestamp_ms: i64) -> String {
@@ -1308,24 +1308,38 @@ impl Nimbra {
             layouts: self.reader_layouts.clone(),
         };
 
-        // Who is in it, how many messages, and its labels: one calm line under the subject.
-        let labels: Vec<(SharedString, Hsla)> = m
-            .rich
-            .then(|| (SharedString::from("Product"), t.violet))
-            .into_iter()
-            .chain(m.tag.clone().map(|(label, a)| (label, t.accent(a))))
-            .chain(m.rich.then(|| (SharedString::from("Due Fri"), t.amber)))
-            .collect();
+        // Who is in it and how many messages, then what it asks of you (tinted chips), then
+        // its labels (a dot and a name): one line under the subject.
+        let waiting = m.waits_on_you();
+        let mut states: Vec<(SharedString, Hsla, Hsla)> = Vec::new();
+        let mut labels: Vec<(SharedString, Hsla)> = Vec::new();
+        if waiting {
+            states.push((crate::data::NEEDS_REPLY.into(), t.rose, t.rose));
+        }
+        if m.rich {
+            states.push(("Due Fri".into(), t.amber_text, t.amber));
+            labels.push(("Product".into(), t.violet));
+        }
+        if let Some((label, a)) = m.tag.clone().filter(|_| !waiting) {
+            labels.push((label, t.accent(a)));
+        }
         let several = !m.earlier.is_empty();
-        let meta_line = (several || !labels.is_empty()).then(|| {
+        let meta_line = (several || !states.is_empty() || !labels.is_empty()).then(|| {
             div()
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .gap(px(space::M))
+                .gap(px(space::S))
                 .min_h(px(24.))
-                .when(several, |d| d.child(meta(m.participants.clone(), t.text2)))
-                .children(labels.into_iter().map(|(label, dot)| pill(t, &label, dot)))
+                .when(several, |d| {
+                    d.child(meta(m.participants.clone(), t.text3).mr(px(space::XS)))
+                })
+                .children(
+                    states
+                        .into_iter()
+                        .map(|(label, ink, hue)| status_chip(t, &label, ink, hue)),
+                )
+                .children(labels.into_iter().map(|(label, dot)| tag(t, &label, dot)))
         });
 
         div()

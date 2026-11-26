@@ -2684,7 +2684,12 @@ impl Render for Nimbra {
                         .overflow_hidden()
                         .occlude()
                         .rounded(px(radius))
-                        .bg(t.sidebar)
+                        // Dusk: a slice of the Inbox Zero sky, deepening to a warm horizon.
+                        .bg(gpui::linear_gradient(
+                            180.,
+                            gpui::linear_color_stop(t.sidebar_top, 0.),
+                            gpui::linear_color_stop(t.sidebar_bottom, 1.),
+                        ))
                         // Moved up by the gap, so that docking shifts nothing vertically.
                         .child(
                             div()

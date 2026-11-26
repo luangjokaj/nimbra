@@ -1,7 +1,8 @@
 //! Small stateless building blocks shared by every pane.
 
 use gpui::{
-    BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point, prelude::*, px, svg,
+    Background, BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div,
+    linear_color_stop, linear_gradient, point, prelude::*, px, svg,
 };
 
 use std::time::{Duration, Instant};
@@ -88,13 +89,14 @@ pub fn meta(text: impl Into<SharedString>, color: Hsla) -> Div {
         .child(text.into())
 }
 
-/// The weight a display title takes at `size`: lighter as it grows, so large type reads as
+/// The weight a display title takes at `size`: a subject (26 to 40) is set firm, as the
+/// first thing read on its page; above that, lighter as it grows, so large type reads as
 /// light rather than as bulk.
 pub fn display_weight(size: f32) -> FontWeight {
     if size >= 40. {
         FontWeight::LIGHT
     } else if size >= 26. {
-        FontWeight::NORMAL
+        FontWeight::SEMIBOLD
     } else {
         FontWeight::MEDIUM
     }
@@ -125,9 +127,9 @@ pub fn title_l(text: impl Into<SharedString>, color: Hsla) -> Div {
     display(text, 40., color)
 }
 
-/// Inbox zero only: 96/104.
+/// Inbox zero only: 72/80.
 pub fn hero(text: impl Into<SharedString>, color: Hsla) -> Div {
-    display_set(text, 96., 104., color)
+    display_set(text, 72., 80., color)
 }
 
 /// A key as a chip. Only where keys are the content: the `?` sheet and Settings › Shortcuts.
@@ -160,6 +162,37 @@ pub fn avatar(tone: Tone, initials: &str, size: f32) -> Div {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(gpui::white())
         .child(initials.to_string())
+}
+
+/// A state that asks something of you (Needs reply, Due Fri): its words in `ink` on a tint
+/// of `hue`, no dot. Labels are quieter (`tag`).
+pub fn status_chip(t: &Theme, label: &str, ink: Hsla, hue: Hsla) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .h(px(22.))
+        .px(px(space::S))
+        .rounded(px(radius::CHIP))
+        .bg(t.chip(hue))
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(ink)
+        .child(label.to_string())
+}
+
+/// A label on a thread: its colour as a dot beside its name, with no box around it.
+pub fn tag(t: &Theme, label: &str, dot: Hsla) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .h(px(22.))
+        .px(px(2.))
+        .child(div().size(px(6.)).rounded_full().bg(dot))
+        .child(meta(label.to_string(), t.text2).font_weight(FontWeight::MEDIUM))
 }
 
 pub fn pill(t: &Theme, label: &str, dot: Hsla) -> Div {
@@ -396,15 +429,25 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str) -> Div {
     }
 }
 
-/// The one main action of a surface: flat solid violet under a white label, a touch lighter
-/// on hover and darker while held.
+/// A two-stop gradient across a control, leaning a little off horizontal.
+pub fn gradient(from: Hsla, to: Hsla) -> Background {
+    linear_gradient(100., linear_color_stop(from, 0.), linear_color_stop(to, 1.))
+}
+
+/// The primary action's fill at rest, hovered and held.
+pub fn primary_fills(t: &Theme) -> [Background; 3] {
+    [
+        gradient(t.primary, t.primary_end),
+        gradient(t.primary_hover, t.primary_hover_end),
+        gradient(t.primary_pressed, t.primary_pressed_end),
+    ]
+}
+
+/// The one main action of a surface: the violet gradient under a white label, a touch
+/// lighter on hover and deeper while held.
 pub fn primary(t: &Theme, id: impl Into<gpui::ElementId>, label: &str) -> Stateful<Div> {
-    solid(
-        button_base(label).id(id),
-        t.primary,
-        t.primary_hover,
-        t.primary_pressed,
-    )
+    let [rest, hover, held] = primary_fills(t);
+    solid(button_base(label).id(id), rest, hover, held)
 }
 
 /// A destructive confirmation: solid rose under a white label.
@@ -415,7 +458,14 @@ pub fn destructive(t: &Theme, id: impl Into<gpui::ElementId>, label: &str) -> St
 }
 
 /// A solid fill with its hover and pressed steps, under a white label.
-pub fn solid(d: Stateful<Div>, rest: Hsla, hover: Hsla, held: Hsla) -> Stateful<Div> {
+pub fn solid(
+    d: Stateful<Div>,
+    rest: impl Into<Background>,
+    hover: impl Into<Background> + 'static,
+    held: impl Into<Background> + 'static,
+) -> Stateful<Div> {
+    let (rest, hover, held): (Background, Background, Background) =
+        (rest.into(), hover.into(), held.into());
     d.bg(rest)
         .text_color(gpui::white())
         .hover(move |s| s.bg(hover))

@@ -51,7 +51,12 @@ pub mod radius {
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub dark: bool,
+    /// The sidebar's material where nothing else gives the place: halfway down its dusk.
     pub sidebar: Hsla,
+    /// The sidebar's dusk, from its top to the horizon at its foot. See-through, over the
+    /// window's blur.
+    pub sidebar_top: Hsla,
+    pub sidebar_bottom: Hsla,
     /// The message list's pane: a step back from the reader.
     pub panel: Hsla,
     /// The reader's pane, the frontmost.
@@ -80,19 +85,27 @@ pub struct Theme {
     pub text3: Hsla,
     /// Disabled icons and hairline glyphs only: too light for text in light mode.
     pub faint: Hsla,
+    /// The interface's accent: what is open, unread, focused or on.
     pub violet: Hsla,
-    /// The primary button's fill at rest, hovered and held: solid, under a white label.
+    /// The primary action's fill, a short violet gradient, at rest, hovered and held, under
+    /// a white label. `primary` is where it starts and `primary_end` where it ends.
     pub primary: Hsla,
+    pub primary_end: Hsla,
     pub primary_hover: Hsla,
+    pub primary_hover_end: Hsla,
     pub primary_pressed: Hsla,
+    pub primary_pressed_end: Hsla,
     /// A destructive button's fill, under a white label.
     pub danger: Hsla,
+    /// Waiting on you: Needs reply, and labels in rose.
     pub rose: Hsla,
     pub amber: Hsla,
     /// Amber that text can be set in (light amber is for icons and dots).
     pub amber_text: Hsla,
     pub mint: Hsla,
     pub sky: Hsla,
+    /// How strong a status chip's tint of its ink is.
+    pub chip_tint: f32,
     pub kbd_bg: Hsla,
     pub kbd_border: Hsla,
     /// The `Elevation::Pop` shadow: menus, tooltips, toasts.
@@ -106,80 +119,117 @@ impl Theme {
     pub fn dark() -> Self {
         Self {
             dark: true,
-            sidebar: c(0x121218, 0.86),
-            panel: c(0x111116, 1.),
-            surface: c(0x16161c, 1.),
-            rim: c(0xffffff, 0.08),
-            raised: c(0x1c1c23, 1.),
-            hover: c(0xffffff, 0.045),
-            selected: c(0x8b7cff, 0.14),
-            selected_edge: c(0x8b7cff, 0.34),
-            pressed: c(0x8b7cff, 0.22),
-            focus: c(0x8b7cff, 1.),
+            sidebar: c(0x1d1228, 0.86),
+            sidebar_top: c(0x130f1e, 0.86),
+            sidebar_bottom: c(0x2b1531, 0.86),
+            panel: c(0x110f17, 1.),
+            surface: c(0x17141f, 1.),
+            rim: c(0xffffff, 0.07),
+            raised: c(0x211d2b, 1.),
+            hover: c(0xffffff, 0.05),
+            selected: c(0x927eff, 0.17),
+            selected_edge: c(0x927eff, 0.3),
+            pressed: c(0x927eff, 0.25),
+            focus: c(0xa898ff, 1.),
             edge: c(0xffffff, 0.1),
-            glass: c(0xffffff, 0.1),
+            glass: c(0x927eff, 0.2),
             glass_opacity: 0.75,
             border: c(0xffffff, 0.07),
             border_strong: c(0xffffff, 0.13),
-            text: c(0xf2f2f5, 1.),
-            text2: c(0xc4c4cc, 1.),
-            text3: c(0x91919b, 1.),
-            faint: c(0x80808a, 1.),
-            violet: c(0x8b7cff, 1.),
-            primary: c(0x6450ea, 1.),
-            primary_hover: c(0x6e5cf6, 1.),
-            primary_pressed: c(0x5a46d8, 1.),
+            text: c(0xf3f0f8, 1.),
+            text2: c(0xcbc6d8, 1.),
+            text3: c(0xa7a1b9, 1.),
+            faint: c(0x8c86a0, 1.),
+            violet: c(0xa898ff, 1.),
+            primary: c(0x5e40e6, 1.),
+            primary_end: c(0x8a3fd2, 1.),
+            primary_hover: c(0x684cf0, 1.),
+            primary_hover_end: c(0x944ada, 1.),
+            primary_pressed: c(0x5236cf, 1.),
+            primary_pressed_end: c(0x7b35bd, 1.),
             danger: c(0xc23a6e, 1.),
-            rose: c(0xff7ab6, 1.),
-            amber: c(0xffb86b, 1.),
-            amber_text: c(0xffb86b, 1.),
+            rose: c(0xff8cc0, 1.),
+            amber: c(0xffbe7a, 1.),
+            amber_text: c(0xffbe7a, 1.),
             mint: c(0x5ee6b0, 1.),
             sky: c(0x6cc4ff, 1.),
+            chip_tint: 0.13,
             kbd_bg: c(0xffffff, 0.06),
             kbd_border: c(0xffffff, 0.10),
-            shadow: c(0x000000, 0.45),
-            shadow_sheet: c(0x000000, 0.55),
-            scrim: c(0x050507, 0.66),
+            shadow: c(0x000000, 0.5),
+            shadow_sheet: c(0x000000, 0.6),
+            scrim: c(0x06040a, 0.66),
         }
     }
 
     pub fn light() -> Self {
         Self {
             dark: false,
-            sidebar: c(0xf7f7f9, 0.86),
-            panel: c(0xf7f7f9, 1.),
+            sidebar: c(0xf0e6f1, 0.86),
+            sidebar_top: c(0xeae5f7, 0.86),
+            sidebar_bottom: c(0xf7e6ea, 0.86),
+            panel: c(0xf8f6fb, 1.),
             surface: c(0xffffff, 1.),
-            rim: c(0x000000, 0.08),
+            rim: c(0x26164e, 0.09),
             raised: c(0xffffff, 1.),
-            hover: c(0x000000, 0.035),
-            selected: c(0x6e5cf6, 0.09),
-            selected_edge: c(0x6e5cf6, 0.3),
-            pressed: c(0x6e5cf6, 0.15),
-            focus: c(0x6e5cf6, 1.),
-            edge: c(0x000000, 0.09),
-            glass: c(0x000000, 0.06),
+            hover: c(0x1e0a3c, 0.045),
+            selected: c(0x6246e8, 0.1),
+            selected_edge: c(0x6246e8, 0.24),
+            pressed: c(0x6246e8, 0.16),
+            focus: c(0x5b3fd9, 1.),
+            edge: c(0x26164e, 0.1),
+            glass: c(0x6246e8, 0.11),
             glass_opacity: 0.78,
-            border: c(0x000000, 0.07),
-            border_strong: c(0x000000, 0.12),
-            text: c(0x16161b, 1.),
-            text2: c(0x44444d, 1.),
-            text3: c(0x696973, 1.),
-            faint: c(0x8a8a94, 1.),
-            violet: c(0x6e5cf6, 1.),
-            primary: c(0x6450ea, 1.),
-            primary_hover: c(0x6e5cf6, 1.),
-            primary_pressed: c(0x5a46d8, 1.),
+            border: c(0x26164e, 0.07),
+            border_strong: c(0x26164e, 0.13),
+            text: c(0x17141f, 1.),
+            text2: c(0x454057, 1.),
+            text3: c(0x696379, 1.),
+            faint: c(0x8d87a0, 1.),
+            violet: c(0x5b3fd9, 1.),
+            primary: c(0x5e40e6, 1.),
+            primary_end: c(0x8a3fd2, 1.),
+            primary_hover: c(0x684cf0, 1.),
+            primary_hover_end: c(0x944ada, 1.),
+            primary_pressed: c(0x5236cf, 1.),
+            primary_pressed_end: c(0x7b35bd, 1.),
             danger: c(0xc23a6e, 1.),
-            rose: c(0xc93a76, 1.),
+            rose: c(0xb8306e, 1.),
             amber: c(0xe58a2e, 1.),
-            amber_text: c(0x9e540b, 1.),
+            amber_text: c(0x9a520a, 1.),
             mint: c(0x13865f, 1.),
             sky: c(0x1c74b8, 1.),
-            kbd_bg: c(0x000000, 0.04),
-            kbd_border: c(0x000000, 0.09),
-            shadow: c(0x000000, 0.12),
-            shadow_sheet: c(0x000000, 0.16),
-            scrim: c(0x101014, 0.2),
+            chip_tint: 0.1,
+            kbd_bg: c(0x26164e, 0.04),
+            kbd_border: c(0x26164e, 0.09),
+            shadow: c(0x1a1030, 0.14),
+            shadow_sheet: c(0x1a1030, 0.18),
+            scrim: c(0x140c24, 0.2),
+        }
+    }
+
+    /// The sidebar's dusk `at` of the way down it.
+    pub fn sidebar_at(&self, at: f32) -> Hsla {
+        let (top, bottom) = (
+            Rgba::from(self.sidebar_top),
+            Rgba::from(self.sidebar_bottom),
+        );
+        let at = at.clamp(0., 1.);
+        let mix = |a: f32, b: f32| a + (b - a) * at;
+        Rgba {
+            r: mix(top.r, bottom.r),
+            g: mix(top.g, bottom.g),
+            b: mix(top.b, bottom.b),
+            a: mix(top.a, bottom.a),
+        }
+        .into()
+    }
+
+    /// A status chip's ground, a tint of `hue` (Needs reply in rose, Due in amber).
+    pub fn chip(&self, hue: Hsla) -> Hsla {
+        Hsla {
+            a: self.chip_tint,
+            ..hue
         }
     }
 
@@ -264,9 +314,9 @@ mod tests {
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
     }
 
-    /// The sidebar's colour without the desktop showing through it.
-    fn sidebar(t: &Theme) -> Hsla {
-        Hsla { a: 1., ..t.sidebar }
+    /// The sidebar's colours without the desktop showing through them.
+    fn sidebars(t: &Theme) -> [Hsla; 3] {
+        [t.sidebar_top, t.sidebar, t.sidebar_bottom].map(|s| Hsla { a: 1., ..s })
     }
 
     const TEXT: f32 = 4.5;
@@ -275,7 +325,7 @@ mod tests {
     #[test]
     fn light_text_tokens_are_legible_on_every_ground() {
         let t = Theme::light();
-        for ground in [t.surface, t.panel, t.raised, sidebar(&t)] {
+        for ground in [[t.surface, t.panel, t.raised].as_slice(), &sidebars(&t)].concat() {
             for text in [t.text, t.text2, t.text3] {
                 assert!(contrast(text, ground) >= TEXT, "{}", contrast(text, ground));
             }
@@ -285,7 +335,7 @@ mod tests {
     #[test]
     fn dark_text_tokens_are_legible_on_every_ground() {
         let t = Theme::dark();
-        for ground in [t.surface, t.panel, t.raised, sidebar(&t)] {
+        for ground in [[t.surface, t.panel, t.raised].as_slice(), &sidebars(&t)].concat() {
             for text in [t.text, t.text2, t.text3] {
                 assert!(contrast(text, ground) >= TEXT, "{}", contrast(text, ground));
             }
@@ -305,14 +355,35 @@ mod tests {
     }
 
     #[test]
-    fn light_amber_text_is_legible_on_its_chip() {
+    fn status_chips_are_legible_on_their_tints() {
+        for t in [Theme::light(), Theme::dark()] {
+            for (ink, hue) in [(t.rose, t.rose), (t.amber_text, t.amber)] {
+                for ground in [t.surface, t.panel, t.raised] {
+                    let chip = over(t.chip(hue), ground);
+                    assert!(contrast(ink, chip) >= TEXT, "{}", contrast(ink, chip));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn text_is_legible_on_the_open_mailbox() {
+        for t in [Theme::light(), Theme::dark()] {
+            let open = over(t.glass, sidebars(&t)[1]);
+            // The open row's name and count are in `text` and `text2`.
+            for text in [t.text, t.text2] {
+                assert!(contrast(text, open) >= TEXT, "{}", contrast(text, open));
+            }
+        }
+    }
+
+    #[test]
+    fn the_dusk_runs_from_its_top_to_its_foot() {
         let t = Theme::light();
-        let chip = over(Hsla { a: 0.14, ..t.amber }, t.surface);
-        assert!(
-            contrast(t.amber_text, chip) >= TEXT,
-            "{}",
-            contrast(t.amber_text, chip)
-        );
+        assert_eq!(t.sidebar_at(0.), t.sidebar_top);
+        let foot = Rgba::from(t.sidebar_at(1.));
+        let bottom = Rgba::from(t.sidebar_bottom);
+        assert!((foot.r - bottom.r).abs() < 1e-4 && (foot.b - bottom.b).abs() < 1e-4);
     }
 
     #[test]
@@ -338,7 +409,15 @@ mod tests {
     #[test]
     fn white_label_is_legible_on_every_solid_button() {
         for t in [Theme::light(), Theme::dark()] {
-            for fill in [t.primary, t.primary_hover, t.primary_pressed, t.danger] {
+            for fill in [
+                t.primary,
+                t.primary_end,
+                t.primary_hover,
+                t.primary_hover_end,
+                t.primary_pressed,
+                t.primary_pressed_end,
+                t.danger,
+            ] {
                 let ratio = contrast(gpui::white(), fill);
                 assert!(ratio >= TEXT, "{ratio}");
             }
@@ -366,7 +445,7 @@ mod tests {
     #[test]
     fn the_focus_ring_stands_out_from_every_ground() {
         for t in [Theme::light(), Theme::dark()] {
-            for ground in [t.surface, t.panel, t.raised, sidebar(&t)] {
+            for ground in [[t.surface, t.panel, t.raised].as_slice(), &sidebars(&t)].concat() {
                 assert!(
                     contrast(t.focus, ground) >= NON_TEXT,
                     "{}",
