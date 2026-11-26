@@ -345,8 +345,13 @@ pub fn request_permission() {
     }
 }
 
+/// The sound every mail notification plays: a file in the app's Resources (macOS takes
+/// AIFF, WAV or CAF of up to 30 seconds there).
+#[cfg(target_os = "macos")]
+const MAIL_SOUND: &str = "mail.caf";
+
 /// Shows a notification. `id` identifies it (see the module), so the same thread never
-/// stacks up twice; `sound` plays the default notification sound with it.
+/// stacks up twice; `sound` plays Nimbra's mail sound with it.
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
 pub fn show(id: &str, title: &str, body: &str, sound: bool) {
@@ -366,7 +371,17 @@ pub fn show(id: &str, title: &str, body: &str, sound: bool) {
         let _: () = msg_send![content, setTitle: ns_string(title)];
         let _: () = msg_send![content, setBody: ns_string(body)];
         if sound {
-            let sound: *mut Object = msg_send![class!(UNNotificationSound), defaultSound];
+            // Nimbra's own chime (Contents/Resources/mail.caf, from assets/sounds), or the
+            // system's when the app has none (a bare debug binary).
+            let bundled = std::env::current_exe()
+                .ok()
+                .and_then(|exe| Some(exe.parent()?.parent()?.join("Resources/mail.caf")))
+                .is_some_and(|path| path.exists());
+            let sound: *mut Object = if bundled {
+                msg_send![class!(UNNotificationSound), soundNamed: ns_string(MAIL_SOUND)]
+            } else {
+                msg_send![class!(UNNotificationSound), defaultSound]
+            };
             let _: () = msg_send![content, setSound: sound];
         }
         if let Some(about) = &about {

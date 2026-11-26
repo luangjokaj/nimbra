@@ -44,6 +44,8 @@ cargo build --release
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/nimbra "$APP/Contents/MacOS/nimbra"
+# The sound mail notifications play (src/notify.rs).
+cp assets/sounds/mail.caf "$APP/Contents/Resources/mail.caf"
 
 # Compile the layered icon into Assets.car (for macOS 26+) and AppIcon.icns (fallback).
 xcrun actool assets/AppIcon.icon \
