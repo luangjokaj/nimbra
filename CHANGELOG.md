@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### New
-- **Signatures for each account.** Make as many as you like in Settings › Composing, as formatted text or HTML with links and images, and pick one (or none) from the handle above it while you write.
+- **Signatures for each account.** Make as many as you like in Settings › Composing, as formatted text or HTML with links and images, and pick one (or none) from the handle above it while you write. Images in a signature (a logo, say) show while you write and in the Preview: Nimbra downloads each one once, over https only, and keeps it on your Mac.
 - **Check for Updates.** In the Nimbra menu, and in Settings › About with the update's status and a Restart button once one is ready.
 - **A clearer reading toolbar.** Done, Snooze, Reply and Forward as words on the left; star, label, move, trash and more on the right. Reply all and Show original are in the more menu (and A and V). A message in its own window has the same look.
 - **A new thought every day.** Inbox Zero has 365 lines now, one for each day of the year: some quiet, some silly, and some famous quotes, with their authors set apart below them.

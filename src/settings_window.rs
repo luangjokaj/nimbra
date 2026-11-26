@@ -1896,8 +1896,26 @@ impl SettingsWindow {
         let hint = match mode {
             SigMode::Text => "Formatted like a message: ⌘B, ⌘I, ⌘U and ⌘K for links.",
             SigMode::Html => "Scripts, forms and unsafe links are taken out as it is saved.",
-            SigMode::Preview => "Images show once the message is sent.",
+            SigMode::Preview => "Images are kept on this Mac.",
         };
+        // In Preview, pictures not downloaded yet are fetched, and the Preview redrawn once
+        // they arrive.
+        let sources = crate::signature::image_sources(&signature.html);
+        if mode == SigMode::Preview {
+            let this = cx.entity().downgrade();
+            crate::signature_images::ensure(sources.clone(), cx, move |cx| {
+                this.update(cx, |_, cx| cx.notify()).ok();
+            });
+        }
+        let refresh = (mode == SigMode::Preview && !sources.is_empty()).then(|| {
+            button(t, ButtonKind::Ghost, "Refresh images", None)
+                .id("sig-refresh-images")
+                .press_soft()
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    crate::signature_images::forget(&sources);
+                    cx.notify();
+                }))
+        });
         let fits = crate::signature::fits_text_editor(&signature.html);
         let body = match mode {
             // The editor is a native web view: this element only reserves its space and
@@ -1963,7 +1981,8 @@ impl SettingsWindow {
                     .items_center()
                     .gap(px(12.))
                     .child(switch)
-                    .child(meta(hint, t.text3).flex_1().min_w(px(0.))),
+                    .child(meta(hint, t.text3).flex_1().min_w(px(0.)))
+                    .children(refresh),
             )
             .child(
                 div()
@@ -2997,6 +3016,14 @@ fn preview_block(t: &Theme, block: &Block) -> AnyElement {
             .text_size(px(12.5))
             .child(text()),
         Kind::Rule => div().h(px(1.)).my(px(6.)).bg(t.border),
+        Kind::Image { src, .. } if let Some(image) = crate::signature_images::image(src) => {
+            div().py(px(2.)).child(
+                gpui::img(image)
+                    .max_w_full()
+                    .max_h(px(160.))
+                    .object_fit(gpui::ObjectFit::ScaleDown),
+            )
+        }
         Kind::Image { alt, .. } => div()
             .flex()
             .items_center()

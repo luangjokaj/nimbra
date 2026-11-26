@@ -31,6 +31,7 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
 #signature a { color: var(--accent) !important; text-decoration: none; }
 #signature table { border-collapse: collapse; }
 #signature img { display: none; }
+#signature img.nimbra-picture { display: inline-block; max-width: 100%; max-height: 160px; width: auto; height: auto; vertical-align: middle; }
 .nimbra-image { display: inline-block; padding: 0 6px; border: 1px solid var(--line) !important; border-radius: 4px; font-size: 11px; line-height: 16px; white-space: nowrap; }
 #more { display: none; margin-top: 12px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--dim); font: inherit; line-height: 18px; cursor: pointer; }
 #quote { display: none; margin-top: 10px; padding-left: 14px; border-left: 2px solid var(--line); color: var(--dim); font-size: 14px; line-height: 22px; white-space: pre-wrap; overflow-wrap: break-word; }
@@ -209,14 +210,23 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
   function showSignature(html) {
     const doc = document.implementation.createHTMLDocument('');
     doc.body.innerHTML = html || '';
+    // Pictures are the app's own downloaded copies, as data: images; any other image
+    // (anything that would load from the internet) is taken out.
+    const PICTURE = /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+\/=]+$/;
     for (const node of Array.from(doc.body.querySelectorAll('*'))) {
+      if (node.tagName === 'IMG' && node.classList.contains('nimbra-picture') && PICTURE.test(node.getAttribute('src') || '')) {
+        for (const attr of Array.from(node.attributes)) {
+          if (!['src', 'alt', 'class', 'width', 'height'].includes(attr.name)) node.removeAttribute(attr.name);
+        }
+        continue;
+      }
       if (DROP.has(node.tagName.toUpperCase())) { node.remove(); continue; }
       for (const attr of Array.from(node.attributes)) {
         if (/^on/i.test(attr.name) || (attr.name === 'href' && !safeHref(attr.value))) node.removeAttribute(attr.name);
       }
     }
     sig.replaceChildren(...Array.from(doc.body.childNodes).map((node) => document.importNode(node, true)));
-    const empty = !sig.textContent.trim();
+    const empty = !sig.textContent.trim() && !sig.querySelector('img');
     sig.style.display = empty ? 'none' : 'block';
     handle.classList.toggle('empty', empty);
     handle.style.display = 'flex';

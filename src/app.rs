@@ -2082,7 +2082,7 @@ fn sample_signatures(settings: &mut crate::settings::Settings) {
             studio,
             "Studio",
             "<table cellpadding=\"0\" cellspacing=\"0\"><tr>\
-             <td style=\"padding-right:14px\"><img src=\"https://nimbra.me/icon.png\" alt=\"Nimbra logo\" width=\"48\" height=\"48\"></td>\
+             <td style=\"padding-right:14px\"><img src=\"https://nimbra.me/icons/android-chrome-192x192.png\" alt=\"Nimbra logo\" width=\"48\" height=\"48\"></td>\
              <td style=\"border-left:2px solid #8b7cff;padding-left:14px\">\
              <div style=\"font-weight:600;color:#16151c\">Luan Gjokaj</div>\
              <div style=\"color:#6b6878\">Design, Nimbra Studio</div>\

@@ -651,6 +651,22 @@ impl Nimbra {
                 .map(|(_, html)| crate::signature::for_display(html))
                 .unwrap_or_default();
             editor.signature(&shown);
+            // Pictures not downloaded yet: shown once they are.
+            let sources = composer
+                .signature
+                .as_ref()
+                .map(|(_, html)| crate::signature::image_sources(html))
+                .unwrap_or_default();
+            let this = cx.entity().downgrade();
+            crate::signature_images::ensure(sources, cx, move |cx| {
+                this.update(cx, |this, cx| {
+                    if let Some(composer) = &mut this.compose {
+                        composer.show_signature = true;
+                    }
+                    cx.notify();
+                })
+                .ok();
+            });
         }
         editor.set_visible(true);
     }

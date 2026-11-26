@@ -32,6 +32,7 @@ mod sending;
 mod servers;
 mod settings;
 mod signature;
+mod signature_images;
 mod signin_page;
 mod sky;
 mod smtp;
