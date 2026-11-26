@@ -136,6 +136,8 @@ actions!(
         SelectAllThreads,
         Print,
         HideApp,
+        /// Nimbra › About Nimbra.
+        AboutNimbra,
         HideOthers,
         ShowAll,
         Minimize,
@@ -1076,6 +1078,10 @@ impl Nimbra {
         // NIMBRA_SCREEN=bulk picks three threads (screenshots).
         if screen == "bulk" {
             this.picked = this.visible().into_iter().take(3).collect();
+        }
+        // NIMBRA_SCREEN=about opens the About panel (screenshots).
+        if screen == "about" {
+            cx.defer(|_| crate::about::show());
         }
         // NIMBRA_SCREEN=settings opens the Settings sheet (screenshots).
         // NIMBRA_SCREEN=settings-account opens it on Add account.

@@ -1,5 +1,6 @@
 //! Nimbra — a mail client concept, mocked in GPUI with static data.
 
+mod about;
 mod app;
 mod arrival;
 mod autohide;
@@ -52,16 +53,16 @@ use gpui::{
 };
 
 use app::{
-    Back, Compose, Confirm, Dismiss, DockDrafts, DockInbox, DockSent, DockSnoozed, DockStarred,
-    First, FocusSearch, FocusSidebar, Forward, ForwardMessage, GoAllMail, GoDrafts, GoInbox,
-    GoNumber, GoSent, GoSnoozed, GoStarred, HideApp, HideOthers, HideWindow, Last, MarkDone,
-    MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReply, MenuReplyAll,
-    MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal, MenuToggleSidebar, MenuTrash, MenuUndo,
-    Minimize, Next, Nimbra, OpenInWindow, OpenSettings, OpenSidebarRow, PageDown, PageUp, PickDown,
-    PickThread, PickUp, Prev, Print, Quit, Reload, Reply, ReplyAll, SaveDraft, SelectAllThreads,
-    SendMail, ShowAll, ToggleFullCompose, ToggleList, ToggleOriginal, TogglePalette,
-    ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo, UseDarkAppearance,
-    UseLightAppearance, UseSystemAppearance,
+    AboutNimbra, Back, Compose, Confirm, Dismiss, DockDrafts, DockInbox, DockSent, DockSnoozed,
+    DockStarred, First, FocusSearch, FocusSidebar, Forward, ForwardMessage, GoAllMail, GoDrafts,
+    GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp, HideOthers, HideWindow, Last,
+    MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReply,
+    MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal, MenuToggleSidebar,
+    MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenInWindow, OpenSettings, OpenSidebarRow,
+    PageDown, PageUp, PickDown, PickThread, PickUp, Prev, Print, Quit, Reload, Reply, ReplyAll,
+    SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList, ToggleOriginal,
+    TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
+    UseDarkAppearance, UseLightAppearance, UseSystemAppearance,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -241,6 +242,7 @@ fn main() {
         input::bind_keys(cx);
         // Arrows and the like go to a web view that has the keyboard, not through GPUI.
         webkeys::install();
+        cx.on_action(|_: &AboutNimbra, _| about::show());
         cx.on_action(|_: &HideApp, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -384,6 +386,8 @@ fn main() {
             Menu {
                 name: "Nimbra".into(),
                 items: vec![
+                    MenuItem::action("About Nimbra", AboutNimbra),
+                    MenuItem::separator(),
                     MenuItem::action("Settings…", OpenSettings),
                     MenuItem::separator(),
                     MenuItem::action("Hide Nimbra", HideApp),
