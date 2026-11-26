@@ -32,6 +32,7 @@ fn may_quit() -> bool {
     if !quit {
         *asked = Some(Instant::now());
         PUT_OFF.store(true, Ordering::Relaxed);
+        crate::checking::OUTSIDE.ring();
     }
     quit
 }

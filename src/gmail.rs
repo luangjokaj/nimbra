@@ -7,13 +7,15 @@
 //!   redirecting to a listener bound to 127.0.0.1 only.
 //! - The refresh token lives in the OS keychain. Access tokens stay in memory.
 //! - Tokens and the client secret are never logged or put into error messages.
-//! - HTML mail is converted to text; no remote content is ever fetched.
+//! - Nothing here fetches what a message links to. Its HTML goes to the locked-down web
+//!   view (where remote images follow the user's setting) and through the converters to
+//!   text; images embedded in the message are inlined, within a budget.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -23,6 +25,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::mail::*;
+use crate::mime::{self, Embedded, inline_cid_images};
 use crate::store::Store;
 
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -49,7 +52,15 @@ const PHOTO_LIMIT: u64 = 2 * 1024 * 1024;
 const KEYCHAIN_SERVICE: &str = "nimbra";
 const KEYCHAIN_USER: &str = "gmail-refresh-token";
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long Gmail may take to connect, or stay silent once connected.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a whole exchange may take, before the time its upload needs.
+const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(300);
+/// The slowest upload allowed for, in bytes a second (a weak hotel or tethered link).
+const SLOWEST_UPLOAD: u64 = 16 * 1024;
+/// The largest reply read. Gmail takes messages of up to 50 MB, and its JSON carries an
+/// attachment as base64, a third larger.
+const REPLY_LIMIT: u64 = 72 * 1024 * 1024;
 /// How many pages of the change feed to read before giving up and fetching afresh.
 const HISTORY_PAGES: usize = 10;
 
@@ -57,8 +68,41 @@ const HISTORY_PAGES: usize = 10;
 #[derive(Clone, Copy)]
 enum Payload<'a> {
     None,
-    Json(&'a serde_json::Value),
     Bytes(&'a [u8]),
+}
+
+/// Gmail's requests, where each step (connect, read, write) times out on its own: a slow
+/// link that keeps moving is not a dead one. No connection is kept for the next request:
+/// one the server closed meanwhile would fail a send that never left as one that may have.
+fn agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .max_idle_connections(0)
+            .timeout_connect(HTTP_TIMEOUT)
+            .timeout_read(HTTP_TIMEOUT)
+            .timeout_write(HTTP_TIMEOUT)
+            .build()
+    })
+}
+
+/// How long an exchange that uploads `sent` bytes may take in all.
+fn exchange_timeout(sent: usize) -> Duration {
+    EXCHANGE_TIMEOUT + Duration::from_secs(sent as u64 / SLOWEST_UPLOAD)
+}
+
+/// A reply's body, refused past `REPLY_LIMIT` (ureq's own reader stops at 10 MB).
+fn read_reply(response: ureq::Response) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .take(REPLY_LIMIT + 1)
+        .read_to_end(&mut body)?;
+    if body.len() as u64 > REPLY_LIMIT {
+        bail!("Gmail's reply was too large to read");
+    }
+    Ok(body)
 }
 
 /// Whether a failed request certainly never left this Mac.
@@ -181,7 +225,11 @@ struct TokenResponse {
 }
 
 fn token_request(form: &[(&str, &str)]) -> Result<TokenResponse> {
-    match ureq::post(TOKEN_URL).timeout(HTTP_TIMEOUT).send_form(form) {
+    match agent()
+        .post(TOKEN_URL)
+        .timeout(HTTP_TIMEOUT)
+        .send_form(form)
+    {
         Ok(response) => response.into_json().context("reading Google's token reply"),
         Err(ureq::Error::Status(code, response)) => {
             #[derive(Deserialize, Default)]
@@ -414,7 +462,8 @@ impl Client {
     /// The account's Google profile photo, downloaded (about 128 px). It is only ever
     /// fetched from Google's own image host, over HTTPS.
     pub fn profile_photo(&self) -> Result<Photo> {
-        let people = ureq::get(PEOPLE_ME)
+        let people = agent()
+            .get(PEOPLE_ME)
             .query("personFields", "photos")
             .query("sources", "READ_SOURCE_TYPE_PROFILE")
             .timeout(HTTP_TIMEOUT);
@@ -431,7 +480,7 @@ impl Client {
             Err(error) => return Err(error.into()),
         }
         let response =
-            self.authorized(&ureq::get(USERINFO).timeout(HTTP_TIMEOUT), Payload::None)?;
+            self.authorized(&agent().get(USERINFO).timeout(HTTP_TIMEOUT), Payload::None)?;
         let info: serde_json::Value = match response {
             Ok(response) => response.into_json()?,
             Err(ureq::Error::Status(401 | 403, _)) => return Ok(Photo::NotAllowed),
@@ -467,8 +516,17 @@ impl Client {
             if !e.is::<SignedOut>() {
                 return e;
             }
-            forget_refresh_token(&self.account);
-            self.signed_out()
+            match stored_refresh_token(&self.account) {
+                // Signed in again since this client was made: that sign-in has not ended.
+                Ok(Some(stored)) if stored != self.refresh_token => {
+                    anyhow!("The sign-in changed meanwhile. Try again.")
+                }
+                Ok(Some(_)) => {
+                    forget_refresh_token(&self.account);
+                    self.signed_out()
+                }
+                _ => self.signed_out(),
+            }
         })?;
         self.remember(tokens.access_token.clone(), tokens.expires_in);
         Ok(tokens.access_token)
@@ -490,7 +548,6 @@ impl Client {
                 .set("Authorization", &format!("Bearer {token}"));
             let result = match payload {
                 Payload::None => call.call(),
-                Payload::Json(value) => call.send_json(value),
                 Payload::Bytes(bytes) => call.send_bytes(bytes),
             };
             if renewed || !matches!(result, Err(ureq::Error::Status(401, _))) {
@@ -518,14 +575,19 @@ impl Client {
         request: ureq::Request,
         body: Option<serde_json::Value>,
     ) -> Result<T> {
+        let body = body.map(|body| serde_json::to_vec(&body)).transpose()?;
+        let mut request = request.timeout(exchange_timeout(body.as_ref().map_or(0, Vec::len)));
+        if body.is_some() {
+            request = request.set("Content-Type", "application/json");
+        }
         // Gmail limits how many requests a user may make per minute. When it says so,
         // wait a little and try again (three times, waiting longer each time).
         let mut wait = Duration::from_millis(1500);
         let mut attempt = 0;
         loop {
             let result = self.authorized(
-                &request.clone().timeout(HTTP_TIMEOUT),
-                body.as_ref().map_or(Payload::None, Payload::Json),
+                &request,
+                body.as_deref().map_or(Payload::None, Payload::Bytes),
             )?;
             if let Err(ureq::Error::Status(code @ (403 | 429), response)) = result {
                 let text = response.into_string().unwrap_or_default();
@@ -539,18 +601,16 @@ impl Client {
             }
             // Gmail answers "204 No Content" (an empty body) when a filtered list has
             // nothing in it, such as no unread mail. That is an empty object, not an error.
-            let text = self
-                .finish(result)?
-                .into_string()
+            let reply = read_reply(self.finish(result)?)
                 .context("reading Gmail's reply")
                 .context(MayHaveArrived)?;
-            let text = if text.trim().is_empty() {
-                "{}"
+            let reply = if reply.trim_ascii().is_empty() {
+                b"{}"
             } else {
-                text.as_str()
+                reply.as_slice()
             };
             // Accepted, so it was carried out, whatever is wrong with the answer.
-            return serde_json::from_str(text)
+            return serde_json::from_slice(reply)
                 .context("reading Gmail's reply")
                 .context(MayHaveArrived);
         }
@@ -573,14 +633,14 @@ impl Client {
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
         let request = request
             .query("uploadType", "multipart")
-            .timeout(Duration::from_secs(180))
+            .timeout(exchange_timeout(body.len()))
             .set(
                 "Content-Type",
                 &format!("multipart/related; boundary={boundary}"),
             );
         let result = self.authorized(&request, Payload::Bytes(&body))?;
-        self.finish(result)?
-            .into_json()
+        read_reply(self.finish(result)?)
+            .and_then(|reply| Ok(serde_json::from_slice(&reply)?))
             .context("reading Gmail's reply")
             .context(MayHaveArrived)
     }
@@ -678,7 +738,7 @@ impl Client {
             email_address: String,
             history_id: String,
         }
-        let profile: Profile = self.send(ureq::get(&format!("{API}/profile")), None)?;
+        let profile: Profile = self.send(agent().get(&format!("{API}/profile")), None)?;
         Ok((profile.email_address, profile.history_id))
     }
 
@@ -726,7 +786,8 @@ impl Client {
         let mut changes = Changes::default();
         let mut token: Option<String> = None;
         for _ in 0..HISTORY_PAGES {
-            let mut request = ureq::get(&format!("{API}/history"))
+            let mut request = agent()
+                .get(&format!("{API}/history"))
                 .query("startHistoryId", start)
                 .query("maxResults", "500");
             if let Some(token) = &token {
@@ -844,8 +905,9 @@ impl Client {
         limit: usize,
         page: Option<&str>,
     ) -> Result<Listing> {
-        let mut request =
-            ureq::get(&format!("{API}/threads")).query("maxResults", &limit.to_string());
+        let mut request = agent()
+            .get(&format!("{API}/threads"))
+            .query("maxResults", &limit.to_string());
         if let Some(page) = page {
             if page.len() > 512 || !page.chars().all(|c| c.is_ascii_graphic()) {
                 bail!("unexpected page token");
@@ -898,7 +960,8 @@ impl Client {
             bail!("unexpected thread id");
         }
         let thread: Thread = self.send(
-            ureq::get(&format!("{API}/threads/{id}"))
+            agent()
+                .get(&format!("{API}/threads/{id}"))
                 .query("format", "metadata")
                 .query("metadataHeaders", "From")
                 .query("metadataHeaders", "To")
@@ -964,7 +1027,9 @@ impl Client {
             bail!("unexpected thread id");
         }
         let thread: Thread = self.send(
-            ureq::get(&format!("{API}/threads/{id}")).query("format", "full"),
+            agent()
+                .get(&format!("{API}/threads/{id}"))
+                .query("format", "full"),
             None,
         )?;
         let mut messages: Vec<Message> = thread
@@ -1006,58 +1071,46 @@ impl Client {
         // so the original view can show them without any network access.
         for (message, raw) in messages.iter_mut().zip(&thread.messages) {
             if let (Some(html), Some(payload)) = (message.html.as_mut(), raw.payload.as_ref())
-                && html.contains("cid:")
+                && let Some(inlined) = self.inline_images(html, payload, &raw.id)
             {
-                self.inline_images(html, payload, &raw.id);
+                *html = inlined;
             }
         }
         Ok(messages)
     }
 
-    /// Replaces `cid:` image links in `html` with the image data from the message's parts.
-    fn inline_images(&self, html: &mut String, payload: &Part, message_id: &str) {
-        const BUDGET: usize = 4 * 1024 * 1024;
-        let mut used = 0;
+    /// `html` with its `cid:` image links replaced by the images among the message's parts.
+    fn inline_images(&self, html: &str, payload: &Part, message_id: &str) -> Option<String> {
         let mut parts = Vec::new();
         collect_parts(payload, &mut parts);
+        let mut images: HashMap<String, (String, &Part)> = HashMap::new();
         for part in parts {
-            let Some(cid) = part
-                .header("Content-ID")
-                .map(|v| v.trim().trim_matches(['<', '>']).to_string())
-                .filter(|cid| !cid.is_empty())
-            else {
+            let Some(cid) = part.header("Content-ID").and_then(mime::content_id) else {
                 continue;
             };
             let mime = part.mime_type.to_ascii_lowercase();
-            if !matches!(
-                mime.as_str(),
-                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-            ) {
-                continue;
+            if mime::is_inline_image(&mime) {
+                images.entry(cid).or_insert((mime, part));
             }
-            let reference = format!("cid:{cid}");
-            if !html.contains(&reference) {
-                continue;
-            }
-            let bytes = match decode_part(part) {
-                Some(bytes) => Some(bytes),
-                None => part
-                    .body
-                    .as_ref()
-                    .and_then(|b| b.attachment_id.as_deref())
-                    .and_then(|att| self.download(message_id, att).ok()),
-            };
-            let Some(bytes) = bytes else { continue };
-            used += bytes.len();
-            if used > BUDGET {
-                break;
-            }
-            let data = format!(
-                "data:{mime};base64,{}",
-                base64::engine::general_purpose::STANDARD.encode(&bytes)
-            );
-            *html = html.replace(&reference, &data);
         }
+        inline_cid_images(html, &images, |_, (mime, part)| {
+            let bytes = match decode_part(part) {
+                Some(bytes) => bytes,
+                None => {
+                    let body = part.body.as_ref()?;
+                    // Base64 is 4/3 of the bytes: a larger one could never fit.
+                    if body.size.saturating_mul(4) / 3 > mime::INLINE_IMAGE_BUDGET as u64 {
+                        return None;
+                    }
+                    self.download(message_id, body.attachment_id.as_deref()?)
+                        .ok()?
+                }
+            };
+            Some(Embedded {
+                mime: mime.clone(),
+                bytes: bytes.into(),
+            })
+        })
     }
 
     /// Downloads one attachment's bytes.
@@ -1071,7 +1124,7 @@ impl Client {
             bail!("unexpected attachment id");
         }
         let body: Body = self.send(
-            ureq::get(&format!(
+            agent().get(&format!(
                 "{API}/messages/{message_id}/attachments/{attachment_id}"
             )),
             None,
@@ -1108,13 +1161,16 @@ impl Client {
                 // Trash also takes a thread out of the inbox, and untrash does not put it
                 // back: restore it to the inbox as a second step.
                 self.send::<serde_json::Value>(
-                    ureq::post(&format!("{API}/threads/{id}/untrash")),
+                    agent().post(&format!("{API}/threads/{id}/untrash")),
                     Some(serde_json::json!({})),
                 )?;
                 labels(&["INBOX"], &[])
             }
         };
-        self.send::<serde_json::Value>(ureq::post(&format!("{API}/threads/{id}/{action}")), body)?;
+        self.send::<serde_json::Value>(
+            agent().post(&format!("{API}/threads/{id}/{action}")),
+            body,
+        )?;
         Ok(())
     }
 
@@ -1136,7 +1192,9 @@ impl Client {
             thread_id: String,
         }
         let listing: Listing = self.send(
-            ureq::get(&format!("{API}/drafts")).query("maxResults", "100"),
+            agent()
+                .get(&format!("{API}/drafts"))
+                .query("maxResults", "100"),
             None,
         )?;
         let id = listing
@@ -1160,7 +1218,9 @@ impl Client {
         }
         let id = id.to_string();
         let full: Full = self.send(
-            ureq::get(&format!("{API}/drafts/{id}")).query("format", "full"),
+            agent()
+                .get(&format!("{API}/drafts/{id}"))
+                .query("format", "full"),
             None,
         )?;
         let message = &full.message;
@@ -1219,8 +1279,8 @@ impl Client {
                 message["threadId"] = thread_id.clone().into();
             }
             let request = match id {
-                Some(id) => ureq::put(&format!("{UPLOAD}/drafts/{id}")),
-                None => ureq::post(&format!("{UPLOAD}/drafts")),
+                Some(id) => agent().put(&format!("{UPLOAD}/drafts/{id}")),
+                None => agent().post(&format!("{UPLOAD}/drafts")),
             };
             self.upload(request, serde_json::json!({ "message": message }), &raw)?
         } else {
@@ -1229,8 +1289,8 @@ impl Client {
                 message["threadId"] = thread_id.clone().into();
             }
             let request = match id {
-                Some(id) => ureq::put(&format!("{API}/drafts/{id}")),
-                None => ureq::post(&format!("{API}/drafts")),
+                Some(id) => agent().put(&format!("{API}/drafts/{id}")),
+                None => agent().post(&format!("{API}/drafts")),
             };
             self.send(request, Some(serde_json::json!({ "message": message })))?
         };
@@ -1277,7 +1337,7 @@ impl Client {
             bail!("unexpected draft id");
         }
         self.send::<serde_json::Value>(
-            ureq::post(&format!("{API}/drafts/send")),
+            agent().post(&format!("{API}/drafts/send")),
             Some(serde_json::json!({ "id": id })),
         )
         .map_err(while_sending)?;
@@ -1290,7 +1350,9 @@ impl Client {
             bail!("unexpected draft id");
         }
         let result = self.authorized(
-            &ureq::delete(&format!("{API}/drafts/{id}")).timeout(HTTP_TIMEOUT),
+            &agent()
+                .delete(&format!("{API}/drafts/{id}"))
+                .timeout(HTTP_TIMEOUT),
             Payload::None,
         )?;
         self.finish(result)?;
@@ -1312,7 +1374,7 @@ impl Client {
                 metadata["threadId"] = thread_id.into();
             }
             self.upload::<serde_json::Value>(
-                ureq::post(&format!("{UPLOAD}/messages/send")),
+                agent().post(&format!("{UPLOAD}/messages/send")),
                 metadata,
                 &raw,
             )
@@ -1322,8 +1384,11 @@ impl Client {
             if let Some(thread_id) = thread_id {
                 body["threadId"] = thread_id.into();
             }
-            self.send::<serde_json::Value>(ureq::post(&format!("{API}/messages/send")), Some(body))
-                .map_err(while_sending)?;
+            self.send::<serde_json::Value>(
+                agent().post(&format!("{API}/messages/send")),
+                Some(body),
+            )
+            .map_err(while_sending)?;
         }
         Ok(())
     }
@@ -1333,7 +1398,7 @@ impl Client {
         if !is_id(id) {
             bail!("unexpected thread id");
         }
-        match self.send::<serde_json::Value>(ureq::delete(&format!("{API}/threads/{id}")), None) {
+        match self.send::<serde_json::Value>(agent().delete(&format!("{API}/threads/{id}")), None) {
             Err(error) if error.to_string().to_lowercase().contains("insufficient") => {
                 Err(NeedsFullAccess.into())
             }
@@ -1348,7 +1413,7 @@ impl Client {
             bail!("A label name needs 1 to 100 characters.");
         }
         self.send::<serde_json::Value>(
-            ureq::request("PATCH", &format!("{API}/labels/{id}")),
+            agent().request("PATCH", &format!("{API}/labels/{id}")),
             Some(serde_json::json!({ "name": name })),
         )?;
         Ok(())
@@ -1359,7 +1424,7 @@ impl Client {
         if !is_label_id(id) {
             bail!("unexpected label id");
         }
-        self.send::<serde_json::Value>(ureq::delete(&format!("{API}/labels/{id}")), None)?;
+        self.send::<serde_json::Value>(agent().delete(&format!("{API}/labels/{id}")), None)?;
         Ok(())
     }
 
@@ -1376,7 +1441,7 @@ impl Client {
             bail!("unexpected id");
         }
         self.send::<serde_json::Value>(
-            ureq::post(&format!("{API}/threads/{id}/modify")),
+            agent().post(&format!("{API}/threads/{id}/modify")),
             Some(serde_json::json!({ "addLabelIds": add, "removeLabelIds": remove })),
         )?;
         Ok(())
@@ -1394,7 +1459,7 @@ impl Client {
             bail!("A label name needs 1 to 100 characters.");
         }
         let created: Created = self.send(
-            ureq::post(&format!("{API}/labels")),
+            agent().post(&format!("{API}/labels")),
             Some(serde_json::json!({
                 "name": name,
                 "labelListVisibility": "labelShow",
@@ -1416,7 +1481,7 @@ impl Client {
             bail!("unexpected id");
         }
         self.send::<serde_json::Value>(
-            ureq::post(&format!("{API}/threads/{id}/modify")),
+            agent().post(&format!("{API}/threads/{id}/modify")),
             Some(serde_json::json!({ "addLabelIds": [label_id] })),
         )?;
         Ok(())
@@ -1444,7 +1509,7 @@ impl Client {
                 scope.spawn(move || {
                     for (id, slot) in ids.iter().zip(out) {
                         *slot = if id.as_str() == "DRAFT" {
-                            self.send::<Detail>(ureq::get(&format!("{API}/labels/{id}")), None)
+                            self.send::<Detail>(agent().get(&format!("{API}/labels/{id}")), None)
                                 .ok()
                                 .map(|d| (0, d.threads_total))
                         } else {
@@ -1473,7 +1538,8 @@ impl Client {
         let mut count = 0u32;
         let mut token: Option<String> = None;
         loop {
-            let mut request = ureq::get(&format!("{API}/threads"))
+            let mut request = agent()
+                .get(&format!("{API}/threads"))
                 .query("maxResults", "500")
                 .query("fields", "threads/id,nextPageToken")
                 .query("labelIds", "INBOX")
@@ -1507,7 +1573,7 @@ impl Client {
             #[serde(default, rename = "type")]
             kind: String,
         }
-        let listing: Listing = self.send(ureq::get(&format!("{API}/labels")), None)?;
+        let listing: Listing = self.send(agent().get(&format!("{API}/labels")), None)?;
         let mut labels: Vec<Label> = listing
             .labels
             .into_iter()
@@ -1736,7 +1802,7 @@ fn own_photo(photos: &[ListedPhoto]) -> Option<&str> {
 /// `PHOTO_LIMIT`.
 fn photo_bytes(link: &str) -> Result<Option<Vec<u8>>> {
     use std::io::Read as _;
-    let response = ureq::get(link).timeout(HTTP_TIMEOUT).call()?;
+    let response = agent().get(link).timeout(HTTP_TIMEOUT).call()?;
     let mut bytes = Vec::new();
     response
         .into_reader()
@@ -2411,5 +2477,53 @@ mod tests {
         let two = r#"{"photos":[{"url":"a"},{"url":"b","metadata":{"primary":true}}]}"#;
         assert_eq!(pick(two).as_deref(), Some("b"));
         assert_eq!(pick("{}"), None);
+    }
+
+    /// Serves one HTTP reply with a body of `len` bytes, on a local port.
+    fn serve_body(len: usize) -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n\r\n");
+            stream.write_all(head.as_bytes()).unwrap();
+            let chunk = vec![b'x'; 64 * 1024];
+            let mut left = len;
+            while left > 0 {
+                let n = left.min(chunk.len());
+                if stream.write_all(&chunk[..n]).is_err() {
+                    return;
+                }
+                left -= n;
+            }
+        });
+        format!("http://127.0.0.1:{port}/")
+    }
+
+    #[test]
+    fn a_reply_past_ten_megabytes_is_read_whole() {
+        let len = 12 * 1024 * 1024;
+        let response = agent().get(&serve_body(len)).call().unwrap();
+        assert_eq!(read_reply(response).unwrap().len(), len);
+    }
+
+    #[test]
+    fn a_reply_past_the_limit_is_refused() {
+        let len = REPLY_LIMIT as usize + 1;
+        let response = agent().get(&serve_body(len)).call().unwrap();
+        assert!(read_reply(response).is_err());
+    }
+
+    #[test]
+    fn a_large_upload_is_given_the_time_a_slow_link_needs() {
+        assert_eq!(exchange_timeout(0), EXCHANGE_TIMEOUT);
+        let message = 25 * 1024 * 1024;
+        // 25 MB at 16 KiB/s is 1,600 s.
+        assert_eq!(
+            exchange_timeout(message),
+            EXCHANGE_TIMEOUT + Duration::from_secs(1600)
+        );
     }
 }

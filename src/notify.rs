@@ -108,6 +108,7 @@ pub fn show_while_active() {
                 if let Ok(mut clicked) = CLICKED.lock() {
                     clicked.push(id);
                 }
+                crate::checking::OUTSIDE.ring();
             }
             let handler = handler as *mut block::Block<(), ()>;
             (*handler).call(());
