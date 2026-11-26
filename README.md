@@ -35,8 +35,8 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/showcase-dark.jpg" />
-    <img src=".github/assets/showcase-light.jpg" alt="Nimbra's window on a violet and amber glow: the sidebar with the split inbox, mailboxes and labels, the thread list, and an open email." width="100%" />
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/showcase-dark.png" />
+    <img src=".github/assets/showcase-light.png" alt="Nimbra's window: the sidebar with the split inbox, mailboxes and labels, the thread list, and an open email." width="100%" />
   </picture>
 </p>
 
