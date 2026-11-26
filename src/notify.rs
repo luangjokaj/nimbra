@@ -387,9 +387,42 @@ pub fn preview_sound() {
 pub fn preview_sound() {}
 
 /// The sound every mail notification plays: a file in the app's Resources (macOS takes
-/// AIFF, WAV or CAF of up to 30 seconds there).
+/// AIFF, WAV or CAF of up to 30 seconds).
 #[cfg(target_os = "macos")]
 const MAIL_SOUND: &str = "mail.caf";
+
+/// The name the chime is installed under in `~/Library/Sounds`.
+#[cfg(target_os = "macos")]
+const INSTALLED_SOUND: &str = "Nimbra.caf";
+
+/// Puts the chime where notifications can find it, once a run, and gives its name. macOS
+/// looks for a notification's sound in `~/Library/Sounds` (an app outside the App Store
+/// has no container of its own), not in the app, so it is copied there, and again when a
+/// new version brings a different one. `None` when the app has no chime (a bare debug
+/// binary) or it cannot be copied: the system's sound plays then.
+#[cfg(target_os = "macos")]
+fn mail_sound() -> Option<&'static str> {
+    static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let installed = *INSTALLED.get_or_init(|| {
+        let install = || -> Option<()> {
+            let exe = std::env::current_exe().ok()?;
+            let bundled =
+                std::fs::read(exe.parent()?.parent()?.join("Resources").join(MAIL_SOUND)).ok()?;
+            let sounds = std::path::Path::new(&std::env::var_os("HOME")?).join("Library/Sounds");
+            let target = sounds.join(INSTALLED_SOUND);
+            if std::fs::read(&target).ok().as_deref() != Some(bundled.as_slice()) {
+                std::fs::create_dir_all(&sounds).ok()?;
+                // Written whole, then renamed into place.
+                let partial = sounds.join(".Nimbra.caf.partial");
+                std::fs::write(&partial, &bundled).ok()?;
+                std::fs::rename(&partial, &target).ok()?;
+            }
+            Some(())
+        };
+        install().is_some()
+    });
+    installed.then_some(INSTALLED_SOUND)
+}
 
 /// Shows a notification. `id` identifies it (see the module), so the same thread never
 /// stacks up twice; `sound` plays Nimbra's mail sound with it.
@@ -412,16 +445,13 @@ pub fn show(id: &str, title: &str, body: &str, sound: bool) {
         let _: () = msg_send![content, setTitle: ns_string(title)];
         let _: () = msg_send![content, setBody: ns_string(body)];
         if sound {
-            // Nimbra's own chime (Contents/Resources/mail.caf, from assets/sounds), or the
-            // system's when the app has none (a bare debug binary).
-            let bundled = std::env::current_exe()
-                .ok()
-                .and_then(|exe| Some(exe.parent()?.parent()?.join("Resources/mail.caf")))
-                .is_some_and(|path| path.exists());
-            let sound: *mut Object = if bundled {
-                msg_send![class!(UNNotificationSound), soundNamed: ns_string(MAIL_SOUND)]
-            } else {
-                msg_send![class!(UNNotificationSound), defaultSound]
+            // Nimbra's own chime (from assets/sounds, installed by `mail_sound`), or the
+            // system's when the app has none.
+            let sound: *mut Object = match mail_sound() {
+                Some(name) => {
+                    msg_send![class!(UNNotificationSound), soundNamed: ns_string(name)]
+                }
+                None => msg_send![class!(UNNotificationSound), defaultSound],
             };
             let _: () = msg_send![content, setSound: sound];
         }
