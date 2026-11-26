@@ -105,39 +105,106 @@ fn previews_root() -> std::path::PathBuf {
     std::env::temp_dir().join("nimbra-previews")
 }
 
-/// A private temporary folder for one Quick Look preview.
-pub(super) fn preview_dir() -> anyhow::Result<std::path::PathBuf> {
-    private_folder_in(&previews_root())
+/// The folder of an account's Quick Look copies.
+fn account_previews(root: &std::path::Path, account: &str) -> Option<std::path::PathBuf> {
+    mail::is_account_id(account).then(|| root.join(format!("account-{account}")))
+}
+
+/// A private temporary folder for one Quick Look preview of `account`'s mail.
+pub(super) fn preview_dir(account: &str) -> anyhow::Result<std::path::PathBuf> {
+    previews_in(&previews_root(), account)
+}
+
+fn previews_in(root: &std::path::Path, account: &str) -> anyhow::Result<std::path::PathBuf> {
+    let folder =
+        account_previews(root, account).ok_or_else(|| anyhow::anyhow!("unexpected account id"))?;
+    private(root)?;
+    private_folder_in(&folder)
 }
 
 fn private_folder_in(root: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
     let mut id = [0u8; 8];
     getrandom::getrandom(&mut id).map_err(|e| anyhow::anyhow!("{e}"))?;
     let dir = root.join(id.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    private(root)?;
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir)?;
+    Ok(dir)
+}
+
+/// Makes `folder` (and what leads to it) if it is not there, and only the user's.
+fn private(folder: &std::path::Path) -> anyhow::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
         builder.mode(0o700);
-        builder.create(root)?;
-        if std::fs::symlink_metadata(root)?.file_type().is_symlink() {
+        builder.create(folder)?;
+        if std::fs::symlink_metadata(folder)?.file_type().is_symlink() {
             anyhow::bail!("the previews folder is a link");
         }
         // Made before this version kept it private.
-        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))?;
     }
-    builder.create(&dir)?;
-    Ok(dir)
+    #[cfg(not(unix))]
+    builder.create(folder)?;
+    Ok(())
 }
 
-/// Removes every Quick Look copy: they are mail, decrypted. At launch and on signing out.
-pub(crate) fn forget_previews() {
-    forget_previews_in(&previews_root());
+/// The Quick Look copies there are now (they are mail, decrypted), to remove off the main
+/// thread with `remove_previews`: none made after this is among them. At launch.
+pub(crate) fn previews_now() -> Vec<std::path::PathBuf> {
+    previews_now_in(&previews_root())
 }
 
-fn forget_previews_in(root: &std::path::Path) {
-    let _ = std::fs::remove_dir_all(root);
+fn previews_now_in(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let children = |folder: &std::path::Path| -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(folder)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default()
+    };
+    children(root)
+        .into_iter()
+        .flat_map(|path| {
+            let is_folder = std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir());
+            let of_account = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("account-"));
+            // Earlier versions kept every preview right in the root.
+            if is_folder && of_account {
+                children(&path)
+            } else {
+                vec![path]
+            }
+        })
+        .collect()
+}
+
+/// Blocking.
+pub(crate) fn remove_previews(previews: Vec<std::path::PathBuf>) {
+    for path in previews {
+        let is_folder = std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir());
+        let _ = if is_folder {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+    }
+}
+
+/// Removes an account's Quick Look copies, on signing out. Blocking.
+pub(crate) fn forget_previews(account: &str) {
+    forget_previews_in(&previews_root(), account);
+}
+
+fn forget_previews_in(root: &std::path::Path, account: &str) {
+    if let Some(folder) = account_previews(root, account) {
+        let _ = std::fs::remove_dir_all(folder);
+    }
 }
 
 /// A button on an attachment: its icon, a turning arrow while it downloads, or a green
@@ -244,7 +311,7 @@ impl Nimbra {
                 view.set_dark(false, false);
                 // Never shown, but it needs a page's size to lay the document out.
                 view.set_bounds(0., 0., 800., 1000.);
-                view.show(&doc, self.original_images);
+                view.show(&doc, self.original_images, None);
             }
         }
         let Some((key, html)) = self.original_target() else {
@@ -276,7 +343,8 @@ impl Nimbra {
             // The page follows Nimbra's theme. Both take effect as the mail loads, so a
             // change of either loads it again.
             view.set_dark(self.dark, darkened);
-            view.show(&html, self.original_images);
+            let account = self.mails.get(self.selected).map(|m| self.account_of(m));
+            view.show(&html, self.original_images, account);
             self.html_shown = Some(wanted);
         }
         view.set_visible(true);
@@ -393,6 +461,7 @@ impl Nimbra {
             return;
         }
         let key = att.attachment_id.clone();
+        let from = account.unwrap_or(&self.account_id).to_string();
         self.attachment_busy.insert(key.clone(), save);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -402,7 +471,7 @@ impl Nimbra {
                 let dir = if save {
                     downloads_dir()?
                 } else {
-                    preview_dir()?
+                    preview_dir(&from)?
                 };
                 save_new(&dir, &name, &bytes)
             })
@@ -566,6 +635,7 @@ impl Nimbra {
         blocks: &[Block],
         base: usize,
         selectable: &super::selection::Selectable,
+        account: &str,
         cx: &mut Context<Self>,
     ) -> Div {
         let sources = rich::image_sources(blocks);
@@ -609,7 +679,7 @@ impl Nimbra {
                 blocks
                     .iter()
                     .enumerate()
-                    .map(|(i, block)| self.block(t, block, base + i, selectable, cx)),
+                    .map(|(i, block)| self.block(t, block, base + i, selectable, account, cx)),
             )
     }
 
@@ -619,6 +689,7 @@ impl Nimbra {
         block: &Block,
         id: usize,
         selectable: &super::selection::Selectable,
+        account: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let text = |color: Hsla| {
@@ -663,10 +734,14 @@ impl Nimbra {
             } else {
                 // Links open in the system browser; only http, https and mailto get this far.
                 let (ranges, urls): (Vec<_>, Vec<_>) = links.into_iter().unzip();
+                let account = account.to_string();
                 gpui::InteractiveText::new(("link-text", id), styled)
-                    .on_click(ranges, move |index, _, cx| {
-                        if !crate::integration::mailto_from_mail(&urls[index], None) {
-                            cx.open_url(&urls[index]);
+                    .on_click(ranges, move |index, window, cx| {
+                        let link = &urls[index];
+                        let from = Some(account.clone());
+                        let here = Some(window.window_handle());
+                        if !crate::integration::mailto_from_mail(link, from, here) {
+                            cx.open_url(link);
                         }
                     })
                     .into_any_element()
@@ -849,6 +924,11 @@ impl Nimbra {
         } else {
             pane_w
         };
+        // A narrow pane drops what has another way in first: the position and the arrows
+        // (the list, J and K), then reply, reply all and forward (on each message, R A F).
+        // "Show original" becomes its icon. More actions always stays.
+        let roomy = pane_w >= 760.;
+        let narrow = pane_w < 600.;
         let visible = self.visible();
         let pos = visible
             .iter()
@@ -887,7 +967,13 @@ impl Nimbra {
                         .whitespace_nowrap()
                         .overflow_hidden()
                         .text_color(t.text3)
-                        .child(short(snippet, 110)),
+                        // Cut by characters to what the column leaves beside the name and
+                        // the time, so it ends with an ellipsis rather than mid-letter.
+                        .child(short(snippet, {
+                            let taken = 8. * name.chars().count() as f32
+                                + 7.5 * when.chars().count() as f32;
+                            ((column - 160. - taken) / 7.).clamp(8., 110.) as usize
+                        })),
                 )
                 .child(mono(when.to_string(), t.faint))
         };
@@ -1083,55 +1169,61 @@ impl Nimbra {
                             }))
                             .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
                     )
+                    .when(!narrow, |d| {
+                        d.child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
+                            .child(
+                                icon_button(t, "reply")
+                                    .id("reply")
+                                    .press(t)
+                                    .tooltip(tip(t.dark, "Reply", "R"))
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        this.set_hint(*hovered, "Reply", "R", cx)
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_compose(ComposeKind::Reply, cx)
+                                    })),
+                            )
+                            .child(
+                                icon_button(t, "reply-all")
+                                    .id("reply-all")
+                                    .press(t)
+                                    .tooltip(tip(t.dark, "Reply all", "A"))
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        this.set_hint(*hovered, "Reply all", "A", cx)
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_compose(ComposeKind::ReplyAll, cx)
+                                    })),
+                            )
+                            .child(
+                                icon_button(t, "forward")
+                                    .id("forward")
+                                    .press(t)
+                                    .tooltip(tip(t.dark, "Forward", "F"))
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        this.set_hint(*hovered, "Forward", "F", cx)
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_compose(ComposeKind::Forward, cx)
+                                    })),
+                            )
+                    })
                     .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
                     .child(
-                        icon_button(t, "reply")
-                            .id("reply")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Reply", "R"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Reply", "R", cx)
-                            }))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_compose(ComposeKind::Reply, cx)
-                            })),
-                    )
-                    .child(
-                        icon_button(t, "reply-all")
-                            .id("reply-all")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Reply all", "A"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Reply all", "A", cx)
-                            }))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_compose(ComposeKind::ReplyAll, cx)
-                            })),
-                    )
-                    .child(
-                        icon_button(t, "forward")
-                            .id("forward")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Forward", "F"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Forward", "F", cx)
-                            }))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_compose(ComposeKind::Forward, cx)
-                            })),
-                    )
-                    .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
-                    .child(
-                        button(
-                            t,
-                            ButtonKind::Ghost,
-                            if original {
-                                "Reader view"
-                            } else {
-                                "Show original"
-                            },
-                            Some("V"),
-                        )
+                        if roomy {
+                            button(
+                                t,
+                                ButtonKind::Ghost,
+                                if original {
+                                    "Reader view"
+                                } else {
+                                    "Show original"
+                                },
+                                Some("V"),
+                            )
+                        } else {
+                            icon_button(t, "eye")
+                        }
                         .id("original")
                         .press_soft()
                         .tooltip(tip(t.dark, "Switch between original and reader view", "V"))
@@ -1147,27 +1239,29 @@ impl Nimbra {
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
                     )
                     .child(div().flex_1())
-                    .child(mono(format!("{pos} / {}", visible.len()), t.text3).mr(px(6.)))
-                    .child(
-                        icon_button(t, "up")
-                            .id("prev")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Previous thread", "K"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Previous thread", "K", cx)
-                            }))
-                            .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
-                    )
-                    .child(
-                        icon_button(t, "down")
-                            .id("next")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Next thread", "J"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Next thread", "J", cx)
-                            }))
-                            .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
-                    )
+                    .when(roomy, |d| {
+                        d.child(mono(format!("{pos} / {}", visible.len()), t.text3).mr(px(6.)))
+                            .child(
+                                icon_button(t, "up")
+                                    .id("prev")
+                                    .press(t)
+                                    .tooltip(tip(t.dark, "Previous thread", "K"))
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        this.set_hint(*hovered, "Previous thread", "K", cx)
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
+                            )
+                            .child(
+                                icon_button(t, "down")
+                                    .id("next")
+                                    .press(t)
+                                    .tooltip(tip(t.dark, "Next thread", "J"))
+                                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                        this.set_hint(*hovered, "Next thread", "J", cx)
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
+                            )
+                    })
                     .child(
                         icon_button(t, "more")
                             .id("more")
@@ -1327,6 +1421,7 @@ impl Nimbra {
                                                                     &e.blocks,
                                                                     (k + 1) * 1000,
                                                                     &selectable,
+                                                                    self.account_of(m),
                                                                     cx,
                                                                 )
                                                                 .pl(px(40.)),
@@ -1354,11 +1449,18 @@ impl Nimbra {
                                 .child(divider())
                                 .child(self.message_header(t, m, 0, true, cx))
                                 .child(
-                                    self.message_body(t, &m.body, 0, &selectable, cx)
-                                        .pl(px(40.))
-                                        .when(!m.loaded, |d| {
-                                            d.child(self.loading_line(t, m, cx.entity()))
-                                        }),
+                                    self.message_body(
+                                        t,
+                                        &m.body,
+                                        0,
+                                        &selectable,
+                                        self.account_of(m),
+                                        cx,
+                                    )
+                                    .pl(px(40.))
+                                    .when(!m.loaded, |d| {
+                                        d.child(self.loading_line(t, m, cx.entity()))
+                                    }),
                                 )
                                 .when(!m.header.attachments.is_empty(), |d| {
                                     d.child(
@@ -2339,12 +2441,41 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_previews_removes_them_all() {
+    fn signing_out_forgets_that_accounts_previews_only() {
         let scratch = Scratch::new();
         let root = scratch.0.join("previews");
-        let dir = private_folder_in(&root).unwrap();
-        std::fs::write(dir.join("mail.pdf"), b"secret").unwrap();
-        forget_previews_in(&root);
-        assert!(!root.exists());
+        let gone = previews_in(&root, "").unwrap();
+        let kept = previews_in(&root, "a1").unwrap();
+        std::fs::write(gone.join("mail.pdf"), b"secret").unwrap();
+        forget_previews_in(&root, "");
+        assert!(!gone.exists());
+        assert!(kept.exists());
+    }
+
+    #[test]
+    fn previews_are_kept_per_account_and_private() {
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        let dir = previews_in(&root, "a1").unwrap();
+        let folder = dir.parent().unwrap();
+        assert_eq!(folder, root.join("account-a1"));
+        assert_eq!(
+            (mode(&root), mode(folder), mode(&dir)),
+            (0o700, 0o700, 0o700)
+        );
+        assert!(previews_in(&root, "../x").is_err());
+    }
+
+    #[test]
+    fn a_launch_forgets_the_previews_there_were_and_not_one_made_since() {
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        let older = previews_in(&root, "").unwrap();
+        let earlier_version = private_folder_in(&root).unwrap();
+        let there = previews_now_in(&root);
+        let since = previews_in(&root, "").unwrap();
+        remove_previews(there);
+        assert!(!older.exists() && !earlier_version.exists());
+        assert!(since.exists());
     }
 }

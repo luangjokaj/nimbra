@@ -15,10 +15,12 @@ use futures::channel::{mpsc, oneshot};
 pub enum Event {
     /// Links from other apps (`mailto:`), as macOS hands them over.
     OpenUrls(Vec<String>),
-    /// A `mailto:` link clicked in a message, from the account it is in when known.
+    /// A `mailto:` link clicked in a message, from the account it is in when known, and the
+    /// window it was clicked in.
     Mailto {
         link: String,
         account: Option<String>,
+        window: Option<gpui::AnyWindowHandle>,
     },
     /// An answer to a notification. No account: the one shown (older notifications).
     Notification {
@@ -79,13 +81,18 @@ pub fn take_events() -> Option<Listener> {
 
 /// A link clicked in a message: a `mailto:` one opens Nimbra's composer (from `account`,
 /// the one the message is in, when known) instead of another mail app. Whether it was one.
-pub fn mailto_from_mail(link: &str, account: Option<String>) -> bool {
+pub fn mailto_from_mail(
+    link: &str,
+    account: Option<String>,
+    window: Option<gpui::AnyWindowHandle>,
+) -> bool {
     if !crate::mailto::is_mailto(link) {
         return false;
     }
     post(Event::Mailto {
         link: link.to_string(),
         account,
+        window,
     });
     true
 }
@@ -107,7 +114,12 @@ thread_local! {
 /// thread only.
 pub async fn pause(timer: impl std::future::Future<Output = ()>) -> bool {
     let (end, ended) = oneshot::channel();
-    PAUSES.with(|pauses| pauses.borrow_mut().push(end));
+    PAUSES.with(|pauses| {
+        let mut pauses = pauses.borrow_mut();
+        // Those whose timer ended first.
+        pauses.retain(|pause| !pause.is_canceled());
+        pauses.push(end);
+    });
     match futures::future::select(std::pin::pin!(timer), ended).await {
         futures::future::Either::Left(_) => false,
         futures::future::Either::Right((result, _)) => result.is_ok(),
@@ -546,5 +558,13 @@ mod tests {
         assert!(!futures::executor::block_on(pause(futures::future::ready(
             ()
         ))));
+    }
+
+    #[test]
+    fn pauses_that_ended_with_their_timer_are_not_kept() {
+        for _ in 0..100 {
+            futures::executor::block_on(pause(futures::future::ready(())));
+        }
+        assert!(PAUSES.with(|pauses| pauses.borrow().len()) <= 1);
     }
 }
