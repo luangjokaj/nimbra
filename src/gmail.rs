@@ -54,7 +54,8 @@ const KEYCHAIN_USER: &str = "gmail-refresh-token";
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long Gmail may take to connect, or stay silent once connected.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
-/// How long a whole exchange may take, before the time its upload needs.
+/// How long a whole exchange may take, before the time its upload needs. Enforced apart
+/// from `HTTP_TIMEOUT`: ureq's own overall timeout would replace the stall timeouts.
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(300);
 /// The slowest upload allowed for, in bytes a second (a weak hotel or tethered link).
 const SLOWEST_UPLOAD: u64 = 16 * 1024;
@@ -68,7 +69,40 @@ const HISTORY_PAGES: usize = 10;
 #[derive(Clone, Copy)]
 enum Payload<'a> {
     None,
-    Bytes(&'a [u8]),
+    /// Stops going out once the exchange is past its deadline.
+    Bytes(&'a [u8], Instant),
+}
+
+/// Reads from `inner` until `until`, then fails as timed out.
+struct Within<R> {
+    inner: R,
+    until: Instant,
+}
+
+impl<R: std::io::Read> std::io::Read for Within<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if Instant::now() >= self.until {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the exchange took too long",
+            ));
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// Makes a request with what it carries. Each connect, read and write may stall for the
+/// agent's timeouts; a body stops at its deadline as well.
+fn exchange(request: ureq::Request, payload: Payload<'_>) -> Result<ureq::Response, ureq::Error> {
+    match payload {
+        Payload::None => request.call(),
+        Payload::Bytes(bytes, until) => request
+            .set("Content-Length", &bytes.len().to_string())
+            .send(Within {
+                inner: bytes,
+                until,
+            }),
+    }
 }
 
 /// Gmail's requests, where each step (connect, read, write) times out on its own: a slow
@@ -76,14 +110,21 @@ enum Payload<'a> {
 /// one the server closed meanwhile would fail a send that never left as one that may have.
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        ureq::AgentBuilder::new()
-            .max_idle_connections(0)
-            .timeout_connect(HTTP_TIMEOUT)
-            .timeout_read(HTTP_TIMEOUT)
-            .timeout_write(HTTP_TIMEOUT)
-            .build()
-    })
+    AGENT.get_or_init(|| stalling_after(HTTP_TIMEOUT))
+}
+
+fn stalling_after(stall: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .max_idle_connections(0)
+        .timeout_connect(stall)
+        .timeout_read(stall)
+        .timeout_write(stall)
+        .build()
+}
+
+/// When an exchange that uploads `sent` bytes, starting now, has to be over.
+fn exchange_deadline(sent: usize) -> Instant {
+    Instant::now() + exchange_timeout(sent)
 }
 
 /// How long an exchange that uploads `sent` bytes may take in all.
@@ -91,14 +132,17 @@ fn exchange_timeout(sent: usize) -> Duration {
     EXCHANGE_TIMEOUT + Duration::from_secs(sent as u64 / SLOWEST_UPLOAD)
 }
 
-/// A reply's body, refused past `REPLY_LIMIT` (ureq's own reader stops at 10 MB).
-fn read_reply(response: ureq::Response) -> Result<Vec<u8>> {
+/// A reply's body, refused past `REPLY_LIMIT` (ureq's own reader stops at 10 MB) or once
+/// the exchange is past `until`.
+fn read_reply(response: ureq::Response, until: Instant) -> Result<Vec<u8>> {
     use std::io::Read as _;
     let mut body = Vec::new();
-    response
-        .into_reader()
-        .take(REPLY_LIMIT + 1)
-        .read_to_end(&mut body)?;
+    Within {
+        inner: response.into_reader(),
+        until,
+    }
+    .take(REPLY_LIMIT + 1)
+    .read_to_end(&mut body)?;
     if body.len() as u64 > REPLY_LIMIT {
         bail!("Gmail's reply was too large to read");
     }
@@ -546,10 +590,7 @@ impl Client {
             let call = request
                 .clone()
                 .set("Authorization", &format!("Bearer {token}"));
-            let result = match payload {
-                Payload::None => call.call(),
-                Payload::Bytes(bytes) => call.send_bytes(bytes),
-            };
+            let result = exchange(call, payload);
             if renewed || !matches!(result, Err(ureq::Error::Status(401, _))) {
                 // Whatever the answer: a write with a lost one may have been carried out.
                 if request.method() != "GET" {
@@ -572,11 +613,11 @@ impl Client {
 
     fn send<T: serde::de::DeserializeOwned>(
         &self,
-        request: ureq::Request,
+        mut request: ureq::Request,
         body: Option<serde_json::Value>,
     ) -> Result<T> {
         let body = body.map(|body| serde_json::to_vec(&body)).transpose()?;
-        let mut request = request.timeout(exchange_timeout(body.as_ref().map_or(0, Vec::len)));
+        let until = exchange_deadline(body.as_ref().map_or(0, Vec::len));
         if body.is_some() {
             request = request.set("Content-Type", "application/json");
         }
@@ -587,7 +628,8 @@ impl Client {
         loop {
             let result = self.authorized(
                 &request,
-                body.as_deref().map_or(Payload::None, Payload::Bytes),
+                body.as_deref()
+                    .map_or(Payload::None, |body| Payload::Bytes(body, until)),
             )?;
             if let Err(ureq::Error::Status(code @ (403 | 429), response)) = result {
                 let text = response.into_string().unwrap_or_default();
@@ -601,7 +643,7 @@ impl Client {
             }
             // Gmail answers "204 No Content" (an empty body) when a filtered list has
             // nothing in it, such as no unread mail. That is an empty object, not an error.
-            let reply = read_reply(self.finish(result)?)
+            let reply = read_reply(self.finish(result)?, until)
                 .context("reading Gmail's reply")
                 .context(MayHaveArrived)?;
             let reply = if reply.trim_ascii().is_empty() {
@@ -631,15 +673,13 @@ impl Client {
         .into_bytes();
         body.extend_from_slice(raw);
         body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-        let request = request
-            .query("uploadType", "multipart")
-            .timeout(exchange_timeout(body.len()))
-            .set(
-                "Content-Type",
-                &format!("multipart/related; boundary={boundary}"),
-            );
-        let result = self.authorized(&request, Payload::Bytes(&body))?;
-        read_reply(self.finish(result)?)
+        let until = exchange_deadline(body.len());
+        let request = request.query("uploadType", "multipart").set(
+            "Content-Type",
+            &format!("multipart/related; boundary={boundary}"),
+        );
+        let result = self.authorized(&request, Payload::Bytes(&body, until))?;
+        read_reply(self.finish(result)?, until)
             .and_then(|reply| Ok(serde_json::from_slice(&reply)?))
             .context("reading Gmail's reply")
             .context(MayHaveArrived)
@@ -2549,14 +2589,117 @@ mod tests {
     fn a_reply_past_ten_megabytes_is_read_whole() {
         let len = 12 * 1024 * 1024;
         let response = agent().get(&serve_body(len)).call().unwrap();
-        assert_eq!(read_reply(response).unwrap().len(), len);
+        assert_eq!(
+            read_reply(response, exchange_deadline(0)).unwrap().len(),
+            len
+        );
     }
 
     #[test]
     fn a_reply_past_the_limit_is_refused() {
         let len = REPLY_LIMIT as usize + 1;
         let response = agent().get(&serve_body(len)).call().unwrap();
-        assert!(read_reply(response).is_err());
+        assert!(read_reply(response, exchange_deadline(0)).is_err());
+    }
+
+    /// Takes connections and never answers.
+    fn serve_silence() -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let held: Vec<TcpStream> = listener.incoming().map_while(Result::ok).collect();
+            drop(held);
+        });
+        format!("http://127.0.0.1:{port}/")
+    }
+
+    /// Takes an upload 64 KB every 50 ms for `slow`, then the rest at once, and answers.
+    fn serve_slow_upload(slow: Duration) -> String {
+        use std::io::Read as _;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let started = Instant::now();
+            let mut chunk = vec![0; 64 * 1024];
+            let mut left = length;
+            while left > 0 && started.elapsed() < slow {
+                match reader.read(&mut chunk[..left.min(64 * 1024)]) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => left -= n,
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let mut rest = vec![0; left];
+            if reader.read_exact(&mut rest).is_err() {
+                return;
+            }
+            let _ = reader
+                .into_inner()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+        });
+        format!("http://127.0.0.1:{port}/")
+    }
+
+    const STALL: Duration = Duration::from_millis(300);
+
+    #[test]
+    fn a_stalled_request_fails_after_the_stall_timeout_whatever_its_total() {
+        let started = Instant::now();
+        let far = Instant::now() + Duration::from_secs(300);
+        let result = exchange(
+            stalling_after(STALL).post(&serve_silence()),
+            Payload::Bytes(b"{}", far),
+        );
+        assert!(result.is_err());
+        let took = started.elapsed();
+        assert!(took >= STALL && took < STALL * 4, "took {took:?}");
+    }
+
+    #[test]
+    fn a_large_upload_that_keeps_moving_outlasts_the_stall_timeout() {
+        let body = vec![b'x'; 16 * 1024 * 1024];
+        let slow = STALL * 4;
+        let url = serve_slow_upload(slow);
+        let started = Instant::now();
+        let response = exchange(
+            stalling_after(STALL).post(&url),
+            Payload::Bytes(&body, exchange_deadline(body.len())),
+        )
+        .unwrap();
+        assert!(started.elapsed() >= slow);
+        assert_eq!(response.into_string().unwrap(), "{}");
+    }
+
+    #[test]
+    fn an_upload_past_its_deadline_is_stopped() {
+        let body = vec![b'x'; 16 * 1024 * 1024];
+        let url = serve_slow_upload(Duration::from_secs(30));
+        let started = Instant::now();
+        let result = exchange(
+            stalling_after(Duration::from_secs(20)).post(&url),
+            Payload::Bytes(&body, Instant::now() + STALL),
+        );
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < STALL * 4,
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
