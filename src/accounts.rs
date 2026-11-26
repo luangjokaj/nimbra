@@ -59,7 +59,7 @@ impl Nimbra {
                         // Saved for its account, which is not the one shown any more.
                         _ if this.account_gen != generation => {}
                         Ok(client) => {
-                            this.connection = Some(Arc::new(client));
+                            this.connection = Some(this.signed_in_again(client));
                             this.open_store(cx);
                         }
                         Err(error) => {
@@ -176,12 +176,15 @@ impl Nimbra {
     ) -> Option<Arc<mail::Client>> {
         let account = self.settings.accounts.iter().find(|a| a.id == id)?;
         let servers = account.servers.clone()?;
-        Some(Arc::new(crate::imap_mail::Client::new(
-            id.to_string(),
-            account.email.clone(),
-            servers,
-            credential?,
-        )))
+        Some(crate::contacts::wrap(
+            crate::imap_mail::Client::new(
+                id.to_string(),
+                account.email.clone(),
+                servers,
+                credential?,
+            ),
+            &account.email,
+        ))
     }
 
     /// Signs in to another Gmail account in the browser, then switches to it. The account
@@ -209,7 +212,8 @@ impl Nimbra {
                     this.update(cx, |this, cx| match result {
                         Ok(client) => {
                             this.reset_account(account, cx);
-                            this.connection = Some(Arc::new(client));
+                            // A new account: its address is known once its profile is read.
+                            this.connection = Some(crate::contacts::wrap(client, ""));
                             this.open_store(cx);
                         }
                         Err(error) => {
@@ -268,7 +272,11 @@ impl Nimbra {
                 }
                 match token {
                     Ok(Some(token)) => {
-                        this.connection = Some(Arc::new(gmail::Client::new(config, token, id)));
+                        let email = this.email_of(&id).unwrap_or_default();
+                        this.connection = Some(crate::contacts::wrap(
+                            gmail::Client::new(config, token, id),
+                            &email,
+                        ));
                         this.open_store(cx);
                     }
                     Ok(None) if sign_in => this.sign_in(cx),
@@ -449,7 +457,9 @@ impl Nimbra {
                 for (id, token) in found {
                     if id != this.account_id && this.settings.accounts.iter().any(|a| a.id == id) {
                         let client = gmail::Client::new(config.clone(), token, id.clone());
-                        this.others.insert(id.clone(), Arc::new(client));
+                        let email = this.email_of(&id).unwrap_or_default();
+                        this.others
+                            .insert(id.clone(), crate::contacts::wrap(client, &email));
                         this.open_other_store(id, cx);
                     }
                 }
@@ -496,6 +506,7 @@ impl Nimbra {
                         .or_insert(inbox_empty);
                     this.snoozed_away.insert(account.clone(), (0, snoozed));
                     this.read_snoozed_elsewhere();
+                    this.scan_contacts(account.clone(), cx);
                     this.load_photo(account, cx);
                 }
             })
@@ -505,6 +516,71 @@ impl Nimbra {
     }
 
     /// The connection for an account: the shown one, or another signed-in one.
+    /// Reads the people of the account's newest sent and received mail for address
+    /// suggestions, once per account and session, a page every `SCAN_PAUSE` (Gmail's
+    /// quota is the user's). It carries on from where it got to before, and stops for the
+    /// session at the first failure (offline: the next launch tries again), or once the
+    /// account's connection is not this one any more (signed out, removed).
+    pub(super) fn scan_contacts(&mut self, account: String, cx: &mut Context<Self>) {
+        let Some(client) = self.client_for(Some(&account)) else {
+            return;
+        };
+        if client.contacts().is_none() || !self.contacts_scans.insert(account.clone()) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                // Also before the first page: the mailbox loading at launch goes first.
+                cx.background_executor()
+                    .timer(crate::contacts::SCAN_PAUSE)
+                    .await;
+                let same = this
+                    .update(cx, |this, _| {
+                        this.client_for(Some(&account)).is_some_and(|now| {
+                            std::ptr::addr_eq(Arc::as_ptr(&now), Arc::as_ptr(&client))
+                        })
+                    })
+                    .unwrap_or(false);
+                if !same {
+                    break;
+                }
+                let step = {
+                    let client = client.clone();
+                    cx.background_executor()
+                        .spawn(async move {
+                            match client.contacts() {
+                                Some(contacts) => contacts.scan_step(&*client),
+                                None => Ok(false),
+                            }
+                        })
+                        .await
+                };
+                match step {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(error) => {
+                        eprintln!("nimbra: could not read the people of past mail: {error:#}");
+                        break;
+                    }
+                }
+            }
+            this.update(cx, |this, _| this.contacts_scans.remove(&account))
+                .ok();
+        })
+        .detach();
+    }
+
+    /// A new Gmail sign-in to the account shown, as the connection to keep: it carries on
+    /// with the people the one it replaces learnt (`contacts.rs`).
+    fn signed_in_again(&self, client: gmail::Client) -> Arc<mail::Client> {
+        match self.connection.as_ref().and_then(|c| c.contacts()) {
+            Some(contacts) => crate::contacts::wrap_sharing(client, contacts.clone()),
+            None => {
+                crate::contacts::wrap(client, &self.email_of(&self.account_id).unwrap_or_default())
+            }
+        }
+    }
+
     pub(super) fn client_for(&self, account: Option<&str>) -> Option<Arc<mail::Client>> {
         match account {
             Some(id) if id != self.account_id => self.others.get(id).cloned(),
@@ -827,7 +903,7 @@ impl Nimbra {
                         // Another account was switched to while the browser was open.
                         Ok(_) if this.account_gen != generation => {}
                         Ok(client) => {
-                            this.connection = Some(Arc::new(client));
+                            this.connection = Some(this.signed_in_again(client));
                             this.notice = None;
                             this.check_photo_again(cx);
                         }
@@ -954,7 +1030,7 @@ impl Nimbra {
                         // Those threads are not the account's that is shown by now.
                         Ok(_) if this.account_gen != generation => {}
                         Ok(client) => {
-                            this.connection = Some(Arc::new(client));
+                            this.connection = Some(this.signed_in_again(client));
                             this.delete_forever(ids, cx);
                         }
                         Err(error) => {

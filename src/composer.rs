@@ -1530,9 +1530,16 @@ impl Nimbra {
                     if token.is_empty() {
                         return None;
                     }
+                    // Typed in the field, or already a pill in To, Cc or Bcc.
                     let present: Vec<String> = text
                         .split([',', ';'])
                         .map(|p| p.trim().to_lowercase())
+                        .chain(
+                            self.compose
+                                .iter()
+                                .flat_map(|c| c.chips.iter().flatten())
+                                .map(|chip| mail::address_of(chip).to_lowercase()),
+                        )
                         .collect();
                     let people = self.match_contacts(&token, &present);
                     (!people.is_empty()).then_some(Suggest {
@@ -1550,44 +1557,78 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// People from the mail on this Mac whose name or address starts with `token`, most
-    /// often seen first.
+    /// The people whose name, address or domain starts with `token`, best first: from
+    /// what each account's connection learnt of the people it writes with (`contacts.rs`),
+    /// the account the message is written from counting double, and from the mail open on
+    /// screen. Never the user's own addresses, nor anyone already in the field.
     fn match_contacts(&self, token: &str, present: &[String]) -> Vec<mail::Person> {
-        let me = self.account.to_lowercase();
-        let mut seen: HashMap<String, (mail::Person, u32)> = HashMap::new();
-        let mut add = |p: &mail::Person| {
-            let key = p.address.to_lowercase();
-            if key.is_empty() || key == me {
+        let from = self
+            .compose
+            .as_ref()
+            .and_then(|c| c.account.clone())
+            .unwrap_or_else(|| self.account_id.clone());
+        let mine: Vec<String> = self
+            .settings
+            .accounts
+            .iter()
+            .map(|a| a.email.to_lowercase())
+            .chain(std::iter::once(self.account.to_lowercase()))
+            .filter(|a| !a.is_empty())
+            .collect();
+        let mut found: HashMap<String, (mail::Person, f64)> = HashMap::new();
+        let mut add = |person: mail::Person, score: f64| {
+            let key = person.address.to_lowercase();
+            if key.is_empty() || mine.contains(&key) || present.contains(&key) {
                 return;
             }
-            let entry = seen.entry(key).or_insert_with(|| (p.clone(), 0));
-            entry.1 += 1;
-            if entry.0.name.is_empty() && !p.name.is_empty() {
-                entry.0.name = p.name.clone();
+            let entry = found.entry(key).or_insert_with(|| (person.clone(), 0.0));
+            entry.1 += score;
+            if entry.0.name.is_empty() && !person.name.is_empty() {
+                entry.0.name = person.name;
             }
         };
+        let connections = self
+            .connection
+            .iter()
+            .map(|c| (self.account_id.as_str(), c))
+            .chain(self.others.iter().map(|(id, c)| (id.as_str(), c)));
+        for (account, client) in connections {
+            let weight = if account == from { 2.0 } else { 1.0 };
+            for (person, score) in client
+                .contacts()
+                .map(|c| c.suggest(token))
+                .unwrap_or_default()
+            {
+                add(person, score * weight);
+            }
+        }
+        // The mail on screen (and the sample mail, which no connection has).
         for mail in self.mails.iter().chain(self.cache.values().flatten()) {
             for header in
                 std::iter::once(&mail.header).chain(mail.earlier.iter().map(|e| &e.header))
             {
-                add(&header.from);
-                header.to.iter().for_each(&mut add);
-                header.cc.iter().for_each(&mut add);
+                for person in std::iter::once(&header.from)
+                    .chain(&header.to)
+                    .chain(&header.cc)
+                {
+                    if crate::contacts::matches(person, token)
+                        && !crate::contacts::automated(&person.address)
+                    {
+                        add(person.clone(), 0.25);
+                    }
+                }
             }
         }
-        let mut found: Vec<(mail::Person, u32)> = seen
-            .into_values()
-            .filter(|(p, _)| {
-                let address = p.address.to_lowercase();
-                let name = p.name.to_lowercase();
-                !present.contains(&address)
-                    && (address.starts_with(token)
-                        || name.starts_with(token)
-                        || name.split_whitespace().any(|w| w.starts_with(token)))
-            })
-            .collect();
-        found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.address.cmp(&b.0.address)));
-        found.into_iter().take(5).map(|(p, _)| p).collect()
+        let mut found: Vec<(mail::Person, f64)> = found.into_values().collect();
+        found.sort_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then_with(|| a.0.address.cmp(&b.0.address))
+        });
+        found
+            .into_iter()
+            .take(crate::contacts::SHOWN)
+            .map(|(p, _)| p)
+            .collect()
     }
 
     /// Puts the chosen suggestion in place of what was being typed.

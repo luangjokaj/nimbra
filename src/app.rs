@@ -506,6 +506,8 @@ pub struct Nimbra {
     update_status: Option<SharedString>,
     /// The address suggestions' window, where it was put, and for how many rows.
     suggest_window: Option<(gpui::WindowHandle<SuggestPopup>, (f64, f64), usize)>,
+    /// The accounts whose first look for people to suggest runs (`contacts.rs`).
+    contacts_scans: HashSet<String>,
     notice_shown: Option<SharedString>,
     notice_gen: usize,
     /// The search panel (opened with / or ⌘F): its field, the results so far (from the mail
@@ -920,6 +922,7 @@ impl Nimbra {
             attachment_saved: HashMap::new(),
             notice_window: None,
             suggest_window: None,
+            contacts_scans: HashSet::new(),
             update_ready: crate::update::staged(),
             restart_for_update: false,
             update_checking: false,

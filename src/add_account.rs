@@ -552,9 +552,10 @@ impl Nimbra {
             || matches!(self.status, Status::SignedOut | Status::SigningIn)
         {
             self.reset_account(id.clone(), cx);
-            self.connection = Some(Arc::new(crate::imap_mail::Client::new(
-                id, email, servers, credential,
-            )));
+            self.connection = Some(crate::contacts::wrap(
+                crate::imap_mail::Client::new(id, email.clone(), servers, credential),
+                &email,
+            ));
             self.status = Status::Loading;
             self.open_store(cx);
         }

@@ -7,6 +7,7 @@ mod autohide;
 mod blocking;
 mod blur;
 mod checking;
+mod contacts;
 mod data;
 mod discover;
 mod dns;

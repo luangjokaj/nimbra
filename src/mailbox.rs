@@ -731,6 +731,7 @@ impl Nimbra {
                 this.scheduled = later;
                 this.snoozed = snoozed;
                 this.store = Some(store);
+                this.scan_contacts(this.account_id.clone(), cx);
                 // Not only after a full listing: opening into what is saved often has none.
                 this.load_photo(this.account_id.clone(), cx);
                 if view == View::Inbox {

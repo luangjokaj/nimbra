@@ -1,5 +1,14 @@
 # Nimbra changelog
 
+## [Unreleased]
+
+### New
+- **Address suggestions from all your mail.** To, Cc and Bcc now suggest anyone you've written to or heard from, on every account, by name, address or domain, with the people you write to first. Nimbra learns them from the mail you read and send, and once from the headers of your newest sent and received mail, read slowly in the background. They stay encrypted on your Mac.
+
+### Fixed
+- **Buttons in dark emails.** A light button in an email that's already dark (like Vercel's) stays as the sender made it, instead of turning dark with unreadable text.
+- **Emails built with modern colours.** Dark mode now reads the newer colour formats many emails use, so their text and boxes are darkened properly instead of showing as white bars.
+
 ## [0.1.4] - 2026-11-26
 
 ### New
