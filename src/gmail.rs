@@ -165,7 +165,7 @@ pub fn forget_refresh_token(account: &str) {
 
 pub(crate) fn random_token() -> Result<String> {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).map_err(|e| anyhow!("no secure random source: {e}"))?;
+    getrandom::fill(&mut bytes).map_err(|e| anyhow!("no secure random source: {e}"))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 

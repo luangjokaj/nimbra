@@ -61,7 +61,7 @@ pub fn mx(domain: &str) -> Result<Vec<String>> {
 /// One query to one resolver, waiting until the reply or the time limit.
 fn ask(resolver: SocketAddr, domain: &str, deadline: Instant) -> Result<Vec<String>> {
     let mut id = [0u8; 2];
-    getrandom::getrandom(&mut id).map_err(|e| anyhow!("no secure random source: {e}"))?;
+    getrandom::fill(&mut id).map_err(|e| anyhow!("no secure random source: {e}"))?;
     let id = u16::from_be_bytes(id);
     let packet = query(id, domain)?;
     let local: IpAddr = match resolver {

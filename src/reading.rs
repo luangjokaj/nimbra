@@ -41,7 +41,7 @@ pub(super) fn unique_download_path(name: &str) -> anyhow::Result<std::path::Path
 /// A private temporary folder for Quick Look previews.
 pub(super) fn preview_path(name: &str) -> anyhow::Result<std::path::PathBuf> {
     let mut id = [0u8; 8];
-    getrandom::getrandom(&mut id).map_err(|e| anyhow::anyhow!("{e}"))?;
+    getrandom::fill(&mut id).map_err(|e| anyhow::anyhow!("{e}"))?;
     let dir = std::env::temp_dir()
         .join("nimbra-previews")
         .join(id.iter().map(|b| format!("{b:02x}")).collect::<String>());

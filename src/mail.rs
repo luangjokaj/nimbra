@@ -288,7 +288,7 @@ pub fn mime_for(name: &str) -> &'static str {
 
 pub(crate) fn random_hex(bytes: usize) -> Result<String> {
     let mut buffer = vec![0u8; bytes];
-    getrandom::getrandom(&mut buffer).map_err(|e| anyhow!("no secure random source: {e}"))?;
+    getrandom::fill(&mut buffer).map_err(|e| anyhow!("no secure random source: {e}"))?;
     Ok(buffer.iter().map(|b| format!("{b:02x}")).collect())
 }
 

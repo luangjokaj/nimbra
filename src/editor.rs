@@ -204,7 +204,7 @@ mod platform {
         /// arrive on `events`.
         pub fn new(window: &gpui::Window, events: UnboundedSender<EditorEvent>) -> Option<Self> {
             let mut nonce = [0u8; 18];
-            getrandom::getrandom(&mut nonce).ok()?;
+            getrandom::fill(&mut nonce).ok()?;
             let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
             let drops = events.clone();
             let view = WebViewBuilder::new()

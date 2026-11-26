@@ -87,7 +87,7 @@ impl Store {
         restrict(&dir, 0o700);
         Ok(Self {
             dir,
-            cipher: ChaCha20Poly1305::new(Key::from_slice(key)),
+            cipher: ChaCha20Poly1305::new(&Key::from(*key)),
             snapshots: AtomicU64::new(0),
             newest: Mutex::new(HashMap::new()),
         })
@@ -97,7 +97,7 @@ impl Store {
     #[cfg(test)]
     pub fn temp() -> Self {
         let mut id = [0u8; 8];
-        getrandom::getrandom(&mut id).unwrap();
+        getrandom::fill(&mut id).unwrap();
         let name: String = id.iter().map(|b| format!("{b:02x}")).collect();
         Self::open_at(
             std::env::temp_dir().join(format!("nimbra-test-{name}")),
@@ -111,13 +111,13 @@ impl Store {
         let path = self.path(name)?;
         let plain = serde_json::to_vec(value)?;
         let mut nonce = [0u8; 12];
-        getrandom::getrandom(&mut nonce).map_err(|e| anyhow!("no secure random source: {e}"))?;
+        getrandom::fill(&mut nonce).map_err(|e| anyhow!("no secure random source: {e}"))?;
         // The record name is bound in as associated data, so one record cannot be swapped
         // in for another.
         let sealed = self
             .cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                &Nonce::from(nonce),
                 chacha20poly1305::aead::Payload {
                     msg: &plain,
                     aad: name.as_bytes(),
@@ -146,7 +146,7 @@ impl Store {
         let plain = self
             .cipher
             .decrypt(
-                Nonce::from_slice(&file[1..13]),
+                &Nonce::try_from(&file[1..13]).ok()?,
                 chacha20poly1305::aead::Payload {
                     msg: &file[13..],
                     aad: name.as_bytes(),
@@ -320,7 +320,7 @@ fn load_or_create_key(account: &str) -> Result<[u8; 32]> {
         return Ok(key); // made meanwhile
     }
     let mut key = [0u8; 32];
-    getrandom::getrandom(&mut key).map_err(|e| anyhow!("no secure random source: {e}"))?;
+    getrandom::fill(&mut key).map_err(|e| anyhow!("no secure random source: {e}"))?;
     entry
         .set_password(&STANDARD.encode(key))
         .context("saving the mail store key to the keychain")?;
@@ -361,7 +361,7 @@ mod tests {
     fn temp_store(key: u8) -> Store {
         let mut dir = std::env::temp_dir();
         let mut id = [0u8; 8];
-        getrandom::getrandom(&mut id).unwrap();
+        getrandom::fill(&mut id).unwrap();
         dir.push(format!(
             "nimbra-store-test-{}",
             STANDARD.encode(id).replace(['/', '+', '='], "")
