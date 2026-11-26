@@ -115,6 +115,7 @@ impl Nimbra {
                                 email.clone(),
                                 Credential::Microsoft(Arc::new(tokens)),
                                 crate::microsoft::servers(&email),
+                                false,
                                 cx,
                             ),
                             Err(error) => Err(error.to_string().into()),
@@ -474,10 +475,12 @@ impl Nimbra {
                     let waiting = store
                         .load::<Outbox>("outbox")
                         .is_some_and(|outbox| !outbox.changes.is_empty());
-                    anyhow::Ok((store, waiting))
+                    let snoozed: Vec<Snooze> = store.load("snoozed").unwrap_or_default();
+                    let inbox_empty = crate::store::Store::saved_empty(&key, &record(View::Inbox));
+                    anyhow::Ok((store, waiting, snoozed, inbox_empty))
                 })
                 .await;
-            let Ok((store, waiting)) = opened else {
+            let Ok((store, waiting, snoozed, inbox_empty)) = opened else {
                 return;
             };
             this.update(cx, |this, cx| {
@@ -487,6 +490,12 @@ impl Nimbra {
                         this.away_waiting.insert(account.clone());
                     }
                     this.other_stores.insert(account.clone(), store);
+                    // What this app saved since, if anything, knows better.
+                    this.inboxes_saved_empty
+                        .entry(account.clone())
+                        .or_insert(inbox_empty);
+                    this.snoozed_away.insert(account.clone(), (0, snoozed));
+                    this.read_snoozed_elsewhere();
                     this.load_photo(account, cx);
                 }
             })
@@ -571,12 +580,18 @@ impl Nimbra {
                     self.away_waiting.insert(self.account_id.clone());
                 }
                 self.other_stores.insert(self.account_id.clone(), store);
+                // Its list as kept here, which is its store's (changes are handed over).
+                let snoozed = std::mem::take(&mut self.snoozed);
+                self.snoozed_away
+                    .insert(self.account_id.clone(), (0, snoozed));
             }
         }
         self.others.remove(&id);
         self.other_stores.remove(&id);
+        self.snoozed_away.remove(&id);
         self.away_waiting.remove(&id);
-        self.inboxes_saved_empty.clear();
+        let reading_queue = self.outbox_pending.take().is_some();
+        self.opening = None;
         let left = self.account_id.clone();
         self.inbox_saved_empty = crate::store::Store::saved_empty(&id, &record(View::Inbox));
         self.account_id = id.clone();
@@ -609,6 +624,9 @@ impl Nimbra {
         let unkept = std::mem::take(&mut self.outbox.changes);
         if !self.other_stores.contains_key(&left) && !unkept.is_empty() {
             self.homeless.insert(left.clone(), unkept);
+        } else if reading_queue && !unkept.is_empty() {
+            // Queued while its store's queue was read, so in no store yet: after that one.
+            self.queue_away(&left, unkept);
         }
         self.outbox = Outbox {
             changes: self.homeless.remove(&self.account_id).unwrap_or_default(),
@@ -969,7 +987,7 @@ impl Nimbra {
     /// the open mailbox again.
     pub(super) fn clear_local_mail(&mut self, cx: &mut Context<Self>) {
         if let Some(store) = &self.store {
-            store.clear();
+            store.clear_soon();
         }
         self.cache.clear();
         self.synced_to.clear();
@@ -1008,13 +1026,16 @@ impl Nimbra {
             crate::servers::forget_password(&gone);
             crate::microsoft::forget_refresh_token(&gone);
             crate::store::wipe(&gone);
+            forget_previews(&gone);
         });
         self.settings.accounts.retain(|a| a.id != account);
         self.others.remove(&account);
         self.forget_photo(&account);
         self.other_stores.remove(&account);
+        self.snoozed_away.remove(&account);
         self.away_waiting.remove(&account);
         self.account_unread.remove(&account);
+        self.inboxes_saved_empty.remove(&account);
         // Another account is signed in: show that one.
         if let Some(next) = self.settings.accounts.first().map(|a| a.id.clone()) {
             self.switch_account(next, cx);
@@ -1033,6 +1054,7 @@ impl Nimbra {
         self.stop_retrying();
         // Whoever signs in next must not send this account's queue.
         self.outbox = Outbox::default();
+        self.outbox_pending = None;
         self.next_pages.clear();
         self.forget_checked();
         self.cache.clear();

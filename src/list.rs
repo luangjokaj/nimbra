@@ -55,6 +55,68 @@ impl Nimbra {
         self.done.iter().all(|done| *done)
     }
 
+    /// Relabels the rows' times ("9:41" becomes "Wed") and moves them from Today to Earlier
+    /// once the day is over. Checked against the wall clock at each frame, a cheap read
+    /// that also catches waking from sleep, and woken at midnight by one timer when
+    /// nothing else is drawn.
+    pub(super) fn roll_day(&mut self, cx: &mut Context<Self>) {
+        if self.is_demo() {
+            return;
+        }
+        let now = std::time::SystemTime::now();
+        match self.day_ends {
+            Some(end) if now < end => {
+                if self.day_timer.is_none() {
+                    self.wake_at_day_end(end.duration_since(now).unwrap_or_default(), cx);
+                }
+                return;
+            }
+            Some(_) => {
+                for mail in self
+                    .mails
+                    .iter_mut()
+                    .chain(self.cache.values_mut().flatten())
+                {
+                    mail.refresh_time();
+                }
+            }
+            None => {}
+        }
+        let end = std::time::SystemTime::from(next_day_start(&chrono::Local::now()));
+        self.day_ends = Some(end);
+        self.wake_at_day_end(end.duration_since(now).unwrap_or_default(), cx);
+    }
+
+    fn wake_at_day_end(&mut self, wait: Duration, cx: &mut Context<Self>) {
+        self.day_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(wait + Duration::from_millis(500))
+                .await;
+            this.update(cx, |this, cx| {
+                this.day_timer = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// What `save_if_zero_changed` goes by, taken without walking the rows' accounts: it
+    /// runs on every redraw request, animation frames included.
+    pub(super) fn zero_inputs(&self) -> ZeroInputs {
+        ZeroInputs {
+            mailbox: self.mailbox,
+            ready: self.status == Status::Ready,
+            whole: self.all_inboxes_whole,
+            account_gen: self.account_gen,
+            rows: (self.mails.as_ptr() as usize, self.mails.len()),
+            left: self.done.iter().filter(|done| !**done).count(),
+            saved_empty: self.inbox_saved_empty,
+            saved_empty_elsewhere: self.inboxes_saved_empty.values().filter(|e| **e).count(),
+            accounts: self.settings.accounts.len(),
+            stores: usize::from(self.store.is_some()) + self.other_stores.len(),
+        }
+    }
+
     /// Everything listed was cleared and more is on its way: that is loading, not empty.
     pub(super) fn next_page_coming(&self) -> bool {
         !self.is_demo() && self.all_cleared() && self.more().is_some()
@@ -92,6 +154,7 @@ impl Nimbra {
                 .press_soft()
                 .child(icon(name, 14., t.text2))
         };
+        let row_of_actions = || div().flex().flex_wrap().justify_center().gap(px(8.));
         let inbox_like = inbox_like(self.mailbox);
         div()
             .flex_1()
@@ -108,75 +171,77 @@ impl Nimbra {
                 44.,
                 t.text,
             ))
-            .child(meta(
-                "⌘-click adds or removes one, Shift-click picks a range, Esc clears.",
-                t.text3,
-            ))
+            // Two rows, what it is and where it goes, so a wrap never strands one button.
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
-                    .justify_center()
+                    .flex_col()
+                    .items_center()
                     .gap(px(8.))
-                    .max_w(px(620.))
-                    .when(
-                        inbox_like
-                            || matches!(
-                                self.mailbox,
-                                View::Done
-                                    | View::Spam
-                                    | View::Trash
-                                    | View::Snoozed
-                                    | View::Reminders
-                            ),
-                        |d| {
-                            d.child(
-                                action(
-                                    "bulk-done",
-                                    "done",
-                                    if inbox_like {
-                                        "Mark done"
-                                    } else {
-                                        "Move to inbox"
-                                    },
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
-                            )
-                        },
-                    )
                     .child(
-                        action("bulk-read", "mail", "Read or unread")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
-                    )
-                    .child(
-                        action("bulk-star", "star", "Star")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
-                    )
-                    .child(action("bulk-label", "tag", "Label").on_click(cx.listener(
-                        |this, _, window, cx| this.toggle_menu(Menu::Labels, window, cx),
-                    )))
-                    .child(
-                        action("bulk-move", "folder", "Move to").on_click(cx.listener(
-                            |this, _, window, cx| this.toggle_menu(Menu::MoveTo, window, cx),
-                        )),
-                    )
-                    .when(inbox_like && !self.is_demo(), |d| {
-                        d.child(
-                            action("bulk-snooze", "clock", "Snooze").on_click(cx.listener(
-                                |this, event: &gpui::ClickEvent, window, cx| {
-                                    this.open_snooze(Some(event.position()), window, cx)
+                        row_of_actions()
+                            .when(
+                                inbox_like
+                                    || matches!(
+                                        self.mailbox,
+                                        View::Done
+                                            | View::Spam
+                                            | View::Trash
+                                            | View::Snoozed
+                                            | View::Reminders
+                                    ),
+                                |d| {
+                                    d.child(
+                                        action(
+                                            "bulk-done",
+                                            "done",
+                                            if inbox_like {
+                                                "Mark done"
+                                            } else {
+                                                "Move to inbox"
+                                            },
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
+                                    )
                                 },
-                            )),
-                        )
-                    })
-                    .when(self.mailbox != View::Spam && !self.is_demo(), |d| {
-                        d.child(action("bulk-spam", "ban", "Spam").on_click(cx.listener(
-                            |this, _, _, cx| this.remove_selected(mail::Change::Spam, cx),
-                        )))
-                    })
+                            )
+                            .child(
+                                action("bulk-read", "mail", "Read or unread")
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
+                            )
+                            .child(
+                                action("bulk-star", "star", "Star")
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
+                            ),
+                    )
                     .child(
-                        action("bulk-trash", "trash", "Trash")
-                            .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
+                        row_of_actions()
+                            .child(action("bulk-label", "tag", "Label").on_click(cx.listener(
+                                |this, _, window, cx| this.toggle_menu(Menu::Labels, window, cx),
+                            )))
+                            .child(
+                                action("bulk-move", "folder", "Move to").on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.toggle_menu(Menu::MoveTo, window, cx)
+                                    },
+                                )),
+                            )
+                            .when(inbox_like && !self.is_demo(), |d| {
+                                d.child(action("bulk-snooze", "clock", "Snooze").on_click(
+                                    cx.listener(|this, event: &gpui::ClickEvent, window, cx| {
+                                        this.open_snooze(Some(event.position()), window, cx)
+                                    }),
+                                ))
+                            })
+                            .when(self.mailbox != View::Spam && !self.is_demo(), |d| {
+                                d.child(action("bulk-spam", "ban", "Spam").on_click(cx.listener(
+                                    |this, _, _, cx| this.remove_selected(mail::Change::Spam, cx),
+                                )))
+                            })
+                            .child(
+                                action("bulk-trash", "trash", "Trash")
+                                    .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
+                            ),
                     ),
             )
             .child(
@@ -307,7 +372,12 @@ impl Nimbra {
 
     /// The message list in a wrapper whose width slides open or shut after a toggle, the
     /// same way the sidebar does. Once it has finished closing it is not drawn at all.
-    pub(super) fn list_slot(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn list_slot(
+        &self,
+        t: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         const SLIDE: Duration = Duration::from_millis((PANEL_SLIDE_SECONDS * 1000.) as u64);
         let moving = self.list_toggled.is_some_and(|at| at.elapsed() < SLIDE);
         if !self.list_open && !moving {
@@ -327,7 +397,7 @@ impl Nimbra {
                     .flex_none()
                     .w(px(width))
                     .h_full()
-                    .child(self.list(t, cx)),
+                    .child(self.list(t, window, cx)),
             );
         if !moving {
             return Some(slot.w(px(width)).into_any_element());
@@ -350,7 +420,7 @@ impl Nimbra {
             self.focus_restore = None;
         }
         self.list_grab = None;
-        self.list_toggled = Some(std::time::Instant::now());
+        self.list_toggled = (!crate::system::reduces_motion()).then(std::time::Instant::now);
         self.list_gen += 1;
         cx.notify();
     }
@@ -414,9 +484,7 @@ impl Nimbra {
                     Accent::Sky,
                     Accent::Mint,
                 ];
-                self.thread_labels(m)
-                    .into_iter()
-                    .next()
+                self.first_label(m)
                     .map(|(index, label)| (short(&label.name, 18), accents[index % accents.len()]))
             })
             .filter(|_| line >= 36);
@@ -434,19 +502,14 @@ impl Nimbra {
             SharedString::default()
         };
 
-        let (key, account) = self.thread_key(m);
         div()
-            .id(SharedString::from(format!("row:{account}:{key}")))
+            .id(("row", row_id(m, self.account_of(m))))
+            .group("row")
             .press(t)
             .relative()
-            .when(self.pick_end.unwrap_or(self.selected) == i, |d| {
-                d.child(reveal(
-                    self.list_scroll.clone(),
-                    self.reveal_row.clone(),
-                    0.,
-                ))
-            })
             .flex()
+            .flex_none()
+            .h(px(ROW_H))
             .gap(px(ROW_PAD))
             .px(px(ROW_PAD))
             .py(px(12.))
@@ -522,15 +585,23 @@ impl Nimbra {
                             .when(m.starred, |d| d.child(icon("star", 13., t.amber)))
                             .children(tag.map(|(label, a)| pill(t, &label, t.accent(a))))
                             .child(div().flex_1())
-                            // Snoozed: when it comes back, in place of when it came (and
-                            // beside the quick actions on the open row).
-                            .children(snoozed.as_ref().map(|(name, when)| {
-                                super::threads::snooze_chip(t, name, when.clone())
-                            }))
-                            .when(!selected && snoozed.is_none(), |d| {
-                                d.child(mono(m.time.clone(), t.text3))
-                            })
-                            // Quick actions on the open row: done, snooze, remind me.
+                            // Snoozed: when it comes back, in place of when it came. On the
+                            // open row the quick actions take this place while it is hovered.
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .children(snoozed.as_ref().map(|(name, when)| {
+                                        super::threads::snooze_chip(t, name, when.clone())
+                                    }))
+                                    .when(snoozed.is_none(), |d| {
+                                        d.child(mono(m.time.clone(), t.text3))
+                                    })
+                                    .when(selected, |d| d.group_hover("row", |s| s.invisible())),
+                            )
+                            // Quick actions on the open row, under the pointer: done, snooze,
+                            // remind me. (The keyboard has E and H.)
                             .when(selected, |d| {
                                 let quick = |id: &'static str, name: &'static str| {
                                     let (hover, bright) = (t.hover, t.text);
@@ -553,10 +624,15 @@ impl Nimbra {
                                         )
                                 };
                                 let archivable = self.done_change().is_some();
-                                d.child(
+                                d.relative().child(
                                     div()
+                                        .absolute()
+                                        .right_0()
+                                        .top(px(-1.))
                                         .flex()
                                         .gap(px(2.))
+                                        .invisible()
+                                        .group_hover("row", |s| s.visible())
                                         .when(archivable, |d| {
                                             d.child(
                                                 quick("quick-done", "done")
@@ -658,26 +734,13 @@ impl Nimbra {
             )
     }
 
-    fn list(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn list(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let visible = self.visible();
         let unread = visible.iter().filter(|i| self.mails[**i].unread).count();
-        let group = |label: &str| {
-            div()
-                .pl(px(14.))
-                .pt(px(14.))
-                .pb(px(6.))
-                .child(overline(label.to_string(), t.faint))
-        };
-        let today: Vec<usize> = visible
-            .iter()
-            .copied()
-            .filter(|i| !self.mails[*i].yesterday)
-            .collect();
-        let earlier: Vec<usize> = visible
-            .iter()
-            .copied()
-            .filter(|i| self.mails[*i].yesterday)
-            .collect();
+        let slots = slots(
+            visible.iter().map(|&i| (i, self.mails[i].yesterday)),
+            self.more().is_some(),
+        );
 
         // Each option has a fixed width, so the highlight behind them can slide from one to
         // the other (and nothing shifts when it does).
@@ -739,7 +802,8 @@ impl Nimbra {
         // Only right after a switch (not again each time the list is drawn anew).
         let switching = self
             .filter_switched
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(260));
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(260))
+            && !crate::system::reduces_motion();
         let pill = if self.filter_gen == 0 || !switching {
             pill.left(px(3. + to_x)).w(px(to_w)).into_any_element()
         } else {
@@ -905,57 +969,89 @@ impl Nimbra {
                         )
                     }),
             )
-            .child(
-                div()
-                    .id("rows")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .gap(px(2.))
-                    .px(px(10.))
-                    .pb(px(10.))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.list_scroll)
-                    .on_scroll_wheel(cx.listener(|this, event, _, cx| this.pull_list(event, cx)))
-                    .children(self.pull_indicator(t))
-                    .when(!today.is_empty(), |d| d.child(group("TODAY")))
-                    .children(today.into_iter().map(|i| self.row(t, i, cx)))
-                    .when(!earlier.is_empty(), |d| d.child(group("EARLIER")))
-                    .children(earlier.into_iter().map(|i| self.row(t, i, cx)))
+            .child(self.rows(t, &slots, window, cx))
+    }
+
+    /// Only the rows in and near view are built; spacers of the exact height stand in for
+    /// the rest, so scrolling, the scroll position and `near_list_end` work as before.
+    fn rows(
+        &self,
+        t: &Theme,
+        slots: &[Slot],
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let pull = self.pull_indicator(t);
+        let lead = self.pull_height().map_or(0., |h| h + SLOT_GAP);
+        let view_h = f32::from(self.list_scroll.bounds().size.height);
+        let target = self.pick_end.unwrap_or(self.selected);
+        if view_h > 0.
+            && self.reveal_row.replace(false)
+            && let Some(k) = slots.iter().position(|s| *s == Slot::Row(target))
+        {
+            let top = lead + slot_top(slots, k);
+            let scroll = -f32::from(self.list_scroll.offset().y);
+            if let Some(to) = reveal_scroll(top, top + ROW_H, scroll, view_h) {
+                self.list_scroll.set_offset(gpui::point(px(0.), px(-to)));
+            }
+        }
+        // As GPUI will clamp it once laid out, so rows removed at the end of a scrolled
+        // list never leave a frame with nothing drawn.
+        let total = slot_top(slots, slots.len());
+        let scroll = (-f32::from(self.list_scroll.offset().y))
+            .min((lead + total + 10. - view_h).max(0.))
+            - lead;
+        // The window bounds the list's height, so this holds even before the first layout
+        // or right after a resize, when the list's own bounds are a frame old.
+        let tallest = f32::from(window.viewport_size().height);
+        let (range, above, below) =
+            window_of(slots, scroll - OVERDRAW, scroll + tallest + OVERDRAW);
+        let group = |label: &'static str| {
+            div()
+                .flex_none()
+                .h(px(HEADER_H))
+                .pl(px(14.))
+                .pt(px(14.))
+                .pb(px(6.))
+                .child(overline(label, t.faint))
+        };
+        let first = range.start;
+        div()
+            .id("rows")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .px(px(10.))
+            .pb(px(10.))
+            .overflow_y_scroll()
+            .track_scroll(&self.list_scroll)
+            .on_scroll_wheel(cx.listener(|this, event, _, cx| this.pull_list(event, cx)))
+            .children(pull.map(|strip| div().flex_none().mb(px(SLOT_GAP)).child(strip)))
+            .child(div().flex_none().h(px(above)))
+            .children(slots[range].iter().enumerate().map(|(n, slot)| {
+                let el = match *slot {
+                    Slot::Header(false) => group("TODAY").into_any_element(),
+                    Slot::Header(true) => group("EARLIER").into_any_element(),
+                    Slot::Row(i) => self.row(t, i, cx).into_any_element(),
                     // More is on its way: placeholder rows that breathe while the next
                     // page loads (it starts on its own as the end of the list comes near).
-                    .when(self.more().is_some(), |d| {
-                        d.children((0..2usize).map(|n| {
-                            let bar = |w: f32| div().h(px(9.)).w(px(w)).rounded_full().bg(t.hover);
-                            div()
-                                .flex()
-                                .flex_none()
-                                .gap(px(ROW_PAD))
-                                .px(px(ROW_PAD))
-                                .py(px(14.))
-                                .child(div().size(px(28.)).flex_none().rounded_full().bg(t.hover))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(8.))
-                                        .pt(px(3.))
-                                        .child(bar(if n == 0 { 120. } else { 96. }))
-                                        .child(bar(if n == 0 { 220. } else { 180. })),
-                                )
-                                .with_animation(
-                                    ("more-loading", n),
-                                    Animation::new(Duration::from_millis(1400)).repeat(),
-                                    move |row, delta| {
-                                        let wave = (std::f32::consts::TAU
-                                            * (delta - n as f32 * 0.15))
-                                            .cos();
-                                        row.opacity(0.55 + 0.35 * wave)
-                                    },
-                                )
-                        }))
-                    }),
-            )
+                    Slot::Waiting(n) => waiting_row(t, n),
+                };
+                div()
+                    .flex_none()
+                    .when(first + n > 0, |d| d.pt(px(SLOT_GAP)))
+                    .child(el)
+            }))
+            .child(div().flex_none().h(px(below)))
+    }
+
+    /// The pull-to-refresh strip's height now, when it is drawn.
+    fn pull_height(&self) -> Option<f32> {
+        if self.pull > 0. {
+            return Some(rubber_band(self.pull));
+        }
+        self.pull_anim
+            .map(|(from, to, start)| settle(from, to, start).max(0.))
     }
 
     /// An empty mailbox other than the inbox (which gets the Inbox Zero screen).
@@ -1024,45 +1120,50 @@ impl Nimbra {
             })
     }
 
-    /// The sky moves on while Inbox Zero is in front of you: a slow frame for the twinkling
-    /// (it changes little from one to the next), every frame while a star falls. Still with
-    /// Reduce Motion, while the window is in the background, and while it comes up.
+    /// A star falls now and then while Inbox Zero is in front of you, drawn every frame
+    /// while it falls; between falls one timer waits for the next and nothing is drawn.
+    /// None with Reduce Motion, while the window is in the background, and while it comes up.
     pub(super) fn move_sky(
         &mut self,
         zero_shown: bool,
-        since_last: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !zero_shown {
             self.sky = None;
+            self.sky_timer = None;
             return;
         }
-        if self.arrival.is_some() || crate::system::reduces_motion() {
+        if self.arrival.is_some() {
             return;
         }
         let sky = self.sky.get_or_insert_with(crate::sky::Sky::new);
-        if !window.is_window_active() {
-            sky.drop_fall();
+        let now = sky.now();
+        if !window.is_window_active() || (!sky.falling() && crate::system::reduces_motion()) {
+            sky.rest(now);
+            self.sky_timer = None;
             return;
         }
-        sky.advance(since_last);
-        if sky.falling() {
-            window.request_animation_frame();
-        } else if !self.sky_tick {
-            self.sky_tick = true;
-            cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(Duration::from_millis(100))
-                    .await;
-                this.update(cx, |this, cx| {
-                    this.sky_tick = false;
-                    cx.notify();
-                })
-                .ok();
-            })
-            .detach();
+        if sky.due(now) {
+            sky.start(now);
         }
+        if sky.falling() {
+            self.sky_timer = None;
+            window.request_animation_frame();
+            return;
+        }
+        if self.sky_timer.is_some() {
+            return;
+        }
+        let wait = Duration::from_secs_f32(sky.wait(now).unwrap_or(0.));
+        self.sky_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            this.update(cx, |this, cx| {
+                this.sky_timer = None;
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     pub(super) fn zero(&self, t: &Theme) -> impl IntoElement {
@@ -1111,41 +1212,19 @@ impl Nimbra {
             .map(|i| {
                 let (x, y, a) = (rnd(), rnd() * 0.42, 0.2 + rnd() * 0.6);
                 let size = if a > 0.7 { 2.5 } else { 1.5 };
-                let (lit, sparkle) = self
-                    .sky
-                    .as_ref()
-                    .map_or((1., 0.), |sky| (sky.twinkle(i), sky.sparkle(i)));
-                let alpha = a * arrival.star(i);
-                // A soft glow as it comes back to full, centred on the star.
-                let halo = size * 3.;
                 div()
                     .absolute()
                     .left(relative(x))
                     .top(relative(y))
-                    .when(sparkle > 0., |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .left(px((size - halo) / 2.))
-                                .top(px((size - halo) / 2.))
-                                .size(px(halo))
-                                .rounded_full()
-                                .bg(c(0xffffff, alpha * 0.18 * sparkle)),
-                        )
-                    })
-                    .child(
-                        div()
-                            .absolute()
-                            .size(px(size))
-                            .rounded_full()
-                            .bg(c(0xffffff, alpha * lit)),
-                    )
+                    .size(px(size))
+                    .rounded_full()
+                    .bg(c(0xffffff, a * arrival.star(i)))
             })
             .collect();
         let falling = self
             .sky
             .as_ref()
-            .and_then(|sky| sky.fall())
+            .and_then(|sky| sky.fall(sky.now()))
             .map(|(fall, dots)| {
                 div()
                     .absolute()
@@ -1238,12 +1317,9 @@ impl Nimbra {
                                 .text_size(px(17.))
                                 .line_height(px(26.))
                                 .text_color(soft)
-                                .child(if self.is_demo() {
-                                    "Every important thread is handled. Go make something wonderful."
-                                } else if self.mailbox == View::AllInboxes {
-                                    "Your inboxes are empty. Go make something wonderful."
-                                } else {
-                                    "Your inbox is empty. Go make something wonderful."
+                                // The headline says it; the line below brings the day's thought.
+                                .when(self.is_demo(), |d| {
+                                    d.child("Every important thread is handled.")
                                 }),
                         )
                         // Sample content: real mail shows the headline only.
@@ -1262,7 +1338,7 @@ impl Nimbra {
                                     .child(stat("clock", t.sky, "time in inbox", "38m"))
                                     .child(stat("zap", t.amber, "zero streak", "8 days")),
                             )
-                        })
+                        }),
                 )
                 // Drawn out from the middle.
                 .child(
@@ -1329,6 +1405,39 @@ impl Nimbra {
     }
 }
 
+/// When the day after `now` starts: its midnight, or the first moment of it where a
+/// clock change skips midnight.
+pub(super) fn next_day_start<Tz: chrono::TimeZone>(
+    now: &chrono::DateTime<Tz>,
+) -> chrono::DateTime<Tz> {
+    let zone = now.timezone();
+    now.date_naive()
+        .succ_opt()
+        .and_then(|day| {
+            (0..24).find_map(|hour| {
+                zone.from_local_datetime(&day.and_hms_opt(hour, 0, 0)?)
+                    .earliest()
+            })
+        })
+        .unwrap_or_else(|| now.clone() + chrono::Duration::days(1))
+}
+
+/// See `Nimbra::zero_inputs`. The rows are told apart by where they are kept, which changes
+/// whenever a listing replaces them; marking done in place changes `left`.
+#[derive(Clone, PartialEq)]
+pub(super) struct ZeroInputs {
+    mailbox: View,
+    ready: bool,
+    whole: bool,
+    account_gen: u64,
+    rows: (usize, usize),
+    left: usize,
+    saved_empty: bool,
+    saved_empty_elsewhere: usize,
+    accounts: usize,
+    stores: usize,
+}
+
 /// The space either side of a row's avatar, and at the row's right. With the list's own
 /// 10pt margin it puts the avatars on `LIST_LEFT`.
 pub(super) const ROW_PAD: f32 = 14.;
@@ -1382,8 +1491,223 @@ impl HeaderFit {
     }
 }
 
+/// The list's fixed heights, so the rows out of view can be left out and stood in for
+/// exactly: a thread's row (its padding, its two lines and the gap between them), a day's
+/// heading, a placeholder row while the next page loads, and the space between any two.
+pub(super) const ROW_H: f32 = 12. + 22. + 3. + 18. + 12.;
+const HEADER_H: f32 = 14. + 12. + 6.;
+const WAITING_H: f32 = 14. + 3. + 9. + 8. + 9. + 14.;
+const SLOT_GAP: f32 = 2.;
+/// How far past the visible rows they are built, so a fast scroll never shows a gap.
+const OVERDRAW: f32 = 400.;
+
+/// One entry of the list: a heading (Earlier when true), a thread by its row, or one of
+/// the placeholder rows for the next page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Slot {
+    Header(bool),
+    Row(usize),
+    Waiting(usize),
+}
+
+impl Slot {
+    fn height(self) -> f32 {
+        match self {
+            Slot::Header(_) => HEADER_H,
+            Slot::Row(_) => ROW_H,
+            Slot::Waiting(_) => WAITING_H,
+        }
+    }
+}
+
+/// The list's entries for these rows (each with whether it is from before today): Today's,
+/// then Earlier's, each under its heading, and two placeholders when more is coming.
+pub(super) fn slots(rows: impl Iterator<Item = (usize, bool)> + Clone, more: bool) -> Vec<Slot> {
+    let mut slots = Vec::new();
+    for earlier in [false, true] {
+        let mut group = rows.clone().filter(|(_, e)| *e == earlier).peekable();
+        if group.peek().is_some() {
+            slots.push(Slot::Header(earlier));
+            slots.extend(group.map(|(i, _)| Slot::Row(i)));
+        }
+    }
+    if more {
+        slots.extend([Slot::Waiting(0), Slot::Waiting(1)]);
+    }
+    slots
+}
+
+/// Where entry `k` starts, from the top of the first.
+pub(super) fn slot_top(slots: &[Slot], k: usize) -> f32 {
+    slots[..k].iter().map(|s| s.height() + SLOT_GAP).sum()
+}
+
+/// The entries that reach into `from..to` (from the top of the first), and the space above
+/// and below them that stands in for the rest.
+pub(super) fn window_of(slots: &[Slot], from: f32, to: f32) -> (std::ops::Range<usize>, f32, f32) {
+    let mut top = 0.;
+    let mut start = slots.len();
+    let mut end = slots.len();
+    let mut above = 0.;
+    for (k, slot) in slots.iter().enumerate() {
+        let gap = if k == 0 { 0. } else { SLOT_GAP };
+        let bottom = top + gap + slot.height();
+        if start == slots.len() && bottom > from {
+            start = k;
+            above = top;
+        }
+        if top + gap >= to {
+            end = k;
+            break;
+        }
+        top = bottom;
+    }
+    let total = slot_top(slots, slots.len()) - if slots.is_empty() { 0. } else { SLOT_GAP };
+    if start == slots.len() {
+        return (start..start, total, 0.);
+    }
+    let end = end.max(start);
+    let rendered_end = if end == 0 {
+        0.
+    } else {
+        slot_top(slots, end) - SLOT_GAP
+    };
+    (start..end, above, (total - rendered_end).max(0.))
+}
+
+/// The scroll position that brings `top..bottom` into a view `height` tall, scrolled to
+/// `scroll`: the least move, or none when it is in view already.
+pub(super) fn reveal_scroll(top: f32, bottom: f32, scroll: f32, height: f32) -> Option<f32> {
+    if top < scroll {
+        Some(top)
+    } else if bottom > scroll + height {
+        Some(bottom - height)
+    } else {
+        None
+    }
+}
+
+/// An id for a thread's row that stays with the thread when rows move, made without
+/// building a string each frame.
+fn row_id(mail: &Mail, account: &str) -> usize {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    match &mail.id {
+        Some(id) => id.hash(&mut hash),
+        None => mail.subject.hash(&mut hash),
+    }
+    account.hash(&mut hash);
+    hash.finish() as usize
+}
+
+/// A placeholder row while the next page loads.
+fn waiting_row(t: &Theme, n: usize) -> AnyElement {
+    let bar = |w: f32| div().h(px(9.)).w(px(w)).rounded_full().bg(t.hover);
+    div()
+        .flex()
+        .flex_none()
+        .h(px(WAITING_H))
+        .gap(px(ROW_PAD))
+        .px(px(ROW_PAD))
+        .py(px(14.))
+        .child(div().size(px(28.)).flex_none().rounded_full().bg(t.hover))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .pt(px(3.))
+                .child(bar(if n == 0 { 120. } else { 96. }))
+                .child(bar(if n == 0 { 220. } else { 180. })),
+        )
+        .with_animation(
+            ("more-loading", n),
+            Animation::new(Duration::from_millis(1400)).repeat(),
+            move |row, delta| {
+                let wave = (std::f32::consts::TAU * (delta - n as f32 * 0.15)).cos();
+                row.opacity(0.55 + 0.35 * wave)
+            },
+        )
+        .into_any_element()
+}
+
 /// How far down Inbox Zero's horizon is.
 pub(super) const HORIZON: f32 = 0.72;
 
 /// The height of an option in the All / Unread switch.
 pub(super) const SEGMENT_H: f32 = 26.;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{FixedOffset, TimeZone, Utc};
+
+    fn sample() -> Vec<Slot> {
+        // Rows 0..3 today, 3..50 earlier, more to come.
+        slots((0..50).map(|i| (i, i >= 3)), true)
+    }
+
+    #[test]
+    fn slots_put_today_then_earlier_under_headings_and_placeholders_last() {
+        let s = sample();
+        assert_eq!(s[0], Slot::Header(false));
+        assert_eq!(s[1..4], [Slot::Row(0), Slot::Row(1), Slot::Row(2)]);
+        assert_eq!(s[4], Slot::Header(true));
+        assert_eq!(s[s.len() - 2..], [Slot::Waiting(0), Slot::Waiting(1)]);
+        assert_eq!(
+            slots((0..2).map(|i| (i, true)), false)[0],
+            Slot::Header(true)
+        );
+        assert!(slots(std::iter::empty(), false).is_empty());
+    }
+
+    #[test]
+    fn the_window_and_its_spacers_add_up_to_the_whole_list_wherever_it_is_scrolled() {
+        let s = sample();
+        let total = slot_top(&s, s.len()) - SLOT_GAP;
+        for from in [-500., 0., 33., 700., 2000., total - 100., total + 300.] {
+            let to = from + 900.;
+            let (range, above, below) = window_of(&s, from, to);
+            let drawn: f32 = s[range.clone()].iter().map(|x| x.height()).sum::<f32>()
+                + SLOT_GAP * range.len().saturating_sub(1) as f32
+                + if range.start > 0 && !range.is_empty() {
+                    SLOT_GAP
+                } else {
+                    0.
+                };
+            assert!(
+                (above + drawn + below - total).abs() < 0.01,
+                "{from}: {range:?}"
+            );
+            // Every entry that reaches into the band is drawn.
+            for k in 0..s.len() {
+                let top = slot_top(&s, k);
+                let bottom = top + s[k].height();
+                if bottom > from && top < to {
+                    assert!(range.contains(&k), "{from}: {k} missing from {range:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn revealing_moves_the_least_or_not_at_all() {
+        assert_eq!(reveal_scroll(100., 167., 0., 800.), None);
+        assert_eq!(reveal_scroll(900., 967., 0., 800.), Some(167.));
+        assert_eq!(reveal_scroll(50., 117., 400., 800.), Some(50.));
+    }
+
+    #[test]
+    fn the_day_ends_at_the_next_midnight_in_its_own_zone() {
+        let late = Utc.with_ymd_and_hms(2026, 11, 26, 23, 59, 30).unwrap();
+        assert_eq!((next_day_start(&late) - late).num_seconds(), 30);
+        let midnight = Utc.with_ymd_and_hms(2026, 11, 27, 0, 0, 0).unwrap();
+        assert_eq!((next_day_start(&midnight) - midnight).num_hours(), 24);
+        let zone = FixedOffset::east_opt(9 * 3600).unwrap();
+        let tokyo = zone.with_ymd_and_hms(2026, 12, 31, 18, 0, 0).unwrap();
+        assert_eq!(
+            next_day_start(&tokyo),
+            zone.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap()
+        );
+    }
+}

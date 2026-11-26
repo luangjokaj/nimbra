@@ -41,6 +41,7 @@ pub fn document(body: &str, images: bool) -> String {
         "<!doctype html><meta charset=\"utf-8\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
          img-src {img}; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'\">\
+         <meta http-equiv=\"x-dns-prefetch-control\" content=\"off\">\
          <style>{DEFAULTS}</style>{}",
         without_links(body)
     )
@@ -130,6 +131,9 @@ mod platform {
         frame: std::cell::Cell<(f32, f32, f32, f32)>,
         hole: std::cell::Cell<Option<(f32, f32, f32, f32)>>,
         applied: std::cell::Cell<Option<((f32, f32, f32, f32), Option<(f32, f32, f32, f32)>)>>,
+        /// The account of the mail shown, for the `mailto:` links in it.
+        #[cfg(target_os = "macos")]
+        account: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     }
 
     impl HtmlView {
@@ -146,23 +150,36 @@ mod platform {
             #[cfg(target_os = "windows")]
             let builder = builder.with_download_started_handler(|_, _| false);
             #[cfg(target_os = "macos")]
+            let account = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+            #[cfg(target_os = "macos")]
+            let follow = {
+                let (account, window) = (account.clone(), window.window_handle());
+                move |link: &str| {
+                    let from = account.borrow().clone();
+                    if leaves_app(link, click::followed())
+                        && !crate::integration::mailto_from_mail(link, from, Some(window))
+                    {
+                        open_in_browser(link);
+                    }
+                }
+            };
+            #[cfg(target_os = "macos")]
             let builder = builder
                 .with_html(document("", false))
-                .with_navigation_handler(|link| {
-                    // The page we load ourselves arrives as about:blank; nothing else may
-                    // replace it. Real links open in the browser instead.
-                    if link == "about:blank" {
-                        return true;
+                .with_navigation_handler({
+                    let follow = follow.clone();
+                    move |link| {
+                        // The page we load ourselves arrives as about:blank; nothing else may
+                        // replace it. Real links open in the browser instead.
+                        if link == "about:blank" {
+                            return true;
+                        }
+                        follow(&link);
+                        false
                     }
-                    if leaves_app(&link, click::followed()) {
-                        open_in_browser(&link);
-                    }
-                    false
                 })
-                .with_new_window_req_handler(|link, _| {
-                    if leaves_app(&link, click::followed()) {
-                        open_in_browser(&link);
-                    }
+                .with_new_window_req_handler(move |link, _| {
+                    follow(&link);
                     NewWindowResponse::Deny
                 });
             let view = builder.build_as_child(window).ok()?;
@@ -183,6 +200,8 @@ mod platform {
                 frame: std::cell::Cell::new((0., 0., 0., 0.)),
                 hole: std::cell::Cell::new(None),
                 applied: std::cell::Cell::new(None),
+                #[cfg(target_os = "macos")]
+                account,
             })
         }
 
@@ -217,7 +236,12 @@ mod platform {
         #[cfg(not(target_os = "macos"))]
         fn apply_hole(&self) {}
 
-        pub fn show(&self, body: &str, images: bool) {
+        /// Loads a mail of `account` (its id; `None` for a page that is not one).
+        pub fn show(&self, body: &str, images: bool, account: Option<&str>) {
+            #[cfg(target_os = "macos")]
+            self.account.replace(account.map(str::to_string));
+            #[cfg(not(target_os = "macos"))]
+            let _ = account;
             #[cfg(target_os = "windows")]
             self.loads.set(self.loads.get() + 1);
             let shown = self.view.load_html(&document(body, images));
@@ -761,7 +785,7 @@ mod platform {
         pub fn new(_window: &gpui::Window) -> Option<Self> {
             None
         }
-        pub fn show(&self, _body: &str, _images: bool) {}
+        pub fn show(&self, _body: &str, _images: bool, _account: Option<&str>) {}
         pub fn set_bounds(&self, _x: f32, _y: f32, _width: f32, _height: f32) {}
         pub fn set_visible(&self, _visible: bool) {}
         pub fn set_hole(&self, _hole: Option<(f32, f32, f32, f32)>) {}
@@ -799,6 +823,13 @@ mod tests {
                 .all(|rule| rule.starts_with(":where(") || space.contains(&rule))
         );
         assert!(!DEFAULTS.contains("max-width") && !DEFAULTS.contains("overflow-wrap"));
+    }
+
+    #[test]
+    fn dns_prefetch_is_off_before_the_message_starts() {
+        let page = document("<a href=\"https://x.example\">x</a>", true);
+        let off = page.find("<meta http-equiv=\"x-dns-prefetch-control\" content=\"off\">");
+        assert!(off.is_some_and(|at| at < page.find("<a href").unwrap()));
     }
 
     #[test]

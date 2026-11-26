@@ -22,14 +22,13 @@ if [ -z "$IDENTITY" ]; then
   echo "No signing certificate found; leaving $TARGET unsigned (Keychain will ask on every rebuild)." >&2
   exit 0
 fi
-# NIMBRA_RELEASE=1 signs for distribution: Apple's notary service needs the hardened
-# runtime and a secure timestamp. A disk image takes only the timestamp.
+# The app gets the hardened runtime, needed for notarization (a bare dev binary does not, so a
+# debugger can still attach). No entitlements: WebKit runs its JIT in its own processes, and
+# nothing here loads other code. A Developer ID signature also gets a secure timestamp, which
+# notarization needs too; a disk image takes only the timestamp. A release (NIMBRA_RELEASE=1)
+# has checked above that the identity is a Developer ID.
 OPTIONS=()
-if [ "${NIMBRA_RELEASE:-}" = 1 ]; then
-  case "$TARGET" in
-    *.dmg) OPTIONS=(--timestamp) ;;
-    *) OPTIONS=(--options runtime --timestamp) ;;
-  esac
-fi
+case "$TARGET" in *.app) OPTIONS+=(--options runtime) ;; esac
+case "$IDENTITY" in "Developer ID Application"*) OPTIONS+=(--timestamp) ;; esac
 codesign --force ${OPTIONS[@]+"${OPTIONS[@]}"} --sign "$IDENTITY" --identifier com.riangle.nimbra "$TARGET"
 echo "Signed $TARGET as: $IDENTITY"

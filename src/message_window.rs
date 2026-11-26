@@ -57,6 +57,10 @@ impl MessageWindow {
         &self.key
     }
 
+    pub(super) fn account(&self) -> &str {
+        &self.account
+    }
+
     /// The thread, fresh from the app when it still has it.
     fn mail(&mut self, cx: &App) -> Mail {
         let n = self.owner.read(cx);
@@ -147,7 +151,7 @@ impl MessageWindow {
         if self.html_shown.as_ref() != Some(&shown) {
             view.set_dark(dark, darkened);
             if let Some(html) = &mail.html {
-                view.show(html, images);
+                view.show(html, images, Some(&self.account));
             }
             self.html_shown = Some(shown);
         }
@@ -343,8 +347,15 @@ impl Render for MessageWindow {
                             .border_color(t.border)
                             .child(n.message_header(&t, &m, k + 1, false, cx))
                             .child(
-                                n.message_body(&t, &e.blocks, (k + 1) * 1000, &selectable, cx)
-                                    .pl(px(40.)),
+                                n.message_body(
+                                    &t,
+                                    &e.blocks,
+                                    (k + 1) * 1000,
+                                    &selectable,
+                                    n.account_of(&m),
+                                    cx,
+                                )
+                                .pl(px(40.)),
                             )
                             .when(!e.header.attachments.is_empty(), |d| {
                                 d.child(
@@ -369,7 +380,10 @@ impl Render for MessageWindow {
                         .border_t_1()
                         .border_color(t.border)
                         .child(n.message_header(&t, &m, 0, false, cx))
-                        .child(n.message_body(&t, &m.body, 0, &selectable, cx).pl(px(40.)))
+                        .child(
+                            n.message_body(&t, &m.body, 0, &selectable, n.account_of(&m), cx)
+                                .pl(px(40.)),
+                        )
                         .when(!m.header.attachments.is_empty(), |d| {
                             d.child(
                                 n.attachment_row(

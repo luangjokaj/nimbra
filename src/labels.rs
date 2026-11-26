@@ -200,20 +200,21 @@ impl Nimbra {
 
     /// The user labels on a thread, with their position in the label list (for a tint).
     pub(super) fn thread_labels(&self, mail: &Mail) -> Vec<(usize, mail::Label)> {
+        self.labels_on(mail)
+            .map(|(index, label)| (index, label.clone()))
+            .collect()
+    }
+
+    fn labels_on<'a>(&'a self, mail: &'a Mail) -> impl Iterator<Item = (usize, &'a mail::Label)> {
         self.labels
             .iter()
             .enumerate()
-            .filter(|(_, label)| mail.labels.iter().any(|id| *id == label.id))
-            .map(|(index, label)| {
-                (
-                    index,
-                    mail::Label {
-                        id: label.id.clone(),
-                        name: label.name.clone(),
-                    },
-                )
-            })
-            .collect()
+            .filter(|(_, label)| mail.labels.contains(&label.id))
+    }
+
+    /// The first of them, which a row shows as its tag.
+    pub(super) fn first_label<'a>(&'a self, mail: &'a Mail) -> Option<(usize, &'a mail::Label)> {
+        self.labels_on(mail).next()
     }
 
     /// Takes a label off the thread in that row.

@@ -15,10 +15,12 @@ mod gmail;
 mod imap_mail;
 mod input;
 mod inspiration;
+mod integration;
 mod keyboard;
 mod leaving;
 mod listing;
 mod mail;
+mod mailto;
 mod microsoft;
 mod mime;
 mod notify;
@@ -40,6 +42,7 @@ mod ui;
 mod usage;
 mod webkeys;
 mod webview;
+mod window_frame;
 
 use std::borrow::Cow;
 
@@ -49,15 +52,16 @@ use gpui::{
 };
 
 use app::{
-    Back, Compose, Confirm, Dismiss, First, FocusSearch, FocusSidebar, Forward, ForwardMessage,
-    GoAllMail, GoDrafts, GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp, HideOthers,
-    HideWindow, Last, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread,
-    MenuReply, MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal,
-    MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenInWindow, OpenSettings,
-    OpenSidebarRow, PageDown, PageUp, PickDown, PickThread, PickUp, Prev, Print, Quit, Reload,
-    Reply, ReplyAll, SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList,
-    ToggleOriginal, TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash,
-    Undo,
+    Back, Compose, Confirm, Dismiss, DockDrafts, DockInbox, DockSent, DockSnoozed, DockStarred,
+    First, FocusSearch, FocusSidebar, Forward, ForwardMessage, GoAllMail, GoDrafts, GoInbox,
+    GoNumber, GoSent, GoSnoozed, GoStarred, HideApp, HideOthers, HideWindow, Last, MarkDone,
+    MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReply, MenuReplyAll,
+    MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal, MenuToggleSidebar, MenuTrash, MenuUndo,
+    Minimize, Next, Nimbra, OpenInWindow, OpenSettings, OpenSidebarRow, PageDown, PageUp, PickDown,
+    PickThread, PickUp, Prev, Print, Quit, Reload, Reply, ReplyAll, SaveDraft, SelectAllThreads,
+    SendMail, ShowAll, ToggleFullCompose, ToggleList, ToggleOriginal, TogglePalette,
+    ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo, UseDarkAppearance,
+    UseLightAppearance, UseSystemAppearance,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -122,6 +126,8 @@ static ICONS: &[(&str, &[u8])] = icons![
     "archive",
     "pulse",
     "eye",
+    "lock",
+    "key",
 ];
 
 struct Assets;
@@ -145,6 +151,11 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// The main window, with its app.
+fn main_window(_cx: &App) -> Option<gpui::WindowHandle<Nimbra>> {
+    MAIN_WINDOW.with(|main| main.get())?.downcast::<Nimbra>()
+}
+
 /// Shows the main window again (Dock icon click while it is hidden).
 fn show_main_window(cx: &mut App) {
     if let Some(handle) = MAIN_WINDOW.with(|main| main.get()) {
@@ -154,6 +165,51 @@ fn show_main_window(cx: &mut App) {
     }
 }
 
+/// Saves where the main window is, a moment after it stops moving or resizing.
+fn keep_frame(window: &mut gpui::Window, cx: &mut gpui::Context<Nimbra>) {
+    let moves = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    cx.observe_window_bounds(window, move |_, window, cx| {
+        if window.is_fullscreen() {
+            return;
+        }
+        let (bounds, maximized) = match window.window_bounds() {
+            WindowBounds::Maximized(bounds) => (bounds, true),
+            WindowBounds::Windowed(bounds) => (bounds, false),
+            WindowBounds::Fullscreen(_) => return,
+        };
+        let Some(display) = window
+            .display(cx)
+            .and_then(|display| display.uuid().ok())
+            .map(|id| id.to_string())
+        else {
+            return;
+        };
+        let saved = window_frame::Saved {
+            frame: window_frame::Frame {
+                x: bounds.origin.x.into(),
+                y: bounds.origin.y.into(),
+                width: bounds.size.width.into(),
+                height: bounds.size.height.into(),
+                maximized,
+            },
+            display,
+        };
+        moves.set(moves.get() + 1);
+        let (moves, this_move) = (moves.clone(), moves.get());
+        cx.spawn(async move |_, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(500))
+                .await;
+            if moves.get() == this_move {
+                cx.background_spawn(async move { window_frame::save(saved) })
+                    .await;
+            }
+        })
+        .detach();
+    })
+    .detach();
+}
+
 fn main() {
     // Before any window builds its pipelines.
     erase::install();
@@ -161,7 +217,11 @@ fn main() {
     let app = Application::new().with_assets(Assets);
     // Clicking the Dock icon while the window is hidden brings it back.
     app.on_reopen(show_main_window);
+    // Links from other apps, also the one that launched Nimbra: they wait for the app.
+    app.on_open_urls(|urls| integration::post(integration::Event::OpenUrls(urls)));
     app.run(|cx: &mut App| {
+        integration::install();
+        app::install_system_actions(cx);
         cx.text_system()
             .add_fonts(vec![
                 Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Regular.ttf").as_slice()),
@@ -362,7 +422,17 @@ fn main() {
                     MenuItem::action("Show or Hide List", ToggleList),
                     MenuItem::action("Original Formatting or Reader", MenuToggleOriginal),
                     MenuItem::separator(),
-                    MenuItem::action("Light or Dark", ToggleTheme),
+                    // Checked by `set_menu_check`, which finds it by these titles.
+                    MenuItem::submenu(Menu {
+                        name: "Appearance".into(),
+                        items: vec![
+                            MenuItem::action("System", UseSystemAppearance),
+                            MenuItem::action("Light", UseLightAppearance),
+                            MenuItem::action("Dark", UseDarkAppearance),
+                            MenuItem::separator(),
+                            MenuItem::action("Switch Light and Dark", ToggleTheme),
+                        ],
+                    }),
                 ],
             },
             Menu {
@@ -390,6 +460,36 @@ fn main() {
             },
         ]);
 
+        cx.set_dock_menu(vec![
+            MenuItem::action("New Message", Compose),
+            MenuItem::separator(),
+            MenuItem::action("Inbox", DockInbox),
+            MenuItem::action("Starred", DockStarred),
+            MenuItem::action("Snoozed", DockSnoozed),
+            MenuItem::action("Drafts", DockDrafts),
+            MenuItem::action("Sent", DockSent),
+        ]);
+
+        const MIN_SIZE: (f32, f32) = (1120., 720.);
+        // Back where it was, on the same display, if that is still connected.
+        let saved = window_frame::load().and_then(|saved| {
+            let display = cx
+                .displays()
+                .into_iter()
+                .find(|d| d.uuid().is_ok_and(|id| id.to_string() == saved.display))?;
+            let size = display.bounds().size;
+            let whole = window_frame::Frame {
+                x: 0.,
+                y: 0.,
+                width: size.width.into(),
+                height: size.height.into(),
+                maximized: false,
+            };
+            Some((
+                display.id(),
+                window_frame::clamp(saved.frame, &[whole], MIN_SIZE)?,
+            ))
+        });
         let mut bounds = Bounds::centered(None, size(px(1480.), px(920.)), cx);
         // NIMBRA_SHIFT=<px> nudges the window sideways (used to test the backdrop blur).
         if let Some(shift) = std::env::var("NIMBRA_SHIFT")
@@ -398,17 +498,32 @@ fn main() {
         {
             bounds.origin.x += px(shift);
         }
+        let window_bounds = match saved {
+            Some((_, frame)) => {
+                let restored = Bounds::new(
+                    point(px(frame.x), px(frame.y)),
+                    size(px(frame.width), px(frame.height)),
+                );
+                if frame.maximized {
+                    WindowBounds::Maximized(restored)
+                } else {
+                    WindowBounds::Windowed(restored)
+                }
+            }
+            None => WindowBounds::Windowed(bounds),
+        };
         let main_window = cx
             .open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_bounds: Some(window_bounds),
+                    display_id: saved.map(|(display, _)| display),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Nimbra".into()),
                         appears_transparent: true,
                         traffic_light_position: Some(point(px(18.), px(18.))),
                     }),
                     window_background: WindowBackgroundAppearance::Blurred,
-                    window_min_size: Some(size(px(1120.), px(720.))),
+                    window_min_size: Some(size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
                     ..Default::default()
                 },
                 |window, cx| {
@@ -419,11 +534,7 @@ fn main() {
                         false
                     });
                     let view = cx.new(Nimbra::new);
-                    // Re-render when the Mac switches between light and dark.
-                    view.update(cx, |_, cx| {
-                        cx.observe_window_appearance(window, |_, _, cx| cx.notify())
-                            .detach()
-                    });
+                    view.update(cx, |_, cx| keep_frame(window, cx));
                     window.focus(&view.read(cx).focus_handle());
                     view
                 },
@@ -438,7 +549,7 @@ fn main() {
         })
         .detach();
         // Set up notifications before anything else, so a click on one that launched the
-        // app is not missed.
+        // app is not missed (it waits in `integration` until the app reads it).
         notify::show_while_active();
         cx.activate(true);
     });

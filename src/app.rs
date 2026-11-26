@@ -96,6 +96,13 @@ mod palette;
 mod snooze_menu;
 use snooze_menu::SnoozeMenu;
 
+#[path = "system_events.rs"]
+mod system_events;
+pub use system_events::{
+    DockDrafts, DockInbox, DockSent, DockSnoozed, DockStarred, UseDarkAppearance,
+    UseLightAppearance, UseSystemAppearance, install as install_system_actions,
+};
+
 actions!(
     nimbra,
     [
@@ -274,7 +281,7 @@ impl Source {
             subject: mail.subject.to_string(),
             sender: mail.sender.to_string(),
             header: mail.header.clone(),
-            body: mail.body.clone(),
+            body: mail.body.to_vec(),
             reply_to: mail.reply.as_ref().map(|(_, reply)| reply.clone()),
             fallback_to: mail.reply.as_ref().map(|(address, _)| address.clone()),
             fallback_all: mail.reply_all.clone(),
@@ -352,10 +359,15 @@ pub struct Nimbra {
     keychain_slow: bool,
     /// Inbox Zero coming up, on a launch that opens on it.
     arrival: Option<Arrival>,
-    /// The night over Inbox Zero once it has come up: twinkling, and falling stars.
+    /// The night over Inbox Zero once it has come up, where a star falls now and then.
     sky: Option<crate::sky::Sky>,
-    /// A slow frame for the twinkling is on its way.
-    sky_tick: bool,
+    /// Waits for the next falling star.
+    sky_timer: Option<gpui::Task<()>>,
+    /// When today ends, by the wall clock, and the timer that wakes the list then.
+    day_ends: Option<std::time::SystemTime>,
+    day_timer: Option<gpui::Task<()>>,
+    /// What deciding whether the Inbox emptied went by last time (see `zero_inputs`).
+    zero_seen: Option<ZeroInputs>,
     /// The message whose full header (all recipients, date) is expanded: thread id and
     /// message index (0 is the latest).
     details: Option<(String, usize)>,
@@ -399,6 +411,14 @@ pub struct Nimbra {
     account_unread: HashMap<String, u32>,
     /// Conversations open in windows of their own.
     message_windows: Vec<gpui::WindowHandle<MessageWindow>>,
+    /// Archive or Mark as Read from a notification for an account not connected yet (the
+    /// banner launched Nimbra): carried out once it is.
+    pending_notes: Vec<(
+        std::time::Instant,
+        String,
+        String,
+        crate::integration::NoteAction,
+    )>,
     /// The Settings window, while it is open.
     settings_window: Option<gpui::WindowHandle<SettingsWindow>>,
     /// Composers that are closed but still saving, waiting to send, or discarded.
@@ -462,6 +482,8 @@ pub struct Nimbra {
     finder: Entity<TextInput>,
     _finder_events: gpui::Subscription,
     finder_hits: Vec<Hit>,
+    /// The mail on this Mac, ready to search, while the search panel is open.
+    finder_index: Option<Arc<[finder::Searchable]>>,
     finder_sel: usize,
     finder_gen: u64,
     finder_loading: bool,
@@ -506,6 +528,17 @@ pub struct Nimbra {
     /// The other signed-in accounts' snoozes (each with its account), for Snoozed,
     /// Reminders and the rows' chips. Read from their stores (`read_snoozed_elsewhere`).
     snoozed_elsewhere: Vec<Snooze>,
+    /// Each other account's own snoozed list as its store has it, and how often it was
+    /// changed here (a read from before a change is not taken).
+    snoozed_away: HashMap<String, (u64, Vec<Snooze>)>,
+    /// The shown account's offline queue is being read from its store, and how many of its
+    /// changes were made by a catch-up since that was asked for.
+    outbox_pending: Option<usize>,
+    /// Counts changes put in other accounts' queues, so that a catch-up that found its
+    /// queue empty does not forget one put there since.
+    away_queued: u64,
+    /// A mailbox clicked whose stored list is still being read (`mailbox::Opening`).
+    opening: Option<mailbox::Opening>,
     /// Snoozed threads being brought back right now.
     waking: HashSet<String>,
     /// The choices in the open snooze palette.
@@ -774,11 +807,15 @@ impl Nimbra {
             keychain_slow: false,
             arrival: None,
             sky: None,
-            sky_tick: false,
+            sky_timer: None,
+            zero_seen: None,
+            day_ends: None,
+            day_timer: None,
             finder_open: false,
             finder,
             _finder_events: finder_events,
             finder_hits: Vec::new(),
+            finder_index: None,
             finder_sel: 0,
             finder_gen: 0,
             finder_loading: false,
@@ -851,6 +888,10 @@ impl Nimbra {
             history_groups: Vec::new(),
             snoozed: Vec::new(),
             snoozed_elsewhere: Vec::new(),
+            snoozed_away: HashMap::new(),
+            outbox_pending: None,
+            away_queued: 0,
+            opening: None,
             waking: HashSet::new(),
             snooze_choices: Vec::new(),
             next_pages: HashMap::new(),
@@ -873,6 +914,7 @@ impl Nimbra {
             settings,
             settings_window: None,
             message_windows: Vec::new(),
+            pending_notes: Vec::new(),
             others: HashMap::new(),
             account_unread: HashMap::new(),
             compose_host: None,
@@ -1071,9 +1113,13 @@ impl Nimbra {
             this.status = Status::Loading;
             this.checks.start(View::Inbox, "");
         }
+        // Listed before a preview can be made, so that none made since is removed.
+        let previews = previews_now();
+        cx.background_spawn(async move { remove_previews(previews) })
+            .detach();
         this.watch_for_mail(cx);
         this.watch_other_accounts(cx);
-        this.watch_notification_clicks(cx);
+        this.watch_system(cx);
         // Every way out: ⌘Q, the Dock, logging out.
         cx.on_app_quit(|this, cx| {
             this.finish_before_quit(cx);
@@ -1110,7 +1156,14 @@ impl Nimbra {
                 this.arrival = Some(Arrival::START);
             }
             // On every change, whichever action made it: the next launch goes by this.
-            cx.observe_self(Self::save_if_zero_changed).detach();
+            cx.observe_self(|this, cx| {
+                let now = this.zero_inputs();
+                if this.zero_seen.as_ref() != Some(&now) {
+                    this.zero_seen = Some(now);
+                    this.save_if_zero_changed(cx);
+                }
+            })
+            .detach();
             this.connect(false, cx);
         }
         // NIMBRA_SEARCH=<query> starts with that search already run.
@@ -1568,21 +1621,19 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// ⌘⇧L and the sun/moon button: switch to the other theme, and remember it.
+    /// ⌘⇧L and the sun/moon button: the other appearance, or following the Mac again
+    /// when that is what it shows (`system_events::flipped`).
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
-        self.dark = !self.dark;
-        self.settings.theme = if self.dark {
-            crate::settings::ThemeChoice::Dark
+        let mac_dark = if self.settings.theme == crate::settings::ThemeChoice::System {
+            self.dark
         } else {
-            crate::settings::ThemeChoice::Light
+            crate::integration::mac_is_dark()
         };
-        self.save_settings(cx);
-        cx.notify();
+        self.set_theme(system_events::flipped(self.dark, mac_dark), cx);
     }
 
     fn save_settings(&self, _cx: &mut Context<Self>) {
-        // Not in the background: the last change has to be the one on disk, also when two
-        // come quickly or the app quits straight after. It is a tiny file, moved into place.
+        // Written on the settings thread, newest last; quitting waits for it.
         if crate::settings::save(&self.settings).is_err() {
             eprintln!("nimbra: could not save settings");
         }
@@ -1679,6 +1730,8 @@ impl Nimbra {
             self.stop_retrying();
             // Whoever signs in next must not send this account's mail.
             self.outbox = Outbox::default();
+            self.outbox_pending = None;
+            self.inboxes_saved_empty.remove(&self.account_id);
             let shown = self.account_id.clone();
             self.forget_photo(&shown);
             self.abandon_sends(&shown);
@@ -1687,7 +1740,10 @@ impl Nimbra {
             self.next_pages.clear();
             self.forget_checked();
             let account = self.account_id.clone();
-            std::thread::spawn(move || crate::store::wipe(&account));
+            std::thread::spawn(move || {
+                crate::store::wipe(&account);
+                forget_previews(&account);
+            });
             self.cache.clear();
             self.mails.clear();
             self.done.clear();
@@ -1729,26 +1785,43 @@ impl Nimbra {
     }
 
     fn visible(&self) -> Vec<usize> {
+        let query = self.demo_query();
         (0..self.mails.len())
-            .filter(|i| match (self.is_demo(), self.mailbox) {
-                (true, View::Done) => self.done[*i],
-                // The sample data is searched locally.
-                (true, View::Search) => {
-                    let mail = &self.mails[*i];
-                    let query = self.query.to_lowercase();
-                    !self.done[*i]
-                        && [&mail.sender, &mail.subject, &mail.snippet]
-                            .iter()
-                            .any(|field| field.to_lowercase().contains(&query))
-                }
-                (true, View::Inbox | View::AllInboxes) | (false, _) => {
-                    // The open thread stays listed under Unread even once it is read.
-                    !self.done[*i]
-                        && (!self.unread_only || self.mails[*i].unread || *i == self.selected)
-                }
-                (true, _) => false,
-            })
+            .filter(|&i| self.shows(i, &query))
             .collect()
+    }
+
+    /// Whether any thread is listed, without collecting them.
+    fn any_visible(&self) -> bool {
+        let query = self.demo_query();
+        (0..self.mails.len()).any(|i| self.shows(i, &query))
+    }
+
+    /// The sample data is searched locally, for this.
+    fn demo_query(&self) -> String {
+        if self.is_demo() && self.mailbox == View::Search {
+            self.query.to_lowercase()
+        } else {
+            String::new()
+        }
+    }
+
+    fn shows(&self, i: usize, demo_query: &str) -> bool {
+        match (self.is_demo(), self.mailbox) {
+            (true, View::Done) => self.done[i],
+            (true, View::Search) => {
+                let mail = &self.mails[i];
+                !self.done[i]
+                    && [&mail.sender, &mail.subject, &mail.snippet]
+                        .iter()
+                        .any(|field| field.to_lowercase().contains(demo_query))
+            }
+            (true, View::Inbox | View::AllInboxes) | (false, _) => {
+                // The open thread stays listed under Unread even once it is read.
+                !self.done[i] && (!self.unread_only || self.mails[i].unread || i == self.selected)
+            }
+            (true, _) => false,
+        }
     }
 
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -2144,15 +2217,6 @@ impl Render for Nimbra {
         if !composing_elsewhere && let Some(focus) = self.pending_focus.take() {
             window.focus(&focus);
         }
-        // "System" follows the Mac's light or dark appearance.
-        if self.settings.theme == crate::settings::ThemeChoice::System
-            && std::env::var_os("NIMBRA_THEME").is_none()
-        {
-            self.dark = matches!(
-                window.appearance(),
-                gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-            );
-        }
         let t = self.theme();
         let viewport = window.viewport_size();
         let viewport = (f32::from(viewport.width), f32::from(viewport.height));
@@ -2176,6 +2240,7 @@ impl Render for Nimbra {
             }
         }
         self.last_frame = Some(now);
+        self.roll_day(cx);
         self.sync_html_view(window);
         if !composing_elsewhere {
             self.sync_editor(window, cx);
@@ -2228,23 +2293,6 @@ impl Render for Nimbra {
         {
             self.bar_fade = None;
         }
-        // The inbox's unread count on the Dock icon.
-        let unread = if self.connection.is_some() && self.settings.dock_badge {
-            // Every signed-in account's inbox.
-            self.counts.get("INBOX").map_or(0, |(unread, _)| *unread)
-                + self
-                    .account_unread
-                    .iter()
-                    .filter(|(id, _)| **id != self.account_id && self.others.contains_key(*id))
-                    .map(|(_, n)| *n)
-                    .sum::<u32>()
-        } else {
-            0
-        };
-        if self.badge != Some(unread) {
-            crate::system::set_badge(unread);
-            self.badge = Some(unread);
-        }
         self.frame = Some(window.bounds());
         if self.pull_hold && !self.fetching() {
             self.pull_hold = false;
@@ -2274,7 +2322,7 @@ impl Render for Nimbra {
         if self.peek.moving() || self.sidebar_sliding() {
             window.request_animation_frame();
         }
-        let empty = self.visible().is_empty();
+        let empty = !self.any_visible();
         let zero_shown = match self.status {
             Status::Demo | Status::Ready => empty && self.is_zero(),
             _ => self.opening_to_zero() && !self.waiting_for_keychain(),
@@ -2286,10 +2334,11 @@ impl Render for Nimbra {
         if self.arrival.is_some() {
             window.request_animation_frame();
         }
-        self.move_sky(zero_shown, since_last, window, cx);
+        self.move_sky(zero_shown, window, cx);
         let list_shown =
             !empty && self.list_open && matches!(self.status, Status::Demo | Status::Ready);
 
+        let enabled = self.menu_state();
         div()
             .id("nimbra")
             .key_context(if self.compose.is_some() && !composing_elsewhere {
@@ -2386,35 +2435,50 @@ impl Render for Nimbra {
                     this.open_snooze(None, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &Print, _, cx| this.print_selected(cx)))
-            .on_action(
-                cx.listener(|this, _: &MenuReply, _, cx| this.open_compose(ComposeKind::Reply, cx)),
-            )
+            // Menu items grey out when they would do nothing (`MenuState`).
+            .when(enabled.open, |d| {
+                d.on_action(cx.listener(|this, _: &Print, _, cx| this.print_selected(cx)))
+            })
+            .when(enabled.answer, |d| {
+                d.on_action(cx.listener(|this, _: &MenuReply, _, cx| {
+                    this.open_compose(ComposeKind::Reply, cx)
+                }))
+                .on_action(cx.listener(|this, _: &MenuReplyAll, _, cx| {
+                    this.open_compose(ComposeKind::ReplyAll, cx)
+                }))
+                .on_action(cx.listener(|this, _: &MenuForwardMessage, _, cx| {
+                    this.open_compose(ComposeKind::Forward, cx)
+                }))
+            })
+            .when(enabled.done, |d| {
+                d.on_action(cx.listener(|this, _: &MenuMarkDone, _, cx| this.mark_done(cx)))
+            })
+            .when(enabled.targets, |d| {
+                d.on_action(cx.listener(|this, _: &MenuMarkUnread, _, cx| this.toggle_unread(cx)))
+                    .on_action(cx.listener(|this, _: &MenuStar, _, cx| this.toggle_star(cx)))
+                    .on_action(cx.listener(|this, _: &MenuTrash, _, cx| this.trash(cx)))
+                    .on_action(cx.listener(|this, _: &MenuSnooze, window, cx| {
+                        this.open_snooze(None, window, cx)
+                    }))
+            })
+            .when(enabled.undo, |d| {
+                d.on_action(cx.listener(|this, _: &MenuUndo, _, cx| this.undo(cx)))
+            })
+            .when(enabled.original, |d| {
+                d.on_action(
+                    cx.listener(|this, _: &MenuToggleOriginal, _, cx| this.toggle_original(cx)),
+                )
+            })
             .on_action(
                 cx.listener(|this, _: &ReplyAll, _, cx| {
                     this.open_compose(ComposeKind::ReplyAll, cx)
                 }),
             )
-            .on_action(cx.listener(|this, _: &MenuReplyAll, _, cx| {
-                this.open_compose(ComposeKind::ReplyAll, cx)
-            }))
             .on_action(cx.listener(|this, _: &ForwardMessage, _, cx| {
                 this.open_compose(ComposeKind::Forward, cx)
             }))
-            .on_action(cx.listener(|this, _: &MenuForwardMessage, _, cx| {
-                this.open_compose(ComposeKind::Forward, cx)
-            }))
-            .on_action(cx.listener(|this, _: &MenuMarkDone, _, cx| this.mark_done(cx)))
-            .on_action(cx.listener(|this, _: &MenuMarkUnread, _, cx| this.toggle_unread(cx)))
-            .on_action(cx.listener(|this, _: &MenuStar, _, cx| this.toggle_star(cx)))
-            .on_action(cx.listener(|this, _: &MenuTrash, _, cx| this.trash(cx)))
-            .on_action(cx.listener(|this, _: &MenuUndo, _, cx| this.undo(cx)))
-            .on_action(cx.listener(|this, _: &MenuToggleOriginal, _, cx| this.toggle_original(cx)))
             .on_action(cx.listener(|this, _: &MenuToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &MenuSearch, _, cx| this.focus_search(cx)))
-            .on_action(
-                cx.listener(|this, _: &MenuSnooze, window, cx| this.open_snooze(None, window, cx)),
-            )
             .on_action(cx.listener(|this, _: &SelectAllThreads, _, cx| {
                 let visible = this.visible();
                 if visible.len() >= 2 {
@@ -2512,13 +2576,15 @@ impl Render for Nimbra {
                 _ if zero_shown => d.child(self.zero(&t)),
                 Status::Ready if empty && self.next_page_coming() => d.child(self.skeleton(&t)),
                 Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t, cx)),
-                Status::Demo | Status::Ready => d.children(self.list_slot(&t, cx)).map(|d| {
-                    if self.picked.len() >= 2 {
-                        d.child(self.bulk_pane(&t, cx))
-                    } else {
-                        d.child(self.reading(&t, cx))
-                    }
-                }),
+                Status::Demo | Status::Ready => {
+                    d.children(self.list_slot(&t, window, cx)).map(|d| {
+                        if self.picked.len() >= 2 {
+                            d.child(self.bulk_pane(&t, cx))
+                        } else {
+                            d.child(self.reading(&t, cx))
+                        }
+                    })
+                }
                 Status::Loading if self.waiting_for_keychain() => {
                     d.child(self.status_screen(&t, cx))
                 }

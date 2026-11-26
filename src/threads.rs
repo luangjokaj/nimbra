@@ -18,6 +18,18 @@ pub(super) struct Snooze {
     pub(super) mail: Mail,
 }
 
+/// A row without its messages, to keep with a snooze: they are downloaded again when it
+/// is opened, and are not written into the snoozed list each time it changes.
+fn row_only(mail: &Mail) -> Mail {
+    Mail {
+        loaded: false,
+        body: Default::default(),
+        earlier: Default::default(),
+        html: None,
+        ..mail.clone()
+    }
+}
+
 /// One choice in the snooze palette.
 #[derive(Clone)]
 pub(super) struct SnoozeChoice {
@@ -278,7 +290,7 @@ impl Nimbra {
                     until_ms: choice.until_ms,
                     no_reply: choice.no_reply,
                     since_ms: mail.timestamp_ms,
-                    mail: mail.clone(),
+                    mail: row_only(mail),
                 },
             ));
         }
@@ -290,7 +302,7 @@ impl Nimbra {
                 .filter(|(o, _)| *o == owner)
                 .map(|(_, snooze)| snooze.clone())
                 .collect();
-            self.change_snoozed_of(&owner, |list| {
+            self.change_snoozed_of(&owner, move |list| {
                 list.retain(|kept| !theirs.iter().any(|s| s.thread_id == kept.thread_id));
                 list.extend(theirs.iter().cloned());
             });
@@ -336,27 +348,60 @@ impl Nimbra {
 
     /// Changes the snoozed list here and in the store, each as it is: saving this copy
     /// could undo what a background check just took out.
-    fn change_snoozed(&mut self, change: impl Fn(&mut Vec<Snooze>)) {
+    fn change_snoozed(&mut self, change: impl Fn(&mut Vec<Snooze>) + Send + Sync + 'static) {
         change(&mut self.snoozed);
-        if let Some(store) = &self.store
-            && store.update("snoozed", |kept| change(kept)).is_err()
-        {
-            eprintln!("nimbra: could not save the snoozed list");
+        if let Some(store) = &self.store {
+            drop(store.update_soon("snoozed", move |kept| change(kept)));
         }
     }
 
     /// The same for any account: the shown one's as above, another's in its own store (or,
     /// with none open, the shown one's, which brings it back all the same).
-    fn change_snoozed_of(&mut self, account: &str, change: impl Fn(&mut Vec<Snooze>)) {
+    fn change_snoozed_of(
+        &mut self,
+        account: &str,
+        change: impl Fn(&mut Vec<Snooze>) + Send + Sync + 'static,
+    ) {
         match self.other_stores.get(account) {
             Some(store) if account != self.account_id => {
-                if store.update("snoozed", |kept| change(kept)).is_err() {
-                    eprintln!("nimbra: could not save the snoozed list");
-                }
+                let (changes, list) = self.snoozed_away.entry(account.to_string()).or_default();
+                *changes += 1;
+                change(list);
+                drop(store.update_soon("snoozed", move |kept| change(kept)));
                 self.read_snoozed_elsewhere();
             }
             _ => self.change_snoozed(change),
         }
+    }
+
+    /// Takes another account's snoozed list as its store has it now, unless it was changed
+    /// here meanwhile.
+    pub(super) fn reread_snoozed_of(&mut self, account: String, cx: &mut Context<Self>) {
+        let Some(store) = self.other_stores.get(&account).cloned() else {
+            return;
+        };
+        let changes = self.snoozed_away.get(&account).map_or(0, |(n, _)| *n);
+        cx.spawn(async move |this, cx| {
+            let reading = store.clone();
+            let list: Vec<Snooze> = cx
+                .background_executor()
+                .spawn(async move { reading.load("snoozed").unwrap_or_default() })
+                .await;
+            this.update(cx, |this, cx| {
+                let same_store = this
+                    .other_stores
+                    .get(&account)
+                    .is_some_and(|now| Arc::ptr_eq(now, &store));
+                let unchanged = this.snoozed_away.get(&account).map_or(0, |(n, _)| *n) == changes;
+                if same_store && unchanged {
+                    this.snoozed_away.insert(account, (changes, list));
+                    this.read_snoozed_elsewhere();
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Forgets the snoozes of these threads, whichever account's list has them.
@@ -364,20 +409,22 @@ impl Nimbra {
         let accounts: std::collections::BTreeSet<&String> =
             threads.iter().map(|(account, _)| account).collect();
         for account in accounts {
-            let ids: Vec<&String> = threads
-                .iter()
-                .filter(|(a, _)| a == account)
-                .map(|(_, id)| id)
-                .collect();
+            let ids: Arc<Vec<String>> = Arc::new(
+                threads
+                    .iter()
+                    .filter(|(a, _)| a == account)
+                    .map(|(_, id)| id.clone())
+                    .collect(),
+            );
             let account = account.clone();
-            self.change_snoozed_of(&account, |list| {
-                list.retain(|s| !ids.contains(&&s.thread_id))
+            let theirs = ids.clone();
+            self.change_snoozed_of(&account, move |list| {
+                list.retain(|s| !theirs.contains(&s.thread_id))
             });
             // One kept with the shown account from before (snoozed from All inboxes).
-            if account != self.account_id
-                && self.snoozed.iter().any(|s| ids.contains(&&s.thread_id))
+            if account != self.account_id && self.snoozed.iter().any(|s| ids.contains(&s.thread_id))
             {
-                self.change_snoozed(|list| list.retain(|s| !ids.contains(&&s.thread_id)));
+                self.change_snoozed(move |list| list.retain(|s| !ids.contains(&s.thread_id)));
             }
         }
     }
@@ -385,7 +432,6 @@ impl Nimbra {
     /// The shown account's snoozes (or reminders) as rows of Snoozed (or Reminders), with
     /// the time they come back where the time they arrived would be.
     pub(super) fn snoozed_rows(&mut self, reminders: bool) -> Vec<Mail> {
-        self.read_snoozed_elsewhere();
         self.snoozed
             .iter()
             .filter(|s| {
@@ -405,21 +451,24 @@ impl Nimbra {
             .collect()
     }
 
-    /// Reads the other signed-in accounts' snoozes from their stores, each marked with
-    /// its account so its row acts there.
+    /// The other signed-in accounts' snoozes, from their lists as last read, each marked
+    /// with its account so its row acts there.
     pub(super) fn read_snoozed_elsewhere(&mut self) {
         let mut found = Vec::new();
-        for (account, store) in &self.other_stores {
+        for account in self.other_stores.keys() {
             if *account == self.account_id || !self.others.contains_key(account) {
                 continue;
             }
-            for mut snooze in store.load::<Vec<Snooze>>("snoozed").unwrap_or_default() {
+            let Some((_, list)) = self.snoozed_away.get(account) else {
+                continue;
+            };
+            for snooze in list {
                 // Kept with its own account, or with this one from All inboxes (shown here).
-                match snooze.mail.account.as_deref() {
+                let mut snooze = match snooze.mail.account.as_deref() {
                     Some(owner) if owner == self.account_id => continue,
-                    Some(_) => {}
-                    None => snooze.mail.account = Some(account.clone()),
-                }
+                    _ => snooze.clone(),
+                };
+                snooze.mail.account.get_or_insert_with(|| account.clone());
                 found.push(snooze);
             }
         }
@@ -429,30 +478,23 @@ impl Nimbra {
     /// A reply came in while a thread was snoozed: it is back in the inbox by itself (as
     /// Gmail does), so it is not brought back again later. `fresh` is an inbox's listing.
     pub(super) fn unsnooze_answered(&mut self, fresh: &[Mail]) {
-        // Each account's list, read once (another account's from its store).
-        let mut lists: HashMap<String, Vec<Snooze>> = HashMap::new();
-        let mut answered = Vec::new();
-        for mail in fresh {
-            let Some(id) = &mail.id else {
-                continue;
-            };
-            let account = self.account_of(mail).to_string();
-            let list = lists.entry(account.clone()).or_insert_with(|| {
-                let mut list = self.snoozed.clone();
-                if account != self.account_id
-                    && let Some(store) = self.other_stores.get(&account)
-                {
-                    list.extend(store.load::<Vec<Snooze>>("snoozed").unwrap_or_default());
-                }
-                list
-            });
-            if list
-                .iter()
-                .any(|s| s.thread_id == *id && mail.timestamp_ms > s.since_ms)
-            {
-                answered.push((account, id.clone()));
-            }
-        }
+        let answered: Vec<(String, String)> = fresh
+            .iter()
+            .filter_map(|mail| {
+                let id = mail.id.as_ref()?;
+                let account = self.account_of(mail);
+                let away = (account != self.account_id)
+                    .then(|| self.snoozed_away.get(account))
+                    .flatten()
+                    .map(|(_, list)| list.as_slice())
+                    .unwrap_or_default();
+                self.snoozed
+                    .iter()
+                    .chain(away)
+                    .any(|s| s.thread_id == *id && mail.timestamp_ms > s.since_ms)
+                    .then(|| (account.to_string(), id.clone()))
+            })
+            .collect();
         if !answered.is_empty() {
             self.forget_snoozes_of(&answered);
         }
@@ -511,8 +553,10 @@ impl Nimbra {
                                     "Back from snooze"
                                 };
                                 if this.settings.notifications {
+                                    // Its own account's, as Archive and Open act on it there.
+                                    let whose = item.mail.account.as_deref().unwrap_or(&owner);
                                     crate::notify::show(
-                                        &item.thread_id,
+                                        &format!("acct:{whose}:{}", item.thread_id),
                                         title,
                                         &item.mail.subject,
                                         this.settings.notify_sound,
