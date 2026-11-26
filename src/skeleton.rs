@@ -4,7 +4,7 @@
 //! under them has the real layout's margins and line heights, so nothing moves when the mail
 //! arrives. A slow, faint wave of light runs down both panes.
 //!
-//! It is all in the two greys of `inks`, in thin lines: no accent colours, no pictures,
+//! It is all in the two greys of `inks`, in soft rounded lines: no accent colours, no pictures,
 //! labels or buttons, and nothing marked as open or unread, so that it reads as a place
 //! quietly being filled and not as mail.
 
@@ -141,7 +141,7 @@ impl Nimbra {
                 .pl(px(ROW_PAD))
                 .pt(px(14.))
                 .pb(px(6.))
-                .child(ink(px(width), 6., 12., soft))
+                .child(ink(px(width), 8., 12., soft))
         };
         // Only those that fit: the wave draws each one again every frame.
         let height = self.frame.map_or(920., |f| f32::from(f.size.height));
@@ -153,9 +153,9 @@ impl Nimbra {
                 .items_center()
                 .gap(px(8.))
                 .h(px(22.))
-                .child(ink(relative(mail.sender), 8., 22., strong))
+                .child(ink(relative(mail.sender), 11., 22., strong))
                 .child(div().flex_1())
-                .child(ink(px(26.), 6., 22., soft).flex_none());
+                .child(ink(px(26.), 8., 22., soft).flex_none());
             let row = div()
                 .relative()
                 .flex()
@@ -183,8 +183,8 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .gap(px(6.))
-                                .child(ink(relative(mail.subject), 7., 18., strong))
-                                .child(ink(relative(mail.snippet), 7., 18., soft)),
+                                .child(ink(relative(mail.subject), 10., 18., strong))
+                                .child(ink(relative(mail.snippet), 10., 18., soft)),
                         ),
                 );
             let before = match i {
@@ -322,7 +322,7 @@ impl Nimbra {
             .pb(px(super::reading::ORIGINAL_SIDE))
             .border_b_1()
             .border_color(t.border)
-            .child(wave(100, 0.05, ink(relative(0.46), 14., 30., strong)))
+            .child(wave(100, 0.05, ink(relative(0.46), 20., 30., strong)))
             // Where a label or a Spam note would be.
             .child(div())
             .child(wave(
@@ -343,12 +343,12 @@ impl Nimbra {
                                 div()
                                     .flex()
                                     .gap(px(8.))
-                                    .child(ink(px(112.), 10., 18., strong))
-                                    .child(ink(px(168.), 8., 18., soft)),
+                                    .child(ink(px(112.), 14., 18., strong))
+                                    .child(ink(px(168.), 11., 18., soft)),
                             )
-                            .child(ink(px(138.), 7., 16., soft)),
+                            .child(ink(px(138.), 10., 16., soft)),
                     )
-                    .child(ink(px(28.), 7., 16., soft).flex_none()),
+                    .child(ink(px(28.), 10., 16., soft).flex_none()),
             ))
     }
 
@@ -365,7 +365,7 @@ impl Nimbra {
             .pb(px(24.))
             // Where a label would be.
             .child(div().h(px(22.)))
-            .child(wave(100, 0.1, ink(relative(0.62), 20., 43., strong)))
+            .child(wave(100, 0.1, ink(relative(0.62), 28., 43., strong)))
             .child(div())
             .child(wave(
                 101,
@@ -375,9 +375,9 @@ impl Nimbra {
                     .items_center()
                     .gap(px(10.))
                     .child(div().flex_none().size(px(28.)).rounded_full().bg(soft))
-                    .child(ink(px(180.), 8., 18., soft))
+                    .child(ink(px(180.), 11., 18., soft))
                     .child(div().flex_1())
-                    .child(ink(px(28.), 7., 16., soft).flex_none()),
+                    .child(ink(px(28.), 10., 16., soft).flex_none()),
             ))
     }
 
@@ -389,7 +389,7 @@ impl Nimbra {
             div().flex().flex_col().children(
                 lines
                     .iter()
-                    .map(|&share| ink(relative(share), 7., 22., soft)),
+                    .map(|&share| ink(relative(share), 10., 22., soft)),
             )
         };
         let parts = [
