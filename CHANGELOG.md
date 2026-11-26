@@ -1,5 +1,19 @@
 # Nimbra changelog
 
+## [0.1.1] - 2026-11-26
+
+Still an alpha. Thanks for trying it.
+
+### New
+- **Automatic updates.** Nimbra checks for a new version every few hours, downloads it in the background, and offers a restart. Every update is checked first: its checksum, Nimbra's own Developer ID signature, and Apple's notarization. Turn it off in Settings › Privacy & Security. From this version on, you won't need to download Nimbra again.
+- **A proper welcome.** The first screen, before any account is added, shows the Nimbra icon over a softly breathing glow and comes in part by part (still, if you've asked macOS to reduce motion).
+- **Clearer accounts in Settings.** Each account shows where its mail comes from (Gmail, Microsoft or another server) as a badge on its photo, Default and Shown now as labels by the address, and quieter Switch to, Make default and Remove buttons.
+- **Default mail app, at a glance.** Settings shows a green badge when Nimbra is the app that opens email links.
+
+### Fixed
+- **No unread count on an empty inbox.** The Dock badge and the sidebar now count what the inbox actually shows, so an inbox at zero no longer shows a number.
+- **Honest sign-in text.** The Connect your inbox screen now says that deleting mail forever asks Google for permission first, instead of saying Nimbra can't delete anything permanently.
+
 ## [0.1.0] - 2026-11-26
 
 The first release, as an alpha: things will change, and some will break. Please report what you find.
