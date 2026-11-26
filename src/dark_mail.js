@@ -8,7 +8,8 @@
 //
 // Colours keep their hue and have their lightness flipped (in OKLab). A light backdrop goes
 // dark, and text changes only where its backdrop did. Pictures, form fields and whatever
-// sits on a background image stay as sent.
+// sits on a background image stay as sent, and so does a light box (a button, a card) on a
+// dark background the mail painted itself: it was designed for the dark.
 (() => {
   'use strict';
 
@@ -70,14 +71,26 @@
     return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
   };
 
-  /// `rgb()`, `rgba()` or `color(srgb ...)`; null for anything else.
+  /// `rgb()`, `rgba()`, `color(srgb ...)`, `oklab()` or `oklch()` (as WebKit gives back
+  /// colours written in them, which Tailwind and react-email do); null for anything else.
   const parse = (value) => {
-    const match = /^(rgba?\(|color\(srgb )([^)]+)\)$/.exec(value);
+    const match = /^(rgba?\(|color\(srgb |oklab\(|oklch\()([^)]+)\)$/.exec(value);
     if (!match) return null;
-    const parts = match[2].trim().split(/[\s,/]+/).map(Number);
+    const parts = match[2]
+      .trim()
+      .split(/[\s,/]+/)
+      .map((part) => (part === 'none' ? 0 : part.endsWith('%') ? parseFloat(part) / 100 : Number(part)));
     if (parts.length < 3 || parts.some(Number.isNaN)) return null;
-    const scale = match[1].startsWith('color') ? 255 : 1;
-    return { rgb: parts.slice(0, 3).map((v) => v * scale), alpha: parts[3] ?? 1 };
+    const alpha = parts[3] ?? 1;
+    const kind = match[1];
+    if (kind === 'oklab(') return { rgb: fromLab(parts.slice(0, 3)), alpha };
+    if (kind === 'oklch(') {
+      const [L, C, H] = parts;
+      const h = (H * Math.PI) / 180;
+      return { rgb: fromLab([L, C * Math.cos(h), C * Math.sin(h)]), alpha };
+    }
+    const scale = kind.startsWith('color') ? 255 : 1;
+    return { rgb: parts.slice(0, 3).map((v) => v * scale), alpha };
   };
   const css = (rgb, alpha = 1) => `rgba(${rgb.map(Math.round).join(',')},${alpha})`;
   const over = (top, alpha, under) => top.map((v, i) => v * alpha + under[i] * (1 - alpha));
@@ -133,7 +146,9 @@
 
     const changes = [];
     const contexts = new Map();
-    const page = { was: pageWas, now: pageNow, kept: false };
+    // `dark`: the backdrop is a dark colour the mail painted (not the browser's canvas).
+    const dark = fill.alpha > 0 && toLab(pageWas)[0] < 0.62;
+    const page = { was: pageWas, now: pageNow, kept: false, dark };
     const walker = createWalker.call(document, root, NodeFilter.SHOW_ELEMENT);
     let count = 0;
     for (let el = root; el; el = walker.nextNode()) {
@@ -149,26 +164,34 @@
       const text = parse(style.color);
       // Pinned, so that a media query, :hover or transition cannot undo half of the change.
       const set = [['transition', 'none']];
-      let { was, now, kept } = up;
+      let { was, now, kept, dark } = up;
 
       if (el === root) {
         set.push(['background-color', css(pageNow)]);
       } else if (el === body && source === body) {
         set.push(['background-color', 'transparent']); // it is the page's now
+      } else if (!back) {
+        // A colour this cannot read: left exactly as sent, and everything in it.
+        kept = true;
       } else if (
-        !back ||
         !text ||
         CONTROLS.has(tag) ||
         (style.backgroundImage !== 'none' && !PICTURES.has(tag))
       ) {
         // An island left as sent, on the backdrop it was designed for.
-        was = back ? over(back.rgb, back.alpha, up.was) : up.was;
+        was = over(back.rgb, back.alpha, up.was);
         now = was;
         set.push(['background-color', css(was)]);
         kept = true;
       } else if (back.alpha > 0) {
         was = over(back.rgb, back.alpha, up.was);
-        if (kept || PICTURES.has(tag)) {
+        dark = toLab(was)[0] < 0.62;
+        if (!kept && up.dark && !dark && !PICTURES.has(tag)) {
+          // Light on the mail's own dark: designed for the dark, so left as sent.
+          now = was;
+          set.push(['background-color', css(was)]);
+          kept = true;
+        } else if (kept || PICTURES.has(tag)) {
           now = over(back.rgb, back.alpha, up.now);
         } else {
           const dark = darkBackground(back.rgb);
@@ -178,7 +201,7 @@
       } else if (!kept) {
         set.push(['background-color', 'transparent']);
       }
-      contexts.set(el, { was, now, kept });
+      contexts.set(el, { was, now, kept, dark });
 
       const nowL = toLab(now)[0];
       const wasL = toLab(was)[0];
