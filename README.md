@@ -40,14 +40,14 @@
 ## Features
 
 - **Fast by nature.** Native Rust, drawn on the GPU, no Electron. Mailboxes open from an encrypted local store and refresh in the background, so the app opens straight into your mail.
-- **One key for everything.** `E` done, `H` snooze, `R` reply, `S` star, `/` search, `Z` undo. Hints show the key only while it would do something, and `?` lists them all.
+- **One key for everything.** `E` done, `H` snooze, `R` reply, `S` star, `/` search, `Z` undo. Tooltips and menus show a key only while it would do something, and `?` lists them all.
 - **Split inbox.** Important, Team, Calendar, Newsletters and Other, plus Starred, Snoozed, Reminders, Drafts, Sent, Done and your labels.
 - **Snooze and reminders.** Quick times, or any day and time from the calendar; “Only if nobody replies” turns a snooze into a reminder. Works for Gmail and IMAP.
 - **Block senders.** Their mail goes straight to a Blocked label and never notifies. It uses the same label as Spark, so a list kept there carries on.
 - **Every account in one place.** Several Gmail and IMAP accounts, All inboxes merged newest first, and replies that go out from the right address.
 - **Writing that gets out of the way.** A formatted editor, address suggestions, attachments by drag and drop, drafts that save themselves, undo send and send later.
 - **Works offline.** Archive, star, read and send while offline; Nimbra sends it all once it can.
-- **Light and dark,** with emails darkened to match in dark mode, and an app icon with every macOS appearance (light, dark, clear and tinted).
+- **Light and dark,** following the Mac's appearance, with emails darkened to match in dark mode, and an app icon with every macOS appearance (light, dark, clear and tinted).
 
 ## Get started
 
@@ -123,9 +123,12 @@ With two or more accounts the sidebar adds **All inboxes**: every account's inbo
 | `V` | Switch between the reader view and the email's original formatting |
 | `C` / `R` | Compose a new message / reply to the open thread |
 | `⌘↵` | Send (in the composer) |
+| `⌘S` | Save the draft now (in the composer) |
 | `⌘⇧F` | Full-page composer on or off |
+| `⌘B` `⌘I` `⌘U` `⌘K`, `⌘⇧7` `⌘⇧8` | Bold, italic, underline, link, numbered and bulleted lists (in the composer) |
 | `⌫` or `⌘⌫` | Move to trash |
-| `⌘⇧L` | Toggle light and dark |
+| `⌘⇧L` | Switch between light and dark; landing on the Mac's own appearance follows the system again |
+| `⌘,` | Settings |
 | `⌘B` | Show or hide the sidebar (hidden, it floats in when the pointer reaches the window's left edge) |
 | `⌘⇧B` | Show or hide the message list (drag its right edge to resize it) |
 | `⌘[` / `⌘]` | Back / forward through opened threads |
@@ -136,11 +139,12 @@ With two or more accounts the sidebar adds **All inboxes**: every account's inbo
 ## Privacy and security
 
 - **Your mail stays on your Mac.** Nimbra talks straight to Gmail or your IMAP and SMTP servers; there is no server of its own in between.
-- **Encrypted at rest.** Mailboxes, opened threads, counts, the offline queue and snoozes are kept in `~/Library/Application Support/Nimbra/store`. Each record is encrypted with ChaCha20-Poly1305 using a key kept only in the system keychain (`nimbra` / `store-key`); the files alone, or a backup of them, are unreadable. Search results are never stored. When a Google sign-in ends, that account's store and its key are deleted; a keychain that cannot be read deletes nothing.
+- **Encrypted at rest.** Mailboxes, opened threads, counts, the offline queue and snoozes are kept in `~/Library/Application Support/Nimbra/store`. Each record is encrypted with ChaCha20-Poly1305 using a key kept only in the system keychain (`nimbra` / `store-key`); the files alone, or a backup of them, are unreadable. Search results are never stored. Signing out deletes that account's store and its key. When Google or Microsoft ends a sign-in, the mail kept for it is deleted but unsent and scheduled mail stay for when you sign in again; a password the server stops taking only asks for it again and keeps everything. A keychain that cannot be read deletes nothing.
 - **Secrets in the Keychain.** Sign-ins, refresh tokens and passwords live only in the system keychain. OAuth client files stay in `~/.config/nimbra`, never in the repo.
 - **Locked-down email.** Mail is drawn natively by default, with scripts, styles and forms dropped. **Show original** (`V`) renders the email's own HTML in a system web view with scripts off, navigation blocked, and remote scripts, frames, fonts and forms blocked by a content security policy; mail that tries to send you somewhere by itself (a meta refresh) is stopped. Only `http`, `https` and `mailto` links are clickable, and they open in your browser when you click them.
-- **Remote images.** In the reader view they stay hidden until you click **Load images**, and tracking pixels are never loaded. The original view shows them by default (senders can then tell the mail was opened); **Block images** turns them off for the open thread.
+- **Remote images.** In the reader view they stay hidden until you click **Load images**, and tracking pixels are never loaded. The original view shows them by default (senders can then tell the mail was opened); **Block images** turns them off for the open thread. Mail in Spam never loads them.
 - **TLS everywhere.** IMAP and SMTP use rustls with certificates always checked.
+- **Settings that survive.** Settings are written to a new file and moved into place, with the last good copy kept as `settings.json.bak`. A damaged file is set aside (`settings.json.corrupt-…`), never saved over, and Nimbra says once what it did.
 
 ## How it works
 
@@ -194,7 +198,7 @@ Messages are written in a formatted editor: bold (⌘B), italic (⌘I), underlin
 
 The composer has Cc and Bcc, suggests addresses from your mail as you type, and takes attachments from the paperclip or by dropping files on it (25 MB in total). Drafts save themselves a moment after you stop typing. Sending waits six seconds so you can undo it (⌘Z). From Send until the server has it, a message is kept encrypted on this Mac: quitting sends it first, and one that could not leave is sent when its account next connects. **Send later** sends the saved draft at the chosen time while Nimbra is running.
 
-Offline, archive, star, read and the like still work: changes are kept (encrypted, on this Mac) and sent once the server can be reached, and an Offline pill shows how many are waiting.
+Offline, archive, star, read and the like still work: changes are kept (encrypted, on this Mac) and sent once the server can be reached, and an Offline pill shows how many are waiting. Signing out deletes messages still waiting to be sent, so Sign Out says how many before its second click. **Clear Mail on This Mac** in Settings removes the downloaded mail only, never unsent or scheduled mail or snoozes.
 
 </details>
 
@@ -202,9 +206,13 @@ Offline, archive, star, read and the like still work: changes are kept (encrypte
 
 The design lives in the [Mail Client Figma file](https://www.figma.com/design/s6tsR2l2X4MKmoA1dNlm4I/Mail-Client?node-id=7313-2):
 
-- **Nimbra — App UI:** the screens as built (the inbox in dark and light, the Snooze menu, Compose, Inbox zero), the colour variables and text styles, and the component kit.
+- **Nimbra App UI:** the screens as built (the inbox in dark and light, the Snooze menu, Compose, Inbox zero), the colour variables and text styles, and the component kit.
 - **Landing:** the landing page.
 - **Brand · App icon:** the icon and its Icon Composer layers.
+
+### Look and feel
+
+Nimbra is dark first with a violet accent and a violet-to-pink glow, a glass sidebar and the night sky of Inbox Zero; light mode follows the Mac. All text is set in Sora: titles use it as a display face, larger and lighter as they grow, and Geist Mono is kept for sparse details such as times and counts. Depth comes from hairlines, glass layers and soft light rather than heavy shadows. Motion runs at the display's refresh rate, is timed by the clock rather than by frames, stops as soon as nothing moves, and drops travel under Reduce Motion. Key hints never sit on screen: they appear in tooltips, menus, right-click menus, the `?` sheet and Settings › Shortcuts.
 
 ### App icon
 
@@ -226,7 +234,7 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 
 ### Screenshot states
 
-`NIMBRA_SCREEN=zero`, `loading`, `compose`, `compose-full`, `snooze` or `snooze-time` opens that screen directly on the sample data. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
+`NIMBRA_SCREEN=zero`, `loading`, `compose`, `compose-full`, `draft`, `snooze`, `snooze-time`, `bulk`, `settings`, `settings-account`, `account` or `account-servers` opens that screen directly on the sample data. `NIMBRA_MAILBOX=<name>` (starred, snoozed, reminders, sent, drafts, done, all, important, spam, trash) opens that mailbox first. `NIMBRA_LIST=closed` hides the message list and `NIMBRA_LIST_WIDTH=<px>` sets its width. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
 
 ### Live tests
 
@@ -251,7 +259,8 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/checking.rs`, `src/arrival.rs`, `src/quitting.rs`, `src/leaving.rs`: checks for mail, Inbox Zero at launch, and what quitting has to finish
 - `src/rich.rs`, `src/webview.rs`: HTML or plain-text mail as styled blocks, and the locked-down web view behind Show original
 - `src/app.rs`: the app's state, key actions and the window's layout; the rest of the `Nimbra` type continues in `accounts.rs`, `mailbox.rs`, `threads.rs`, `labels.rs`, `finder.rs`, `composer.rs`, `outgoing.rs` and `menus.rs`
-- `src/sidebar.rs`, `src/list.rs`, `src/reading.rs`, `src/snooze_menu.rs`: the sidebar, the thread list (with Inbox Zero), the reading pane and the Snooze menu
+- `src/sidebar.rs`, `src/list.rs`, `src/reading.rs`, `src/snooze_menu.rs`, `src/skeleton.rs`: the sidebar, the thread list (with Inbox Zero), the reading pane, the Snooze menu and the loading screen
+- `src/menus.rs`, `src/toast.rs`, `src/tooltip.rs`, `src/finder.rs`: menus, notices and the Undo pill, tooltips, and search
 - `src/ui.rs`, `src/input.rs`: shared building blocks and the text field
 - `assets/`: the app icon, bundled Sora and Geist Mono fonts (OFL) and Lucide-style icons
 
