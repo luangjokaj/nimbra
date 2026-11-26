@@ -1094,7 +1094,12 @@ impl Nimbra {
         }
         // NIMBRA_SCREEN=settings opens the Settings sheet (screenshots).
         // NIMBRA_SCREEN=settings-account opens it on Add account.
-        if screen == "settings" || screen == "settings-account" {
+        // NIMBRA_SCREEN=settings-remove opens it on Accounts, asking to remove one.
+        if screen == "settings"
+            || screen == "settings-account"
+            || screen == "settings-accounts"
+            || screen == "settings-remove"
+        {
             let form = screen == "settings-account";
             // After the main window is up.
             cx.spawn(async move |this, cx| {

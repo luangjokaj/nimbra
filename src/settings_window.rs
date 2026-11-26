@@ -90,6 +90,10 @@ pub(super) struct SettingsWindow {
     pending_focus: Option<FocusHandle>,
     /// A first click on a destructive button arms it; a second within 4 s does it.
     armed: Option<(&'static str, Instant)>,
+    /// The account whose Remove asks for confirmation (id, address), in a dialog.
+    confirm_remove: Option<(String, String)>,
+    /// The dialog's keyboard focus, for Esc and Return.
+    dialog_focus: FocusHandle,
     /// A segmented choice that just changed: the option it slides from, when, and a
     /// count that keys the slide.
     slides: std::collections::HashMap<&'static str, (usize, Instant, usize)>,
@@ -139,17 +143,23 @@ impl SettingsWindow {
             );
             signature.push(input);
         }
+        // NIMBRA_SCREEN=settings-remove opens Accounts asking to remove the first one.
+        let asking = (std::env::var("NIMBRA_SCREEN").as_deref() == Ok("settings-remove"))
+            .then(|| owner.read(cx).settings.accounts.first().cloned())
+            .flatten()
+            .map(|a| (a.id, a.email));
         SettingsWindow {
             owner,
             // Screenshots of Add account open on Accounts.
-            tab: if std::env::var("NIMBRA_SCREEN").as_deref() == Ok("settings-account") {
-                Tab::Accounts
-            } else {
-                Tab::General
+            tab: match std::env::var("NIMBRA_SCREEN").as_deref() {
+                Ok("settings-account" | "settings-accounts" | "settings-remove") => Tab::Accounts,
+                _ => Tab::General,
             },
             signature,
             pending_focus: None,
             armed: None,
+            confirm_remove: asking,
+            dialog_focus: cx.focus_handle(),
             slides: std::collections::HashMap::new(),
             mail_app: None,
             making_default: false,
@@ -242,6 +252,118 @@ impl SettingsWindow {
             .is_some_and(|(k, at)| k == key && at.elapsed().as_secs() < 4)
     }
 
+    /// Remove: asks first, in a dialog.
+    fn ask_remove(&mut self, id: String, email: String, cx: &mut Context<Self>) {
+        self.confirm_remove = Some((id, email));
+        self.pending_focus = Some(self.dialog_focus.clone());
+        cx.notify();
+    }
+
+    fn cancel_remove(&mut self, cx: &mut Context<Self>) {
+        self.confirm_remove = None;
+        cx.notify();
+    }
+
+    fn confirm_remove(&mut self, cx: &mut Context<Self>) {
+        if let Some((id, _)) = self.confirm_remove.take() {
+            self.owner.update(cx, |n, cx| n.remove_account(id, cx));
+        }
+        cx.notify();
+    }
+
+    /// The dialog over the window: what goes and what stays, Cancel and Remove.
+    fn remove_dialog(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (_, email) = self.confirm_remove.as_ref()?;
+        let danger = div()
+            .id("confirm-remove")
+            .flex()
+            .flex_none()
+            .items_center()
+            .px(px(14.))
+            .py(px(6.))
+            .rounded(px(9.))
+            .bg(t.rose)
+            .text_color(gpui::white())
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .hover(|s| s.opacity(0.9))
+            .child("Remove")
+            .on_click(cx.listener(|this, _, _, cx| this.confirm_remove(cx)));
+        Some(
+            div()
+                .id("remove-dialog-scrim")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(t.scrim)
+                .occlude()
+                .track_focus(&self.dialog_focus)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.cancel_remove(cx),
+                        "enter" => this.confirm_remove(cx),
+                        _ => {}
+                    }
+                }))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.cancel_remove(cx)),
+                )
+                .child(
+                    div()
+                        .id("remove-dialog")
+                        .w(px(400.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .p(px(24.))
+                        .rounded(px(16.))
+                        .bg(t.raised)
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .shadow(vec![shadow(
+                            c(0x000000, if t.dark { 0.6 } else { 0.2 }),
+                            24.,
+                            60.,
+                            -10.,
+                        )])
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!("Remove {email}?")),
+                        )
+                        .child(
+                            div().text_color(t.text2).child(
+                                "Nimbra signs out of it and deletes its mail from this Mac. \
+                                 Its mail on the server, and your other accounts, stay as they are.",
+                            ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(px(8.))
+                                .pt(px(10.))
+                                .child(
+                                    button(t, ButtonKind::Secondary, "Cancel", None)
+                                        .id("cancel-remove")
+                                        .press_soft()
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.cancel_remove(cx)),
+                                        ),
+                                )
+                                .child(danger),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn arm(&mut self, key: &'static str, cx: &mut Context<Self>) -> bool {
         if self.is_armed(key) {
             self.armed = None;
@@ -286,7 +408,9 @@ impl Render for SettingsWindow {
             Tab::About => self.about(&t, cx),
         };
         let hover = t.hover;
+        let dialog = self.remove_dialog(&t, cx);
         div()
+            .relative()
             .flex()
             .size_full()
             .bg(t.surface)
@@ -368,6 +492,7 @@ impl Render for SettingsWindow {
                             .children(content),
                     ),
             )
+            .children(dialog)
     }
 }
 
@@ -682,7 +807,6 @@ impl SettingsWindow {
         let connected = n.connection.is_some();
         // Google's sign-in needs its setup; any other address does not.
         let can_add = true;
-        let active_email = n.account.to_string();
         let photos = n.photos.clone();
         let photo_answer = n.photo_answers.get(&active).copied().filter(|_| connected);
         let several = accounts.len() >= 2;
@@ -695,18 +819,17 @@ impl SettingsWindow {
                 let is_default = several && default.as_deref() == Some(account.id.as_str());
                 let id = account.id.clone();
                 let make_default = account.id.clone();
+                let remove = (account.id.clone(), account.email.clone());
                 let initials = account
                     .email
                     .chars()
                     .next()
                     .map(|c| c.to_uppercase().to_string())
                     .unwrap_or_default();
-                div()
+                let identity = div()
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .px(px(16.))
-                    .py(px(12.))
                     .child(if let Some(photo) = photos.get(&account.id) {
                         me_avatar(Some(photo), &initials, 32.)
                     } else if shown {
@@ -744,10 +867,28 @@ impl SettingsWindow {
                                     t.text3
                                 },
                             )),
-                    )
+                    );
+                // Under the address, lined up with it (past the 32 pt photo and its gap).
+                let actions = div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(8.))
+                    .pl(px(44.))
+                    .when(!shown, |d| {
+                        d.child(
+                            button(t, ButtonKind::Secondary, "Switch to", None)
+                                .id(("switch-account", i))
+                                .press_soft()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let id = id.clone();
+                                    this.owner.update(cx, |n, cx| n.switch_account(id, cx));
+                                })),
+                        )
+                    })
                     .when(several && !is_default, |d| {
                         d.child(
-                            button(t, ButtonKind::Ghost, "Make default", None)
+                            button(t, ButtonKind::Secondary, "Make default", None)
                                 .id(("default-account", i))
                                 .press_soft()
                                 .tooltip(tip(
@@ -761,61 +902,43 @@ impl SettingsWindow {
                                 })),
                         )
                     })
-                    .when(!shown, |d| {
-                        d.child(
-                            button(t, ButtonKind::Secondary, "Switch to", None)
-                                .id(("switch-account", i))
-                                .press_soft()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let id = id.clone();
-                                    this.owner.update(cx, |n, cx| n.switch_account(id, cx));
-                                })),
-                        )
-                    })
+                    // Asks first, in a dialog.
+                    .child(
+                        button(t, ButtonKind::Secondary, "Remove", None)
+                            .id(("remove-account", i))
+                            .press_soft()
+                            .text_color(t.rose)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let (id, email) = remove.clone();
+                                this.ask_remove(id, email, cx);
+                            })),
+                    );
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .px(px(16.))
+                    .py(px(14.))
+                    .child(identity)
+                    .child(actions)
                     .into_any_element()
             })
             .collect();
         if rows.is_empty() {
             rows.push(row(t, "No account yet", "", div()));
         }
-        let armed = self.is_armed("sign-out");
-        let actions = div()
-            .flex()
-            .gap(px(8.))
-            .when(can_add, |d| {
-                d.child(
-                    button(t, ButtonKind::Secondary, "Add account", None)
-                        .id("add-account")
-                        .press_soft()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.tab = Tab::Accounts;
-                            this.owner
-                                .update(cx, |n, cx| n.open_account_form_in_settings(cx));
-                        })),
-                )
-            })
-            .when(connected, |d| {
-                d.child(
-                    button(
-                        t,
-                        ButtonKind::Ghost,
-                        if armed {
-                            "Click again to sign out"
-                        } else {
-                            "Sign out of this account"
-                        },
-                        None,
-                    )
-                    .id("sign-out")
+        let actions = div().flex().gap(px(8.)).when(can_add, |d| {
+            d.child(
+                button(t, ButtonKind::Secondary, "Add account", None)
+                    .id("add-account")
                     .press_soft()
-                    .when(armed, |d| d.text_color(t.rose))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        if this.arm("sign-out", cx) {
-                            this.owner.update(cx, |n, cx| n.sign_out(cx));
-                        }
+                        this.tab = Tab::Accounts;
+                        this.owner
+                            .update(cx, |n, cx| n.open_account_form_in_settings(cx));
                     })),
-                )
-            });
+            )
+        });
         let check_again = |cx: &mut Context<Self>| {
             button(t, ButtonKind::Secondary, "Check again", None)
                 .id("check-photo")
@@ -858,15 +981,6 @@ impl SettingsWindow {
                 .gap(px(8.))
                 .child(actions)
                 // The consequence, at the moment it matters.
-                .when(connected && armed, |d| {
-                    d.child(meta(
-                        format!(
-                            "Signing out of {} removes its mail from this Mac. Other accounts stay.",
-                            if active_email.is_empty() { "this account".to_string() } else { active_email }
-                        ),
-                        t.text3,
-                    ))
-                })
                 .into_any_element(),
         ]
     }

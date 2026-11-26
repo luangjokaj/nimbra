@@ -1002,6 +1002,72 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// Settings › Accounts › Remove: takes an account off this Mac. Its sign-in (Google's, the
+    /// password, or Microsoft's), the mail kept for it and its key are deleted; the mail on
+    /// its server is not touched. The account shown signs out as before; any other goes
+    /// without switching away from what is open.
+    pub(super) fn remove_account(&mut self, account: String, cx: &mut Context<Self>) {
+        if account == self.account_id {
+            self.sign_out(cx);
+            return;
+        }
+        let Some(email) = self
+            .settings
+            .accounts
+            .iter()
+            .find(|a| a.id == account)
+            .map(|a| a.email.clone())
+        else {
+            return;
+        };
+        // As signing out: a message on its way waits to finish first.
+        let on_its_way = self.sends.iter().any(|job| {
+            job.account == account && !self.queue.iter().any(|waiting| Arc::ptr_eq(waiting, job))
+        });
+        if on_its_way {
+            self.notice = Some(
+                "A message from this account is still being sent. Remove it again in a moment."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
+        self.abandon_sends(&account);
+        let gone = account.clone();
+        std::thread::spawn(move || {
+            gmail::forget_refresh_token(&gone);
+            crate::servers::forget_password(&gone);
+            crate::microsoft::forget_refresh_token(&gone);
+            crate::store::wipe(&gone);
+            forget_previews(&gone);
+        });
+        self.settings.accounts.retain(|a| a.id != account);
+        if self.settings.default_account.as_deref() == Some(account.as_str()) {
+            self.settings.default_account = None;
+        }
+        self.others.remove(&account);
+        self.forget_photo(&account);
+        self.other_stores.remove(&account);
+        self.snoozed_away.remove(&account);
+        self.away_waiting.remove(&account);
+        self.account_unread.remove(&account);
+        self.inboxes_saved_empty.remove(&account);
+        self.snoozed_elsewhere
+            .retain(|s| s.mail.account.as_deref() != Some(account.as_str()));
+        self.save_settings(cx);
+        // All inboxes without it: listed again, or, with one account left, its inbox.
+        if self.mailbox == View::AllInboxes {
+            self.cache.remove(&View::AllInboxes);
+            if self.settings.accounts.len() < 2 {
+                self.select_mailbox(View::Inbox, cx);
+            } else {
+                self.refresh(cx);
+            }
+        }
+        self.notice = Some(format!("Removed {email}. Its mail was removed from this Mac.").into());
+        cx.notify();
+    }
+
     /// Signs out: forgets the sign-in (Google's, the password, or Microsoft's) and removes the mail kept on this Mac and its
     /// key. Settings (signature, theme) stay.
     pub(super) fn sign_out(&mut self, cx: &mut Context<Self>) {
