@@ -2,6 +2,8 @@
 //! HTML view beside the native one, printing and unsubscribing.
 
 use super::*;
+use crate::theme::{GRADIENT_GLOW, radius, space};
+use crate::ui::{Elevation, elevation};
 
 /// "Fri, Nov 21, 2026 at 09:41", in local time; empty when unknown.
 pub(super) fn long_date(timestamp_ms: i64) -> String {
@@ -16,50 +18,122 @@ pub(super) fn long_date(timestamp_ms: i64) -> String {
         .unwrap_or_default()
 }
 
-/// A free path in Downloads for `name` ("Plan.pdf", then "Plan 2.pdf", ...).
-pub(super) fn unique_download_path(name: &str) -> anyhow::Result<std::path::PathBuf> {
+/// Saves `bytes` as a new file in Downloads named after `name` ("Plan.pdf", then
+/// "Plan 2.pdf", ...). Nothing already there is replaced or followed.
+fn save_to_downloads(name: &str, bytes: &[u8]) -> anyhow::Result<std::path::PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("no home folder"))?;
-    let dir = std::path::PathBuf::from(home).join("Downloads");
+    save_new_in(&std::path::PathBuf::from(home).join("Downloads"), name, bytes)
+}
+
+/// Saves `bytes` in `dir` under the first free name of "name", "name 2", ...
+fn save_new_in(
+    dir: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+) -> anyhow::Result<std::path::PathBuf> {
     let (stem, ext) = match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), format!(".{ext}")),
-        _ => (name.to_string(), String::new()),
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
     };
     for n in 1..1000 {
-        let file = if n == 1 {
+        let path = dir.join(if n == 1 {
             format!("{stem}{ext}")
         } else {
             format!("{stem} {n}{ext}")
-        };
-        let path = dir.join(file);
-        if !path.exists() {
-            return Ok(path);
+        });
+        match write_new(&path, bytes) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
         }
     }
-    anyhow::bail!("too many files with that name in Downloads")
+    anyhow::bail!("too many files with that name")
 }
 
-/// A private temporary folder for Quick Look previews.
-pub(super) fn preview_path(name: &str) -> anyhow::Result<std::path::PathBuf> {
+/// Saves `bytes` for Quick Look, in a private temporary folder of its own.
+fn save_for_preview(name: &str, bytes: &[u8]) -> anyhow::Result<std::path::PathBuf> {
     let mut id = [0u8; 8];
     getrandom::fill(&mut id).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let dir = std::env::temp_dir()
-        .join("nimbra-previews")
-        .join(id.iter().map(|b| format!("{b:02x}")).collect::<String>());
-    std::fs::create_dir_all(&dir)?;
+    let parent = std::env::temp_dir().join("nimbra-previews");
+    std::fs::create_dir_all(&parent)?;
+    let dir = parent.join(id.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let mut folder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
-    Ok(dir.join(name))
+    std::os::unix::fs::DirBuilderExt::mode(&mut folder, 0o700);
+    folder.create(&dir)?;
+    let path = dir.join(name);
+    write_new(&path, bytes)?;
+    Ok(path)
 }
 
-pub(super) fn restrict_file(path: &std::path::Path) {
+/// Creates `path` (only if nothing is there, not even a link), readable by the user alone
+/// and quarantined like any download, then writes `bytes` to it.
+fn write_new(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    let written = quarantine(&file).and_then(|()| file.write_all(bytes));
+    if written.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
     }
+    written
+}
+
+/// Marks a file as downloaded from the internet, so that macOS asks before it opens or
+/// runs anything in it (a `.terminal`, `.fileloc` or app would otherwise run unasked). A
+/// file that cannot carry the mark is not kept.
+#[cfg(target_os = "macos")]
+fn quarantine(file: &std::fs::File) -> std::io::Result<()> {
+    use std::ffi::{c_char, c_int, c_void};
+    use std::os::fd::AsRawFd as _;
+    unsafe extern "C" {
+        fn fsetxattr(
+            fd: c_int,
+            name: *const c_char,
+            value: *const c_void,
+            size: usize,
+            position: u32,
+            options: c_int,
+        ) -> c_int;
+    }
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // Flags 0081: downloaded, and not yet approved by the user.
+    let value = format!("0081;{since:x};Nimbra;");
+    // SAFETY: a live descriptor, a NUL-terminated name and a buffer of `value.len()` bytes.
+    let set = unsafe {
+        fsetxattr(
+            file.as_raw_fd(),
+            c"com.apple.quarantine".as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        )
+    };
+    if set == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn quarantine(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Whether `shown` (the web view's "account:thread") is this thread, without building it.
+fn shows_thread(shown: &str, account: &str, thread: &str) -> bool {
+    shown
+        .strip_prefix(account)
+        .and_then(|rest| rest.strip_prefix(':'))
+        == Some(thread)
 }
 
 /// A button on an attachment: its icon, a turning arrow while it downloads, or a green
@@ -72,7 +146,7 @@ pub(super) fn attachment_button(t: &Theme, name: &str, busy: bool, done: bool) -
         .items_center()
         .justify_center()
         .size(px(30.))
-        .rounded(px(8.))
+        .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(if busy {
@@ -124,7 +198,7 @@ impl Nimbra {
     /// The thread the web view should be showing right now, if any. It stays hidden
     /// whenever something is drawn over the reading pane, because a native web view
     /// always sits on top of everything GPUI paints.
-    fn original_target(&self) -> Option<(String, SharedString)> {
+    fn original_target(&self) -> Option<(&Mail, ThreadKey)> {
         let ready = matches!(self.status, Status::Demo | Status::Ready);
         // (A toolbar menu does not hide it: menus open in a window of their own, above it.)
         let covered = self.palette
@@ -143,10 +217,24 @@ impl Nimbra {
             return None;
         }
         let mail = self.mails.get(self.selected)?;
-        // Not the row: new mail would load the email again, undoing Block images.
-        let (thread, account) = self.thread_key(mail);
-        let key = format!("{account}:{thread}");
-        Some((key, mail.html.clone()?))
+        mail.html.as_ref()?;
+        // Not the row: new mail would load the email again.
+        Some((mail, self.thread_key(mail)))
+    }
+
+    /// Whether this thread is in Spam (Gmail's label, or an IMAP Junk folder).
+    pub(super) fn in_spam(&self, mail: &Mail) -> bool {
+        mail.labels.iter().any(|l| l == "SPAM")
+            || (self.mailbox == View::Spam
+                && self
+                    .row_of(&message_window::key_of(mail), self.account_of(mail))
+                    .is_some())
+    }
+
+    /// Whether the email's remote images load: as Settings › Reading says, and never for
+    /// mail in Spam, which is where tracking pixels confirm an address is read.
+    pub(super) fn remote_images(&self, mail: &Mail) -> bool {
+        self.settings.load_images && !self.in_spam(mail)
     }
 
     /// Whether light emails are given a dark page right now (Settings › Reading).
@@ -154,7 +242,8 @@ impl Nimbra {
         cfg!(target_os = "macos") && self.dark && self.settings.dark_emails
     }
 
-    /// Creates, loads, shows or hides the web view to match the current state.
+    /// Creates, loads, shows or hides the web view to match the current state. Runs every
+    /// frame, so it only talks to the view when something changed.
     pub(super) fn sync_html_view(&mut self, window: &mut Window) {
         // A print job has a view of its own, so the email shown does not replace it, and it
         // is light whatever the theme.
@@ -162,44 +251,56 @@ impl Nimbra {
             if self.print_view.is_none() {
                 self.print_view = HtmlView::new(window);
             }
+            let images = self
+                .mails
+                .get(self.selected)
+                .is_some_and(|mail| self.remote_images(mail));
             if let Some(view) = &self.print_view {
                 view.set_dark(false, false);
                 // Never shown, but it needs a page's size to lay the document out.
                 view.set_bounds(0., 0., 800., 1000.);
-                view.show(&doc, self.original_images);
+                view.print_when_loaded();
+                view.show(&doc, images);
             }
         }
-        let Some((key, html)) = self.original_target() else {
+        let Some((mail, (thread, account))) = self.original_target() else {
             if let Some(view) = &self.html_view {
                 view.set_visible(false);
             }
             return;
         };
+        let (spam, html) = (self.in_spam(mail), mail.html.clone());
+        let same_thread = self
+            .html_shown
+            .as_ref()
+            .is_some_and(|(key, ..)| shows_thread(key, &account, &thread));
+        // A different thread starts again from what Settings says.
+        if !same_thread {
+            self.original_images = self.settings.load_images;
+        }
+        let images = self.original_images && !spam;
+        let darkened = self.darkens_mail();
+        let unchanged = same_thread
+            && self
+                .html_shown
+                .as_ref()
+                .is_some_and(|(_, i, dark, d)| (*i, *dark, *d) == (images, self.dark, darkened));
+        let html = html.filter(|_| !unchanged);
         if self.html_view.is_none() {
             self.html_view = HtmlView::new(window).map(std::rc::Rc::new);
         }
         let Some(view) = &self.html_view else {
             // No web view on this platform: fall back to the native reader.
             self.original = false;
-            self.notice = Some("The original view is not available on this system.".into());
+            self.notice = Some("The original view isn’t available here.".into());
             return;
         };
-        // A different thread starts with remote images on again.
-        if self
-            .html_shown
-            .as_ref()
-            .is_some_and(|(shown, ..)| *shown != key)
-        {
-            self.original_images = self.settings.load_images;
-        }
-        let darkened = self.darkens_mail();
-        let wanted = (key, self.original_images, self.dark, darkened);
-        if self.html_shown.as_ref() != Some(&wanted) {
+        if let Some(html) = html {
             // The page follows Nimbra's theme. Both take effect as the mail loads, so a
             // change of either loads it again.
             view.set_dark(self.dark, darkened);
-            view.show(&html, self.original_images);
-            self.html_shown = Some(wanted);
+            view.show(&html, images);
+            self.html_shown = Some((format!("{account}:{thread}"), images, self.dark, darkened));
         }
         view.set_visible(true);
         // The web view is above all the app draws, so the floating sidebar gets a hole in
@@ -234,7 +335,7 @@ impl Nimbra {
             return;
         };
         if !mail.loaded {
-            self.notice = Some("The message is still loading. Try again in a moment.".into());
+            self.notice = Some("Still loading. Try again in a moment.".into());
             cx.notify();
             return;
         }
@@ -278,21 +379,9 @@ impl Nimbra {
                 }
             }
         }
+        // Loaded on the next frame, and printed once the page has finished loading.
         self.print_pending = Some(doc);
         cx.notify();
-        // The document is loaded on the next frame; give it a moment, then print.
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(700))
-                .await;
-            this.update(cx, |this, _| {
-                if let Some(view) = &this.print_view {
-                    view.print();
-                }
-            })
-            .ok();
-        })
-        .detach();
     }
 
     /// Downloads an attachment, then either previews it with Quick Look (from a private
@@ -315,22 +404,24 @@ impl Nimbra {
             return;
         }
         let key = att.attachment_id.clone();
+        let shown_name = short(&att.name, 48);
         self.attachment_busy.insert(key.clone(), save);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = within(cx.background_executor(), async move {
-                let bytes = client.download(&att.message_id, &att.attachment_id)?;
-                let name = mail::safe_file_name(&att.name);
-                let path = if save {
-                    unique_download_path(&name)?
-                } else {
-                    preview_path(&name)?
-                };
-                std::fs::write(&path, &bytes)?;
-                restrict_file(&path);
-                anyhow::Ok(path)
-            })
-            .await;
+            // No deadline: the spinner shows it is still coming, and one given up on would
+            // still land in Downloads after saying it failed.
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let bytes = client.download(&att.message_id, &att.attachment_id)?;
+                    let name = mail::safe_file_name(&att.name);
+                    if save {
+                        save_to_downloads(&name, &bytes)
+                    } else {
+                        save_for_preview(&name, &bytes)
+                    }
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.attachment_busy.remove(&key);
                 match result {
@@ -361,8 +452,9 @@ impl Nimbra {
                             .detach();
                         }
                     }
-                    Err(error) => {
-                        this.notice = Some(format!("Could not get the attachment: {error}").into())
+                    Err(_) => {
+                        this.notice =
+                            Some(format!("Couldn’t download {shown_name}. Try again.").into())
                     }
                 }
                 cx.notify();
@@ -428,37 +520,74 @@ impl Nimbra {
         }
     }
 
-    /// Fetches the remote images of a message after the user asked for them.
+    /// Fetches the remote images of a message after the user asked for them. Never for mail
+    /// in Spam.
     fn load_images(&mut self, sources: Vec<String>, cx: &mut Context<Self>) {
-        for url in sources.into_iter().take(16) {
+        let sources: Vec<String> = sources.into_iter().take(16).collect();
+        self.forget_images(&sources, cx);
+        for url in sources {
             if !self.image_requests.insert(url.clone()) {
                 continue;
             }
             cx.spawn(async move |this, cx| {
                 let fetch_url = url.clone();
-                let result = cx
+                // Decoding and hashing the bytes is work for the background too.
+                let image = cx
                     .background_executor()
-                    .spawn(async move { rich::fetch_image(&fetch_url) })
+                    .spawn(async move {
+                        let (kind, bytes) = rich::fetch_image(&fetch_url)?;
+                        let format = match kind {
+                            rich::ImageKind::Png => gpui::ImageFormat::Png,
+                            rich::ImageKind::Jpeg => gpui::ImageFormat::Jpeg,
+                            rich::ImageKind::Gif => gpui::ImageFormat::Gif,
+                            rich::ImageKind::Webp => gpui::ImageFormat::Webp,
+                        };
+                        anyhow::Ok(Arc::new(gpui::Image::from_bytes(format, bytes)))
+                    })
                     .await;
-                let Ok((kind, bytes)) = result else {
+                let Ok(image) = image else {
                     return;
                 };
-                let format = match kind {
-                    rich::ImageKind::Png => gpui::ImageFormat::Png,
-                    rich::ImageKind::Jpeg => gpui::ImageFormat::Jpeg,
-                    rich::ImageKind::Gif => gpui::ImageFormat::Gif,
-                    rich::ImageKind::Webp => gpui::ImageFormat::Webp,
-                };
                 this.update(cx, |this, cx| {
-                    this.images
-                        .insert(url, Arc::new(gpui::Image::from_bytes(format, bytes)));
-                    cx.notify();
+                    // Unless it was let go of while on its way.
+                    if this.image_requests.contains(&url) {
+                        this.images.insert(url, image);
+                        cx.notify();
+                    }
                 })
                 .ok();
             })
             .detach();
         }
         cx.notify();
+    }
+
+    /// Lets go of the images (and their decoded textures) of threads no longer open, once
+    /// there are more than a few, keeping the open thread's and `wanted`.
+    fn forget_images(&mut self, wanted: &[String], cx: &mut Context<Self>) {
+        const KEPT: usize = 32;
+        if self.image_requests.len() + wanted.len() <= KEPT {
+            return;
+        }
+        let open: Vec<&String> = self.mails.get(self.selected).map_or_else(Vec::new, |mail| {
+            mail.earlier
+                .iter()
+                .flat_map(|e| &e.blocks)
+                .chain(&mail.body)
+                .filter_map(|block| match &block.kind {
+                    Kind::Image { src, .. } => Some(src),
+                    _ => None,
+                })
+                .collect()
+        });
+        let keep = |url: &String| wanted.contains(url) || open.contains(&url);
+        self.image_requests.retain(|url| keep(url));
+        let gone: Vec<String> = self.images.keys().filter(|url| !keep(url)).cloned().collect();
+        for url in gone {
+            if let Some(image) = self.images.remove(&url) {
+                image.remove_asset(cx);
+            }
+        }
     }
 
     /// Space and Shift-Space: the conversation a page further or back.
@@ -481,46 +610,51 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// One message drawn natively from its blocks. `base` keeps element ids unique when
-    /// several messages are on screen.
-    /// A message's text, selectable where it is drawn (`selectable`).
+    /// One message drawn natively from its blocks, its text selectable where it is drawn
+    /// (`selectable`). `base` keeps element ids unique when several messages are on screen.
+    /// `images` is whether its remote images may be loaded at all (never in Spam).
     pub(super) fn message_body(
         &self,
         t: &Theme,
         blocks: &[Block],
         base: usize,
+        images: bool,
         selectable: &super::selection::Selectable,
         cx: &mut Context<Self>,
     ) -> Div {
         let sources = rich::image_sources(blocks);
-        let pending = sources.iter().any(|src| !self.image_requests.contains(src));
+        let pending = images && sources.iter().any(|src| !self.image_requests.contains(src));
+        let (size, line) = self.settings.reader_text.metrics();
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .text_size(px(self.settings.reader_text.metrics().0))
-            .line_height(px(self.settings.reader_text.metrics().1))
-            .text_color(t.text2)
+            .gap(px((line * 0.6).round()))
+            // A comfortable measure: about 70 characters to a line.
+            .max_w(px(size * 44.))
+            .text_size(px(size))
+            .line_height(px(line))
+            .text_color(t.text)
             .when(pending, |d| {
                 d.child(
-                    card(t)
+                    div()
+                        .id(("images-hidden", base))
                         .flex()
                         .items_center()
-                        .gap(px(10.))
-                        .pl(px(12.))
-                        .pr(px(6.))
-                        .py(px(6.))
+                        .gap(px(space::S))
+                        .h(px(40.))
+                        .pl(px(space::M))
+                        .pr(px(space::XS))
+                        .rounded(px(radius::CARD))
+                        .bg(t.hover)
+                        .border_1()
+                        .border_color(t.border)
                         .text_size(px(13.))
                         .line_height(px(18.))
-                        .child(icon("image", 16., t.text3))
+                        .tooltip(tip(t.dark, "Senders can tell when images load", ""))
+                        .child(icon("image", 15., t.text3))
+                        .child(div().flex_1().text_color(t.text2).child("Images hidden"))
                         .child(
-                            div()
-                                .flex_1()
-                                .text_color(t.text3)
-                                .child("Remote images are hidden to protect your privacy."),
-                        )
-                        .child(
-                            button(t, ButtonKind::Secondary, "Load images")
+                            button(t, ButtonKind::Ghost, "Load Images")
                                 .id(("load-images", base))
                                 .press(t)
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -643,7 +777,7 @@ impl Nimbra {
             Kind::Code => div()
                 .px(px(14.))
                 .py(px(10.))
-                .rounded(px(10.))
+                .rounded(px(radius::ROW))
                 .bg(t.hover)
                 .border_1()
                 .border_color(t.border)
@@ -654,7 +788,7 @@ impl Nimbra {
             Kind::Rule => div().h(px(1.)).my(px(6.)).bg(t.border),
             Kind::Image { src, alt } => match self.images.get(src) {
                 Some(image) => {
-                    div().child(gpui::img(image.clone()).max_w(px(560.)).rounded(px(10.)))
+                    div().child(gpui::img(image.clone()).max_w_full().rounded(px(radius::ROW)))
                 }
                 None => div()
                     .flex()
@@ -674,12 +808,18 @@ impl Nimbra {
         // Quoted text gets a bar on the left, one step per nesting level.
         if block.quote > 0 {
             div()
+                .flex()
+                .gap(px(12.))
                 .ml(px(14. * (block.quote.min(4) - 1) as f32))
-                .pl(px(14.))
-                .border_l_2()
-                .border_color(t.border_strong)
-                .text_color(t.text3)
-                .child(element)
+                .text_color(t.text2)
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(2.))
+                        .rounded_full()
+                        .bg(t.violet.opacity(0.35)),
+                )
+                .child(div().flex_1().min_w(px(0.)).child(element))
                 .into_any_element()
         } else {
             element.into_any_element()
@@ -696,53 +836,50 @@ impl Nimbra {
                     div()
                         .size(px(16.))
                         .flex_none()
-                        .rounded(px(5.))
+                        .rounded(px(radius::CHIP))
                         .border_1()
                         .border_color(t.border_strong),
                 )
                 .child(div().flex_1().child(text.to_string()))
-                .child(caption(due.to_string(), t.amber))
+                .child(caption(due.to_string(), t.amber_text))
         };
-        // GPUI has no gradient strokes, so the border is a 1px gradient frame around the card.
+        let glow = |hex: u32, a: f32| c(hex, a);
+        // GPUI has no gradient strokes, so the edge is a 1pt gradient frame around the card.
         div()
             .p(px(1.))
-            .rounded(px(14.))
-            .bg(gradient(100., c(0x8b7cff, 0.75), c(0xffb86b, 0.3)))
-            .shadow(vec![shadow(c(0x8b7cff, 0.16), 12., 40., -12.)])
+            .rounded(px(radius::CARD))
+            .bg(gradient(
+                100.,
+                glow(GRADIENT_GLOW.from, 0.7),
+                glow(GRADIENT_GLOW.to, 0.25),
+            ))
+            .shadow(elevation(t, Elevation::Glow))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.))
+                    .gap(px(space::M))
                     .px(px(20.))
-                    .pt(px(16.))
-                    .pb(px(18.))
-                    .rounded(px(13.))
+                    .py(px(space::L))
+                    .rounded(px(radius::CARD - 1.))
                     .bg(t.raised)
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .child(icon("sparkles", 16., t.mint))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child("Brief"))
+                            .gap(px(space::S))
+                            .child(icon("sparkles", 15., t.violet))
                             .child(
-                                meta(
-                                    match &m.thread {
-                                        Some(n) => format!("from {n} messages"),
-                                        None => "from 1 message".to_string(),
-                                    },
-                                    t.text3,
-                                )
-                                .flex_1(),
-                            )
-                            .child(kbd(t, "⌘"))
-                            .child(kbd(t, "J")),
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(t.text)
+                                    .child("Brief"),
+                            ),
                     )
                     .child(
                         div()
                             .text_size(px(15.))
-                            .line_height(px(26.))
+                            .line_height(px(24.))
                             .text_color(t.text2)
                             .child(m.brief.clone()),
                     )
@@ -751,11 +888,212 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(8.))
+                                .gap(px(space::S))
                                 .child(todo("Confirm pricing tiers on slide 14", "Fri"))
                                 .child(todo("Sign off on the press embargo date", "Fri")),
                         )
                     }),
+            )
+    }
+
+    /// The reading pane's bar: what to do with the thread, in groups, and where to go next.
+    /// Keys are in the tooltips, only while they would do something.
+    fn reading_toolbar(
+        &self,
+        t: &Theme,
+        m: &Mail,
+        original: bool,
+        is_draft: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let visible = self.visible();
+        let pos = visible.iter().position(|i| *i == self.selected);
+        let has_prev = pos.is_some_and(|p| p > 0);
+        let has_next = pos.is_some_and(|p| p + 1 < visible.len());
+        let rule = || {
+            div()
+                .flex_none()
+                .w(px(1.))
+                .h(px(16.))
+                .mx(px(space::S))
+                .bg(t.border_strong)
+        };
+        let tool = |name: &str, id: &'static str, label: SharedString, key: &'static str| {
+            icon_button(t, name)
+                .id(id)
+                .press(t)
+                .tooltip(tip(t.dark, label, key))
+        };
+        let done = self.done_change().map(|change| match change {
+            mail::Change::Archive => ("done", "Mark Done"),
+            mail::Change::NotSpam => ("inbox", "Not Spam"),
+            mail::Change::Untrash => ("inbox", "Restore"),
+            _ => ("inbox", "Move to Inbox"),
+        });
+        let in_trash = self.mailbox == View::Trash;
+        div()
+            .id("reading-toolbar")
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(2.))
+            // Nothing to clear: the window controls leave with the sidebar.
+            .px(px(20.))
+            // Its hairline is the line under it (`edge`).
+            .h(px(TOP_BAR - 1.))
+            .on_mouse_down(MouseButton::Left, drag_or_zoom)
+            .child(
+                tool(
+                    "list",
+                    "toggle-list",
+                    if self.list_open {
+                        "Hide Message List"
+                    } else {
+                        "Show Message List"
+                    }
+                    .into(),
+                    "⌘⇧B",
+                )
+                .when(!self.list_open, |d| d.bg(t.selected))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
+            )
+            .child(rule())
+            .when(is_draft, |d| {
+                d.child(crate::ui::glow(
+                    button(t, ButtonKind::Primary, "Edit Draft")
+                        .id("edit-draft")
+                        .press(t)
+                        .on_click(cx.listener(|this, _, _, cx| this.open_draft(this.selected, cx))),
+                    "edit-draft",
+                ))
+                .child(div().w(px(space::S)))
+            })
+            .when_some(done, |d, (name, label)| {
+                d.child(
+                    tool(name, "mark-done", label.into(), "E")
+                        .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
+                )
+            })
+            .child({
+                // Where the Snooze menu drops from, also when opened with H.
+                let anchor = self.snooze_anchor.clone();
+                tool("clock", "snooze", "Snooze".into(), "H")
+                    .relative()
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                anchor.set(Some(gpui::point(bounds.left(), bounds.bottom() + px(6.))))
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_snooze(this.snooze_anchor.get(), window, cx)
+                    }))
+            })
+            .child(rule())
+            .child(
+                tool("reply", "reply", "Reply".into(), "R")
+                    .on_click(cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx))),
+            )
+            .child(tool("reply-all", "reply-all", "Reply All".into(), "A").on_click(
+                cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::ReplyAll, cx)),
+            ))
+            .child(tool("forward", "forward", "Forward".into(), "F").on_click(
+                cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Forward, cx)),
+            ))
+            .child(rule())
+            .child(
+                tool(
+                    "star",
+                    "star",
+                    if m.starred { "Unstar" } else { "Star" }.into(),
+                    "S",
+                )
+                .when(m.starred, |d| d.bg(t.selected))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
+            )
+            .child(
+                tool(
+                    "mail",
+                    "toggle-unread",
+                    if m.unread {
+                        "Mark as Read"
+                    } else {
+                        "Mark as Unread"
+                    }
+                    .into(),
+                    "U",
+                )
+                // Lit while the open thread is unread.
+                .when(m.unread, |d| d.bg(t.selected))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
+            )
+            .child(
+                tool("tag", "label", "Label".into(), "")
+                    .when(self.menu == Some(Menu::Labels), |d| d.bg(t.selected))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_menu(Menu::Labels, window, cx)
+                    })),
+            )
+            .child(
+                tool("folder", "move-to", "Move To".into(), "")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_menu(Menu::MoveTo, window, cx)
+                    })),
+            )
+            .child(
+                tool(
+                    "trash",
+                    "trash",
+                    if in_trash {
+                        "Delete Forever"
+                    } else {
+                        "Move to Trash"
+                    }
+                    .into(),
+                    "⌫",
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
+            )
+            .child(div().flex_1())
+            .when(m.html.is_some() && !is_draft, |d| {
+                d.child(
+                    tool(
+                        "eye",
+                        "original",
+                        if original {
+                            "Reader View"
+                        } else {
+                            "Show Original"
+                        }
+                        .into(),
+                        "V",
+                    )
+                    .when(original, |d| d.bg(t.selected))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
+                )
+                .child(rule())
+            })
+            .child(
+                tool("up", "prev", "Previous Thread".into(), if has_prev { "K" } else { "" })
+                    .when(!has_prev, |d| d.opacity(0.4))
+                    .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
+            )
+            .child(
+                tool("down", "next", "Next Thread".into(), if has_next { "J" } else { "" })
+                    .when(!has_next, |d| d.opacity(0.4))
+                    .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
+            )
+            .child(
+                tool("more", "more", "More".into(), "")
+                    .when(self.menu == Some(Menu::More), |d| d.bg(t.selected))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_menu(Menu::More, window, cx)
+                    })),
             )
     }
 
@@ -769,35 +1107,36 @@ impl Nimbra {
         } else {
             pane_w
         };
-        let visible = self.visible();
-        let pos = visible
-            .iter()
-            .position(|i| *i == self.selected)
-            .unwrap_or(0)
-            + 1;
         // Only switch panes when this thread really has HTML to show.
         // Drafts always use the reader, so a click on the text can open the editor.
         let is_draft = self.mailbox == View::Drafts && !self.is_demo();
         let original = self.original && m.html.is_some() && !is_draft;
         // Until the message has been fetched we cannot know whether it has an original
-        // (HTML) version, so show a loader, not the reader view that would flash by first.
+        // (HTML) version, so show its outline, not the reader view that would flash by first.
         let loading = self.original && !is_draft && !m.loaded;
-        let divider = || div().h(px(1.)).bg(t.border);
+        let scrolled =
+            !original && !loading && f32::from(self.reader_scroll.offset().y) < -0.5;
+        let images = !self.in_spam(m);
+        let divider = || div().flex_none().h(px(1.)).bg(t.border);
 
         let earlier = |tone: Tone, initials: &str, name: &str, snippet: &str, when: &str| {
+            let hover = t.hover;
             div()
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .py(px(12.))
-                .border_t_1()
-                .border_color(t.border)
+                .h(px(44.))
+                // The hover fill reaches past the column; the content stays on it.
+                .mx(px(-10.))
+                .px(px(10.))
+                .rounded(px(radius::ROW))
+                .hover(move |s| s.bg(hover))
                 .child(avatar(tone, initials, 24.))
                 .child(
                     div()
                         .flex_none()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(t.text2)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(t.text)
                         .child(name.to_string()),
                 )
                 .child(
@@ -809,34 +1148,34 @@ impl Nimbra {
                         .text_color(t.text3)
                         .child(short(snippet, 110)),
                 )
-                .child(caption(when.to_string(), t.faint))
+                .child(caption(when.to_string(), t.text3))
         };
 
-        let attachment = |name: &str, info: &str, from: u32, to: u32| {
-            card(t)
+        let attachment = |name: &str, info: &str, tone: Tone| {
+            div()
                 .flex()
                 .items_center()
                 .gap(px(10.))
                 .pl(px(8.))
                 .pr(px(14.))
                 .py(px(8.))
+                .rounded(px(radius::CARD))
+                .bg(t.hover)
+                .border_1()
+                .border_color(t.border)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_center()
                         .size(px(30.))
-                        .rounded(px(8.))
-                        .bg(gradient(135., c(from, 1.), c(to, 1.)))
+                        .rounded(px(radius::CONTROL))
+                        .bg(tone.gradient())
                         .child(icon("file", 16., gpui::white())),
                 )
                 .child(
                     div()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(name.to_string()),
-                        )
+                        .child(div().font_weight(FontWeight::MEDIUM).child(name.to_string()))
                         .child(meta(info.to_string(), t.text3)),
                 )
         };
@@ -847,6 +1186,7 @@ impl Nimbra {
             place: super::selection::Place::Main(self.thread_key(m)),
             layouts: self.reader_layouts.clone(),
         };
+        let pills = m.rich || m.tag.is_some();
         div()
             .flex()
             .flex_col()
@@ -858,195 +1198,12 @@ impl Nimbra {
             .child(self.selection_watch(self.reader_layouts.clone(), cx))
             // While a panel slides, the email keeps one width and the extra is cut off here.
             .overflow_hidden()
-            // Toolbar
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(2.))
-                    // Nothing to clear: the window controls leave with the sidebar.
-                    .pl(px(20.))
-                    .pr(px(20.))
-                    .h(px(TOP_BAR))
-                    .border_b_1()
-                    .border_color(t.border)
-                    .on_mouse_down(MouseButton::Left, drag_or_zoom)
-                    .child(
-                        icon_button(t, "list")
-                            .id("toggle-list")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Show or hide message list", "⌘⇧B"))
-                            .when(!self.list_open, |d| d.bg(t.selected))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
-                    )
-                    .child(div().w(px(6.)))
-                    .when(is_draft, |d| {
-                        d.child(crate::ui::glow(
-                            button(t, ButtonKind::Primary, "Edit draft")
-                                .id("edit-draft")
-                                .press(t)
-                                .tooltip(tip(t.dark, "Open this draft in the editor", ""))
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.open_draft(this.selected, cx)
-                                    }),
-                                ),
-                            "edit-draft",
-                        ))
-                        .child(div().w(px(8.)))
-                    })
-                    .child(div().w(px(6.)))
-                    .child(
-                        done_button(t)
-                            .id("mark-done")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Mark done (archive)", "E"))
-                            .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
-                    )
-                    .child(div().w(px(6.)))
-                    .child({
-                        // Where the Snooze menu drops from, also when opened with H.
-                        let anchor = self.snooze_anchor.clone();
-                        icon_button(t, "clock")
-                            .id("snooze")
-                            .relative()
-                            .press(t)
-                            .tooltip(tip(t.dark, "Snooze", "H"))
-                            .child(
-                                gpui::canvas(
-                                    move |bounds, _, _| {
-                                        anchor.set(Some(gpui::point(
-                                            bounds.left(),
-                                            bounds.bottom() + px(6.),
-                                        )))
-                                    },
-                                    |_, _, _, _| {},
-                                )
-                                .absolute()
-                                .size_full(),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_snooze(this.snooze_anchor.get(), window, cx)
-                            }))
-                    })
-                    .child(
-                        icon_button(t, "star")
-                            .id("star")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Star", "S"))
-                            .when(m.starred, |d| d.bg(t.selected))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
-                    )
-                    .child(
-                        icon_button(t, "mail")
-                            .id("toggle-unread")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Mark as unread or read", "U"))
-                            // Lit while the open thread is unread.
-                            .when(m.unread, |d| d.bg(t.selected))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
-                    )
-                    .child(
-                        icon_button(t, "tag")
-                            .id("label")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Add a label", ""))
-                            .when(self.menu == Some(Menu::Labels), |d| d.bg(t.selected))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_menu(Menu::Labels, window, cx)
-                            })),
-                    )
-                    .child(
-                        icon_button(t, "folder")
-                            .id("move-to")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Move to", ""))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_menu(Menu::MoveTo, window, cx)
-                            })),
-                    )
-                    .child(
-                        icon_button(t, "trash")
-                            .id("trash")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Move to trash", "⌫"))
-                            .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
-                    )
-                    .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
-                    .child(
-                        icon_button(t, "reply")
-                            .id("reply")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Reply", "R"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_compose(ComposeKind::Reply, cx)
-                            })),
-                    )
-                    .child(
-                        icon_button(t, "reply-all")
-                            .id("reply-all")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Reply all", "A"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_compose(ComposeKind::ReplyAll, cx)
-                            })),
-                    )
-                    .child(
-                        icon_button(t, "forward")
-                            .id("forward")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Forward", "F"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_compose(ComposeKind::Forward, cx)
-                            })),
-                    )
-                    .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
-                    .child(
-                        button(
-                            t,
-                            ButtonKind::Ghost,
-                            if original {
-                                "Reader view"
-                            } else {
-                                "Show original"
-                            },
-                        )
-                        .id("original")
-                        .press(t)
-                        .tooltip(tip(t.dark, "Switch between original and reader view", "V"))
-                        .when(original, |d| d.bg(t.selected))
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
-                    )
-                    .child(div().flex_1())
-                    .child(caption(format!("{pos} / {}", visible.len()), t.text3).mr(px(6.)))
-                    .child(
-                        icon_button(t, "up")
-                            .id("prev")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Previous thread", "K"))
-                            .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
-                    )
-                    .child(
-                        icon_button(t, "down")
-                            .id("next")
-                            .press(t)
-                            .tooltip(tip(t.dark, "Next thread", "J"))
-                            .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
-                    )
-                    .child(
-                        icon_button(t, "more")
-                            .id("more")
-                            .press(t)
-                            .tooltip(tip(t.dark, "More actions", ""))
-                            .when(self.menu == Some(Menu::More), |d| d.bg(t.selected))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_menu(Menu::More, window, cx)
-                            })),
-                    ),
-            )
-            // Conversation (native reader)
+            .child(self.reading_toolbar(t, m, original, is_draft, cx))
+            // Under the bar: there while something is under it, as the reader is once it
+            // scrolls, and always over an email in its own formatting.
+            .child(divider().when(!(original || loading || scrolled), |d| d.opacity(0.)))
             .when(loading, |d| d.child(self.loading_pane(t, m, cx.entity())))
+            // Conversation (native reader)
             .when(!original && !loading, |d| {
                 d.child(
                     div()
@@ -1079,73 +1236,69 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(22.))
+                                .gap(px(space::XL))
                                 .px(px(64.))
                                 // Full view keeps lines a comfortable length.
                                 .when(self.focus_restore.is_some(), |d| d.w_full().max_w(px(980.)))
                                 .pt(px(40.))
-                                .pb(px(24.))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .gap(px(6.))
-                                        .when(m.rich, |d| d.child(pill(t, "Product", t.violet)))
-                                        .children(
-                                            m.tag
-                                                .clone()
-                                                .map(|(label, a)| pill(t, &label, t.accent(a))),
-                                        )
-                                        .when(m.rich, |d| d.child(pill(t, "Due Fri", t.amber)))
-                                        .when(!m.rich && m.tag.is_none(), |d| {
-                                            d.child(pill(
-                                                t,
-                                                &self.inbox_name(),
-                                                t.accent(Accent::Violet),
-                                            ))
-                                        }),
-                                )
+                                .pb(px(48.))
+                                .when(pills, |d| {
+                                    d.child(
+                                        div()
+                                            .flex()
+                                            .flex_wrap()
+                                            .gap(px(6.))
+                                            .when(m.rich, |d| d.child(pill(t, "Product", t.violet)))
+                                            .children(
+                                                m.tag
+                                                    .clone()
+                                                    .map(|(label, a)| pill(t, &label, t.accent(a))),
+                                            )
+                                            .when(m.rich, |d| d.child(pill(t, "Due Fri", t.amber))),
+                                    )
+                                })
                                 .child(self.subject_row(t, m, 30., column - 128., cx))
-                                .child(self.thread_banners(t, m, cx))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(10.))
-                                        .child(
-                                            div()
-                                                .relative()
-                                                .flex_none()
-                                                .h(px(28.))
-                                                .w(px(if m.rich { 68. } else { 48. }))
-                                                .children(
-                                                    [
-                                                        Some((m.tone, m.initials.clone())),
-                                                        m.rich.then(|| {
-                                                            (Tone::Mint, SharedString::from("JR"))
-                                                        }),
-                                                        Some((
-                                                            Tone::Graphite,
-                                                            self.me_initials.clone(),
-                                                        )),
-                                                    ]
-                                                    .into_iter()
-                                                    .flatten()
-                                                    .enumerate()
-                                                    .map(|(n, (tone, initials))| {
-                                                        avatar(tone, &initials, 28.)
-                                                            .absolute()
-                                                            .top_0()
-                                                            .left(px(n as f32 * 20.))
-                                                    }),
-                                                ),
-                                        )
-                                        .child(meta(m.participants.clone(), t.text3).flex_1())
-                                        .child(caption(m.time.clone(), t.text3)),
-                                )
+                                .children(self.thread_banners(t, m, cx))
+                                // Who is in a conversation of several messages.
+                                .when(!m.earlier.is_empty(), |d| {
+                                    let people = [
+                                        Some((m.tone, m.initials.clone())),
+                                        m.rich.then(|| (Tone::Mint, SharedString::from("JR"))),
+                                        Some((Tone::Graphite, self.me_initials.clone())),
+                                    ];
+                                    let count = people.iter().flatten().count();
+                                    d.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(10.))
+                                            .child(
+                                                div()
+                                                    .relative()
+                                                    .flex_none()
+                                                    .h(px(28.))
+                                                    .w(px(28. + 20. * (count - 1) as f32))
+                                                    .children(
+                                                        people.into_iter().flatten().enumerate().map(
+                                                            |(n, (tone, initials))| {
+                                                                // A ring of the page between them.
+                                                                avatar(tone, &initials, 28.)
+                                                                    .absolute()
+                                                                    .top_0()
+                                                                    .left(px(n as f32 * 20.))
+                                                                    .border_2()
+                                                                    .border_color(t.surface)
+                                                            },
+                                                        ),
+                                                    ),
+                                            )
+                                            .child(meta(m.participants.clone(), t.text3).flex_1()),
+                                    )
+                                })
                                 .when(!m.brief.is_empty(), |d| d.child(self.brief(t, m)))
                                 .when(!m.earlier.is_empty(), |d| {
-                                    d.child(div().children(m.earlier.iter().enumerate().map(
-                                        |(k, e)| {
+                                    d.child(div().flex().flex_col().gap(px(space::XS)).children(
+                                        m.earlier.iter().enumerate().map(|(k, e)| {
                                             // Click a collapsed message to read it in full.
                                             div()
                                                 .child(
@@ -1158,6 +1311,7 @@ impl Nimbra {
                                                     )
                                                     .id(("earlier", k))
                                                     .cursor_pointer()
+                                                    .press(t)
                                                     .on_click(cx.listener(move |this, _, _, cx| {
                                                         let selected = this.selected;
                                                         if let Some(e) = this
@@ -1175,24 +1329,22 @@ impl Nimbra {
                                                         div()
                                                             .flex()
                                                             .flex_col()
-                                                            .gap(px(12.))
-                                                            .pb(px(14.))
+                                                            .gap(px(space::M))
+                                                            .pt(px(space::S))
+                                                            .pb(px(space::L))
                                                             .child(self.message_header(
-                                                                t,
-                                                                m,
-                                                                k + 1,
-                                                                true,
-                                                                cx,
+                                                                t, m, k + 1, true, cx,
                                                             ))
                                                             .child(
                                                                 self.message_body(
                                                                     t,
                                                                     &e.blocks,
                                                                     (k + 1) * 1000,
+                                                                    images,
                                                                     &selectable,
                                                                     cx,
                                                                 )
-                                                                .pl(px(40.)),
+                                                                .ml(px(40.)),
                                                             )
                                                             .when(
                                                                 !e.header.attachments.is_empty(),
@@ -1211,16 +1363,24 @@ impl Nimbra {
                                                             ),
                                                     )
                                                 })
-                                        },
-                                    )))
+                                        }),
+                                    ))
                                 })
                                 .child(divider())
-                                .child(self.message_header(t, m, 0, true, cx))
                                 .child(
-                                    self.message_body(t, &m.body, 0, &selectable, cx)
-                                        .pl(px(40.))
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(space::L))
+                                        .child(self.message_header(t, m, 0, true, cx))
+                                        .child(
+                                            self.message_body(t, &m.body, 0, images, &selectable, cx)
+                                                .ml(px(40.)),
+                                        )
                                         .when(!m.loaded, |d| {
-                                            d.child(self.loading_line(t, m, cx.entity()))
+                                            d.child(
+                                                self.unloaded_body(t, m, cx.entity()).ml(px(40.)),
+                                            )
                                         }),
                                 )
                                 .when(!m.header.attachments.is_empty(), |d| {
@@ -1239,19 +1399,18 @@ impl Nimbra {
                                     d.child(
                                         div()
                                             .flex()
+                                            .flex_wrap()
                                             .gap(px(10.))
                                             .pl(px(40.))
                                             .child(attachment(
                                                 "Q4-Launch-Plan.pdf",
                                                 "PDF · 4.2 MB",
-                                                0xff7ab6,
-                                                0xff4f7b,
+                                                Tone::Rose,
                                             ))
                                             .child(attachment(
                                                 "Pricing-tiers.fig",
                                                 "Figma · 1.1 MB",
-                                                0x8b7cff,
-                                                0x5b47e0,
+                                                Tone::Violet,
                                             )),
                                     )
                                 }),
@@ -1262,48 +1421,51 @@ impl Nimbra {
             .children(self.menu_view(t, cx))
     }
 
-    /// Shown while an email's content is on its way, or could not be fetched.
+    /// Shown in place of an email while its content is on its way (its outline), or could
+    /// not be fetched.
     pub(super) fn loading_pane(
         &self,
         t: &Theme,
         mail: &Mail,
         owner: gpui::Entity<Self>,
     ) -> impl IntoElement {
-        let pane = div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h(px(0.))
-            .items_center()
-            .justify_center()
-            .gap(px(12.));
+        let pane = div().flex().flex_col().flex_1().min_h(px(0.));
         if self.body_failed.contains(&self.thread_key(mail)) {
-            return pane.child(self.loading_line(t, mail, owner));
+            return pane
+                .items_center()
+                .justify_center()
+                .child(self.unloaded_body(t, mail, owner));
         }
-        pane.child(icon("reload", 22., t.violet).with_animation(
-            "message-loading",
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
-        ))
-        .child(meta("Loading message…", t.text3))
+        pane.px(px(28.))
+            .pt(px(28.))
+            .child(message_outline(t, self.settings.reader_text.metrics().1))
     }
 
-    /// The same in words, with a way to try again when it failed.
-    fn loading_line(&self, t: &Theme, mail: &Mail, owner: gpui::Entity<Self>) -> Div {
-        let line = div().flex().items_center().gap(px(12.)).text_color(t.text3);
+    /// A message's body before it is here: its outline while it loads, or what went wrong
+    /// and a way to try again.
+    fn unloaded_body(&self, t: &Theme, mail: &Mail, owner: gpui::Entity<Self>) -> Div {
         let key = self.thread_key(mail);
         if !self.body_failed.contains(&key) {
-            return line.child("Loading message…");
+            return div()
+                .w_full()
+                .max_w(px(self.settings.reader_text.metrics().0 * 44.))
+                .child(message_outline(t, self.settings.reader_text.metrics().1));
         }
-        line.child("This message could not be loaded.").child(
-            button(t, ButtonKind::Secondary, "Try again")
-                .id("message-retry")
-                .press(t)
-                .on_click(move |_, _, cx| {
-                    let (id, account) = key.clone();
-                    owner.update(cx, |n, cx| n.load_body(id, account, cx));
-                }),
-        )
+        div()
+            .flex()
+            .items_center()
+            .gap(px(space::M))
+            .text_color(t.text2)
+            .child("Couldn’t load this message.")
+            .child(
+                button(t, ButtonKind::Secondary, "Try Again")
+                    .id("message-retry")
+                    .press(t)
+                    .on_click(move |_, _, cx| {
+                        let (id, account) = key.clone();
+                        owner.update(cx, |n, cx| n.load_body(id, account, cx));
+                    }),
+            )
     }
 
     /// One message's header: sender, a one-line recipient summary that expands into every
@@ -1440,19 +1602,19 @@ impl Nimbra {
                     .when(actions, |d| {
                         d.child(reply_button(
                             "reply",
-                            "Reply to this message",
+                            "Reply",
                             ComposeKind::Reply,
                             index * 3,
                         ))
                         .child(reply_button(
                             "reply-all",
-                            "Reply all to this message",
+                            "Reply All",
                             ComposeKind::ReplyAll,
                             index * 3 + 1,
                         ))
                         .child(reply_button(
                             "forward",
-                            "Forward this message",
+                            "Forward",
                             ComposeKind::Forward,
                             index * 3 + 2,
                         ))
@@ -1514,7 +1676,7 @@ impl Nimbra {
                 .max_w_full()
                 .px(px(7.))
                 .py(px(3.))
-                .rounded(px(7.))
+                .rounded(px(radius::CHIP))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .press(t)
@@ -1622,15 +1784,12 @@ impl Nimbra {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .pl(px(14.))
-            .pr(px(10.))
-            .pt(px(10.))
-            .pb(px(8.))
-            .rounded(px(12.))
-            .bg(t.raised)
+            .px(px(space::M))
+            .py(px(space::M))
+            .rounded(px(radius::CARD))
+            .bg(t.hover)
             .border_1()
             .border_color(t.border)
-            .shadow(vec![shadow(c(0x000000, 0.06), 1., 3., 0.)])
             .text_size(px(12.5))
             .line_height(px(18.))
             .child(row("From", from))
@@ -1650,7 +1809,7 @@ impl Nimbra {
                         .ml(px(-7.))
                         .px(px(7.))
                         .py(px(3.))
-                        .rounded(px(7.))
+                        .rounded(px(radius::CHIP))
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover))
                         .press(t)
@@ -1679,10 +1838,7 @@ impl Nimbra {
                 div()
                     .flex()
                     .justify_end()
-                    .pt(px(4.))
-                    .mt(px(2.))
-                    .border_t_1()
-                    .border_color(t.border)
+                    .mb(px(-space::XS))
                     .child(
                         div()
                             .id(("detail-copy-all", index))
@@ -1691,7 +1847,7 @@ impl Nimbra {
                             .gap(px(6.))
                             .px(px(8.))
                             .py(px(4.))
-                            .rounded(px(7.))
+                            .rounded(px(radius::CONTROL))
                             .cursor_pointer()
                             .text_color(if all_done { t.mint } else { t.text2 })
                             .font_weight(FontWeight::MEDIUM)
@@ -1702,7 +1858,7 @@ impl Nimbra {
                                 13.,
                                 if all_done { t.mint } else { t.text2 },
                             ))
-                            .child(if all_done { "Copied" } else { "Copy all" })
+                            .child(if all_done { "Copied" } else { "Copy All" })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.copy_text(all_key.clone(), all.clone(), cx)
                             })),
@@ -1734,7 +1890,7 @@ impl Nimbra {
                     .filter(|e| *e != att.name)
                     .unwrap_or("file")
                     .to_uppercase();
-                card(t)
+                div()
                     .flex()
                     .items_center()
                     .gap(px(10.))
@@ -1742,6 +1898,10 @@ impl Nimbra {
                     .pr(px(6.))
                     .py(px(6.))
                     .max_w(px(360.))
+                    .rounded(px(radius::CARD))
+                    .bg(t.hover)
+                    .border_1()
+                    .border_color(t.border)
                     .child(
                         div()
                             .flex()
@@ -1749,8 +1909,8 @@ impl Nimbra {
                             .items_center()
                             .justify_center()
                             .size(px(30.))
-                            .rounded(px(8.))
-                            .bg(gradient(135., c(0x8b7cff, 1.), c(0x5b47e0, 1.)))
+                            .rounded(px(radius::CONTROL))
+                            .bg(Tone::Violet.gradient())
                             .child(icon("file", 16., gpui::white())),
                     )
                     .child(
@@ -1804,7 +1964,12 @@ impl Nimbra {
     }
 
     /// The thread's labels, and the Trash and Spam notes, when they apply.
-    pub(super) fn thread_banners(&self, t: &Theme, mail: &Mail, cx: &mut Context<Self>) -> Div {
+    pub(super) fn thread_banners(
+        &self,
+        t: &Theme,
+        mail: &Mail,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         // Labels are gathered from every message in the thread, so one deleted (or spam)
         // message would mark the whole conversation. Like Gmail, only a conversation that is
         // in that mailbox (or no longer in the inbox) gets the banner.
@@ -1824,9 +1989,12 @@ impl Nimbra {
         } else {
             Vec::new()
         };
+        if labels.is_empty() && !spam && !trash {
+            return None;
+        }
         let thread = (key, account);
         let (restore, not_spam) = (thread.clone(), thread.clone());
-        div()
+        let banners = div()
             .flex()
             .flex_col()
             .gap(px(10.))
@@ -1869,8 +2037,8 @@ impl Nimbra {
                                         .cursor_pointer()
                                         .text_color(t.text3)
                                         .hover(move |s| s.bg(hover))
-                                        .tooltip(tip(t.dark, "Remove label", ""))
-                                        .child("×")
+                                        .tooltip(tip(t.dark, "Remove Label", ""))
+                                        .child(icon("x", 10., t.text3))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             if let Some(row) =
                                                 this.row_to_act_on(&key, &account, cx)
@@ -1888,9 +2056,10 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .px(px(14.))
-                        .py(px(8.))
-                        .rounded(px(10.))
+                        .h(px(44.))
+                        .pl(px(14.))
+                        .pr(px(6.))
+                        .rounded(px(radius::CARD))
                         .bg(t.hover)
                         .border_1()
                         .border_color(t.border)
@@ -1919,18 +2088,17 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .gap(px(10.))
-                        .px(px(14.))
-                        .py(px(8.))
-                        .rounded(px(10.))
-                        .bg(t.rose.opacity(0.12))
+                        .h(px(44.))
+                        .pl(px(14.))
+                        .pr(px(6.))
+                        .rounded(px(radius::CARD))
+                        .bg(t.rose.opacity(0.1))
                         .border_1()
-                        .border_color(t.rose.opacity(0.4))
-                        .child(icon("bell", 15., t.rose))
-                        .child(div().flex_1().child(
-                            "This message is in Spam. Be careful with its links and attachments.",
-                        ))
+                        .border_color(t.rose.opacity(0.35))
+                        .child(icon("ban", 15., t.rose))
+                        .child(div().flex_1().child("In Spam. Be careful with its links."))
                         .child(
-                            button(t, ButtonKind::Secondary, "Not spam")
+                            button(t, ButtonKind::Secondary, "Not Spam")
                                 .id("not-spam")
                                 .press(t)
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1941,7 +2109,8 @@ impl Nimbra {
                                 })),
                         ),
                 )
-            })
+            });
+        Some(banners)
     }
 
     /// A thread's subject, with Unsubscribe at its top right when it is from a mailing list.
@@ -1982,7 +2151,7 @@ impl Nimbra {
                         .w(px(BUTTON_W))
                         .h(px(BUTTON_H))
                         // Centred on the subject's first line.
-                        .mt(px(((size * 1.14).round() - BUTTON_H) / 2.))
+                        .mt(px(((size * 1.2).round() - BUTTON_H) / 2.))
                         .press(t)
                         .tooltip(tip(t.dark, hint, ""))
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -2016,14 +2185,13 @@ impl Nimbra {
                     .flex_col()
                     .gap(px(12.))
                     .px(px(28.))
-                    .pt(px(16.))
-                    .pb(px(12.))
-                    .border_b_1()
-                    .border_color(t.border)
+                    .pt(px(18.))
+                    .pb(px(14.))
                     .child(self.subject_row(t, m, 22., pane_w - 56., cx))
-                    .child(self.thread_banners(t, m, cx))
+                    .children(self.thread_banners(t, m, cx))
                     .child(self.message_header(t, m, 0, false, cx)),
             )
+            .child(div().flex_none().h(px(1.)).bg(t.border))
             // The web view is a native layer; this element only reserves its space and
             // tells it where that space is each frame.
             .child(
@@ -2053,7 +2221,7 @@ impl Nimbra {
             })
     }
 
-    /// The attachments of an email shown in its original formatting, in a tray under it.
+    /// The attachments of an email shown in its original formatting, on a card under it.
     pub(super) fn attachment_tray(
         &self,
         t: &Theme,
@@ -2063,41 +2231,159 @@ impl Nimbra {
     ) -> Div {
         let total: u64 = attachments.iter().map(|a| a.size).sum();
         let count = attachments.len();
-        div()
-            .flex()
-            .flex_none()
-            .flex_col()
-            .gap(px(10.))
-            .px(px(28.))
-            .pt(px(12.))
-            .pb(px(14.))
-            .bg(t.surface)
-            .border_t_1()
-            .border_color(t.border)
-            .shadow(vec![shadow(c(0x000000, 0.12), -4., 12., 0.)])
-            .child(
+        div().flex_none().p(px(space::M)).bg(t.surface).child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .p(px(space::M))
+                .rounded(px(radius::CARD))
+                .bg(t.raised)
+                .border_1()
+                .border_color(t.edge)
+                .shadow(elevation(t, Elevation::Pop))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(space::S))
+                        .child(icon("clip", 14., t.text3))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(t.text2)
+                                .child(if count == 1 {
+                                    "1 Attachment".to_string()
+                                } else {
+                                    format!("{count} Attachments")
+                                }),
+                        )
+                        .child(caption(file_size(total), t.text3)),
+                )
+                .child(self.attachment_row(t, attachments, 0, account, cx)),
+        )
+    }
+}
+
+/// A message's text before it arrives: lines of ink at the reader's line height, with a few
+/// slow passes of light, then still.
+fn message_outline(t: &Theme, line: f32) -> AnyElement {
+    const PARAGRAPHS: [&[f32]; 3] = [&[0.22], &[0.97, 0.92, 0.99, 0.58], &[0.94, 0.98, 0.41]];
+    let ink = t.border;
+    let outline = div().flex().flex_col().gap(px((line * 0.6).round())).children(
+        PARAGRAPHS.iter().map(|lines| {
+            div().flex().flex_col().children(lines.iter().map(|&share| {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .child(icon("clip", 14., t.text3))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(t.text2)
-                            .child(if count == 1 {
-                                "1 attachment".to_string()
-                            } else {
-                                format!("{count} attachments")
-                            }),
-                    )
-                    .child(meta(format!("· {}", file_size(total)), t.text3)),
-            )
-            .child(self.attachment_row(t, attachments, 0, account, cx))
+                    .h(px(line))
+                    .w(relative(share))
+                    .child(div().w_full().h(px(8.)).rounded_full().bg(ink))
+            }))
+        }),
+    );
+    if crate::ui::motion::reduced() {
+        return outline.into_any_element();
     }
+    let pass = Animation::new(Duration::from_millis(1700));
+    outline
+        .with_animations(
+            "message-outline",
+            vec![pass.clone(), pass.clone(), pass],
+            |outline, _, delta| {
+                outline.opacity(0.8 + 0.2 * (delta * std::f32::consts::TAU).cos())
+            },
+        )
+        .into_any_element()
+}
+
+/// The reading pane's bar as the loading screen draws it: the same controls, in the same
+/// places, out of reach.
+#[allow(dead_code, reason = "for the loading screen (`skeleton.rs`) to draw")]
+pub(super) fn toolbar_outline(t: &Theme) -> Div {
+    let rule = || {
+        div()
+            .flex_none()
+            .w(px(1.))
+            .h(px(16.))
+            .mx(px(space::S))
+            .bg(t.border_strong)
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .size_full()
+        .overflow_hidden()
+        .px(px(20.))
+        .child(icon_button(t, "list"))
+        .child(rule())
+        .children(["done", "clock"].map(|name| icon_button(t, name)))
+        .child(rule())
+        .children(["reply", "reply-all", "forward"].map(|name| icon_button(t, name)))
+        .child(rule())
+        .children(["star", "mail", "tag", "folder", "trash"].map(|name| icon_button(t, name)))
+        .child(div().flex_1())
+        .children(["up", "down", "more"].map(|name| icon_button(t, name)))
 }
 
 /// Done, as the toolbar and the loading screen draw it.
 pub(super) fn done_button(t: &Theme) -> Div {
     icon_button(t, "done")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch() -> std::path::PathBuf {
+        let mut id = [0u8; 8];
+        getrandom::fill(&mut id).unwrap();
+        let dir = std::env::temp_dir().join(format!("nimbra-test-{}", u64::from_le_bytes(id)));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_second_save_of_the_same_name_gets_a_new_file() {
+        let dir = scratch();
+        let first = save_new_in(&dir, "Plan.pdf", b"one").unwrap();
+        let second = save_new_in(&dir, "Plan.pdf", b"two").unwrap();
+        assert_eq!(second.file_name().unwrap(), "Plan 2.pdf");
+        assert_eq!(std::fs::read(first).unwrap(), b"one");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_never_writes_through_a_link_already_there() {
+        let dir = scratch();
+        let target = dir.join("target");
+        std::fs::write(&target, b"keep").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join("Plan.pdf")).unwrap();
+        let saved = save_new_in(&dir, "Plan.pdf", b"mail").unwrap();
+        assert_eq!(saved.file_name().unwrap(), "Plan 2.pdf");
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_attachments_are_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch();
+        let saved = save_new_in(&dir, "a.txt", b"x").unwrap();
+        let mode = std::fs::metadata(saved).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_shown_thread_is_matched_by_account_and_thread() {
+        assert!(shows_thread("a@x.co:123", "a@x.co", "123"));
+        assert!(shows_thread(":123", "", "123"));
+        assert!(!shows_thread("a@x.co:1234", "a@x.co", "123"));
+        assert!(!shows_thread("b@x.co:123", "a@x.co", "123"));
+        assert!(!shows_thread("a@x.co:123", "a@x.c", "o:123"));
+    }
 }

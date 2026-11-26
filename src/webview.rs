@@ -119,10 +119,12 @@ mod platform {
     #[cfg(target_os = "macos")]
     use wry::NewWindowResponse;
     use wry::dpi::{LogicalPosition, LogicalSize};
-    use wry::{Rect, WebView, WebViewBuilder};
+    use std::cell::{Cell, OnceCell};
+    use std::rc::{Rc, Weak};
+    use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder};
 
     pub struct HtmlView {
-        view: WebView,
+        view: Rc<WebView>,
         /// Documents handed over that have not started loading (see `navigation`).
         #[cfg(target_os = "windows")]
         loads: std::rc::Rc<std::cell::Cell<u32>>,
@@ -130,16 +132,33 @@ mod platform {
         frame: std::cell::Cell<(f32, f32, f32, f32)>,
         hole: std::cell::Cell<Option<(f32, f32, f32, f32)>>,
         applied: std::cell::Cell<Option<((f32, f32, f32, f32), Option<(f32, f32, f32, f32)>)>>,
+        /// Whether the view is shown, as last applied.
+        visible: Cell<Option<bool>>,
+        /// Print the next document once it has loaded.
+        print_on_load: Rc<Cell<bool>>,
     }
 
     impl HtmlView {
         /// Creates the (hidden) web view as a child of the app window.
         pub fn new(window: &gpui::Window) -> Option<Self> {
+            let print_on_load = Rc::new(Cell::new(false));
+            let printer: Rc<OnceCell<Weak<WebView>>> = Rc::default();
             let builder = WebViewBuilder::new()
                 .with_javascript_disabled()
                 .with_incognito(true)
                 .with_devtools(false)
-                .with_visible(false);
+                .with_visible(false)
+                .with_on_page_load_handler({
+                    let (wanted, printer) = (print_on_load.clone(), printer.clone());
+                    move |event, _| {
+                        if matches!(event, PageLoadEvent::Finished)
+                            && wanted.replace(false)
+                            && let Some(view) = printer.get().and_then(Weak::upgrade)
+                        {
+                            let _ = view.print();
+                        }
+                    }
+                });
             // Windows takes neither of wry's handlers, as they are not told whether it was a
             // click: `click::watch` has its own. (wry still refuses every pop-up.) Nor does it
             // load before those are in place, or download what a mail points at.
@@ -165,7 +184,8 @@ mod platform {
                     }
                     NewWindowResponse::Deny
                 });
-            let view = builder.build_as_child(window).ok()?;
+            let view = Rc::new(builder.build_as_child(window).ok()?);
+            let _ = printer.set(Rc::downgrade(&view));
             // Without the check there is no view at all (the reader shows the mail instead).
             #[cfg(target_os = "windows")]
             let loads = click::watch(&view)?;
@@ -183,6 +203,8 @@ mod platform {
                 frame: std::cell::Cell::new((0., 0., 0., 0.)),
                 hole: std::cell::Cell::new(None),
                 applied: std::cell::Cell::new(None),
+                visible: Cell::new(None),
+                print_on_load,
             })
         }
 
@@ -241,6 +263,9 @@ mod platform {
         }
 
         pub fn set_visible(&self, visible: bool) {
+            if self.visible.replace(Some(visible)) == Some(visible) {
+                return;
+            }
             let _ = self.view.set_visible(visible);
             // A hidden view keeps no hole (its click-through view would block the app).
             if !visible && self.applied.get().is_some_and(|(_, hole)| hole.is_some()) {
@@ -249,9 +274,9 @@ mod platform {
             }
         }
 
-        /// Opens the system print panel for what the view shows.
-        pub fn print(&self) {
-            let _ = self.view.print();
+        /// Opens the system print panel once the next document handed to `show` has loaded.
+        pub fn print_when_loaded(&self) {
+            self.print_on_load.set(true);
         }
 
         /// Space and Shift-Space: a page down or up. The mail's own scripts are off; one
@@ -766,7 +791,7 @@ mod platform {
         pub fn set_visible(&self, _visible: bool) {}
         pub fn set_hole(&self, _hole: Option<(f32, f32, f32, f32)>) {}
         pub fn set_dark(&self, _dark: bool, _darken: bool) {}
-        pub fn print(&self) {}
+        pub fn print_when_loaded(&self) {}
         pub fn scroll_page(&self, _down: bool) {}
     }
 }

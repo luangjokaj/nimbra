@@ -21,6 +21,7 @@ pub(super) struct MessageWindow {
     focused_once: bool,
     /// The text blocks as last drawn here, for selecting (`selection.rs`).
     layouts: super::selection::Layouts,
+    scroll: gpui::ScrollHandle,
     _observe: gpui::Subscription,
 }
 
@@ -49,6 +50,7 @@ impl MessageWindow {
             focus: cx.focus_handle(),
             focused_once: false,
             layouts: Default::default(),
+            scroll: gpui::ScrollHandle::new(),
             _observe: observe,
         }
     }
@@ -160,7 +162,7 @@ impl Render for MessageWindow {
         let m = self.mail(cx);
         let (dark, darkened, images) = {
             let n = self.owner.read(cx);
-            (n.dark, n.darkens_mail(), n.settings.load_images)
+            (n.dark, n.darkens_mail(), n.remote_images(&m))
         };
         let t = if dark { Theme::dark() } else { Theme::light() };
         window.set_window_title(&m.subject);
@@ -186,70 +188,93 @@ impl Render for MessageWindow {
         let original = self.original && m.html.is_some();
         let width = f32::from(window.viewport_size().width);
 
-        let tool = |name: &'static str, label: &'static str, id: usize| {
-            let key = match id {
-                0 => "R",
-                1 => "A",
-                2 => "F",
-                3 => "E",
-                _ => "⌫",
-            };
+        let (done, in_trash) = {
+            let n = self.owner.read(cx);
+            let done = n.done_change().map(|change| match change {
+                mail::Change::Archive => ("done", "Mark Done"),
+                mail::Change::NotSpam => ("inbox", "Not Spam"),
+                mail::Change::Untrash => ("inbox", "Restore"),
+                _ => ("inbox", "Move to Inbox"),
+            });
+            (done, n.mailbox == View::Trash)
+        };
+        let tool = |name: &'static str, label: &'static str, key: &'static str, id: usize| {
             icon_button(&t, name)
                 .id(("message-window-tool", id))
                 .press(&t)
                 .tooltip(tip(t.dark, label, key))
         };
+        let rule = || {
+            div()
+                .flex_none()
+                .w(px(1.))
+                .h(px(16.))
+                .mx(px(8.))
+                .bg(t.border_strong)
+        };
         let toolbar = div()
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(4.))
-            .h(px(crate::ui::TOP_BAR))
+            .gap(px(2.))
+            // Its hairline is the line under it.
+            .h(px(crate::ui::TOP_BAR - 1.))
             .pl(px(84.))
             .pr(px(14.))
-            .border_b_1()
-            .border_color(t.border)
             .on_mouse_down(MouseButton::Left, |event, window, cx| {
                 drag_or_zoom(event, window, cx)
             })
-            .child(tool("reply", "Reply", 0).on_click(
+            .when_some(done, |d, (name, label)| {
+                d.child(tool(name, label, "E", 3).on_click(cx.listener(
+                    |this, _, window, cx| this.act(window, cx, |n, row, cx| n.done_thread(row, cx)),
+                )))
+                .child(rule())
+            })
+            .child(tool("reply", "Reply", "R", 0).on_click(
                 cx.listener(|this, _, window, cx| this.reply(ComposeKind::Reply, window, cx)),
             ))
-            .child(tool("reply-all", "Reply all", 1).on_click(
+            .child(tool("reply-all", "Reply All", "A", 1).on_click(
                 cx.listener(|this, _, window, cx| this.reply(ComposeKind::ReplyAll, window, cx)),
             ))
-            .child(tool("forward", "Forward", 2).on_click(
+            .child(tool("forward", "Forward", "F", 2).on_click(
                 cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx)),
             ))
-            .child(div().w(px(1.)).h(px(18.)).mx(px(6.)).bg(t.border))
+            .child(rule())
             .child(
-                tool("done", "Done", 3).on_click(cx.listener(|this, _, window, cx| {
-                    this.act(window, cx, |n, row, cx| n.done_thread(row, cx))
+                tool(
+                    "trash",
+                    if in_trash { "Delete Forever" } else { "Move to Trash" },
+                    "⌫",
+                    4,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.act(window, cx, |n, row, cx| n.trash_thread(row, cx))
                 })),
             )
-            .child(tool("trash", "Move to trash", 4).on_click(cx.listener(
-                |this, _, window, cx| this.act(window, cx, |n, row, cx| n.trash_thread(row, cx)),
-            )))
             .child(div().flex_1())
+            // V is the main window's: no key here.
             .when(m.html.is_some(), |d| {
                 d.child(
-                    button(
-                        &t,
-                        ButtonKind::Ghost,
+                    tool(
+                        "eye",
                         if self.original {
-                            "Reader view"
+                            "Reader View"
                         } else {
-                            "Show original"
+                            "Show Original"
                         },
+                        "",
+                        5,
                     )
-                    .id("message-window-view")
-                    .press(&t)
+                    .when(self.original, |d| d.bg(t.selected))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.original = !this.original;
                         cx.notify();
                     })),
                 )
             });
+        let divider = || div().flex_none().h(px(1.)).bg(t.border);
+        let scrolled = !original && f32::from(self.scroll.offset().y) < -0.5;
+        let loading = !m.loaded && m.body.is_empty();
 
         let header = |n: &mut Nimbra, cx: &mut Context<Nimbra>, title_w: f32| {
             div()
@@ -257,10 +282,11 @@ impl Render for MessageWindow {
                 .flex_col()
                 .gap(px(12.))
                 .child(n.subject_row(&t, &m, 24., title_w, cx))
-                .child(n.thread_banners(&t, &m, cx))
+                .children(n.thread_banners(&t, &m, cx))
         };
 
-        let body: AnyElement = if !m.loaded && m.body.is_empty() {
+        let images = self.owner.read(cx).remote_images(&m);
+        let body: AnyElement = if loading {
             self.owner
                 .read(cx)
                 .loading_pane(&t, &m, self.owner.clone())
@@ -275,9 +301,7 @@ impl Render for MessageWindow {
                     .gap(px(12.))
                     .px(px(28.))
                     .pt(px(18.))
-                    .pb(px(12.))
-                    .border_b_1()
-                    .border_color(t.border)
+                    .pb(px(14.))
                     .child(header(n, cx, (width - 56.).max(0.)))
                     .child(n.message_header(&t, &m, 0, false, cx))
             });
@@ -292,6 +316,7 @@ impl Render for MessageWindow {
                 .flex_1()
                 .min_h(px(0.))
                 .child(top)
+                .child(divider())
                 .child(
                     gpui::canvas(
                         move |bounds, _, _| {
@@ -322,28 +347,32 @@ impl Render for MessageWindow {
                 let mut d = div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(px(24.))
                     .w_full()
                     .max_w(px(860.))
                     .mx_auto()
                     .px(px(36.))
-                    .pt(px(26.))
+                    .pt(px(28.))
                     .pb(px(48.))
                     .child(header(n, cx, (column - 72.).max(0.)));
                 // Every message, oldest first, the latest last.
                 for (k, e) in m.earlier.iter().enumerate() {
-                    d = d.child(
+                    d = d.child(divider()).child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
-                            .pt(px(14.))
-                            .border_t_1()
-                            .border_color(t.border)
+                            .gap(px(16.))
                             .child(n.message_header(&t, &m, k + 1, false, cx))
                             .child(
-                                n.message_body(&t, &e.blocks, (k + 1) * 1000, &selectable, cx)
-                                    .pl(px(40.)),
+                                n.message_body(
+                                    &t,
+                                    &e.blocks,
+                                    (k + 1) * 1000,
+                                    images,
+                                    &selectable,
+                                    cx,
+                                )
+                                .ml(px(40.)),
                             )
                             .when(!e.header.attachments.is_empty(), |d| {
                                 d.child(
@@ -359,16 +388,16 @@ impl Render for MessageWindow {
                             }),
                     );
                 }
-                d.child(
+                d.child(divider()).child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(12.))
-                        .pt(px(14.))
-                        .border_t_1()
-                        .border_color(t.border)
+                        .gap(px(16.))
                         .child(n.message_header(&t, &m, 0, false, cx))
-                        .child(n.message_body(&t, &m.body, 0, &selectable, cx).pl(px(40.)))
+                        .child(
+                            n.message_body(&t, &m.body, 0, images, &selectable, cx)
+                                .ml(px(40.)),
+                        )
                         .when(!m.header.attachments.is_empty(), |d| {
                             d.child(
                                 n.attachment_row(
@@ -388,6 +417,7 @@ impl Render for MessageWindow {
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_y_scroll()
+                .track_scroll(&self.scroll)
                 .child(content)
                 .into_any_element()
         };
@@ -454,6 +484,7 @@ impl Render for MessageWindow {
             .line_height(px(18.))
             .text_color(t.text)
             .child(toolbar)
+            .child(divider().when(!(original || loading || scrolled), |d| d.opacity(0.)))
             .child(body)
             .children(compose)
     }

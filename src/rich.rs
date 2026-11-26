@@ -15,6 +15,10 @@ use scraper::{ElementRef, Html, Node};
 const MAX_BLOCKS: usize = 600;
 const MAX_CHARS: usize = 60_000;
 const MAX_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
+/// Elements nested deeper than this are read as plain text. The walk recurses once per
+/// level, and the background threads it runs on have small stacks (512 KiB on macOS), so a
+/// mail of a few thousand nested tags would otherwise abort the app.
+const MAX_DEPTH: u16 = 64;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Block {
@@ -146,6 +150,8 @@ struct Builder {
     lists: Vec<Option<u32>>,
     /// Marker waiting for the first text of the current list item.
     marker: Option<String>,
+    /// Elements open around the one being read.
+    depth: u16,
 }
 
 const SKIPPED: &[&str] = &[
@@ -212,19 +218,64 @@ impl Builder {
     }
 
     fn element(&mut self, element: ElementRef) {
+        if is_dropped(element) {
+            return;
+        }
+        if self.depth >= MAX_DEPTH {
+            self.flatten(element);
+            return;
+        }
+        self.depth += 1;
+        self.read(element);
+        self.depth -= 1;
+    }
+
+    /// Everything under `element` as running text, without recursing. Blocks are kept
+    /// apart by a space.
+    fn flatten(&mut self, element: ElementRef) {
+        // `None` marks the end of a block.
+        let mut pending: Vec<_> = element.children().rev().map(Some).collect();
+        while let Some(step) = pending.pop() {
+            if self.full() {
+                return;
+            }
+            let Some(node) = step else {
+                self.gap();
+                continue;
+            };
+            match node.value() {
+                Node::Text(text) => self.push_text(text),
+                Node::Element(value) if value.name() == "br" => {
+                    if !self.text.is_empty() {
+                        self.text.push('\n');
+                    }
+                }
+                Node::Element(value) => {
+                    if ElementRef::wrap(node).is_none_or(is_dropped) {
+                        continue;
+                    }
+                    if BLOCKS.contains(&value.name()) {
+                        self.gap();
+                        pending.push(None);
+                    }
+                    pending.extend(node.children().rev().map(Some));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A space, unless the text already ends in one.
+    fn gap(&mut self) {
+        if !self.text.is_empty() && !self.text.ends_with([' ', '\n']) {
+            self.text.push(' ');
+            self.chars += 1;
+        }
+    }
+
+    fn read(&mut self, element: ElementRef) {
         let value = element.value();
         let name = value.name();
-        if SKIPPED.contains(&name) || is_hidden(value.attr("style")) {
-            return;
-        }
-        // Gmail wraps the quoted earlier messages in these; the thread view shows them
-        // as their own messages instead.
-        if value
-            .classes()
-            .any(|c| c == "gmail_quote" || c == "gmail_extra")
-        {
-            return;
-        }
         match name {
             "br" => {
                 if !self.text.is_empty() {
@@ -401,6 +452,17 @@ impl Builder {
     }
 }
 
+/// Not read at all: scripts and the like, hidden text, and Gmail's wrappers around the
+/// quoted earlier messages (the thread view shows those as their own messages).
+fn is_dropped(element: ElementRef) -> bool {
+    let value = element.value();
+    SKIPPED.contains(&value.name())
+        || is_hidden(value.attr("style"))
+        || value
+            .classes()
+            .any(|c| c == "gmail_quote" || c == "gmail_extra")
+}
+
 fn is_hidden(style: Option<&str>) -> bool {
     let Some(style) = style else {
         return false;
@@ -437,9 +499,10 @@ pub enum ImageKind {
 
 /// Downloads one remote image, on the user's request.
 ///
-/// Limited to https on a public host name (no IP literals or localhost, so a message
-/// cannot make the app probe the local network), with a size cap and a timeout. The
-/// format is taken from the bytes, not from what the server claims.
+/// Limited to https on a public host name, after every redirect too, with a size cap and a
+/// timeout. Names are resolved here and only public addresses are dialled, so a message
+/// cannot make the app probe the local network, not even through a public name that points
+/// at a private address. The format is taken from the bytes, not from what the server claims.
 pub fn fetch_image(url: &str) -> Result<(ImageKind, Vec<u8>)> {
     let parsed = url::Url::parse(url)?;
     let host = match (parsed.scheme(), parsed.host()) {
@@ -454,6 +517,8 @@ pub fn fetch_image(url: &str) -> Result<(ImageKind, Vec<u8>)> {
         bail!("local addresses are not loaded");
     }
     let response = ureq::AgentBuilder::new()
+        .https_only(true)
+        .resolver(public_addresses)
         .redirects(3)
         .timeout(Duration::from_secs(10))
         .build()
@@ -470,6 +535,73 @@ pub fn fetch_image(url: &str) -> Result<(ImageKind, Vec<u8>)> {
     }
     let kind = sniff(&bytes).ok_or_else(|| anyhow::anyhow!("not a supported image"))?;
     Ok((kind, bytes))
+}
+
+/// The addresses of `netloc` ("host:port") that are on the public internet.
+fn public_addresses(netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    use std::net::ToSocketAddrs as _;
+    let found: Vec<_> = netloc
+        .to_socket_addrs()?
+        .filter(|address| is_public(address.ip()))
+        .collect();
+    if found.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "not a public address",
+        ));
+    }
+    Ok(found)
+}
+
+fn is_public(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(ip) => is_public_v4(ip),
+        IpAddr::V6(ip) => {
+            if let Some(v4) = ip.to_ipv4_mapped() {
+                return is_public_v4(v4);
+            }
+            let s = ip.segments();
+            // NAT64 (64:ff9b::/96) and 6to4 (2002::/16) carry an IPv4 address.
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return is_public_v4(std::net::Ipv4Addr::from(
+                    (u32::from(s[6]) << 16) | u32::from(s[7]),
+                ));
+            }
+            if s[0] == 0x2002 {
+                return is_public_v4(std::net::Ipv4Addr::from(
+                    (u32::from(s[1]) << 16) | u32::from(s[2]),
+                ));
+            }
+            !(ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+                // Site-local (fec0::/10), deprecated but still routed on some networks.
+                || s[0] & 0xffc0 == 0xfec0
+                // Documentation (2001:db8::/32).
+                || s[..2] == [0x2001, 0xdb8]
+                // IPv4-compatible (::/96), as old as it is unused.
+                || s[..6] == [0; 6])
+        }
+    }
+}
+
+fn is_public_v4(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    !(ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.is_multicast()
+        || a == 0
+        // Carrier-grade NAT (100.64.0.0/10), benchmarking (198.18.0.0/15), reserved (240/4).
+        || (a == 100 && (64..128).contains(&b))
+        || (a == 198 && (18..20).contains(&b))
+        || a >= 240)
 }
 
 fn sniff(bytes: &[u8]) -> Option<ImageKind> {
@@ -624,6 +756,72 @@ mod tests {
         ] {
             assert!(fetch_image(url).is_err(), "{url} should be refused");
         }
+    }
+
+    #[test]
+    fn only_public_addresses_are_dialled() {
+        for private in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.1",
+            "198.18.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "fd00::1",
+            "fec0::1",
+            "::ffff:192.168.1.1",
+            "::ffff:127.0.0.1",
+            "64:ff9b::a00:1",
+            "2002:c0a8:101::1",
+            "2001:db8::1",
+        ] {
+            assert!(!is_public(private.parse().unwrap()), "{private}");
+        }
+        for public in ["93.184.216.34", "1.1.1.1", "2606:4700:4700::1111", "64:ff9b::101:101"] {
+            assert!(is_public(public.parse().unwrap()), "{public}");
+        }
+    }
+
+    #[test]
+    fn a_name_that_resolves_to_the_local_network_is_not_dialled() {
+        assert!(public_addresses("127.0.0.1:443").is_err());
+        assert!(public_addresses("[::1]:443").is_err());
+        assert!(public_addresses("192.168.1.1:443").is_err());
+    }
+
+    #[test]
+    fn deep_nesting_is_read_without_overflowing_a_small_stack() {
+        // The size of the GCD worker threads GPUI's background executor runs on.
+        const STACK: usize = 512 * 1024;
+        for tag in ["div", "b", "a href='https://x.test'", "blockquote", "ul"] {
+            let html = format!("{}deep text", format!("<{tag}>").repeat(5_000));
+            let blocks = std::thread::Builder::new()
+                .stack_size(STACK)
+                .spawn(move || from_html(&html))
+                .unwrap()
+                .join()
+                .expect("the walk overflowed its stack");
+            assert!(
+                blocks.iter().any(|b| b.text.contains("deep text")),
+                "{tag}: {blocks:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_past_the_depth_limit_keeps_its_order_and_drops_what_is_hidden() {
+        let html = format!(
+            "{}<p>one</p><script>bad()</script><span style='display:none'>hidden</span>two<br>three",
+            "<div>".repeat(MAX_DEPTH as usize + 10)
+        );
+        assert_eq!(texts(&from_html(&html)), ["one two\nthree"]);
     }
 
     #[test]
