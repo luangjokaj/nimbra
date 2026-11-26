@@ -106,6 +106,8 @@ pub struct Theme {
     pub sky: Hsla,
     /// How strong a status chip's tint of its ink is.
     pub chip_tint: f32,
+    /// The eclipse's moon, in front of the sun.
+    pub moon: Hsla,
     pub kbd_bg: Hsla,
     pub kbd_border: Hsla,
     /// The `Elevation::Pop` shadow: menus, tooltips, toasts.
@@ -154,6 +156,7 @@ impl Theme {
             mint: c(0x5ee6b0, 1.),
             sky: c(0x6cc4ff, 1.),
             chip_tint: 0.13,
+            moon: c(0x120e1c, 1.),
             kbd_bg: c(0xffffff, 0.06),
             kbd_border: c(0xffffff, 0.10),
             shadow: c(0x000000, 0.5),
@@ -200,6 +203,7 @@ impl Theme {
             mint: c(0x13865f, 1.),
             sky: c(0x1c74b8, 1.),
             chip_tint: 0.1,
+            moon: c(0x2b2142, 1.),
             kbd_bg: c(0x26164e, 0.04),
             kbd_border: c(0x26164e, 0.09),
             shadow: c(0x1a1030, 0.14),

@@ -492,7 +492,6 @@ impl Nimbra {
         let visible = self.visible();
         let left = visible.len();
         let unread = visible.iter().filter(|i| self.mails[**i].unread).count();
-        let bars = [9., 14., 8., 17., 12., 20., 15.];
         // The other mailboxes are not connected yet, so their counts only show in the demo.
         let demo = self.is_demo();
         let fake = |n: &str| demo.then(|| n.to_string());
@@ -672,8 +671,9 @@ impl Nimbra {
                     .px(px(10.))
                     .rounded(px(radius::CONTROL))
                     .bg(t.hover)
+                    // A field with no edge until it is open or has the keyboard.
                     .border_1()
-                    .border_color(t.border)
+                    .border_color(gpui::transparent_black())
                     .id("jump")
                     .cursor(gpui::CursorStyle::IBeam)
                     .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
@@ -955,7 +955,7 @@ impl Nimbra {
             .child(div().flex_1())
             // The streak is sample content, so it only shows with the demo data.
             .when(demo && self.settings.show_streak, |d| {
-                d.child(self.streak(t, &bars, left, cx))
+                d.child(self.streak(t, left, cx))
             });
 
         // Settings stays at the bottom, whatever is scrolled above it.
@@ -1101,78 +1101,82 @@ impl Nimbra {
 }
 
 impl Nimbra {
-    /// The Zero Streak: the last week's days at zero, and what is left today. Hidden from its
-    /// own close button (shown on hover) or in Settings › General.
-    fn streak(
-        &self,
-        t: &Theme,
-        bars: &[f32; 7],
-        left: usize,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let tallest = bars.iter().copied().fold(0., f32::max);
+    /// The eclipse: today's mail, done and left, as the moon across the sun, with what is
+    /// left and the streak beside it. Total at zero. Until it has been pointed at once, a
+    /// caption above it says what it is. Hidden from its own close button (shown on hover) or
+    /// in Settings › General.
+    fn streak(&self, t: &Theme, left: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let total = left == 0;
+        let covered = crate::eclipse::covered(SAMPLE_DONE, left);
+        let (title, under) = if total {
+            ("Done at 10:52".to_string(), "8-day streak")
+        } else {
+            (format!("{left} left"), "7-day streak")
+        };
+        let progress = format!("{SAMPLE_DONE} of {} done today", SAMPLE_DONE + left);
         let (hover, bright) = (t.hover, t.text);
+        let first_time = !self.settings.eclipse_seen;
         div()
             .id("streak")
             .group("streak")
             .relative()
             .flex()
-            .flex_col()
+            .items_center()
             .gap(px(space::M))
             .mt(px(space::L2))
-            .p(px(space::M))
-            .rounded(px(radius::CARD))
-            .border_1()
-            .border_color(t.border)
+            .h(px(56.))
+            .px(px(space::S))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if *hovered && !this.settings.eclipse_seen {
+                    this.settings.eclipse_seen = true;
+                    this.save_settings(cx);
+                    cx.notify();
+                }
+            }))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(space::S))
-                    .h(px(20.))
-                    .child(icon("zap", 14., t.violet))
+                    .id("eclipse")
+                    .tooltip(tip(t.dark, progress, ""))
+                    .child(crate::eclipse::eclipse(t, 34., covered, 14.)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
                     .child(
                         div()
-                            .flex_1()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Zero Streak"),
+                            .text_size(px(14.))
+                            .line_height(px(18.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(t.text)
+                            .child(title),
                     )
-                    .child(caption("7d", t.text3).group_hover("streak", |s| s.invisible())),
+                    .child(meta(under, t.text3)),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .gap(px(space::XS))
-                    .h(px(24.))
-                    .children(bars.iter().enumerate().map(|(day, h)| {
-                        let today = day + 1 == bars.len();
-                        div()
-                            .flex_1()
-                            .h(px(24. * h / tallest))
-                            .rounded(px(2.))
-                            .bg(if today {
-                                t.violet
-                            } else {
-                                t.violet.opacity(0.4)
-                            })
-                    })),
-            )
-            .child(meta(
-                if left == 0 {
-                    "Done at 10:52".to_string()
-                } else {
-                    format!("{left} left")
-                },
-                t.text3,
-            ))
+            .when(first_time, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .bottom(px(56.))
+                        .left(px(space::XS))
+                        .px(px(10.))
+                        .py(px(6.))
+                        .rounded(px(radius::ROW))
+                        .bg(t.raised)
+                        .border_1()
+                        .border_color(t.edge)
+                        .shadow(crate::ui::elevation(t, crate::ui::Elevation::Pop))
+                        .whitespace_nowrap()
+                        .child(meta("Covers as today’s mail is done", t.text2)),
+                )
+            })
             .child(
                 div()
                     .id("hide-streak")
                     .group("hide-streak")
                     .absolute()
-                    .top(px(space::M - 2.))
-                    .right(px(space::M - 4.))
+                    .top(px(space::S))
+                    .right(px(0.))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1183,7 +1187,7 @@ impl Nimbra {
                     .group_hover("streak", |s| s.visible())
                     .hover(move |s| s.bg(hover))
                     .press(t)
-                    .tooltip(tip(t.dark, "Hide Zero Streak", ""))
+                    .tooltip(tip(t.dark, "Hide", ""))
                     .child(
                         icon("x", 12., t.text3)
                             .group_hover("hide-streak", move |s| s.text_color(bright)),
@@ -1196,6 +1200,9 @@ impl Nimbra {
             )
     }
 }
+
+/// Threads the sample day has already cleared, for the eclipse.
+const SAMPLE_DONE: usize = 16;
 
 /// How narrow and how wide the sidebar can be dragged. No narrower than its usual width:
 /// the window controls beside the traffic lights end 8pt before that edge (the reload
@@ -1294,15 +1301,13 @@ fn nav_still(
         .h(px(NAV_ROW))
         .flex_none()
         .rounded(px(NAV_RADIUS))
-        .when(selected, |d| {
-            d.relative()
-                .font_weight(FontWeight::MEDIUM)
-                .child(active_pill(t))
-        })
+        .font_weight(FontWeight::MEDIUM)
+        .when(selected, |d| d.relative().child(active_pill(t)))
+        // The open mailbox's glyph in the accent; a label keeps its own colour.
         .child(icon(
             name,
             16.,
-            tint.unwrap_or(if selected { t.text } else { t.text2 }),
+            tint.unwrap_or(if selected { t.violet } else { t.text3 }),
         ))
         .child(
             div()
@@ -1310,8 +1315,7 @@ fn nav_still(
                 .text_color(if selected { t.text } else { t.text2 })
                 .child(label.to_string()),
         )
-        // Not violet, nor is the icon: on glass over a bright desktop it cannot be seen.
-        .children(count.map(|n| caption(n, if selected { t.text } else { t.text3 })))
+        .children(count.map(|n| caption(n, if selected { t.text2 } else { t.text3 })))
 }
 
 /// A sample row (the demo's split inbox and labels): it does nothing, so it does not look

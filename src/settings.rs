@@ -59,6 +59,8 @@ pub struct Settings {
     pub reader_text: TextSize,
     /// The Zero Streak shows in the sidebar and on Inbox Zero.
     pub show_streak: bool,
+    /// The eclipse at the sidebar's foot has been pointed at once, so it needs no caption.
+    pub eclipse_seen: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -138,6 +140,7 @@ impl Default for Settings {
             dock_badge: true,
             reader_text: TextSize::Default,
             show_streak: true,
+            eclipse_seen: false,
         }
     }
 }

@@ -10,6 +10,7 @@ mod checking;
 mod data;
 mod discover;
 mod dns;
+mod eclipse;
 mod editor;
 mod erase;
 mod gmail;
