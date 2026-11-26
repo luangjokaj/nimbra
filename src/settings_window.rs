@@ -632,6 +632,8 @@ impl SettingsWindow {
         let accounts = n.settings.accounts.clone();
         let active = n.account_id.clone();
         let connected = n.connection.is_some();
+        // Signing out deletes what waits for the connection: the second click says so.
+        let unsent = n.waiting_to_send(&active);
         // Google's sign-in needs its setup; any other address does not.
         let can_add = true;
         let active_email = n.account.to_string();
@@ -747,10 +749,11 @@ impl SettingsWindow {
                     button(
                         t,
                         ButtonKind::Ghost,
-                        if armed {
-                            "Click Again to Sign Out"
-                        } else {
-                            "Sign Out"
+                        &match (armed, unsent) {
+                            (false, _) => "Sign Out".to_string(),
+                            (true, 0) => "Click Again to Sign Out".to_string(),
+                            (true, 1) => "Delete 1 Unsent and Sign Out".to_string(),
+                            (true, n) => format!("Delete {n} Unsent and Sign Out"),
                         },
                     )
                     .id("sign-out")
