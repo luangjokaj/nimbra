@@ -11,10 +11,30 @@ const ROW_H: f32 = 42.;
 const TABLE_HEAD: f32 = 34.;
 /// The main window's corner radius, so the dimmed backdrop fits it exactly.
 const WINDOW_RADIUS: f32 = 16.;
+/// The tab bar's segments: their height, the space around and between them, and the
+/// padding beside each label.
+const TAB_H: f32 = 28.;
+const TAB_INSET: f32 = 3.;
+const TAB_GAP: f32 = 2.;
+const TAB_PAD: f32 = 14.;
+/// The card without its table: padding, title and hint, tab bar, and the gaps between.
+const CARD_CHROME: f32 = 2. * 28. + 39. + 6. + 22. + 20. + (TAB_H + 2. * TAB_INSET + 2.) + 20.;
+/// How long a switch of tab moves the highlight and the table's height.
+const SWITCH: Duration = Duration::from_millis(260);
+
+/// A tab's table height: its head and rows, and the border.
+fn table_height(tab: usize) -> f32 {
+    TABLE_HEAD + SHORTCUT_TABS[tab].1.len() as f32 * ROW_H + 2.
+}
 
 pub(super) struct ShortcutsSheet {
     owner: gpui::WeakEntity<Nimbra>,
     tab: usize,
+    /// The tab shown before the last switch, when that was, and how many switches so far
+    /// (each switch animates once, from where the last one ended).
+    from_tab: usize,
+    switched: Option<std::time::Instant>,
+    switches: usize,
     dark: bool,
     focus: gpui::FocusHandle,
     was_active: bool,
@@ -36,7 +56,10 @@ impl ShortcutsSheet {
 
     fn show_tab(&mut self, tab: usize, cx: &mut Context<Self>) {
         if tab < SHORTCUT_TABS.len() && tab != self.tab {
+            self.from_tab = self.tab;
             self.tab = tab;
+            self.switched = Some(std::time::Instant::now());
+            self.switches += 1;
             cx.notify();
         }
     }
@@ -56,67 +79,97 @@ impl ShortcutsSheet {
         }
     }
 
-    /// The tabs: a segmented control like the list's All / Unread.
+    /// Whether a switch of tab is still moving (and the Mac allows motion).
+    fn switching(&self) -> bool {
+        self.switches > 0
+            && self.switched.is_some_and(|at| at.elapsed() < SWITCH)
+            && !crate::system::reduces_motion()
+    }
+
+    /// The tabs: a segmented control like the list's All / Unread, its highlight sliding from
+    /// the old tab to the new one.
     fn tabs(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
+        let widths: Vec<f32> = SHORTCUT_TABS
+            .iter()
+            .map(|(name, _)| {
+                (text_width(name, 13., crate::theme::SANS, cx) + 2. * TAB_PAD + 2.).ceil()
+            })
+            .collect();
+        let spot = |tab: usize| {
+            let x: f32 = widths[..tab].iter().map(|w| w + TAB_GAP).sum();
+            (x, widths[tab])
+        };
+        let ((to_x, to_w), (from_x, from_w)) = (spot(self.tab), spot(self.from_tab));
+        let pill = div()
+            .absolute()
+            .top(px(TAB_INSET))
+            .h(px(TAB_H))
+            .rounded(px(7.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border)
+            .shadow(vec![shadow(
+                c(0x000000, if t.dark { 0.25 } else { 0.08 }),
+                1.,
+                3.,
+                0.,
+            )]);
+        let pill = if self.switching() {
+            pill.with_animation(
+                ("shortcut-tab-pill", self.switches),
+                Animation::new(SWITCH).with_easing(ease_out_quint()),
+                move |d, delta| {
+                    d.left(px(TAB_INSET + from_x + (to_x - from_x) * delta))
+                        .w(px(from_w + (to_w - from_w) * delta))
+                },
+            )
+            .into_any_element()
+        } else {
+            pill.left(px(TAB_INSET + to_x))
+                .w(px(to_w))
+                .into_any_element()
+        };
         div()
+            .relative()
             .flex()
             .flex_none()
-            .gap(px(2.))
-            .p(px(3.))
-            .rounded(px(9.))
+            .gap(px(TAB_GAP))
+            .p(px(TAB_INSET))
+            .rounded(px(10.))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
+            .child(pill)
             .children(SHORTCUT_TABS.iter().enumerate().map(|(i, (name, _))| {
-                let on = i == self.tab;
                 div()
                     .id(("shortcut-tab", i))
-                    .px(px(14.))
-                    .h(px(28.))
+                    .w(px(widths[i]))
+                    .h(px(TAB_H))
                     .flex()
                     .items_center()
-                    .rounded(px(7.))
+                    .justify_center()
                     .cursor_pointer()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(if on { t.text } else { t.text3 })
-                    .when(on, |d| {
-                        d.bg(t.raised)
-                            .border_1()
-                            .border_color(t.border)
-                            .shadow(vec![shadow(
-                                c(0x000000, if t.dark { 0.25 } else { 0.08 }),
-                                1.,
-                                3.,
-                                0.,
-                            )])
-                    })
-                    .when(!on, |d| {
-                        d.border_1().border_color(gpui::transparent_black())
-                    })
+                    .text_color(if i == self.tab { t.text } else { t.text3 })
                     .child(name.to_string())
                     .on_click(cx.listener(move |this, _, _, cx| this.show_tab(i, cx)))
             }))
     }
 
     /// The table of one tab: keys on the left, what they do on the right.
-    fn table(&self, t: &Theme) -> Div {
+    /// As tall as its rows, growing or shrinking to the next tab's over the switch.
+    fn table(&self, t: &Theme) -> gpui::AnyElement {
         let rows = SHORTCUT_TABS[self.tab].1;
-        // As tall as the longest tab, so switching tabs never moves the card.
-        let most = SHORTCUT_TABS
-            .iter()
-            .map(|(_, r)| r.len())
-            .max()
-            .unwrap_or(0);
+        let (to_h, from_h) = (table_height(self.tab), table_height(self.from_tab));
         let cell_head = |label: &str| {
             div()
                 .flex_1()
                 .child(mono(label.to_string(), t.text3).text_size(px(10.5)))
         };
-        div()
+        let table = div()
             .flex()
             .flex_col()
             .flex_none()
-            .h(px(TABLE_HEAD + most as f32 * ROW_H + 2.))
             .rounded(px(12.))
             .border_1()
             .border_color(t.border)
@@ -146,17 +199,33 @@ impl ShortcutsSheet {
                         }),
                     ))
                     .child(div().flex_1().text_color(t.text2).child(action.to_string()))
-            }))
+            }));
+        if self.switching() {
+            table
+                .with_animation(
+                    ("shortcut-table", self.switches),
+                    Animation::new(SWITCH).with_easing(ease_out_quint()),
+                    move |d, delta| d.h(px(from_h + (to_h - from_h) * delta)),
+                )
+                .into_any_element()
+        } else {
+            table.h(px(to_h)).into_any_element()
+        }
     }
 }
 
 impl Render for ShortcutsSheet {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = if self.dark {
             Theme::dark()
         } else {
             Theme::light()
         };
+        let tallest = (0..SHORTCUT_TABS.len())
+            .map(table_height)
+            .fold(0., f32::max);
+        let height = f32::from(window.viewport_size().height);
+        let top = ((height - CARD_CHROME - tallest) / 2.).max(16.);
         let card = div()
             .id("shortcuts-card")
             .w(px(CARD_W))
@@ -217,9 +286,12 @@ impl Render for ShortcutsSheet {
             .size_full()
             .rounded(px(WINDOW_RADIUS))
             .bg(t.scrim)
+            // The card's top stays put while its table changes height: where the tallest
+            // tab would sit centred.
             .flex()
+            .flex_col()
             .items_center()
-            .justify_center()
+            .pt(px(top))
             .font_family(crate::theme::SANS)
             .text_size(px(13.))
             .line_height(px(18.))
@@ -274,9 +346,25 @@ impl Nimbra {
                 cx.new(|cx| {
                     let focus = cx.focus_handle();
                     window.focus(&focus);
+                    // NIMBRA_SHORTCUTS_TAB=<n> switches to tab n a second after opening
+                    // (screenshots of the switch).
+                    if let Some(tab) = std::env::var("NIMBRA_SHORTCUTS_TAB")
+                        .ok()
+                        .and_then(|v| v.parse::<usize>().ok())
+                    {
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(Duration::from_secs(1)).await;
+                            this.update(cx, |this: &mut ShortcutsSheet, cx| this.show_tab(tab, cx))
+                                .ok();
+                        })
+                        .detach();
+                    }
                     ShortcutsSheet {
                         owner,
                         tab: 0,
+                        from_tab: 0,
+                        switched: None,
+                        switches: 0,
                         dark,
                         focus,
                         was_active: false,
