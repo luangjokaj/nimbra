@@ -3,12 +3,6 @@
 use super::*;
 
 impl Nimbra {
-    /// The snooze panel, for the threads open or picked now.
-    pub(super) fn open_palette(&mut self) {
-        self.palette = true;
-        self.palette_for = Some(self.meant_for(&self.targets()));
-    }
-
     /// How many rows the palette has.
     pub(super) fn palette_len(&self) -> usize {
         if self.is_demo() {

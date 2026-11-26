@@ -1,27 +1,40 @@
 //! Inbox Zero coming up as Nimbra opens: the glows rise, the stars come out, the horizon
-//! draws out, then the words settle into place.
+//! draws out, then the words settle into place. Timed by the wall clock from the first
+//! frame it is drawn in, so late frames never slow it down.
+
+use std::time::Instant;
 
 /// How far below their place the words start, in points.
 const RISE: f32 = 8.;
-/// The most one frame moves it on, so that a slow first frame does not swallow the start.
-const LONGEST_STEP: f32 = 0.05;
 /// When the last part is in place, in seconds.
 const END: f32 = 1.6;
 
 /// How far along it is. Each part is a share from 0 to 1, and all are 1 once it has settled.
 #[derive(Clone, Copy)]
 pub struct Arrival {
+    /// When it was first drawn; `None` until then.
+    start: Option<Instant>,
     seconds: f32,
 }
 
 impl Arrival {
-    pub const START: Self = Self { seconds: 0. };
-    pub const SETTLED: Self = Self { seconds: END };
+    pub const START: Self = Self {
+        start: None,
+        seconds: 0.,
+    };
+    pub const SETTLED: Self = Self {
+        start: None,
+        seconds: END,
+    };
 
-    /// A frame later, or `None` once it has settled.
-    pub fn after(self, frame: f32) -> Option<Self> {
-        let seconds = self.seconds + frame.min(LONGEST_STEP);
-        (seconds < END).then_some(Self { seconds })
+    /// As it is at `now`, or `None` once it has settled.
+    pub fn after(self, now: Instant) -> Option<Self> {
+        let start = self.start.unwrap_or(now);
+        let seconds = now.saturating_duration_since(start).as_secs_f32();
+        (seconds < END).then_some(Self {
+            start: Some(start),
+            seconds,
+        })
     }
 
     fn part(self, start: f32, length: f32) -> f32 {
@@ -71,6 +84,8 @@ pub fn drop_for(shown: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn parts(at: Arrival) -> Vec<f32> {
@@ -88,13 +103,15 @@ mod tests {
 
     #[test]
     fn starts_dark_only_moves_forward_and_ends_exactly_in_place() {
-        let mut at = Arrival::START;
+        let first = Instant::now();
+        let mut at = Arrival::START.after(first).expect("just started");
         let mut last = parts(at);
         assert!(last.iter().all(|part| *part == 0.));
-        while let Some(next) = at.after(1. / 120.) {
+        let mut frame = 1;
+        while let Some(next) = at.after(first + Duration::from_secs_f32(frame as f32 / 120.)) {
             let now = parts(next);
             assert!(now.iter().zip(&last).all(|(now, last)| now >= last));
-            (at, last) = (next, now);
+            (at, last, frame) = (next, now, frame + 1);
         }
         // No jump from the last animated frame to the still screen.
         assert!(last.iter().all(|part| *part > 0.999));
@@ -103,8 +120,15 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_frame_does_not_swallow_it() {
-        let next = Arrival::START.after(3.).expect("still arriving");
-        assert!(next.headline() == 0.);
+    fn it_starts_at_its_first_frame_and_keeps_to_the_clock() {
+        let first = Instant::now();
+        let started = Arrival::START.after(first).expect("just started");
+        assert_eq!(started.headline(), 0.);
+        // A frame that comes 0.6 s late shows where it is at 0.6 s, not one step on.
+        let late = started
+            .after(first + Duration::from_millis(600))
+            .expect("still arriving");
+        assert!((late.seconds - 0.6).abs() < 1e-3);
+        assert!(started.after(first + Duration::from_secs(2)).is_none());
     }
 }

@@ -37,9 +37,6 @@ pub struct Sidebar<'a> {
     pub collapsed: &'a [String],
 }
 
-/// The most labels the sidebar lists.
-pub const LABELS_SHOWN: usize = 40;
-
 impl Sidebar<'_> {
     pub fn several(&self) -> bool {
         !self.demo && self.accounts.len() >= 2
@@ -120,9 +117,7 @@ impl Sidebar<'_> {
                     View::Trash,
                 ],
             );
-            let labels: Vec<View> = (0..self.labels.min(LABELS_SHOWN))
-                .map(View::Label)
-                .collect();
+            let labels: Vec<View> = (0..self.labels).map(View::Label).collect();
             section("labels", &labels);
         }
         rows.push(Row::Settings);
@@ -316,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn labels_stop_where_the_sidebar_does() {
+    fn every_label_is_reachable_from_the_keyboard() {
         let accounts = ids(1);
         let mut many = sidebar(&accounts, &[], View::Inbox);
         many.labels = 90;
@@ -325,7 +320,7 @@ mod tests {
             .iter()
             .filter(|r| matches!(r, Row::Mailbox(View::Label(_))))
             .count();
-        assert_eq!(labels, LABELS_SHOWN);
+        assert_eq!(labels, 90);
     }
 
     #[test]

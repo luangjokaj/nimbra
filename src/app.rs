@@ -20,11 +20,13 @@ use crate::mail::{self, View};
 use crate::rich::{self, Block, Kind};
 use crate::scheduled::{self, Outcome, Scheduled};
 use crate::sending::{Job, QueuedMail, Stage};
-use crate::theme::{Accent, SANS, Theme, Tone, c, fade, gradient};
+use crate::theme::{
+    Accent, GRADIENT_GLOW, SANS, Theme, Tone, c, fade, gradient, over, radius, space,
+};
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Press, TOP_BAR, avatar, button, caption, display, hero, icon, icon_button, kbd,
-    meta, overline, pill, shadow, tip, title_l, title_m, title_s,
+    ButtonKind, Elevation, Press, TOP_BAR, avatar, button, caption, display, elevation, focus_ring,
+    hero, icon, icon_button, kbd, meta, overline, pill, shadow, tip, title_l, title_m, title_s,
 };
 use crate::webview::HtmlView;
 
@@ -352,10 +354,10 @@ pub struct Nimbra {
     keychain_slow: bool,
     /// Inbox Zero coming up, on a launch that opens on it.
     arrival: Option<Arrival>,
-    /// The night over Inbox Zero once it has come up: twinkling, and falling stars.
+    /// The night over Inbox Zero once it has come up, and the one wake waiting for its
+    /// falling star (dropping it cancels the wake).
     sky: Option<crate::sky::Sky>,
-    /// A slow frame for the twinkling is on its way.
-    sky_tick: bool,
+    sky_wake: Option<gpui::Task<()>>,
     /// The message whose full header (all recipients, date) is expanded: thread id and
     /// message index (0 is the latest).
     details: Option<(String, usize)>,
@@ -490,7 +492,7 @@ pub struct Nimbra {
     bar_fade: Option<(std::time::Instant, usize)>,
     /// The number shown on the Dock icon.
     badge: Option<u32>,
-    /// A document waiting to be printed (it is loaded into the web view first).
+    /// A document waiting to be printed: the next frame lays it out in the print view.
     print_pending: Option<String>,
     /// Nimbra opens at login (read when Settings opens).
     login_item: bool,
@@ -599,8 +601,8 @@ pub struct Nimbra {
     menu_dismissed: Option<(Menu, std::time::Instant)>,
     /// "Show original": the message's own HTML in a web view instead of the native reader.
     original: bool,
-    /// Remote images allowed in the web view for the open thread. On by default; the
-    /// strip above the message can block them.
+    /// Remote images allowed in the web view for the open thread: as the setting says when
+    /// a thread opens, until the images card asks for them.
     original_images: bool,
     /// The web view, created the first time it is needed.
     html_view: Option<std::rc::Rc<HtmlView>>,
@@ -667,7 +669,7 @@ pub struct Nimbra {
     list_gen: usize,
     /// Pull to refresh: the list's scroll position, how far it has been pulled past the
     /// top, and whether the current trackpad gesture started at the top.
-    list_scroll: gpui::ScrollHandle,
+    list_scroll: ListScroll,
     sidebar_scroll: gpui::ScrollHandle,
     /// When each mailbox was last checked, by its record.
     checked: HashMap<String, Asked>,
@@ -768,7 +770,7 @@ impl Nimbra {
             keychain_slow: false,
             arrival: None,
             sky: None,
-            sky_tick: false,
+            sky_wake: None,
             finder_open: false,
             finder,
             _finder_events: finder_events,
@@ -964,7 +966,7 @@ impl Nimbra {
             sidebar_grab: None,
             list_toggled: None,
             list_gen: 0,
-            list_scroll: gpui::ScrollHandle::new(),
+            list_scroll: ListScroll::new(),
             sidebar_scroll: gpui::ScrollHandle::new(),
             checked: HashMap::new(),
             counted: None,
@@ -1113,7 +1115,17 @@ impl Nimbra {
                 this.arrival = Some(Arrival::START);
             }
             // On every change, whichever action made it: the next launch goes by this.
-            cx.observe_self(Self::save_if_zero_changed).detach();
+            let mut seen = None;
+            cx.observe_self(move |this, cx| {
+                // On every notify, animation frames included: look only when what decides it
+                // could have changed.
+                let now = this.zero_inputs();
+                if seen != Some(now) {
+                    seen = Some(now);
+                    this.save_if_zero_changed(cx);
+                }
+            })
+            .detach();
             this.connect(false, cx);
         }
         // NIMBRA_SEARCH=<query> starts with that search already run.
@@ -1123,6 +1135,19 @@ impl Nimbra {
             this.run_search(cx);
         }
         this
+    }
+
+    /// What `save_if_zero_changed` goes by: the mailbox, how far it is listed, and how many
+    /// of its threads are cleared.
+    fn zero_inputs(&self) -> (View, bool, bool, usize, usize, usize) {
+        (
+            self.mailbox,
+            self.status == Status::Ready,
+            self.all_inboxes_whole,
+            self.mails.len(),
+            self.done.iter().filter(|done| **done).count(),
+            self.history.len(),
+        )
     }
 
     fn is_demo(&self) -> bool {
@@ -1246,26 +1271,14 @@ impl Nimbra {
                     .flex()
                     .flex_col()
                     .gap(px(16.))
-                    .p(px(24.))
-                    .rounded(px(18.))
+                    .p(px(space::XL))
+                    .rounded(px(radius::SHEET))
                     .bg(t.raised)
                     .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![shadow(
-                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
-                        30.,
-                        80.,
-                        -10.,
-                    )])
+                    .border_color(t.edge)
+                    .shadow(elevation(t, Elevation::Sheet))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(
-                        div()
-                            .flex()
-                            .items_end()
-                            .justify_between()
-                            .child(title_s("Keyboard shortcuts", t.text))
-                            .child(meta("esc to close".to_string(), t.text3)),
-                    )
+                    .child(title_s("Keyboard Shortcuts", t.text))
                     .child(
                         div()
                             .flex()
@@ -1286,19 +1299,19 @@ impl Nimbra {
                 } else {
                     format!("Delete {} forever?", ids.len())
                 },
-                "They are deleted from the server for good. This can’t be undone.".into(),
-                "Delete forever",
+                "This can’t be undone.".into(),
+                "Delete Forever",
             ),
             Some(Ask::GrantFullAccess(_)) => (
-                "One more permission".into(),
-                "Deleting permanently needs Google’s full mail access, which Nimbra does not ask for until it is needed. Google opens in your browser to allow it; nothing is deleted until you do."
+                "One More Permission".into(),
+                "Deleting for good needs one more permission from Google. Nothing is deleted until you allow it."
                     .into(),
-                "Continue in browser",
+                "Continue in Browser",
             ),
             Some(Ask::DeleteLabel(_, name)) => (
                 format!("Delete “{}”?", short(name, 30)),
-                "The label is removed from Gmail. The mail it was on stays where it is.".into(),
-                "Delete label",
+                "The mail it was on stays where it is.".into(),
+                "Delete Label",
             ),
             None => (String::new(), String::new(), ""),
         };
@@ -1325,17 +1338,12 @@ impl Nimbra {
                     .flex()
                     .flex_col()
                     .gap(px(12.))
-                    .p(px(22.))
-                    .rounded(px(18.))
+                    .p(px(space::XL))
+                    .rounded(px(radius::SHEET))
                     .bg(t.raised)
                     .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![shadow(
-                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
-                        30.,
-                        80.,
-                        -10.,
-                    )])
+                    .border_color(t.edge)
+                    .shadow(elevation(t, Elevation::Sheet))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(title_s(&title, t.text))
                     .child(div().text_color(t.text2).child(body))
@@ -1387,15 +1395,15 @@ impl Nimbra {
 
     /// `pane_layout` as it will be `ahead` seconds from now.
     fn pane_layout_at(&self, ahead: f32) -> (f32, f32) {
-        const SLIDE: f32 = PANEL_SLIDE_SECONDS;
+        let slide = slide_seconds();
         // The same curve as the slide itself.
         let ease = panel_ease;
         let part = |open: bool, at: Option<std::time::Instant>, size: f32| {
             let to = if open { 1. } else { 0. };
             match at.map(|at| at.elapsed().as_secs_f32() + ahead) {
-                Some(elapsed) if elapsed < SLIDE => {
+                Some(elapsed) if elapsed < slide => {
                     let from = 1. - to;
-                    size * (from + (to - from) * ease(elapsed / SLIDE))
+                    size * (from + (to - from) * ease(elapsed / slide))
                 }
                 _ => size * to,
             }
@@ -1554,14 +1562,11 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// ⌘⇧L and the sun/moon button: switch to the other theme, and remember it.
-    fn toggle_theme(&mut self, cx: &mut Context<Self>) {
+    /// ⌘⇧L: the other theme. Landing on the Mac's own appearance goes back to following
+    /// it; only a theme that differs from the Mac's is kept as a choice.
+    fn toggle_theme(&mut self, system_dark: bool, cx: &mut Context<Self>) {
         self.dark = !self.dark;
-        self.settings.theme = if self.dark {
-            crate::settings::ThemeChoice::Dark
-        } else {
-            crate::settings::ThemeChoice::Light
-        };
+        self.settings.theme = theme_choice(self.dark, system_dark);
         self.save_settings(cx);
         cx.notify();
     }
@@ -1639,7 +1644,7 @@ impl Nimbra {
             cx.notify();
             return;
         }
-        eprintln!("nimbra: {error}");
+        log_failure(&error);
         if let Some(out) = error.downcast_ref::<mail::SignedOut>()
             && !self.shown_signed_out(&error)
         {
@@ -1656,51 +1661,73 @@ impl Nimbra {
             cx.notify();
             return;
         }
-        if self.shown_signed_out(&error) {
-            self.connection = None;
-            // The mail kept for that sign-in goes; what the user wrote and has not sent stays,
-            // for signing in again (`hold_sends`).
-            self.store = None;
-            self.checks.forget();
-            self.offline = false;
-            self.stop_retrying();
-            // Whoever signs in next must not send this account's mail.
-            self.outbox = Outbox::default();
-            let shown = self.account_id.clone();
+        if self.ends_sign_in(&error) {
+            self.signed_out_by_server(cx);
+        } else if self.mails.is_empty() && self.status != Status::Ready {
+            // An error is no reason to hide a mailbox known to be empty.
+            self.status = Status::Failed(said_to_people(&error));
+        } else {
+            self.notice = Some(said_to_people(&error));
+        }
+        cx.notify();
+    }
+
+    /// Whether `error` certainly ends the shown account's sign-in: a revoked token or a
+    /// refused password, never a busy server or a dropped connection. Everything that signs
+    /// out on an error asks this, and only this.
+    fn ends_sign_in(&self, error: &anyhow::Error) -> bool {
+        self.shown_signed_out(error)
+    }
+
+    /// The server ended the shown account's sign-in. A Google or Microsoft account's
+    /// sign-in was revoked: its mail goes with it, as signing out does. An account with a
+    /// password only needs it again: what is kept on this Mac, unsent mail included, stays
+    /// for when it is given.
+    fn signed_out_by_server(&mut self, cx: &mut Context<Self>) {
+        let shown = self.account_id.clone();
+        let password = self.servers_of(&shown).is_some() && !self.is_microsoft(&shown);
+        self.connection = None;
+        self.store = None;
+        self.checks.forget();
+        self.offline = false;
+        self.stop_retrying();
+        // On disk, read again when the store opens; never sent from another account.
+        self.outbox = Outbox::default();
+        if password {
+            self.set_sends_aside(&shown);
+        } else {
             self.forget_photo(&shown);
             self.hold_sends(&shown);
             self.parked
                 .retain(|(_, c)| c.account.as_ref().is_some_and(|a| *a != shown));
-            self.next_pages.clear();
-            self.forget_checked();
-            let account = self.account_id.clone();
+            let account = shown.clone();
             std::thread::spawn(move || crate::store::wipe_mail(&account));
-            self.cache.clear();
-            self.mails.clear();
-            self.done.clear();
-            self.history.clear();
-            self.picked.clear();
-            self.history_groups.clear();
-            self.back.clear();
-            self.forward.clear();
-            self.selected = 0;
-            self.palette = false;
-            self.status = Status::SignedOut;
-            self.notice = Some(if self.is_microsoft(&self.account_id) {
-                "Your Microsoft sign-in expired. Sign in again to continue.".into()
-            } else if self.servers_of(&self.account_id).is_some() {
-                "The server stopped taking this account’s password. Sign in again to continue."
-                    .into()
-            } else {
-                "Your Google sign-in expired. Connect again to continue.".into()
-            });
-        // An error is no reason to hide a mailbox known to be empty.
-        } else if self.mails.is_empty() && self.status != Status::Ready {
-            self.status = Status::Failed(error.to_string().into());
-        } else {
-            self.notice = Some(error.to_string().into());
         }
+        self.next_pages.clear();
+        self.forget_checked();
+        self.cache.clear();
+        self.mails.clear();
+        self.done.clear();
+        self.history.clear();
+        self.picked.clear();
+        self.history_groups.clear();
+        self.back.clear();
+        self.forward.clear();
+        self.selected = 0;
+        self.palette = false;
+        self.status = Status::SignedOut;
+        self.notice = (!password && !self.is_microsoft(&shown))
+            .then(|| "Your Google sign-in expired.".into());
         cx.notify();
+    }
+
+    /// Lets go of an account's unsent mail without deleting any of it. What is kept on this
+    /// Mac is picked up again when the account's store opens next (`Job::left_behind`); what
+    /// is not stays queued here, as quitting would lose it.
+    fn set_sends_aside(&mut self, account: &str) {
+        let aside = |job: &Arc<Job>| job.account == account && job.kept();
+        self.queue.retain(|job| !aside(job));
+        self.sends.retain(|job| !aside(job));
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
@@ -1716,13 +1743,13 @@ impl Nimbra {
     }
 
     fn visible(&self) -> Vec<usize> {
+        let query = self.query.to_lowercase();
         (0..self.mails.len())
             .filter(|i| match (self.is_demo(), self.mailbox) {
                 (true, View::Done) => self.done[*i],
                 // The sample data is searched locally.
                 (true, View::Search) => {
                     let mail = &self.mails[*i];
-                    let query = self.query.to_lowercase();
                     !self.done[*i]
                         && [&mail.sender, &mail.subject, &mail.snippet]
                             .iter()
@@ -1756,7 +1783,7 @@ impl Nimbra {
                 self.open_selected(cx);
                 if next == 0 {
                     // The top, with the heading above the first thread.
-                    self.list_scroll.set_offset(gpui::point(px(0.), px(0.)));
+                    self.list_scroll.to_top();
                 } else {
                     self.reveal_row.set(true);
                 }
@@ -1882,7 +1909,7 @@ fn balance_title(text: &str, size: f32, width: f32, cx: &App) -> String {
         }
         starts
     };
-    // A little slack: the italic tail and kerning make real lines slightly wider.
+    // A little slack: kerning makes real lines slightly wider than their glyphs' advances.
     let limit = width * 0.97;
     let lines = fill(limit).len();
     if lines == 1 {
@@ -1907,6 +1934,88 @@ fn balance_title(text: &str, size: f32, width: f32, cx: &App) -> String {
         out.push_str(word);
     }
     out
+}
+
+/// Whether the Mac is in dark mode.
+fn is_dark(appearance: gpui::WindowAppearance) -> bool {
+    matches!(
+        appearance,
+        gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
+    )
+}
+
+/// What to keep for a theme picked by hand: following the Mac when it is the Mac's own.
+fn theme_choice(dark: bool, system_dark: bool) -> crate::settings::ThemeChoice {
+    use crate::settings::ThemeChoice;
+    match (dark == system_dark, dark) {
+        (true, _) => ThemeChoice::System,
+        (false, true) => ThemeChoice::Dark,
+        (false, false) => ThemeChoice::Light,
+    }
+}
+
+/// Logs what kind of request failed, never its text: that can hold addresses and what a
+/// server said.
+fn log_failure(error: &anyhow::Error) {
+    let kind = if error.is::<mail::SignedOut>() {
+        "the sign-in was refused"
+    } else if error.is::<mail::MayHaveArrived>() {
+        "the answer did not arrive"
+    } else {
+        "a request failed"
+    };
+    eprintln!("nimbra: {kind}");
+}
+
+/// The error as a sentence for the screen. Nimbra's own messages are written for people
+/// (a capital, a full stop); anything else, such as a protocol error, is not shown.
+fn said_to_people(error: &anyhow::Error) -> SharedString {
+    let said = error.to_string();
+    let sentence = said.chars().next().is_some_and(char::is_uppercase)
+        && said.ends_with(['.', '?'])
+        && said.len() <= 200;
+    if sentence {
+        said.into()
+    } else {
+        "Something went wrong. Try again.".into()
+    }
+}
+
+/// `text` cut with "…" so that it fits `room` points in `font` at `size`, and the width it
+/// takes. Measured, so wide scripts never spill and narrow ones fill their room; cut only
+/// between graphemes, so no emoji or accent is broken.
+fn fit(text: &str, room: f32, font: &gpui::Font, size: f32, cx: &App) -> (SharedString, f32) {
+    use unicode_segmentation::UnicodeSegmentation;
+    let system = cx.text_system();
+    let font_id = system.resolve_font(font);
+    let advance = |c: char| {
+        system
+            .advance(font_id, px(size), c)
+            .map_or(size * 0.6, |a| f32::from(a.width))
+    };
+    let graphemes: Vec<(usize, f32)> = text
+        .grapheme_indices(true)
+        .map(|(at, g)| (at, g.chars().map(advance).sum()))
+        .collect();
+    let whole: f32 = graphemes.iter().map(|(_, w)| w).sum();
+    if whole <= room {
+        return (text.to_string().into(), whole);
+    }
+    let ellipsis = advance('…');
+    let mut used = 0.;
+    let mut end = 0;
+    for &(at, width) in &graphemes {
+        if used + width + ellipsis > room {
+            end = at;
+            break;
+        }
+        used += width;
+    }
+    let head = text[..end].trim_end();
+    if head.is_empty() {
+        return ("…".into(), ellipsis);
+    }
+    (format!("{head}…").into(), used + ellipsis)
 }
 
 /// Shortens text to `max` characters with an ellipsis.
@@ -1978,7 +2087,7 @@ fn card(t: &Theme) -> Div {
         .bg(t.hover)
         .border_1()
         .border_color(t.border)
-        .rounded(px(12.))
+        .rounded(px(radius::CARD))
 }
 
 // ---------------------------------------------------------------- panes
@@ -1990,45 +2099,35 @@ impl Nimbra {
         let microsoft = self.is_microsoft(&self.account_id);
         let (title, message, action): (&str, SharedString, Option<&str>) = match &self.status {
             Status::SignedOut if microsoft => (
-                "Sign in again",
-                "Microsoft ended this account’s sign-in. Nimbra opens Microsoft in your \
-                 browser to sign in again."
-                    .into(),
-                Some("Sign in"),
+                "Sign In Again",
+                "Sign in to Microsoft again to keep getting mail.".into(),
+                Some("Sign In"),
             ),
             Status::SigningIn if microsoft => (
                 "Waiting for Microsoft",
-                "Finish signing in in your browser, then come back here.".into(),
+                "Finish signing in in your browser.".into(),
                 None,
             ),
             Status::SignedOut if own_servers => (
-                "Sign in again",
-                "The mail server stopped taking this account’s password. Sign in again, or \
-                 use an app password if the account has two-step sign-in."
-                    .into(),
-                Some("Sign in"),
+                "Sign In Again",
+                "The server stopped accepting this password. Your mail is still here.".into(),
+                Some("Sign In"),
             ),
             Status::SignedOut => (
-                "Connect your inbox",
-                "Nimbra opens Google in your browser to sign in. It can read and archive \
-                 your mail, and send what you write. It cannot permanently delete anything."
-                    .into(),
+                "Connect Your Inbox",
+                "Nimbra can read, archive and send. It can’t delete mail for good.".into(),
                 Some("Connect Gmail"),
             ),
             Status::SigningIn => (
                 "Waiting for Google",
-                "Finish signing in in your browser, then come back here.".into(),
+                "Finish signing in in your browser.".into(),
                 None,
             ),
-            Status::Failed(reason) => ("Something went wrong", reason.clone(), Some("Try again")),
+            Status::Failed(reason) => ("Couldn’t Load Mail", reason.clone(), Some("Try Again")),
             _ if self.waiting_for_keychain() => {
                 ("Waiting for the Keychain", KEYCHAIN_WAITING.into(), None)
             }
-            _ => (
-                "Fetching your inbox",
-                "This takes a few seconds.".into(),
-                None,
-            ),
+            _ => ("Loading", SharedString::default(), None),
         };
         div()
             .flex_1()
@@ -2038,12 +2137,12 @@ impl Nimbra {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(14.))
+            .gap(px(space::M))
             .bg(t.surface)
             .child(title_l(title, t.text))
             .child(
                 div()
-                    .max_w(px(460.))
+                    .max_w(px(440.))
                     .text_center()
                     .text_size(px(15.))
                     .line_height(px(24.))
@@ -2052,13 +2151,12 @@ impl Nimbra {
             )
             .children(action.map(|label| {
                 div()
-                    .pt(px(10.))
+                    .pt(px(space::M))
                     .flex()
-                    .gap(px(8.))
+                    .gap(px(space::S))
                     .child(crate::ui::glow(
                         button(t, ButtonKind::Primary, label)
                             .id("status-action")
-                            .press(t)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if matches!(this.status, Status::Failed(_)) {
                                     this.try_again(cx);
@@ -2071,7 +2169,7 @@ impl Nimbra {
                     // Signed out of Gmail (or never in): any other address works too.
                     .when(self.status == Status::SignedOut && !own_servers, |d| {
                         d.child(
-                            button(t, ButtonKind::Secondary, "Use another address")
+                            button(t, ButtonKind::Secondary, "Use Another Address")
                                 .id("status-other")
                                 .press(t)
                                 .on_click(
@@ -2118,10 +2216,7 @@ impl Render for Nimbra {
         if self.settings.theme == crate::settings::ThemeChoice::System
             && std::env::var_os("NIMBRA_THEME").is_none()
         {
-            self.dark = matches!(
-                window.appearance(),
-                gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-            );
+            self.dark = is_dark(window.appearance());
         }
         let t = self.theme();
         let viewport = window.viewport_size();
@@ -2136,10 +2231,8 @@ impl Render for Nimbra {
         // Measure the display's frame interval from back-to-back frames (an animation keeps
         // them coming), smoothed; long gaps between idle frames are ignored.
         let now = std::time::Instant::now();
-        let mut since_last = 0.;
         if let Some(last) = self.last_frame {
             let dt = now.duration_since(last).as_secs_f32();
-            since_last = dt;
             if (0.004..0.035).contains(&dt) {
                 let smooth = self.frame_interval.get() * 0.8 + dt * 0.2;
                 self.frame_interval.set(smooth);
@@ -2194,10 +2287,13 @@ impl Render for Nimbra {
         self.bar_shown = bar;
         if self
             .bar_fade
-            .is_some_and(|(at, _)| at.elapsed() > Duration::from_millis(600))
+            .is_some_and(|(at, _)| at.elapsed() > crate::ui::motion::FADE)
         {
             self.bar_fade = None;
         }
+        // Sections that have finished folding leave the layout.
+        self.folding
+            .retain(|_, (at, _)| at.elapsed() < crate::ui::motion::FOLD);
         // The inbox's unread count on the Dock icon.
         let unread = if self.connection.is_some() && self.settings.dock_badge {
             // Every signed-in account's inbox.
@@ -2244,7 +2340,9 @@ impl Render for Nimbra {
         if self.peek.moving() || self.sidebar_sliding() {
             window.request_animation_frame();
         }
-        let empty = self.visible().is_empty();
+        let visible = self.visible();
+        let empty = visible.is_empty();
+        self.sync_list(&visible);
         let zero_shown = match self.status {
             Status::Demo | Status::Ready => empty && self.is_zero(),
             _ => self.opening_to_zero() && !self.waiting_for_keychain(),
@@ -2252,11 +2350,11 @@ impl Render for Nimbra {
         self.arrival = self
             .arrival
             .filter(|_| zero_shown)
-            .and_then(|arrival| arrival.after(since_last));
+            .and_then(|arrival| arrival.after(now));
         if self.arrival.is_some() {
             window.request_animation_frame();
         }
-        self.move_sky(zero_shown, since_last, window, cx);
+        self.move_sky(zero_shown, window, cx);
         let list_shown =
             !empty && self.list_open && matches!(self.status, Status::Demo | Status::Ready);
 
@@ -2436,7 +2534,9 @@ impl Render for Nimbra {
                     this.toggle_full_view(cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &ToggleTheme, _, cx| this.toggle_theme(cx)))
+            .on_action(cx.listener(|this, _: &ToggleTheme, window, cx| {
+                this.toggle_theme(is_dark(window.appearance()), cx)
+            }))
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &Back, _, cx| this.go_back(cx)))
@@ -2446,6 +2546,9 @@ impl Render for Nimbra {
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                if !this.sidebar_open {
+                    crate::autohide::moved();
+                }
                 let Some((start, width)) = this.list_grab else {
                     return;
                 };
@@ -2630,6 +2733,17 @@ impl Render for Nimbra {
     }
 }
 
+/// What Google answered about a photo, with the photo ready to draw. Made off the main
+/// thread: an image hashes all its bytes when it is made.
+fn photo_of(photo: mail::Photo) -> (PhotoAnswer, Option<Arc<gpui::Image>>) {
+    match photo {
+        mail::Photo::Image(bytes) => (PhotoAnswer::Theirs, photo_image(bytes)),
+        mail::Photo::Unchecked(bytes) => (PhotoAnswer::Unchecked, photo_image(bytes)),
+        mail::Photo::NoPhoto => (PhotoAnswer::None, None),
+        mail::Photo::NotAllowed => (PhotoAnswer::NotAllowed, None),
+    }
+}
+
 /// A profile photo's bytes as an image, if they are one of the formats Google serves.
 fn photo_image(bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
     let format = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
@@ -2744,8 +2858,33 @@ mod header_tests {
                 }
             }
         }
-        // At the default width there is room for all of it.
-        let full = HeaderFit::new(452. - 1. - LIST_LEFT - LIST_RIGHT, 131., Some(126.));
-        assert_eq!((full.words, full.compose), (true, ComposeLook::Keyed));
+    }
+
+    #[test]
+    fn picking_the_macs_own_theme_follows_the_mac_again() {
+        use crate::settings::ThemeChoice;
+        assert!(theme_choice(true, true) == ThemeChoice::System);
+        assert!(theme_choice(false, false) == ThemeChoice::System);
+        assert!(theme_choice(true, false) == ThemeChoice::Dark);
+        assert!(theme_choice(false, true) == ThemeChoice::Light);
+    }
+
+    #[test]
+    fn only_sentences_written_for_people_reach_the_screen() {
+        let shown = |e: anyhow::Error| said_to_people(&e).to_string();
+        assert_eq!(
+            shown(anyhow::anyhow!("That draft is no longer in Gmail.")),
+            "That draft is no longer in Gmail."
+        );
+        for raw in [
+            "unexpected thread id",
+            "NO [UNAVAILABLE] try later",
+            "Google rejected the sign-in (400 invalid_grant)",
+        ] {
+            assert_eq!(
+                shown(anyhow::anyhow!(raw.to_string())),
+                "Something went wrong. Try again."
+            );
+        }
     }
 }

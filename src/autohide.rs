@@ -1,11 +1,17 @@
 //! The hidden sidebar's auto-hide: at the window's left edge it floats in over the content,
 //! and it leaves again with the pointer.
 //!
-//! The pointer is asked from AppKit on a short timer rather than taken from mouse events:
-//! those never arrive over the email's native web view (which reaches the edge when the
-//! list is hidden), nor once a fast move has carried the pointer out of the window.
+//! GPUI's own mouse events never arrive over the email's native web view (which reaches the
+//! edge when the list is hidden), nor once a fast move has carried the pointer out of the
+//! window. So on the Mac, AppKit's event monitors say when the pointer moves anywhere, and
+//! the pointer is then asked from AppKit. Nothing is looked at while it rests.
 
+use std::cell::RefCell;
 use std::time::Instant;
+
+use futures::channel::mpsc;
+
+use crate::ui::motion;
 
 /// The strip along the window's left edge that brings the panel in.
 const EDGE: f32 = 6.;
@@ -14,7 +20,8 @@ const OVERSHOOT: f32 = 48.;
 /// How far right of the panel the pointer may go before it leaves.
 const SLACK: f32 = 10.;
 const IN_SECONDS: f32 = 0.18;
-const OUT_SECONDS: f32 = 0.12;
+/// Leaving is quicker than coming.
+const OUT_SECONDS: f32 = 0.14;
 
 /// The pointer, in window points from the left edge.
 #[derive(Clone, Copy, Debug)]
@@ -49,27 +56,23 @@ impl Peek {
         *self = Peek::new();
     }
 
-    /// How far in the panel is `ahead` seconds from now: 0 away, 1 in place, a little over
-    /// as it springs in.
+    fn seconds(&self) -> f32 {
+        if self.shown { IN_SECONDS } else { OUT_SECONDS }
+    }
+
+    /// How far in the panel is `ahead` seconds from now: 0 away, 1 in place.
     pub fn progress(&self, ahead: f32) -> f32 {
         let to = if self.shown { 1. } else { 0. };
         let Some(since) = self.since else {
             return to;
         };
         let elapsed = since.elapsed().as_secs_f32() + ahead;
-        let eased = if self.shown {
-            spring(elapsed / IN_SECONDS)
-        } else {
-            let t = (elapsed / OUT_SECONDS).min(1.);
-            t * t
-        };
-        self.from + (to - self.from) * eased
+        self.from + (to - self.from) * motion::ease_out(elapsed / self.seconds())
     }
 
     pub fn moving(&self) -> bool {
-        let seconds = if self.shown { IN_SECONDS } else { OUT_SECONDS };
         self.since
-            .is_some_and(|since| since.elapsed().as_secs_f32() < seconds)
+            .is_some_and(|since| since.elapsed().as_secs_f32() < self.seconds())
     }
 
     /// Takes a look at the pointer. `None`: it is not this window's to follow (inactive,
@@ -97,27 +100,97 @@ impl Peek {
             return false;
         }
         self.from = self.progress(0.);
-        self.since = Some(Instant::now());
+        // With Reduce Motion it is simply there, or gone.
+        self.since = (!motion::reduced()).then(Instant::now);
         self.shown = shown;
         true
     }
 }
 
-/// Eases out a touch past the end and settles back (about 5pt on the sidebar's width).
-fn spring(t: f32) -> f32 {
-    const BACK: f32 = 0.75;
-    let t = t.clamp(0., 1.) - 1.;
-    1. + (BACK + 1.) * t * t * t + BACK * t * t
+thread_local! {
+    /// Where pointer moves are told while the hidden sidebar is watched.
+    static MOVES: RefCell<Option<mpsc::UnboundedSender<()>>> = const { RefCell::new(None) };
+}
+
+/// Starts telling pointer moves: each comes out of the receiver, until it is dropped.
+pub fn watch_moves() -> mpsc::UnboundedReceiver<()> {
+    platform::install_monitors();
+    let (sender, receiver) = mpsc::unbounded();
+    MOVES.with_borrow_mut(|moves| *moves = Some(sender));
+    receiver
+}
+
+/// The pointer moved. Nothing happens unless the sidebar is being watched.
+pub fn moved() {
+    MOVES.with_borrow_mut(|moves| {
+        if moves
+            .as_ref()
+            .is_some_and(|sender| sender.unbounded_send(()).is_err())
+        {
+            *moves = None;
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)] // emitted by the objc crate's macros
 mod platform {
-    use objc::runtime::Object;
+    use block::ConcreteBlock;
+    use objc::runtime::{BOOL, NO, Object};
     use objc::{class, msg_send, sel, sel_impl};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     use super::Pointer;
+
+    /// NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged.
+    const MOVES_MASK: u64 = (1 << 5) | (1 << 6);
+
+    thread_local! {
+        static MONITORING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Only while Nimbra is the active app: then its window is the one the pointer is for.
+    fn tell_move() {
+        // SAFETY: a plain getter on the shared application, from AppKit's main thread.
+        let active: BOOL = unsafe {
+            let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+            msg_send![app, isActive]
+        };
+        if active != NO {
+            super::moved();
+        }
+    }
+
+    /// AppKit's monitors for pointer moves: in Nimbra's windows (the web view's included),
+    /// and anywhere else on screen. Installed once; they cost nothing while no one listens.
+    pub fn install_monitors() {
+        if MONITORING.replace(true) {
+            return;
+        }
+        let local = ConcreteBlock::new(|event: *mut Object| -> *mut Object {
+            tell_move();
+            event
+        })
+        .copy();
+        let global = ConcreteBlock::new(|_event: *mut Object| tell_move()).copy();
+        // SAFETY: main thread; the monitors and their blocks live as long as the app.
+        unsafe {
+            let monitor: *mut Object = msg_send![
+                class!(NSEvent),
+                addLocalMonitorForEventsMatchingMask: MOVES_MASK
+                handler: &*local
+            ];
+            let _: *mut Object = msg_send![monitor, retain];
+            let monitor: *mut Object = msg_send![
+                class!(NSEvent),
+                addGlobalMonitorForEventsMatchingMask: MOVES_MASK
+                handler: &*global
+            ];
+            let _: *mut Object = msg_send![monitor, retain];
+        }
+        std::mem::forget(local);
+        std::mem::forget(global);
+    }
 
     /// An x that has all three traffic lights left of the window.
     const AWAY: f32 = -120.;
@@ -275,6 +348,9 @@ mod platform {
     }
 
     pub fn place_traffic_lights(_window: &gpui::Window, _x: Option<f32>) {}
+
+    /// GPUI's own mouse events reach the window everywhere here: the root view tells them.
+    pub fn install_monitors() {}
 }
 
 pub use platform::{place_traffic_lights, pointer};
@@ -348,11 +424,23 @@ mod tests {
     }
 
     #[test]
-    fn the_spring_overshoots_a_little_and_lands() {
-        assert!(spring(0.).abs() < 1e-5 && (spring(1.) - 1.).abs() < 1e-5);
-        let peak = (0..=100)
-            .map(|i| spring(i as f32 / 100.))
-            .fold(0., f32::max);
-        assert!(peak > 1.01 && peak < 1.03, "{peak}");
+    fn it_never_goes_past_its_place() {
+        let mut peek = shown();
+        for ahead in 0..=40 {
+            let at = peek.progress(ahead as f32 / 100.);
+            assert!((0. ..=1.).contains(&at), "{at}");
+        }
+        peek.look(at(900.), RIGHT, false);
+        assert!(peek.progress(1.) == 0.);
+    }
+
+    #[test]
+    fn moves_reach_whoever_watches_and_stop_with_them() {
+        let mut moves = watch_moves();
+        moved();
+        assert!(moves.try_recv().is_ok());
+        drop(moves);
+        moved();
+        MOVES.with_borrow(|sender| assert!(sender.is_none()));
     }
 }

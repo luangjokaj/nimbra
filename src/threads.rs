@@ -218,73 +218,6 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// The times offered when snoozing.
-    pub(super) fn snooze_choices() -> Vec<SnoozeChoice> {
-        use chrono::{Datelike, Duration as Days, Local, TimeZone, Timelike, Weekday};
-        let now = Local::now();
-        let at = |date: chrono::NaiveDate, hour: u32| {
-            Local
-                .from_local_datetime(&date.and_hms_opt(hour, 0, 0).unwrap_or_default())
-                .single()
-        };
-        let label = |when: chrono::DateTime<Local>| when.format("%a %-d %b, %H:%M").to_string();
-        let mut choices = Vec::new();
-        let mut push =
-            |icon, name: &str, when: Option<chrono::DateTime<Local>>, header, no_reply| {
-                if let Some(when) = when {
-                    choices.push(SnoozeChoice {
-                        icon,
-                        label: name.to_string(),
-                        hint: label(when),
-                        header,
-                        until_ms: when.timestamp_millis(),
-                        no_reply,
-                    });
-                }
-            };
-        let today = now.date_naive();
-        if now.hour() < 17 {
-            push("clock", "Later today", at(today, 18), Some("SNOOZE"), false);
-        } else {
-            push(
-                "clock",
-                "In three hours",
-                Some(now + Days::hours(3)),
-                Some("SNOOZE"),
-                false,
-            );
-        }
-        let tomorrow = today + Days::days(1);
-        push("clock", "Tomorrow morning", at(tomorrow, 8), None, false);
-        if !matches!(now.weekday(), Weekday::Fri | Weekday::Sat | Weekday::Sun) {
-            let mut saturday = today;
-            while saturday.weekday() != Weekday::Sat {
-                saturday += Days::days(1);
-            }
-            push("calendar", "This weekend", at(saturday, 9), None, false);
-        }
-        let mut monday = today + Days::days(1);
-        while monday.weekday() != Weekday::Mon {
-            monday += Days::days(1);
-        }
-        push("calendar", "Next week", at(monday, 8), None, false);
-        push(
-            "bell",
-            "Remind me if no reply in 3 days",
-            at(today + Days::days(3), 9),
-            Some("REMINDER"),
-            true,
-        );
-        push(
-            "bell",
-            "Remind me if no reply in a week",
-            at(today + Days::days(7), 9),
-            None,
-            true,
-        );
-        choices
-    }
-
     /// Snoozes the open (or picked) threads: out of the inbox now, back at the chosen time,
     /// unread and with a notification. A reminder only comes back if nobody has replied.
     /// Each is kept with its own account (a thread snoozed from All inboxes may be another's).
@@ -925,13 +858,6 @@ impl Nimbra {
             .rev()
             .find(|(kind, _)| matches!(kind, Parked::Sending | Parked::Discarded))
             .map(|(_, c)| c.serial)
-    }
-
-    /// Pressing `Z` in the main window now would bring something back.
-    pub(super) fn can_undo(&self) -> bool {
-        // With the composer in this window, Z is a letter.
-        let typing = self.compose.is_some() && self.compose_host.is_none();
-        !typing && (self.held_back().is_some() || !self.history.is_empty())
     }
 
     /// `Z`: brings back the last thread that was archived, moved or trashed.

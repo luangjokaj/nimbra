@@ -2,15 +2,19 @@
 //!
 //! The bars along the top are the real components, dimmed and out of reach, and everything
 //! under them has the real layout's margins and line heights, so nothing moves when the mail
-//! arrives. A slow, faint wave of light runs down both panes.
+//! arrives. A slow, faint wave of light runs down both panes a few times, then holds still:
+//! a wave that never ends redraws the whole window for as long as loading lasts.
 //!
 //! It is all in the two greys of `inks`: no accent colours, and nothing marked as open or
 //! unread, so that it reads as a place being filled and not as mail.
 
 use super::*;
+use crate::ui::motion;
 
-/// A row's height with the 2pt under it: its padding and two lines of text.
-const ROW_H: f32 = 69.;
+/// A row's height with the 2pt under it, as the list draws it.
+const ROW_STEP: f32 = ROW_H + ROW_GAP;
+/// How many times the wave runs down the screen.
+const WAVES: usize = 3;
 /// The rows above EARLIER.
 const TODAY: usize = 4;
 /// How dim the bars' controls are until there is mail to use them on.
@@ -72,11 +76,17 @@ fn ink(width: impl Into<gpui::Length> + Clone, thick: f32, line: f32, color: Hsl
 /// The wave. `down` is how far down the screen the element is, 0 to 1, so that the light
 /// travels from the top in both panes at once.
 fn wave(key: usize, down: f32, element: Div) -> AnyElement {
+    // Where the light is at the start and end of a pass, so the last one ends on it.
+    let rest = 0.86 + 0.14 * (down * 0.8 * std::f32::consts::TAU).cos();
+    if motion::reduced() {
+        return element.opacity(rest).into_any_element();
+    }
+    let pass = Animation::new(Duration::from_millis(1700));
     element
-        .with_animation(
+        .with_animations(
             ("skeleton", key),
-            Animation::new(Duration::from_millis(1700)).repeat(),
-            move |element, delta| {
+            vec![pass; WAVES],
+            move |element, _, delta| {
                 let light = ((delta - down * 0.8) * std::f32::consts::TAU).cos();
                 element.opacity(0.86 + 0.14 * light)
             },
@@ -117,7 +127,7 @@ impl Nimbra {
             .flex_none()
             .gap(px(2.))
             .p(px(3.))
-            .rounded(px(10.))
+            .rounded(px(radius::ROW))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
@@ -128,7 +138,7 @@ impl Nimbra {
                     .justify_center()
                     .w(px(width))
                     .h(px(SEGMENT_H))
-                    .rounded(px(7.))
+                    .rounded(px(radius::CONTROL))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if label == "All" { t.text } else { t.text3 })
                     .when(label == "All", |d| d.bg(t.raised))
@@ -138,14 +148,14 @@ impl Nimbra {
         let heading = |width: f32| {
             div()
                 .flex_none()
+                .h(px(GROUP_H))
                 .pl(px(ROW_PAD))
-                .pt(px(14.))
-                .pb(px(6.))
+                .pt(px(16.))
                 .child(ink(px(width), 6., 12., soft))
         };
         // Only those that fit: the wave draws each one again every frame.
         let height = self.frame.map_or(920., |f| f32::from(f.size.height));
-        let fitting = ((height - TOP_BAR) / ROW_H).ceil().max(1.) as usize;
+        let fitting = ((height - TOP_BAR) / ROW_STEP).ceil().max(1.) as usize;
         let rows = (0..fitting).flat_map(|i| {
             let mail = &MAIL[i % MAIL.len()];
             let top_line = div()
@@ -175,10 +185,11 @@ impl Nimbra {
                 .relative()
                 .flex()
                 .flex_none()
+                .h(px(ROW_H))
                 .gap(px(ROW_PAD))
                 .px(px(ROW_PAD))
-                .py(px(12.))
-                .rounded(px(12.))
+                .py(px(11.))
+                .rounded(px(radius::ROW))
                 .child(
                     div()
                         .flex()
@@ -198,6 +209,7 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .gap(px(6.))
+                                .h(px(18.))
                                 .child(ink(relative(mail.subject), 8., 18., strong))
                                 .child(ink(relative(mail.snippet), 8., 18., soft)),
                         ),
@@ -234,16 +246,7 @@ impl Nimbra {
                             .pr(px(LIST_RIGHT))
                             .opacity(WAITING)
                             .child(switch)
-                            .child(match compose {
-                                ComposeLook::Keyed | ComposeLook::Plain => {
-                                    button(t, ButtonKind::Secondary, "Compose").h(px(34.))
-                                }
-                                ComposeLook::Icon => icon_button(t, "draft")
-                                    .size(px(34.))
-                                    .bg(t.hover)
-                                    .border_1()
-                                    .border_color(t.border_strong),
-                            }),
+                            .child(compose_button(t, compose)),
                     )
                     .child(shield()),
             )
@@ -256,7 +259,7 @@ impl Nimbra {
                     .flex_1()
                     .min_h(px(0.))
                     .overflow_hidden()
-                    .gap(px(2.))
+                    .gap(px(ROW_GAP))
                     .px(px(10.))
                     .children(rows),
             )
@@ -272,6 +275,8 @@ impl Nimbra {
                 .mx(px(6.))
                 .bg(t.border_strong)
         };
+        // In the reading toolbar's order: the list, what clears the thread, replies, the
+        // rest, then the view and the way through the list.
         let tools = div()
             .flex()
             .items_center()
@@ -282,23 +287,15 @@ impl Nimbra {
             .pr(px(20.))
             .opacity(WAITING)
             .child(icon_button(t, "list"))
-            .child(gap(6.))
-            .child(gap(6.))
-            .child(super::reading::done_button(t))
-            .child(gap(6.))
-            .children(
-                ["clock", "star", "mail", "tag", "folder", "trash"]
-                    .map(|name| icon_button(t, name)),
-            )
+            .child(rule())
+            .children(["done", "clock"].map(|name| icon_button(t, name)))
             .child(rule())
             .children(["reply", "reply-all", "forward"].map(|name| icon_button(t, name)))
             .child(rule())
-            .child(if self.original {
-                button(t, ButtonKind::Ghost, "Reader view").bg(t.selected)
-            } else {
-                button(t, ButtonKind::Ghost, "Show original")
-            })
+            .children(["star", "mail", "tag", "folder", "trash"].map(|name| icon_button(t, name)))
             .child(div().flex_1())
+            .child(icon_button(t, "eye").when(self.original, |d| d.bg(t.selected)))
+            .child(gap(6.))
             .children(["up", "down", "more"].map(|name| icon_button(t, name)));
 
         div()
@@ -313,8 +310,6 @@ impl Nimbra {
                     .relative()
                     .flex_none()
                     .h(px(TOP_BAR))
-                    .border_b_1()
-                    .border_color(t.border)
                     .child(tools)
                     .child(shield()),
             )
@@ -341,8 +336,6 @@ impl Nimbra {
             .px(px(28.))
             .pt(px(16.))
             .pb(px(12.))
-            .border_b_1()
-            .border_color(t.border)
             .child(wave(100, 0.05, ink(relative(0.46), 18., 30., strong)))
             // Where a label or a Spam note would be.
             .child(div())
@@ -384,17 +377,6 @@ impl Nimbra {
             .px(px(64.))
             .pt(px(40.))
             .pb(px(24.))
-            .child(
-                div().flex().child(
-                    div()
-                        .h(px(22.))
-                        .w(px(84.))
-                        .rounded_full()
-                        .border_1()
-                        .border_color(t.border)
-                        .bg(t.hover),
-                ),
-            )
             .child(wave(100, 0.1, ink(relative(0.62), 24., 43., strong)))
             .child(div())
             .child(wave(
@@ -427,7 +409,7 @@ impl Nimbra {
             .justify_center()
             .w_full()
             .h(px(168.))
-            .rounded(px(12.))
+            .rounded(px(radius::CARD))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
@@ -439,7 +421,7 @@ impl Nimbra {
                 .justify_center()
                 .w(px(148.))
                 .h(px(36.))
-                .rounded(px(9.))
+                .rounded(px(radius::CONTROL))
                 .bg(t.hover)
                 .child(ink(px(84.), 8., 16., soft)),
         );

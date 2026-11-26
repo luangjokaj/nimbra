@@ -1,7 +1,10 @@
 //! The list of threads: its header and rows, pulling it down to reload, the pane for several
 //! picked threads, and what an empty or cleared mailbox shows.
 
+use std::hash::{Hash, Hasher};
+
 use super::*;
+use crate::ui::motion;
 
 /// Pull-to-refresh distances, in points: where a release triggers a refresh, where the
 /// indicator rests while refreshing, and the distance the resistance is scaled to.
@@ -37,6 +40,196 @@ pub(super) fn settle(from: f32, to: f32, start: std::time::Instant) -> f32 {
 pub(super) const CLOSE_SECONDS: f32 = 0.22;
 
 pub(super) const SETTLE_SECONDS: f32 = 0.7;
+
+/// A row's height: its padding (11 above and below) and two lines of text (22 + 3 + 18).
+pub(super) const ROW_H: f32 = 65.;
+/// The space under each row.
+pub(super) const ROW_GAP: f32 = 2.;
+/// A group head (TODAY, EARLIER): 16 above its 12pt line, 6 below.
+pub(super) const GROUP_H: f32 = 34.;
+/// The list's own margin left and right of the rows, and under the last.
+const LIST_SIDE: f32 = 10.;
+const LIST_BOTTOM: f32 = 10.;
+/// How far past the visible rows the virtual list lays out, so a fast scroll finds them.
+const OVERDRAW: f32 = 480.;
+/// The least room a sender keeps beside a label pill; with less, the pill gives way.
+const SENDER_MIN: f32 = 96.;
+
+/// What is in the list, one per item of GPUI's virtual list.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Item {
+    Group(Group),
+    /// A thread: its row in `mails`, and who it is (its key and account, hashed), which
+    /// stays the same when a refresh moves it.
+    Row {
+        index: usize,
+        id: u64,
+    },
+    /// One of the placeholder rows while more is on its way.
+    More(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Group {
+    Today,
+    Earlier,
+}
+
+impl Item {
+    /// The same thing in the list, wherever it is in `mails` now.
+    fn same(&self, other: &Item) -> bool {
+        match (self, other) {
+            (Item::Group(a), Item::Group(b)) => a == b,
+            (Item::Row { id: a, .. }, Item::Row { id: b, .. }) => a == b,
+            (Item::More(a), Item::More(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// Every item is drawn at exactly this height, so where anything is can be worked out
+    /// without laying it out.
+    fn height(&self) -> f32 {
+        match self {
+            Item::Group(_) => GROUP_H,
+            Item::Row { .. } | Item::More(_) => ROW_H + ROW_GAP,
+        }
+    }
+}
+
+/// The thread list's scroll state: GPUI's virtual list, which builds only the rows in view,
+/// and what each of its items is.
+pub(super) struct ListScroll {
+    state: gpui::ListState,
+    items: Vec<Item>,
+}
+
+impl ListScroll {
+    pub(super) fn new() -> Self {
+        Self {
+            state: gpui::ListState::new(0, gpui::ListAlignment::Top, px(OVERDRAW)),
+            items: Vec::new(),
+        }
+    }
+
+    fn viewport(&self) -> f32 {
+        f32::from(self.state.viewport_bounds().size.height)
+    }
+
+    fn content(&self) -> f32 {
+        self.items.iter().map(Item::height).sum::<f32>() + LIST_BOTTOM
+    }
+
+    /// How far down the list is scrolled, in points.
+    fn top(&self) -> f32 {
+        let top = self.state.logical_scroll_top();
+        let before: f32 = self.items.iter().take(top.item_ix).map(Item::height).sum();
+        before + f32::from(top.offset_in_item)
+    }
+
+    /// As a scroll handle has it: up from the top, so never above 0.
+    pub(super) fn offset(&self) -> gpui::Point<gpui::Pixels> {
+        gpui::point(px(0.), px(-self.top()))
+    }
+
+    pub(super) fn max_offset(&self) -> gpui::Size<gpui::Pixels> {
+        gpui::size(px(0.), px((self.content() - self.viewport()).max(0.)))
+    }
+
+    pub(super) fn at_top(&self) -> bool {
+        self.top() <= 0.5
+    }
+
+    pub(super) fn to_top(&self) {
+        self.scroll_to(0.);
+    }
+
+    fn scroll_to(&self, y: f32) {
+        let y = y.clamp(0., (self.content() - self.viewport()).max(0.));
+        let mut above = 0.;
+        for (item_ix, item) in self.items.iter().enumerate() {
+            if above + item.height() > y {
+                self.state.scroll_to(gpui::ListOffset {
+                    item_ix,
+                    offset_in_item: px(y - above),
+                });
+                return;
+            }
+            above += item.height();
+        }
+        self.state.scroll_to(gpui::ListOffset {
+            item_ix: self.items.len(),
+            offset_in_item: px(0.),
+        });
+    }
+
+    /// Scrolls just enough for item `ix` to be in view.
+    fn reveal(&self, ix: usize) {
+        let Some(item) = self.items.get(ix) else {
+            return;
+        };
+        let start: f32 = self.items[..ix].iter().map(Item::height).sum();
+        let end = start + item.height();
+        let (top, viewport) = (self.top(), self.viewport());
+        if start < top {
+            self.scroll_to(start);
+        } else if viewport > 0. && end > top + viewport {
+            self.scroll_to(end - viewport);
+        }
+    }
+
+    /// The list is now `items`. Only what changed is laid out again, and the list stays on
+    /// the thread it was scrolled to when a refresh moves it.
+    pub(super) fn update(&mut self, items: Vec<Item>) {
+        let (old, new) = (self.items.len(), items.len());
+        let prefix = self
+            .items
+            .iter()
+            .zip(&items)
+            .take_while(|(a, b)| a.same(b))
+            .count();
+        let suffix = self.items[prefix..]
+            .iter()
+            .rev()
+            .zip(items[prefix..].iter().rev())
+            .take_while(|(a, b)| a.same(b))
+            .count();
+        if prefix == old && prefix == new {
+            self.items = items;
+            return;
+        }
+        let top = self.state.logical_scroll_top();
+        let changed = prefix..old - suffix;
+        let anchor = changed
+            .contains(&top.item_ix)
+            .then(|| self.items.get(top.item_ix).copied())
+            .flatten()
+            .and_then(|was| items.iter().position(|item| item.same(&was)));
+        self.state.splice(changed, new - prefix - suffix);
+        if let Some(item_ix) = anchor {
+            self.state.scroll_to(gpui::ListOffset {
+                item_ix,
+                offset_in_item: top.offset_in_item,
+            });
+        }
+        self.items = items;
+    }
+}
+
+/// A thread's identity in the list: its key and its account.
+fn row_id(key: &str, account: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    account.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// What a row says, cut to the room it has.
+struct RowText {
+    sender: SharedString,
+    tag: Option<(SharedString, Accent)>,
+    subject: SharedString,
+    snippet: SharedString,
+}
 
 impl Nimbra {
     /// Whether nothing on screen means Inbox Zero, rather than nothing in this mailbox.
@@ -83,16 +276,56 @@ impl Nimbra {
         here || elsewhere
     }
 
+    /// Brings the virtual list up to date with `visible` (the rows as `visible()` has them),
+    /// and scrolls to the open thread when the keyboard asked for it.
+    pub(super) fn sync_list(&mut self, visible: &[usize]) {
+        let mut items = Vec::with_capacity(visible.len() + 4);
+        for (group, earlier) in [(Group::Today, false), (Group::Earlier, true)] {
+            let mut rows = visible
+                .iter()
+                .copied()
+                .filter(|i| self.mails[*i].yesterday == earlier)
+                .map(|index| {
+                    let (key, account) = self.thread_key(&self.mails[index]);
+                    Item::Row {
+                        index,
+                        id: row_id(&key, &account),
+                    }
+                })
+                .peekable();
+            if rows.peek().is_some() {
+                items.push(Item::Group(group));
+                items.extend(rows);
+            }
+        }
+        if self.more().is_some() && !visible.is_empty() {
+            items.extend((0..2).map(Item::More));
+        }
+        self.list_scroll.update(items);
+        if self.reveal_row.replace(false) {
+            let target = self.pick_end.unwrap_or(self.selected);
+            if let Some(ix) = self
+                .list_scroll
+                .items
+                .iter()
+                .position(|item| matches!(item, Item::Row { index, .. } if *index == target))
+            {
+                self.list_scroll.reveal(ix);
+            }
+        }
+    }
+
     /// Several threads picked: what can be done to all of them.
     pub(super) fn bulk_pane(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.targets().len();
         let action = |id: &'static str, name: &'static str, label: &'static str| {
-            button(t, ButtonKind::Secondary, label)
-                .id(id)
-                .press(t)
-                .child(icon(name, 14., t.text2))
+            labelled(t, name, label).id(id).press(t)
         };
         let inbox_like = inbox_like(self.mailbox);
+        let back_to_inbox = matches!(
+            self.mailbox,
+            View::Done | View::Spam | View::Trash | View::Snoozed | View::Reminders
+        );
         div()
             .flex_1()
             .min_w(px(0.))
@@ -101,47 +334,32 @@ impl Nimbra {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(18.))
+            .gap(px(space::XL))
             .bg(t.surface)
-            .child(title_l(format!("{count} conversations, selected"), t.text))
-            .child(meta(
-                "⌘-click adds or removes one, Shift-click picks a range, Esc clears.",
-                t.text3,
-            ))
+            .child(title_l(format!("{count} Selected"), t.text))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
                     .justify_center()
-                    .gap(px(8.))
+                    .gap(px(space::S))
                     .max_w(px(620.))
-                    .when(
-                        inbox_like
-                            || matches!(
-                                self.mailbox,
-                                View::Done
-                                    | View::Spam
-                                    | View::Trash
-                                    | View::Snoozed
-                                    | View::Reminders
-                            ),
-                        |d| {
-                            d.child(
-                                action(
-                                    "bulk-done",
-                                    "done",
-                                    if inbox_like {
-                                        "Mark done"
-                                    } else {
-                                        "Move to inbox"
-                                    },
-                                )
+                    .when(inbox_like, |d| {
+                        d.child(crate::ui::glow(
+                            button(t, ButtonKind::Primary, "Mark Done")
+                                .id("bulk-done")
                                 .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
-                            )
-                        },
-                    )
+                            "bulk-done",
+                        ))
+                    })
+                    .when(back_to_inbox, |d| {
+                        d.child(
+                            action("bulk-done", "inbox", "Move to Inbox")
+                                .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
+                        )
+                    })
                     .child(
-                        action("bulk-read", "mail", "Read or unread")
+                        action("bulk-read", "mail", "Read/Unread")
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
                     )
                     .child(
@@ -152,7 +370,7 @@ impl Nimbra {
                         |this, _, window, cx| this.toggle_menu(Menu::Labels, window, cx),
                     )))
                     .child(
-                        action("bulk-move", "folder", "Move to").on_click(cx.listener(
+                        action("bulk-move", "folder", "Move To").on_click(cx.listener(
                             |this, _, window, cx| this.toggle_menu(Menu::MoveTo, window, cx),
                         )),
                     )
@@ -176,9 +394,10 @@ impl Nimbra {
                     ),
             )
             .child(
-                button(t, ButtonKind::Ghost, "Clear selection")
+                button(t, ButtonKind::Ghost, "Deselect All")
                     .id("bulk-clear")
                     .press(t)
+                    .text_color(t.text2)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.picked.clear();
                         cx.notify();
@@ -191,7 +410,7 @@ impl Nimbra {
     /// springs back when it is done. Only a trackpad gesture that begins with the list
     /// already at the top counts, so the momentum of a normal scroll up never triggers it.
     fn pull_list(&mut self, event: &gpui::ScrollWheelEvent, cx: &mut Context<Self>) {
-        let at_top = f32::from(self.list_scroll.offset().y) >= -0.5;
+        let at_top = self.list_scroll.at_top();
         match event.touch_phase {
             gpui::TouchPhase::Started => {
                 self.pull_armed = at_top && !self.pull_hold;
@@ -205,7 +424,6 @@ impl Nimbra {
                 let shown = rubber_band(self.pull);
                 self.pull = 0.;
                 self.pull_gen += 1;
-                self.pull_done = false;
                 if shown >= PULL_TRIGGER && !self.fetching() {
                     // Settle at the resting height and stay there while mail is fetched.
                     self.pull_anim = Some((shown, PULL_REST, std::time::Instant::now()));
@@ -228,7 +446,7 @@ impl Nimbra {
             self.pull_anim = None;
             // While the list is being pulled it must not scroll as well, or the two
             // movements fight each other.
-            self.list_scroll.set_offset(gpui::point(px(0.), px(0.)));
+            self.list_scroll.to_top();
             cx.notify();
         }
     }
@@ -242,19 +460,11 @@ impl Nimbra {
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .gap(px(8.))
+                .gap(px(space::S))
                 .h(px(height.max(0.)))
                 .overflow_hidden()
-                .child(if spin {
-                    arrow
-                        .with_animation(
-                            "pull-spin",
-                            Animation::new(Duration::from_millis(800)).repeat(),
-                            |svg, delta| {
-                                svg.with_transformation(Transformation::rotate(percentage(delta)))
-                            },
-                        )
-                        .into_any_element()
+                .child(if spin && !motion::reduced() {
+                    spinning(arrow, "pull-spin")
                 } else {
                     arrow
                         .with_transformation(Transformation::rotate(percentage(turn)))
@@ -284,8 +494,6 @@ impl Nimbra {
         let (from, to, start) = self.pull_anim?;
         let label = if self.pull_hold {
             "Checking for mail…"
-        } else if self.pull_done {
-            "Done"
         } else {
             ""
         };
@@ -304,8 +512,9 @@ impl Nimbra {
     /// The message list in a wrapper whose width slides open or shut after a toggle, the
     /// same way the sidebar does. Once it has finished closing it is not drawn at all.
     pub(super) fn list_slot(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        const SLIDE: Duration = Duration::from_millis((PANEL_SLIDE_SECONDS * 1000.) as u64);
-        let moving = self.list_toggled.is_some_and(|at| at.elapsed() < SLIDE);
+        let moving = self
+            .list_toggled
+            .is_some_and(|at| at.elapsed() < motion::SLIDE);
         if !self.list_open && !moving {
             return None;
         }
@@ -332,7 +541,7 @@ impl Nimbra {
         Some(
             slot.with_animation(
                 ("list-width", self.list_gen),
-                Animation::new(SLIDE).with_easing(panel_ease),
+                Animation::new(motion::SLIDE).with_easing(motion::drawer),
                 move |slot, delta| slot.w(px(width * (from + (to - from) * delta))),
             )
             .into_any_element(),
@@ -346,7 +555,7 @@ impl Nimbra {
             self.focus_restore = None;
         }
         self.list_grab = None;
-        self.list_toggled = Some(std::time::Instant::now());
+        self.list_toggled = (!motion::reduced()).then(std::time::Instant::now);
         self.list_gen += 1;
         cx.notify();
     }
@@ -367,14 +576,7 @@ impl Nimbra {
         // Settings sits below the scrolled rows, always in view.
         let scrolled = row != SidebarRow::Settings;
         let el = if open { el } else { el.bg(t.hover) };
-        let el = el.relative().child(
-            div()
-                .absolute()
-                .inset_0()
-                .rounded(px(radius))
-                .border_1()
-                .border_color(t.mint),
-        );
+        let el = el.relative().child(focus_ring(t, radius));
         if !scrolled {
             return el;
         }
@@ -383,6 +585,68 @@ impl Nimbra {
             self.reveal_cursor.clone(),
             SIDEBAR_CLEAR,
         ))
+    }
+
+    /// The width the row's text has: the list, less its margins, the row's padding, the
+    /// avatar and the gap after it.
+    fn row_room(&self) -> f32 {
+        self.list_width - 2. * LIST_SIDE - 3. * ROW_PAD - AVATAR
+    }
+
+    /// Sender, label, subject and snippet, each cut where its real width runs out.
+    fn row_text(&self, m: &Mail, right: f32, cx: &App) -> RowText {
+        let room = self.row_room();
+        let accents = [
+            Accent::Violet,
+            Accent::Rose,
+            Accent::Amber,
+            Accent::Sky,
+            Accent::Mint,
+        ];
+        let tag = m.tag.clone().or_else(|| {
+            self.thread_labels(m)
+                .into_iter()
+                .next()
+                .map(|(index, label)| (label.name.clone().into(), accents[index % accents.len()]))
+        });
+        let sans = |weight| gpui::Font {
+            weight,
+            ..gpui::font(crate::theme::SANS)
+        };
+        let gap = 8.;
+        let count = m
+            .thread
+            .as_ref()
+            .map_or(0., |n| gap + text_width(n, 11., crate::theme::MONO, cx));
+        let star = if m.starred { gap + 13. } else { 0. };
+        let sender_room = room - count - star - right - gap;
+        // On a narrow list the label gives way, so the sender's name stays readable.
+        let tag = tag.and_then(|(label, accent)| {
+            let label = fit(&label, 120., &sans(FontWeight::NORMAL), 12., cx).0;
+            let pill = gap + PILL_CHROME + text_width(&label, 12., crate::theme::SANS, cx);
+            (sender_room - pill >= SENDER_MIN).then_some(((label, accent), pill))
+        });
+        let sender_room = sender_room - tag.as_ref().map_or(0., |(_, pill)| *pill);
+        let (sender_weight, subject_weight) = if m.unread {
+            (FontWeight::SEMIBOLD, FontWeight::MEDIUM)
+        } else {
+            (FontWeight::MEDIUM, FontWeight::NORMAL)
+        };
+        let sender = fit(&m.sender, sender_room, &sans(sender_weight), 13., cx).0;
+        let subject = m.subject.split(',').next().unwrap_or(&m.subject);
+        let (subject, used) = fit(subject, room, &sans(subject_weight), 13., cx);
+        let snippet_room = room - used - 6.;
+        let snippet = if snippet_room >= 40. {
+            fit(&m.snippet, snippet_room, &sans(FontWeight::NORMAL), 13., cx).0
+        } else {
+            SharedString::default()
+        };
+        RowText {
+            sender,
+            tag: tag.map(|(tag, _)| tag),
+            subject,
+            snippet,
+        }
     }
 
     fn row(&self, t: &Theme, i: usize, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -394,61 +658,39 @@ impl Nimbra {
         );
         let picked = self.picked.contains(&i);
         let selected = i == self.selected && self.picked.len() < 2;
-        let hover = t.hover;
-        // How many characters fit on a row at the list's current width (the text is cut
-        // with an ellipsis by character count, so this follows the resize handle).
-        let line = ((self.list_width - 104.) / 7.4).max(8.) as usize;
-        // On a narrow list the tag gives way so the sender's name stays readable.
-        let tag = m
-            .tag
-            .clone()
-            .or_else(|| {
-                let accents = [
-                    Accent::Violet,
-                    Accent::Rose,
-                    Accent::Amber,
-                    Accent::Sky,
-                    Accent::Mint,
-                ];
-                self.thread_labels(m)
-                    .into_iter()
-                    .next()
-                    .map(|(index, label)| (short(&label.name, 18), accents[index % accents.len()]))
-            })
-            .filter(|_| line >= 36);
-        let tag_chars = tag
-            .as_ref()
-            .map_or(0, |(label, _)| label.chars().count() + 6);
-        let extras =
-            13 + tag_chars + if m.thread.is_some() { 3 } else { 0 } + if m.starred { 3 } else { 0 };
-        let sender_max = line.saturating_sub(extras).max(6);
-        let subject = short(m.subject.split(',').next().unwrap_or(&m.subject), line);
-        let snippet_max = line.saturating_sub(subject.chars().count() + 2);
-        let snippet = if snippet_max >= 8 {
-            short(&m.snippet, snippet_max)
+        let lit = selected || picked;
+        // The right end of the first line: when it comes back, or when it came.
+        let right = match &snoozed {
+            Some((_, when)) => 27. + text_width(when, 11., crate::theme::MONO, cx),
+            None => text_width(&m.time, 11., crate::theme::MONO, cx),
+        };
+        let text = self.row_text(m, right, cx);
+        let ground = if lit {
+            over(t.selected, t.surface)
         } else {
-            SharedString::default()
+            over(t.hover, t.surface)
+        };
+        let (primary, secondary) = if m.unread {
+            (t.text, t.text)
+        } else {
+            (t.text2, t.text2)
         };
 
         let (key, account) = self.thread_key(m);
         div()
             .id(SharedString::from(format!("row:{account}:{key}")))
-            .press(t)
+            .group("thread-row")
+            .map(|d| if lit { d.press_selected(t) } else { d.press(t) })
             .relative()
-            .when(self.pick_end.unwrap_or(self.selected) == i, |d| {
-                d.child(reveal(
-                    self.list_scroll.clone(),
-                    self.reveal_row.clone(),
-                    0.,
-                ))
-            })
             .flex()
+            .flex_none()
+            .h(px(ROW_H))
             .gap(px(ROW_PAD))
             .px(px(ROW_PAD))
-            .py(px(12.))
-            .rounded(px(12.))
+            .py(px(11.))
+            .rounded(px(radius::ROW))
             .cursor_pointer()
-            .when(selected || picked, |d| d.bg(t.selected))
+            .when(lit, |d| d.bg(t.selected))
             // Drawn over the row rather than as its border, which would take up space and
             // make the row (and those below it) jump.
             .when(picked, |d| {
@@ -456,12 +698,15 @@ impl Nimbra {
                     div()
                         .absolute()
                         .inset_0()
-                        .rounded(px(12.))
+                        .rounded(px(radius::ROW))
                         .border_1()
                         .border_color(t.violet.opacity(0.5)),
                 )
             })
-            .when(!selected && !picked, |d| d.hover(move |s| s.bg(hover)))
+            .when(!lit, |d| {
+                let hover = t.hover;
+                d.hover(move |s| s.bg(hover))
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -471,28 +716,24 @@ impl Nimbra {
             .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                 this.click_row(i, event.modifiers(), event.click_count(), cx)
             }))
-            // The unread dot sits in the padding, so the avatar has the same space either side.
+            // In the padding, so the avatar has the same space either side, and level with
+            // the first line, which is the sender it is about.
             .when(m.unread, |d| {
                 d.child(
                     div()
                         .absolute()
-                        .left(px((ROW_PAD - 6.) / 2.))
-                        // Level with the avatar's middle: the row's padding (12), then half
-                        // of its two lines and their gap (22 + 3 + 18).
-                        .top(px(12. + 43. / 2. - 3.))
-                        .size(px(6.))
+                        .left(px((ROW_PAD - UNREAD_DOT) / 2.))
+                        .top(px(11. + (22. - UNREAD_DOT) / 2.))
+                        .size(px(UNREAD_DOT))
                         .rounded_full()
                         .bg(t.violet),
                 )
             })
-            // Centred on the two lines of text beside it.
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .child(avatar(m.tone, &m.initials, 28.)),
-            )
+            .child(div().flex().flex_none().items_center().child(avatar(
+                m.tone,
+                &m.initials,
+                AVATAR,
+            )))
             .child(
                 div()
                     .flex()
@@ -504,125 +745,38 @@ impl Nimbra {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(px(space::S))
                             .h(px(22.))
                             .child(
                                 div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .min_w(px(0.))
+                                    .flex_none()
                                     .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .child(short(&m.sender, sender_max)),
+                                    .font_weight(if m.unread {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::MEDIUM
+                                    })
+                                    .text_color(primary)
+                                    .child(text.sender),
                             )
                             .children(m.thread.clone().map(|n| caption(n, t.text3)))
                             .when(m.starred, |d| d.child(icon("star", 13., t.amber)))
-                            .children(tag.map(|(label, a)| pill(t, &label, t.accent(a))))
+                            .children(text.tag.map(|(label, a)| pill(t, &label, t.accent(a))))
                             .child(div().flex_1())
-                            // Snoozed: when it comes back, in place of when it came (and
-                            // beside the quick actions on the open row).
                             .children(snoozed.as_ref().map(|(name, when)| {
                                 super::threads::snooze_chip(t, name, when.clone())
+                                    .when(!selected, |d| {
+                                        d.group_hover("thread-row", |s| s.invisible())
+                                    })
+                                    .when(selected, |d| d.invisible())
                             }))
-                            .when(!selected && snoozed.is_none(), |d| {
-                                d.child(caption(m.time.clone(), t.text3))
-                            })
-                            // Quick actions on the open row: done, snooze, remind me.
-                            .when(selected, |d| {
-                                let quick = |id: &'static str, name: &'static str| {
-                                    let (hover, bright) = (t.hover, t.text);
-                                    div()
-                                        .id((id, i))
-                                        .group("quick")
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .size(px(24.))
-                                        .rounded(px(6.))
-                                        .cursor_pointer()
-                                        .hover(move |s| s.bg(hover))
-                                        .press(t)
-                                        .child(
-                                            icon(name, 15., t.text2)
-                                                .group_hover("quick", move |s| {
-                                                    s.text_color(bright)
-                                                }),
-                                        )
-                                };
-                                let archivable = self.done_change().is_some();
+                            .when(snoozed.is_none(), |d| {
                                 d.child(
-                                    div()
-                                        .flex()
-                                        .gap(px(2.))
-                                        .when(archivable, |d| {
-                                            d.child(
-                                                quick("quick-done", "done")
-                                                    .tooltip(tip(
-                                                        t.dark,
-                                                        if matches!(
-                                                            self.mailbox,
-                                                            View::Done
-                                                                | View::Spam
-                                                                | View::Trash
-                                                                | View::Snoozed
-                                                                | View::Reminders
-                                                        ) {
-                                                            "Move to inbox"
-                                                        } else {
-                                                            "Mark done"
-                                                        },
-                                                        "E",
-                                                    ))
-                                                    .on_click(cx.listener(
-                                                        move |this, _, _, cx| {
-                                                            cx.stop_propagation();
-                                                            this.selected = i;
-                                                            this.mark_done(cx);
-                                                        },
-                                                    )),
-                                            )
+                                    caption(m.time.clone(), t.text3)
+                                        .when(!selected, |d| {
+                                            d.group_hover("thread-row", |s| s.invisible())
                                         })
-                                        .child(
-                                            quick("quick-snooze", "clock")
-                                                .tooltip(tip(t.dark, "Snooze", "H"))
-                                                .on_click(cx.listener(
-                                                    move |this, event: &gpui::ClickEvent, window, cx| {
-                                                        cx.stop_propagation();
-                                                        this.selected = i;
-                                                        this.picked.clear();
-                                                        this.open_selected(cx);
-                                                        this.open_snooze(
-                                                            Some(event.position()),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    },
-                                                )),
-                                        )
-                                        .child(
-                                            quick("quick-remind", "bell")
-                                                .tooltip(tip(
-                                                    t.dark,
-                                                    "Remind me if no reply in 3 days",
-                                                    "",
-                                                ))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    cx.stop_propagation();
-                                                    this.selected = i;
-                                                    this.picked.clear();
-                                                    if this.is_demo() {
-                                                        this.open_palette();
-                                                        this.palette_sel = 0;
-                                                        cx.notify();
-                                                        return;
-                                                    }
-                                                    if let Some(choice) = Self::snooze_choices()
-                                                        .into_iter()
-                                                        .find(|c| c.no_reply)
-                                                    {
-                                                        this.snooze(choice, cx);
-                                                    }
-                                                })),
-                                        ),
+                                        .when(selected, |d| d.invisible()),
                                 )
                             }),
                     )
@@ -630,16 +784,18 @@ impl Nimbra {
                         div()
                             .flex()
                             .gap(px(6.))
+                            .h(px(18.))
                             .child(
-                                // Long subjects shrink with an ellipsis instead of
-                                // spilling out of the row; the snippet takes what is left.
                                 div()
-                                    .min_w(px(0.))
+                                    .flex_none()
                                     .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(if selected { t.text } else { t.text2 })
-                                    .child(subject),
+                                    .font_weight(if m.unread {
+                                        FontWeight::MEDIUM
+                                    } else {
+                                        FontWeight::NORMAL
+                                    })
+                                    .text_color(secondary)
+                                    .child(text.subject),
                             )
                             .child(
                                 div()
@@ -648,42 +804,191 @@ impl Nimbra {
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .text_color(t.text3)
-                                    .child(snippet),
+                                    .child(text.snippet),
                             ),
                     ),
             )
+            .child(self.quick_actions(t, i, selected, ground, cx))
+    }
+
+    /// Done and Snooze over the end of the first line: on the open row, and on any row
+    /// under the pointer. Their keys show only on the open row, which is what the keys act on.
+    fn quick_actions(
+        &self,
+        t: &Theme,
+        i: usize,
+        selected: bool,
+        ground: Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let quick = |id: &'static str, name: &'static str| {
+            let (hover, bright) = (t.hover, t.text);
+            div()
+                .id((id, i))
+                .group("quick")
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(24.))
+                .rounded(px(radius::CHIP))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .press(t)
+                .child(icon(name, 15., t.text2).group_hover("quick", move |s| s.text_color(bright)))
+        };
+        let key = |key: &'static str| if selected { key } else { "" };
+        let done = self.done_change().map(|_| {
+            let label = if inbox_like(self.mailbox) {
+                "Mark Done"
+            } else {
+                "Move to Inbox"
+            };
+            quick("quick-done", "done")
+                .tooltip(tip(t.dark, label, key("E")))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if i == this.selected && this.picked.len() < 2 {
+                        this.mark_done(cx);
+                    } else {
+                        this.done_thread(i, cx);
+                    }
+                }))
+        });
+        let snooze = inbox_like(self.mailbox).then(|| {
+            quick("quick-snooze", "clock")
+                .tooltip(tip(t.dark, "Snooze", key("H")))
+                .on_click(
+                    cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.picked.clear();
+                        this.open(i);
+                        this.open_selected(cx);
+                        this.open_snooze(Some(event.position()), window, cx);
+                    }),
+                )
+        });
+        div()
+            .absolute()
+            .top(px(10.))
+            .right(px(ROW_PAD - 4.))
+            .h(px(24.))
+            .flex()
+            .items_center()
+            .when(!selected, |d| {
+                d.invisible().group_hover("thread-row", |s| s.visible())
+            })
+            // The row's own colour, fading in from the left over what it covers.
+            .child(
+                div()
+                    .w(px(20.))
+                    .h_full()
+                    .bg(gradient(90., ground.opacity(0.), ground)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .h_full()
+                    .bg(ground)
+                    .rounded_r(px(radius::CHIP))
+                    .children(done)
+                    .children(snooze),
+            )
+    }
+
+    /// One item of the virtual list, built only while it is in view (or about to be).
+    fn list_item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let t = self.theme();
+        let Some(item) = self.list_scroll.items.get(ix).copied() else {
+            return div().into_any_element();
+        };
+        let item_box = || div().px(px(LIST_SIDE)).h(px(item.height()));
+        match item {
+            Item::Group(group) => item_box()
+                .pl(px(LIST_SIDE + ROW_PAD))
+                .pt(px(16.))
+                .child(overline(
+                    &t,
+                    match group {
+                        Group::Today => "TODAY",
+                        Group::Earlier => "EARLIER",
+                    },
+                ))
+                .into_any_element(),
+            Item::Row { index, .. } if index < self.mails.len() => {
+                item_box().child(self.row(&t, index, cx)).into_any_element()
+            }
+            Item::Row { .. } => item_box().into_any_element(),
+            Item::More(n) => item_box().child(self.more_row(&t, n)).into_any_element(),
+        }
+    }
+
+    /// A row of the next page, before it is here: the shape of a row, breathing while it
+    /// loads and still otherwise. The virtual list only builds it once it is near the view.
+    fn more_row(&self, t: &Theme, n: usize) -> AnyElement {
+        let bar = |w: f32, h: f32| div().h(px(h)).w(px(w)).rounded_full().bg(t.hover);
+        let row = div()
+            .flex()
+            .flex_none()
+            .h(px(ROW_H))
+            .gap(px(ROW_PAD))
+            .px(px(ROW_PAD))
+            .py(px(11.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(div().size(px(AVATAR)).rounded_full().bg(t.hover)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .h(px(22.))
+                            .child(bar(if n == 0 { 120. } else { 96. }, 10.)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .h(px(18.))
+                            .child(bar(if n == 0 { 220. } else { 180. }, 8.)),
+                    ),
+            );
+        if !self.loading_more || motion::reduced() {
+            return row.opacity(0.7).into_any_element();
+        }
+        row.with_animation(
+            ("more-loading", n),
+            Animation::new(Duration::from_millis(1400)).repeat(),
+            move |row, delta| {
+                let wave = (std::f32::consts::TAU * (delta - n as f32 * 0.15)).cos();
+                row.opacity(0.55 + 0.35 * wave)
+            },
+        )
+        .into_any_element()
     }
 
     fn list(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let visible = self.visible();
-        let unread = visible.iter().filter(|i| self.mails[**i].unread).count();
-        let group = |label: &str| {
-            div()
-                .pl(px(14.))
-                .pt(px(14.))
-                .pb(px(6.))
-                .child(overline(t, label.to_string()))
-        };
-        let today: Vec<usize> = visible
+        let unread = self
+            .list_scroll
+            .items
             .iter()
-            .copied()
-            .filter(|i| !self.mails[*i].yesterday)
-            .collect();
-        let earlier: Vec<usize> = visible
-            .iter()
-            .copied()
-            .filter(|i| self.mails[*i].yesterday)
-            .collect();
+            .filter(|item| matches!(item, Item::Row { index, .. } if self.mails[*index].unread))
+            .count();
 
         // Each option has a fixed width, so the highlight behind them can slide from one to
         // the other (and nothing shifts when it does).
         let unread_text = unread.to_string();
         let widths = [44., 70. + 7. * unread_text.len() as f32];
         // The switch: its options, the 2pt between them, its padding and its border.
-        let mut switch_w = widths[0] + widths[1] + 2. + 8.;
-        if self.is_demo() {
-            switch_w += 2. + 112.;
-        }
+        let switch_w = widths[0] + widths[1] + 2. + 8.;
         // Dot, gap, padding and border around the pill's words.
         let offline_w = self
             .offline
@@ -693,7 +998,7 @@ impl Nimbra {
             switch_w,
             offline_w,
         );
-        let segment = |label: &str, count: Option<(&str, Hsla)>, active: bool, width: f32| {
+        let segment = |label: &str, count: Option<&str>, active: bool, width: f32| {
             div()
                 .flex()
                 .flex_none()
@@ -702,11 +1007,11 @@ impl Nimbra {
                 .gap(px(6.))
                 .w(px(width))
                 .h(px(SEGMENT_H))
-                .rounded(px(7.))
+                .rounded(px(radius::CONTROL))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(if active { t.text } else { t.text3 })
                 .child(label.to_string())
-                .children(count.map(|(n, color)| caption(n.to_string(), color)))
+                .children(count.map(|n| caption(n.to_string(), t.text3)))
         };
         // The highlight: where it is, and where it was before the last switch.
         let spot = |unread: bool| {
@@ -722,26 +1027,21 @@ impl Nimbra {
             .absolute()
             .top(px(3.))
             .h(px(SEGMENT_H))
-            .rounded(px(7.))
+            .rounded(px(radius::CONTROL))
             .bg(t.raised)
             .border_1()
-            .border_color(t.border)
-            .shadow(vec![shadow(
-                c(0x000000, if t.dark { 0.25 } else { 0.08 }),
-                1.,
-                3.,
-                0.,
-            )]);
+            .border_color(t.edge)
+            .shadow(vec![shadow(t.shadow.opacity(0.5), 1., 3., 0.)]);
         // Only right after a switch (not again each time the list is drawn anew).
         let switching = self
             .filter_switched
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(260));
-        let pill = if self.filter_gen == 0 || !switching {
+            .is_some_and(|at| at.elapsed() < motion::PILL);
+        let pill = if self.filter_gen == 0 || !switching || motion::reduced() {
             pill.left(px(3. + to_x)).w(px(to_w)).into_any_element()
         } else {
             pill.with_animation(
                 ("filter-pill", self.filter_gen),
-                Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
+                Animation::new(motion::PILL).with_easing(motion::ease_out),
                 move |d, delta| {
                     d.left(px(3. + from_x + (to_x - from_x) * delta))
                         .w(px(from_w + (to_w - from_w) * delta))
@@ -749,6 +1049,14 @@ impl Nimbra {
             )
             .into_any_element()
         };
+
+        let rows = gpui::list(
+            self.list_scroll.state.clone(),
+            cx.processor(|this, ix: usize, _: &mut Window, cx| this.list_item(ix, cx)),
+        )
+        .flex_1()
+        .w_full()
+        .pb(px(LIST_BOTTOM));
 
         div()
             .flex()
@@ -761,7 +1069,8 @@ impl Nimbra {
             .border_r_1()
             .border_color(t.border)
             // Drag the right edge to resize the list; double-click it to hide the list.
-            .child(
+            .child({
+                let hover = t.hover;
                 div()
                     .id("list-resize")
                     .absolute()
@@ -770,7 +1079,7 @@ impl Nimbra {
                     .right(px(-3.))
                     .w(px(7.))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
-                    .hover(|s| s.bg(gpui::white().opacity(0.06)))
+                    .hover(move |s| s.bg(hover))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
@@ -781,8 +1090,8 @@ impl Nimbra {
                                     Some((f32::from(event.position.x), this.list_width));
                             }
                         }),
-                    ),
-            )
+                    )
+            })
             .child(
                 // One row on the top line (y = 25): the filters, then Offline and Compose.
                 div()
@@ -801,7 +1110,7 @@ impl Nimbra {
                             .flex_none()
                             .gap(px(2.))
                             .p(px(3.))
-                            .rounded(px(10.))
+                            .rounded(px(radius::ROW))
                             .bg(t.hover)
                             .border_1()
                             .border_color(t.border)
@@ -815,42 +1124,26 @@ impl Nimbra {
                                     })),
                             )
                             .child(
-                                segment(
-                                    "Unread",
-                                    Some((&unread_text, t.faint)),
-                                    self.unread_only,
-                                    widths[1],
-                                )
-                                .id("filter-unread")
-                                .cursor_pointer()
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.set_unread_only(true, cx)),
-                                ),
-                            )
-                            .when(self.is_demo(), |d| {
-                                d.child(segment("Needs reply", Some(("2", t.rose)), false, 112.))
-                            }),
+                                segment("Unread", Some(&unread_text), self.unread_only, widths[1])
+                                    .id("filter-unread")
+                                    .cursor_pointer()
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.set_unread_only(true, cx)
+                                        }),
+                                    ),
+                            ),
                     )
                     .child(div().flex_1().min_w(px(0.)).mx(px(-HEADER_GAP / 2.)))
                     .when(self.offline, |d| d.child(self.offline_pill(t, fit.words)))
                     .child(
-                        match fit.compose {
-                            ComposeLook::Keyed | ComposeLook::Plain => {
-                                button(t, ButtonKind::Secondary, "Compose")
-                            }
-                            ComposeLook::Icon => icon_button(t, "draft")
-                                .size(px(34.))
-                                .bg(t.hover)
-                                .border_1()
-                                .border_color(t.border_strong),
-                        }
-                        .id("compose")
-                        .h(px(34.))
-                        .press(t)
-                        .tooltip(tip(t.dark, "New message", "C"))
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::New, cx)),
-                        ),
+                        compose_button(t, fit.compose)
+                            .id("compose")
+                            .press(t)
+                            .tooltip(tip(t.dark, "New Message", "C"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_compose(ComposeKind::New, cx)
+                            })),
                     ),
             )
             // While mail is checked, a thin bar glides along the top of the list. Its 2px
@@ -864,40 +1157,7 @@ impl Nimbra {
                     .rounded_full()
                     .overflow_hidden()
                     .when(self.bar_shown || self.bar_fade.is_some(), |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .bg(t.border)
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .h_full()
-                                        .w(relative(0.45))
-                                        .rounded_full()
-                                        .bg(gradient(90., c(0x8b7cff, 0.), c(0xff7ab6, 1.)))
-                                        .with_animation(
-                                            "checking-mail",
-                                            Animation::new(Duration::from_millis(1150))
-                                                .repeat()
-                                                .with_easing(gpui::ease_in_out),
-                                            |bar, delta| bar.left(relative(-0.45 + 1.45 * delta)),
-                                        ),
-                                )
-                                .map(|strip| match self.bar_fade {
-                                    // Done: fade the whole strip out.
-                                    Some((_, n)) => strip
-                                        .with_animation(
-                                            ("checking-mail-fade", n),
-                                            Animation::new(Duration::from_millis(450))
-                                                .with_easing(ease_out_quint()),
-                                            |strip, delta| strip.opacity(1. - delta),
-                                        )
-                                        .into_any_element(),
-                                    None => strip.into_any_element(),
-                                }),
-                        )
+                        d.child(self.checking_bar(t))
                     }),
             )
             .child(
@@ -906,89 +1166,83 @@ impl Nimbra {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .gap(px(2.))
-                    .px(px(10.))
-                    .pb(px(10.))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.list_scroll)
+                    .min_h(px(0.))
                     .on_scroll_wheel(cx.listener(|this, event, _, cx| this.pull_list(event, cx)))
                     .children(self.pull_indicator(t))
-                    .when(!today.is_empty(), |d| d.child(group("TODAY")))
-                    .children(today.into_iter().map(|i| self.row(t, i, cx)))
-                    .when(!earlier.is_empty(), |d| d.child(group("EARLIER")))
-                    .children(earlier.into_iter().map(|i| self.row(t, i, cx)))
-                    // More is on its way: placeholder rows that breathe while the next
-                    // page loads (it starts on its own as the end of the list comes near).
-                    .when(self.more().is_some(), |d| {
-                        d.children((0..2usize).map(|n| {
-                            let bar = |w: f32| div().h(px(9.)).w(px(w)).rounded_full().bg(t.hover);
-                            div()
-                                .flex()
-                                .flex_none()
-                                .gap(px(ROW_PAD))
-                                .px(px(ROW_PAD))
-                                .py(px(14.))
-                                .child(div().size(px(28.)).flex_none().rounded_full().bg(t.hover))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(8.))
-                                        .pt(px(3.))
-                                        .child(bar(if n == 0 { 120. } else { 96. }))
-                                        .child(bar(if n == 0 { 220. } else { 180. })),
-                                )
-                                .with_animation(
-                                    ("more-loading", n),
-                                    Animation::new(Duration::from_millis(1400)).repeat(),
-                                    move |row, delta| {
-                                        let wave = (std::f32::consts::TAU
-                                            * (delta - n as f32 * 0.15))
-                                            .cos();
-                                        row.opacity(0.55 + 0.35 * wave)
-                                    },
-                                )
-                        }))
-                    }),
+                    .child(rows),
             )
     }
 
-    /// An empty mailbox other than the inbox (which gets the Inbox Zero screen).
+    /// The light gliding along the top of the list while mail is checked, fading out once
+    /// the check is done. With Reduce Motion it holds still.
+    fn checking_bar(&self, t: &Theme) -> AnyElement {
+        let light = gradient(90., c(GRADIENT_GLOW.from, 0.), c(GRADIENT_GLOW.to, 1.));
+        let glide = div().absolute().top_0().h_full().rounded_full().bg(light);
+        let glide = if motion::reduced() {
+            glide
+                .left(relative(0.))
+                .w_full()
+                .opacity(0.6)
+                .into_any_element()
+        } else {
+            glide
+                .w(relative(0.45))
+                .with_animation(
+                    "checking-mail",
+                    Animation::new(Duration::from_millis(1150))
+                        .repeat()
+                        .with_easing(gpui::ease_in_out),
+                    |bar, delta| bar.left(relative(-0.45 + 1.45 * delta)),
+                )
+                .into_any_element()
+        };
+        let strip = div().absolute().inset_0().bg(t.border).child(glide);
+        match self.bar_fade {
+            Some((_, n)) => strip
+                .with_animation(
+                    ("checking-mail-fade", n),
+                    Animation::new(motion::FADE).with_easing(motion::ease_out),
+                    |strip, delta| strip.opacity(1. - delta),
+                )
+                .into_any_element(),
+            None => strip.into_any_element(),
+        }
+    }
+
+    /// An empty mailbox other than the inbox (which gets the Inbox Zero screen): what it is,
+    /// and at most one thing to do about it.
     pub(super) fn empty_mailbox(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let search = self.mailbox == View::Search;
         // Not empty at all: filtered, or the rest could not be had.
         let filtered = self.unread_only && !self.all_cleared();
         let unlisted = match self.mailbox {
             View::AllInboxes => !self.all_inboxes_whole,
             view => self.next_pages.contains_key(&view),
         };
-        let (title, line) = if filtered {
-            (
-                format!("Nothing unread in {}", self.inbox_name()),
-                "What you have read is still here.".to_string(),
-            )
-        } else if search {
-            (
-                "No results".to_string(),
-                format!("Nothing matches “{}”.", short(&self.query, 60)),
+        let title: SharedString = if filtered {
+            "Nothing Unread".into()
+        } else if self.mailbox == View::Search {
+            "No Results".into()
+        } else if unlisted {
+            "Couldn’t Load Everything".into()
+        } else {
+            format!("Nothing in {}", self.inbox_name()).into()
+        };
+        let action = if filtered {
+            Some(
+                button(t, ButtonKind::Secondary, "Show All")
+                    .id("empty-action")
+                    .press(t)
+                    .on_click(cx.listener(|this, _, _, cx| this.set_unread_only(false, cx))),
             )
         } else if unlisted {
-            (
-                "Not all here yet".to_string(),
-                "The rest could not be checked. Reload to try again.".to_string(),
+            Some(
+                button(t, ButtonKind::Secondary, "Try Again")
+                    .id("empty-action")
+                    .press(t)
+                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
             )
         } else {
-            (
-                format!("Nothing in {}", self.inbox_name()),
-                match self.mailbox {
-                    View::Snoozed => "Press H on a thread to put it away until later.",
-                    View::Reminders => {
-                        "Press H and pick “Remind me if no reply” to be told when nobody answers."
-                    }
-                    _ => "Threads will show up here.",
-                }
-                .to_string(),
-            )
+            None
         };
         div()
             .flex_1()
@@ -998,65 +1252,49 @@ impl Nimbra {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(14.))
+            .gap(px(space::XL))
             .bg(t.surface)
-            .child(title_l(&title, t.text))
-            .child(
-                div()
-                    .text_size(px(15.))
-                    .line_height(px(24.))
-                    .text_color(t.text2)
-                    .child(line),
-            )
-            // The filter's own switch is in the list's header, which is not drawn here.
-            .when(filtered, |d| {
-                d.child(
-                    button(t, ButtonKind::Secondary, "Show all")
-                        .id("show-all")
-                        .press(t)
-                        .on_click(cx.listener(|this, _, _, cx| this.set_unread_only(false, cx))),
-                )
-            })
+            .child(title_l(title, t.text2))
+            .children(action)
     }
 
-    /// The sky moves on while Inbox Zero is in front of you: a slow frame for the twinkling
-    /// (it changes little from one to the next), every frame while a star falls. Still with
-    /// Reduce Motion, while the window is in the background, and while it comes up.
+    /// The night over Inbox Zero is still. Once it has come up, one star falls, drawn at the
+    /// display's rate while it does; before that a single wake is all that is waiting. Not
+    /// with Reduce Motion, and not while the window is in the background.
     pub(super) fn move_sky(
         &mut self,
         zero_shown: bool,
-        since_last: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !zero_shown {
             self.sky = None;
+            self.sky_wake = None;
             return;
         }
-        if self.arrival.is_some() || crate::system::reduces_motion() {
+        if self.arrival.is_some() || motion::reduced() {
             return;
         }
-        let sky = self.sky.get_or_insert_with(crate::sky::Sky::new);
+        let now = std::time::Instant::now();
+        let sky = self.sky.get_or_insert_with(|| crate::sky::Sky::new(now));
         if !window.is_window_active() {
-            sky.drop_fall();
+            sky.let_go(now);
+            self.sky_wake = None;
             return;
         }
-        sky.advance(since_last);
-        if sky.falling() {
+        if sky.falling(now) {
             window.request_animation_frame();
-        } else if !self.sky_tick {
-            self.sky_tick = true;
-            cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(Duration::from_millis(100))
-                    .await;
+        } else if let Some(wait) = sky.until_fall(now)
+            && self.sky_wake.is_none()
+        {
+            self.sky_wake = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
                 this.update(cx, |this, cx| {
-                    this.sky_tick = false;
+                    this.sky_wake = None;
                     cx.notify();
                 })
                 .ok();
-            })
-            .detach();
+            }));
         }
     }
 
@@ -1067,7 +1305,7 @@ impl Nimbra {
             d.bg(c(0xffffff, 0.07))
                 .border_1()
                 .border_color(c(0xffffff, 0.14))
-                .rounded(px(14.))
+                .rounded(px(radius::CARD))
         };
         let stat = |name: &str, color: Hsla, label: &str, value: &str| {
             glass(div())
@@ -1099,41 +1337,20 @@ impl Nimbra {
             .map(|i| {
                 let (x, y, a) = (rnd(), rnd() * 0.42, 0.2 + rnd() * 0.6);
                 let size = if a > 0.7 { 2.5 } else { 1.5 };
-                let (lit, sparkle) = self
-                    .sky
-                    .as_ref()
-                    .map_or((1., 0.), |sky| (sky.twinkle(i), sky.sparkle(i)));
-                let alpha = a * arrival.star(i);
-                // A soft glow as it comes back to full, centred on the star.
-                let halo = size * 3.;
                 div()
                     .absolute()
                     .left(relative(x))
                     .top(relative(y))
-                    .when(sparkle > 0., |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .left(px((size - halo) / 2.))
-                                .top(px((size - halo) / 2.))
-                                .size(px(halo))
-                                .rounded_full()
-                                .bg(c(0xffffff, alpha * 0.18 * sparkle)),
-                        )
-                    })
-                    .child(
-                        div()
-                            .absolute()
-                            .size(px(size))
-                            .rounded_full()
-                            .bg(c(0xffffff, alpha * lit)),
-                    )
+                    .size(px(size))
+                    .rounded_full()
+                    .bg(c(0xffffff, a * arrival.star(i)))
             })
             .collect();
+        let now = std::time::Instant::now();
         let falling = self
             .sky
             .as_ref()
-            .and_then(|sky| sky.fall())
+            .and_then(|sky| sky.fall(now))
             .map(|(fall, dots)| {
                 div()
                     .absolute()
@@ -1168,27 +1385,17 @@ impl Nimbra {
                 .bg(fade(angle, color, alpha * shown, reach))
         };
 
-        let below = if self.can_undo() {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(meta("Press", c(0xffffff, 0.5)))
-                .child(kbd(&Theme::dark(), "Z"))
-                .child(meta("to undo", c(0xffffff, 0.5)))
-        } else {
-            div()
-                .w_full()
-                .px(px(32.))
-                .text_center()
-                .font_weight(FontWeight::LIGHT)
-                .text_size(px(22.))
-                .line_height(px(30.))
-                .text_color(soft)
-                .child(crate::inspiration::line_for(
-                    chrono::Local::now().date_naive(),
-                ))
-        };
+        let below = div()
+            .w_full()
+            .px(px(space::XXL))
+            .text_center()
+            .font_weight(FontWeight::LIGHT)
+            .text_size(px(22.))
+            .line_height(px(30.))
+            .text_color(soft)
+            .child(crate::inspiration::line_for(
+                chrono::Local::now().date_naive(),
+            ));
 
         div().flex_1().min_w(px(0.)).h_full().bg(t.surface).child(
             div()
@@ -1216,30 +1423,19 @@ impl Nimbra {
                         .justify_center()
                         .w_full()
                         .h(relative(HORIZON))
-                        .child(settle(overline(t, today).text_color(c(0xffffff, 0.55)), arrival.date()))
+                        .child(settle(
+                            overline(t, today).text_color(c(0xffffff, 0.55)),
+                            arrival.date(),
+                        ))
                         .child(div().h(px(18.)).flex_none())
                         .child(settle(hero("Inbox zero.", ink), arrival.headline()))
-                        .child(div().h(px(14.)).flex_none())
-                        .child(
-                            settle(div(), arrival.line())
-                                .text_size(px(17.))
-                                .line_height(px(26.))
-                                .text_color(soft)
-                                .child(if self.is_demo() {
-                                    "Every important thread is handled. Go make something wonderful."
-                                } else if self.mailbox == View::AllInboxes {
-                                    "Your inboxes are empty. Go make something wonderful."
-                                } else {
-                                    "Your inbox is empty. Go make something wonderful."
-                                }),
-                        )
                         // Sample content: real mail shows the headline only.
                         .when(self.is_demo(), |d| {
                             d.child(
-                                div()
+                                settle(div(), arrival.line())
                                     .flex()
                                     .mt(px(40.))
-                                    .gap(px(12.))
+                                    .gap(px(space::M))
                                     .child(stat(
                                         "done",
                                         t.mint,
@@ -1249,7 +1445,7 @@ impl Nimbra {
                                     .child(stat("clock", t.sky, "time in inbox", "38m"))
                                     .child(stat("zap", t.amber, "zero streak", "8 days")),
                             )
-                        })
+                        }),
                 )
                 // Drawn out from the middle.
                 .child(
@@ -1285,7 +1481,7 @@ impl Nimbra {
                                             .items_center()
                                             .justify_center()
                                             .size(px(34.))
-                                            .rounded(px(9.))
+                                            .rounded(px(radius::CONTROL))
                                             .bg(Tone::Sky.gradient())
                                             .child(icon("calendar", 16., gpui::white())),
                                     )
@@ -1295,18 +1491,11 @@ impl Nimbra {
                                             .child(
                                                 div()
                                                     .font_weight(FontWeight::SEMIBOLD)
-                                                    .child("Up next · Design crit"),
+                                                    .child("Design Crit"),
                                             )
-                                            .child(meta(
-                                                "2:00 PM · Studio B · in 42 min",
-                                                c(0xffffff, 0.55),
-                                            )),
+                                            .child(meta("2:00 PM · Studio B", c(0xffffff, 0.55))),
                                     )
-                                    .child(button(
-                                        &Theme::dark(),
-                                        ButtonKind::Secondary,
-                                        "Join",
-                                    )),
+                                    .child(button(&Theme::dark(), ButtonKind::Secondary, "Join")),
                             )
                         })
                         .child(settle(below, arrival.below())),
@@ -1315,9 +1504,62 @@ impl Nimbra {
     }
 }
 
+/// A turning reload arrow, for as long as it is drawn.
+pub(super) fn spinning(arrow: gpui::Svg, id: &'static str) -> AnyElement {
+    arrow
+        .with_animation(
+            id,
+            Animation::new(Duration::from_millis(900)).repeat(),
+            |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+        )
+        .into_any_element()
+}
+
+/// A secondary button with its icon before its label.
+pub(super) fn labelled(t: &Theme, name: &str, label: &str) -> Div {
+    let (selected, strong) = (t.selected, t.border_strong);
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .h(px(34.))
+        .pl(px(10.))
+        .pr(px(14.))
+        .rounded(px(radius::CONTROL))
+        .bg(t.hover)
+        .border_1()
+        .border_color(t.border_strong)
+        .cursor_pointer()
+        .hover(move |s| s.bg(selected).border_color(strong))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.text)
+        .child(icon(name, 14., t.text2))
+        .child(label.to_string())
+}
+
+/// Compose, as wide as the header lets it be.
+pub(super) fn compose_button(t: &Theme, look: ComposeLook) -> Div {
+    match look {
+        ComposeLook::Labelled => labelled(t, "draft", "Compose"),
+        ComposeLook::Icon => icon_button(t, "draft")
+            .size(px(34.))
+            .bg(t.hover)
+            .border_1()
+            .border_color(t.border_strong),
+    }
+}
+
 /// The space either side of a row's avatar, and at the row's right. With the list's own
 /// 10pt margin it puts the avatars on `LIST_LEFT`.
 pub(super) const ROW_PAD: f32 = 14.;
+
+const AVATAR: f32 = 28.;
+
+const UNREAD_DOT: f32 = 7.;
+
+/// What a label pill adds around its words: padding, dot, gap and border.
+const PILL_CHROME: f32 = 7. + 6. + 6. + 9. + 2.;
 
 /// The list header's margins: the list's text starts and ends on them.
 pub(super) const LIST_LEFT: f32 = 24.;
@@ -1329,23 +1571,21 @@ pub(super) const HEADER_GAP: f32 = 8.;
 /// How Compose is drawn, as the room for it shrinks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ComposeLook {
-    Keyed,
-    Plain,
+    Labelled,
     Icon,
 }
 
 impl ComposeLook {
     pub(super) fn width(self) -> f32 {
         match self {
-            ComposeLook::Keyed => 112.,
-            ComposeLook::Plain => 88.,
+            ComposeLook::Labelled => 112.,
             ComposeLook::Icon => 34.,
         }
     }
 }
 
 /// What fits in the list's one-row header. The list can be 300pt narrow, so first the
-/// Offline pill loses its words, then Compose its key, then Compose its label.
+/// Offline pill loses its words, then Compose its label.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct HeaderFit {
     pub(super) words: bool,
@@ -1354,11 +1594,14 @@ pub(super) struct HeaderFit {
 
 impl HeaderFit {
     pub(super) fn new(room: f32, switch: f32, offline: Option<f32>) -> Self {
-        use ComposeLook::{Icon, Keyed, Plain};
-        for (words, compose) in [(true, Keyed), (false, Keyed), (false, Plain)] {
+        use ComposeLook::{Icon, Labelled};
+        for words in [true, false] {
             let pill = offline.map_or(0., |wide| HEADER_GAP + if words { wide } else { 22. });
-            if switch + pill + HEADER_GAP + compose.width() <= room {
-                return HeaderFit { words, compose };
+            if switch + pill + HEADER_GAP + Labelled.width() <= room {
+                return HeaderFit {
+                    words,
+                    compose: Labelled,
+                };
             }
         }
         HeaderFit {
@@ -1373,3 +1616,92 @@ pub(super) const HORIZON: f32 = 0.72;
 
 /// The height of an option in the All / Unread switch.
 pub(super) const SEGMENT_H: f32 = 26.;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: u64) -> Item {
+        Item::Row { index: 0, id }
+    }
+
+    fn scroll(items: Vec<Item>) -> ListScroll {
+        let mut list = ListScroll::new();
+        list.update(items);
+        list
+    }
+
+    #[test]
+    fn a_thread_keeps_its_item_when_it_moves_in_mails() {
+        assert!(row(7).same(&Item::Row { index: 40, id: 7 }));
+        assert!(!row(7).same(&row(8)));
+        assert!(!Item::Group(Group::Today).same(&Item::Group(Group::Earlier)));
+    }
+
+    #[test]
+    fn new_mail_at_the_top_keeps_the_thread_in_view() {
+        let mut list = scroll((0..50).map(row).collect());
+        list.state.scroll_to(gpui::ListOffset {
+            item_ix: 10,
+            offset_in_item: px(5.),
+        });
+        let mut items = vec![row(99)];
+        items.extend((0..50).map(row));
+        list.update(items);
+        let top = list.state.logical_scroll_top();
+        assert_eq!((top.item_ix, top.offset_in_item), (11, px(5.)));
+    }
+
+    #[test]
+    fn a_refresh_that_reorders_the_top_follows_the_thread() {
+        let mut list = scroll((0..20).map(row).collect());
+        list.state.scroll_to(gpui::ListOffset {
+            item_ix: 3,
+            offset_in_item: px(2.),
+        });
+        // Threads 0 to 5 come back in another order; thread 3 is now fifth.
+        let mut items: Vec<Item> = [5, 1, 0, 4, 3, 2].into_iter().map(row).collect();
+        items.extend((6..20).map(row));
+        list.update(items);
+        assert_eq!(list.state.logical_scroll_top().item_ix, 4);
+    }
+
+    #[test]
+    fn positions_come_from_the_known_heights() {
+        let mut items = vec![Item::Group(Group::Today)];
+        items.extend((0..10).map(row));
+        let list = scroll(items);
+        list.state.scroll_to(gpui::ListOffset {
+            item_ix: 3,
+            offset_in_item: px(4.),
+        });
+        assert_eq!(list.top(), GROUP_H + 2. * (ROW_H + ROW_GAP) + 4.);
+        assert!(!list.at_top());
+        list.to_top();
+        assert!(list.at_top());
+        assert_eq!(
+            list.content(),
+            GROUP_H + 10. * (ROW_H + ROW_GAP) + LIST_BOTTOM
+        );
+    }
+
+    #[test]
+    fn an_unchanged_list_is_not_laid_out_again() {
+        let mut list = scroll((0..5).map(row).collect());
+        list.state.scroll_to(gpui::ListOffset {
+            item_ix: 2,
+            offset_in_item: px(1.),
+        });
+        list.update((0..5).map(row).collect());
+        assert_eq!(list.state.logical_scroll_top().item_ix, 2);
+        assert_eq!(list.state.item_count(), 5);
+    }
+
+    #[test]
+    fn compose_loses_its_label_only_when_it_must() {
+        let wide = HeaderFit::new(452. - 1. - LIST_LEFT - LIST_RIGHT, 131., Some(126.));
+        assert_eq!((wide.words, wide.compose), (true, ComposeLook::Labelled));
+        let narrow = HeaderFit::new(300. - 1. - LIST_LEFT - LIST_RIGHT, 131., Some(126.));
+        assert_eq!(narrow.compose, ComposeLook::Icon);
+    }
+}
