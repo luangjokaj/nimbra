@@ -2312,10 +2312,10 @@ impl Nimbra {
 }
 
 /// How long the welcome screen takes to come in, and how far apart its parts start.
-const WELCOME_IN: Duration = Duration::from_millis(1400);
+const WELCOME_IN: Duration = Duration::from_millis(2000);
 const WELCOME_PART: f32 = 0.12;
 /// One part's own rise, as a share of `WELCOME_IN`.
-const WELCOME_RISE: f32 = 0.55;
+const WELCOME_RISE: f32 = 0.6;
 
 /// A part of the welcome screen rising into place and fading in, after the ones above it.
 fn welcome_entrance(part: usize, element: AnyElement) -> AnyElement {
@@ -2328,9 +2328,11 @@ fn welcome_entrance(part: usize, element: AnyElement) -> AnyElement {
             move |d, delta| {
                 let start = part as f32 * WELCOME_PART;
                 let local = ((delta - start) / WELCOME_RISE).clamp(0., 1.);
-                // Ease out (quint): quick at first, settling softly.
-                let eased = 1. - (1. - local).powi(5);
-                d.opacity(eased).top(px(14. * (1. - eased)))
+                // Ease out (cubic): it rises from a little way down and settles gently,
+                // fading in on a slower curve (smoothstep) so it never flashes up.
+                let eased = 1. - (1. - local).powi(3);
+                let shown = local * local * (3. - 2. * local);
+                d.opacity(shown).top(px(24. * (1. - eased)))
             },
         )
         .into_any_element()
