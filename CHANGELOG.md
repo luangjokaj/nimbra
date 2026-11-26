@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.3] - 2026-11-26
 
 ### New
 - **Finds more mail servers on its own.** When a domain publishes nothing, Nimbra now tries the usual names itself (mail., then imap. and smtp. of the domain), so most cPanel and shared hosting accounts need no typing. It only counts a server whose certificate is valid for that name, and sends no password while looking.
