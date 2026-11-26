@@ -7,7 +7,7 @@ use super::PhotoAnswer;
 use super::*;
 use crate::settings::{MarkRead, TextSize, ThemeChoice};
 use crate::theme::radius;
-use crate::ui::{Elevation, elevation, motion};
+use crate::ui::motion;
 
 /// The app's icon on About, in points.
 const ABOUT_ICON: f32 = 96.;
@@ -222,90 +222,117 @@ impl Render for SettingsWindow {
             Tab::About => self.about(&t, cx),
         };
         let hover = t.hover;
-        div()
-            .flex()
-            .size_full()
-            .bg(t.surface)
+        // The top of each panel moves the window, as a title bar would.
+        let title_bar = || {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(px(TOP_BAR - 1.))
+                .on_mouse_down(MouseButton::Left, drag_or_zoom)
+        };
+        crate::ui::panels(&t)
             .font_family(crate::theme::SANS)
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
-            // The sections.
+            // The sections, under the traffic lights.
             .child(
-                div()
+                panel(&t, crate::ui::Depth::Back)
                     .flex()
                     .flex_col()
                     .flex_none()
-                    .w(px(210.))
+                    .w(px(TABS_W))
                     .h_full()
-                    .px(px(12.))
-                    .pt(px(52.))
-                    .gap(px(2.))
-                    .bg(t.sidebar)
-                    .children(Tab::ALL.iter().enumerate().map(|(i, item)| {
-                        let item = *item;
-                        let on = item == tab;
-                        div()
-                            .id(("settings-tab", i))
-                            .flex()
-                            .items_center()
-                            .gap(px(10.))
-                            .px(px(10.))
-                            .h(px(32.))
-                            .rounded(px(radius::CONTROL))
-                            .cursor_pointer()
-                            .when(on, |d| {
-                                d.bg(t.selected)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .press_selected(&t)
-                            })
-                            .when(!on, |d| d.hover(move |s| s.bg(hover)).press(&t))
-                            .child(icon(item.icon(), 16., if on { t.violet } else { t.text2 }))
-                            .child(
-                                div()
-                                    .text_color(if on { t.text } else { t.text2 })
-                                    .child(item.label()),
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.tab = item;
-                                this.armed = None;
-                                cx.notify();
-                            }))
-                    })),
+                    .child(title_bar())
+                    .child(div().flex().flex_col().gap(px(2.)).px(px(10.)).children(
+                        Tab::ALL.iter().enumerate().map(|(i, item)| {
+                            let item = *item;
+                            let on = item == tab;
+                            div()
+                                .id(("settings-tab", i))
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .px(px(10.))
+                                .h(px(32.))
+                                .rounded(px(radius::CONTROL))
+                                .cursor_pointer()
+                                .when(on, |d| {
+                                    d.bg(t.selected)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .press_selected(&t)
+                                })
+                                .when(!on, |d| d.hover(move |s| s.bg(hover)).press(&t))
+                                .child(icon(item.icon(), 16., if on { t.violet } else { t.text2 }))
+                                .child(
+                                    div()
+                                        .text_color(if on { t.text } else { t.text2 })
+                                        .child(item.label()),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.tab = item;
+                                    this.armed = None;
+                                    cx.notify();
+                                }))
+                        }),
+                    ))
+                    .child(rim(&t, radius::SHEET)),
             )
-            .child(div().flex_none().w(px(1.)).h_full().bg(t.border))
-            // The section itself.
+            // The section itself, its name on the top line.
             .child(
-                div()
-                    .id("settings-content")
+                panel(&t, crate::ui::Depth::Front)
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_w(px(0.))
                     .h_full()
-                    .overflow_y_scroll()
+                    .child(
+                        title_bar()
+                            .px(px(CONTENT_X))
+                            .when(tab != Tab::About, |d| d.child(title_s(tab.label(), t.text))),
+                    )
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(18.))
-                            // A definite width, so wrapped text is measured at its real width.
-                            .w_full()
-                            .px(px(40.))
-                            .map(|d| match tab {
-                                // In the middle of the pane, whatever the window's size
-                                // (and scrolling when it is too short).
-                                // (A percentage height does not resolve inside a scroll.)
-                                Tab::About => d
-                                    .min_h(window.viewport_size().height)
-                                    .justify_center()
-                                    .py(px(40.)),
-                                _ => d.max_w(px(680.)).pt(px(44.)).pb(px(40.)),
-                            })
-                            .when(tab != Tab::About, |d| d.child(title_s(tab.label(), t.text)))
-                            .children(content),
-                    ),
+                            .id("settings-content")
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(18.))
+                                    // A definite width, so wrapped text is measured at its
+                                    // real width.
+                                    .w_full()
+                                    .px(px(CONTENT_X))
+                                    .map(|d| match tab {
+                                        // In the middle of the pane, whatever the window's
+                                        // size (and scrolling when it is too short). (A
+                                        // percentage height does not resolve inside a scroll.)
+                                        Tab::About => d
+                                            .min_h(
+                                                window.viewport_size().height
+                                                    - px(2. * crate::ui::GUTTER + TOP_BAR),
+                                            )
+                                            .justify_center()
+                                            .pb(px(TOP_BAR)),
+                                        _ => d.max_w(px(680.)).pt(px(space::S)).pb(px(40.)),
+                                    })
+                                    .children(content),
+                            ),
+                    )
+                    .child(rim(&t, radius::SHEET)),
             )
     }
 }
+
+/// The sections' panel.
+const TABS_W: f32 = 210.;
+
+/// Where a section's title and content start in their panel.
+const CONTENT_X: f32 = 32.;
 
 // ---------------------------------------------------------------- building blocks
 
@@ -900,7 +927,6 @@ impl SettingsWindow {
                             .overflow_hidden()
                             .border_2()
                             .border_color(rest)
-                            .when(on, |d| d.shadow(elevation(t, Elevation::Glow)))
                             .when(!on, |d| {
                                 d.group_hover("theme-tile", move |s| s.border_color(lit))
                             })
@@ -1247,9 +1273,9 @@ impl SettingsWindow {
                 .child(
                     div()
                         .size(px(ABOUT_ICON))
-                        // The glow follows the icon's own shape, which the image brings.
+                        // The shadow follows the icon's own shape, which the image brings.
                         .rounded(px(ABOUT_ICON / 4.))
-                        .shadow(vec![shadow(t.glow, 14., 40., -6.)])
+                        .shadow(vec![shadow(t.shadow, 14., 32., -10.)])
                         // The icon as macOS shows it in the same appearance.
                         .child(
                             gpui::img(if t.dark {

@@ -10,7 +10,7 @@ use crate::discover::Found;
 use crate::imap_mail::Credential;
 use crate::servers::{Secret, Security, Server, Servers};
 use crate::theme::radius;
-use crate::ui::{Elevation, elevation, motion};
+use crate::ui::motion;
 
 const NOT_FOUND: &str = "Couldn’t find the servers. Check them above.";
 const NO_PASSWORD: &str = "Enter the password.";
@@ -519,18 +519,13 @@ impl Nimbra {
                 cx.listener(|this, _, _, cx| this.close_account_sheet(cx)),
             )
             .child(
-                div()
+                crate::ui::sheet(t)
                     .id("account-sheet")
                     .w(px(480.))
                     .flex()
                     .flex_col()
                     .gap(px(14.))
-                    .p(px(22.))
-                    .rounded(px(radius::SHEET))
-                    .bg(t.raised)
-                    .border_1()
-                    .border_color(t.edge)
-                    .shadow(elevation(t, Elevation::Sheet))
+                    .p(px(space::XL))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(title_s(
                         if asking_again {

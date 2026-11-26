@@ -246,7 +246,7 @@ impl Nimbra {
                             .pr(px(LIST_RIGHT))
                             .opacity(WAITING)
                             .child(switch)
-                            .child(compose_button(t, compose)),
+                            .child(compose_button(compose)),
                     )
                     .child(shield()),
             )
@@ -280,7 +280,8 @@ impl Nimbra {
                     .relative()
                     .flex_none()
                     .h(px(TOP_BAR))
-                    .child(tools)
+                    // On the top line, as the reader's own bar above its hairline.
+                    .child(div().h(px(TOP_BAR - 1.)).child(tools))
                     .child(shield()),
             )
             .map(|d| {

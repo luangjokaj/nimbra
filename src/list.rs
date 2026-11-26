@@ -4,6 +4,7 @@
 use std::hash::{Hash, Hasher};
 
 use super::*;
+use crate::theme::GRADIENT_PRIMARY;
 use crate::ui::motion;
 
 /// Pull-to-refresh distances, in points: where a release triggers a refresh, where the
@@ -1076,7 +1077,7 @@ impl Nimbra {
             .h_full()
             // Drag the gutter on the right to resize the list; double-click it to hide the list.
             .child({
-                let hover = t.aura;
+                let hover = t.border_strong;
                 div()
                     .id("list-resize")
                     .absolute()
@@ -1143,15 +1144,15 @@ impl Nimbra {
                     )
                     .child(div().flex_1().min_w(px(0.)).mx(px(-HEADER_GAP / 2.)))
                     .when(self.offline, |d| d.child(self.offline_pill(t, fit.words)))
-                    .child(
-                        compose_button(t, fit.compose)
+                    .child(crate::ui::glow(
+                        compose_button(fit.compose)
                             .id("compose")
-                            .press(t)
                             .tooltip(tip(t.dark, "New Message", "C"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::New, cx)
                             })),
-                    ),
+                        "compose",
+                    )),
             )
             // While mail is checked, a thin bar glides along the top of the list. Its 2px
             // strip is always there, so nothing below it moves.
@@ -1417,7 +1418,7 @@ impl Nimbra {
                 .size_full()
                 .overflow_hidden()
                 .rounded(px(corner))
-                .shadow(aura(t, Depth::Front))
+                .shadow(lift(t, Depth::Front))
                 .bg(c(0x0a0912, 1.))
                 // Aurora: GPUI has no blur filter, so the glow is layered two-stop gradients.
                 .child(layer(0, 45., 0x6b4dff, 0.9, 0.62))
@@ -1518,7 +1519,7 @@ impl Nimbra {
     }
 }
 
-/// The light the open row's card gives off into the panel.
+/// The open row's card: lifted, and lit from inside.
 fn card_glow(t: &Theme) -> Vec<gpui::BoxShadow> {
     vec![
         shadow(
@@ -1527,7 +1528,7 @@ fn card_glow(t: &Theme) -> Vec<gpui::BoxShadow> {
             12.,
             -6.,
         ),
-        shadow(t.aura.opacity((t.aura.a * 1.4).min(1.)), 0., 20., -4.),
+        shadow(t.lit, 0., 20., -4.),
     ]
 }
 
@@ -1565,15 +1566,28 @@ pub(super) fn labelled(t: &Theme, name: &str, label: &str) -> Div {
         .child(label.to_string())
 }
 
-/// Compose, as wide as the header lets it be.
-pub(super) fn compose_button(t: &Theme, look: ComposeLook) -> Div {
+/// Compose, as wide as the header lets it be: the main window's one primary action. Wrap it
+/// in `glow` for its hover and press.
+pub(super) fn compose_button(look: ComposeLook) -> Div {
+    let base = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .h(px(34.))
+        .rounded(px(radius::CONTROL))
+        .cursor_pointer()
+        .bg(GRADIENT_PRIMARY.along(90.))
+        .text_color(gpui::white())
+        .child(icon("draft", 14., gpui::white()));
     match look {
-        ComposeLook::Labelled => labelled(t, "draft", "Compose"),
-        ComposeLook::Icon => icon_button(t, "draft")
-            .size(px(34.))
-            .bg(t.hover)
-            .border_1()
-            .border_color(t.border_strong),
+        ComposeLook::Labelled => base
+            .gap(px(6.))
+            .pl(px(12.))
+            .pr(px(14.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child("Compose"),
+        ComposeLook::Icon => base.w(px(34.)),
     }
 }
 

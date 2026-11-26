@@ -2,7 +2,7 @@
 //! HTML view beside the native one, printing and unsubscribing.
 
 use super::*;
-use crate::theme::{GRADIENT_GLOW, radius, space};
+use crate::theme::{radius, space};
 use crate::ui::{Elevation, elevation};
 
 /// "Fri, Nov 21, 2026 at 09:41", in local time; empty when unknown.
@@ -853,57 +853,46 @@ impl Nimbra {
                 .child(div().flex_1().child(text.to_string()))
                 .child(caption(due.to_string(), t.amber_text))
         };
-        let glow = |hex: u32, a: f32| c(hex, a);
-        // GPUI has no gradient strokes, so the edge is a 1pt gradient frame around the card.
         div()
-            .p(px(1.))
+            .flex()
+            .flex_col()
+            .gap(px(space::M))
+            .px(px(20.))
+            .py(px(space::L))
             .rounded(px(radius::CARD))
-            .bg(gradient(
-                100.,
-                glow(GRADIENT_GLOW.from, 0.7),
-                glow(GRADIENT_GLOW.to, 0.25),
-            ))
-            .shadow(elevation(t, Elevation::Glow))
+            .bg(t.hover)
+            .border_1()
+            .border_color(t.edge)
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap(px(space::M))
-                    .px(px(20.))
-                    .py(px(space::L))
-                    .rounded(px(radius::CARD - 1.))
-                    .bg(t.raised)
+                    .items_center()
+                    .gap(px(space::S))
+                    .child(icon("sparkles", 15., t.violet))
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(space::S))
-                            .child(icon("sparkles", 15., t.violet))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(t.text)
-                                    .child("Brief"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(15.))
-                            .line_height(px(24.))
-                            .text_color(t.text2)
-                            .child(m.brief.clone()),
-                    )
-                    .when(m.rich, |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(space::S))
-                                .child(todo("Confirm pricing tiers on slide 14", "Fri"))
-                                .child(todo("Sign off on the press embargo date", "Fri")),
-                        )
-                    }),
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(t.text)
+                            .child("Brief"),
+                    ),
             )
+            .child(
+                div()
+                    .text_size(px(15.))
+                    .line_height(px(24.))
+                    .text_color(t.text2)
+                    .child(m.brief.clone()),
+            )
+            .when(m.rich, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::S))
+                        .child(todo("Confirm pricing tiers on slide 14", "Fri"))
+                        .child(todo("Sign off on the press embargo date", "Fri")),
+                )
+            })
     }
 
     /// The reading pane's bar: what to do with the thread, in groups, and where to go next.
@@ -1299,18 +1288,18 @@ impl Nimbra {
                                                     .relative()
                                                     .flex_none()
                                                     .h(px(28.))
-                                                    .w(px(28. + 20. * (count - 1) as f32))
+                                                    .w(px(28. + 23. * (count - 1) as f32))
                                                     .children(
                                                         people
                                                             .into_iter()
                                                             .flatten()
                                                             .enumerate()
                                                             .map(|(n, (tone, initials))| {
-                                                                // A ring of the page between them.
+                                                                // A ring of the page between them, clear of the initials.
                                                                 avatar(tone, &initials, 28.)
                                                                     .absolute()
                                                                     .top_0()
-                                                                    .left(px(n as f32 * 20.))
+                                                                    .left(px(n as f32 * 23.))
                                                                     .border_2()
                                                                     .border_color(t.surface)
                                                             }),
