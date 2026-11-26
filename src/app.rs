@@ -1093,6 +1093,9 @@ impl Nimbra {
             this.status = Status::Loading;
             this.checks.start(View::Inbox, "");
         }
+        if screen == "signed-out" {
+            this.status = Status::SignedOut;
+        }
         // Damaged settings were set aside at launch, never saved over: say so once.
         this.notice = match crate::settings::recovery() {
             Some(crate::settings::Recovery::FromBackup) => {
@@ -2118,7 +2121,12 @@ fn view_key(view: View) -> usize {
 
 impl Nimbra {
     /// Shown in place of the mail panes while signed out, signing in, loading or failed.
-    fn status_screen(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn status_screen(
+        &self,
+        t: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let own_servers = self.servers_of(&self.account_id).is_some();
         let microsoft = self.is_microsoft(&self.account_id);
         let (title, message, action): (&str, SharedString, Option<&str>) = match &self.status {
@@ -2153,24 +2161,28 @@ impl Nimbra {
             }
             _ => ("Loading", SharedString::default(), None),
         };
-        div()
-            .flex_1()
-            .min_w(px(0.))
-            .h_full()
+        // Outside, or on the way in: under the night, as Inbox Zero is. A failure or a wait
+        // for the Keychain is plain.
+        let outside = matches!(self.status, Status::SignedOut | Status::SigningIn);
+        let night = crate::night::Night::of(t);
+        let (ink, soft) = if outside {
+            (night.ink, night.soft)
+        } else {
+            (t.text, t.text2)
+        };
+        let words = div()
             .flex()
             .flex_col()
             .items_center()
-            .justify_center()
             .gap(px(space::M))
-            .bg(t.surface)
-            .child(title_l(title, t.text))
+            .child(title_l(title, ink))
             .child(
                 div()
                     .max_w(px(520.))
                     .text_center()
                     .text_size(px(15.))
                     .line_height(px(24.))
-                    .text_color(t.text2)
+                    .text_color(soft)
                     .child(message),
             )
             .children(action.map(|label| {
@@ -2200,7 +2212,35 @@ impl Nimbra {
                                 ),
                         )
                     })
-            }))
+            }));
+        let pane = div()
+            .relative()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .overflow_hidden()
+            .bg(t.surface);
+        if !outside {
+            return pane.justify_center().child(words).into_any_element();
+        }
+        pane.bg(night.ground)
+            .child(crate::night::layer(t, 0., window, cx))
+            .children(crate::night::stars(&night, 48, |_| 1.))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .w_full()
+                    .h(relative(crate::night::HORIZON))
+                    .child(words),
+            )
+            .child(div().flex_none().w_full().h(px(1.)).bg(night.edge))
+            .into_any_element()
     }
 }
 
@@ -2236,6 +2276,7 @@ impl Render for Nimbra {
             window.focus(&focus);
         }
         let t = self.theme();
+        crate::night::keep_ready(&t, window, cx);
         let viewport = window.viewport_size();
         let viewport = (f32::from(viewport.width), f32::from(viewport.height));
         // The floating composer needs a concrete position before it can be dragged.
@@ -2581,7 +2622,7 @@ impl Render for Nimbra {
                     .when(afloat > 0., |d| d.bg(t.surface)),
             )
             .map(|d| match self.status {
-                _ if zero_shown => d.child(self.zero(&t)),
+                _ if zero_shown => d.child(self.zero(&t, window, cx)),
                 Status::Ready if empty && self.next_page_coming() => d.child(self.skeleton(&t, cx)),
                 Status::Demo | Status::Ready if empty => d.child(self.empty_mailbox(&t, cx)),
                 Status::Demo | Status::Ready => d.children(self.list_slot(&t, cx)).map(|d| {
@@ -2592,10 +2633,10 @@ impl Render for Nimbra {
                     }
                 }),
                 Status::Loading if self.waiting_for_keychain() => {
-                    d.child(self.status_screen(&t, cx))
+                    d.child(self.status_screen(&t, window, cx))
                 }
                 Status::Loading => d.child(self.skeleton(&t, cx)),
-                _ => d.child(self.status_screen(&t, cx)),
+                _ => d.child(self.status_screen(&t, window, cx)),
             })
             .when(self.offline && !list_shown && place.is_none(), |d| {
                 // No list and no reload button to carry it.

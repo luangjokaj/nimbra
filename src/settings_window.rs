@@ -12,6 +12,9 @@ use crate::ui::motion;
 /// The app's icon on About, in points.
 const ABOUT_ICON: f32 = 96.;
 
+/// The night behind it: a whole number of grain tiles at 1x and 2x, so that none is cut.
+const PLATE: (f32, f32) = (512., 256.);
+
 /// The app's icon in its light (Default) and Dark appearances, rendered from
 /// `assets/AppIcon.icon` (README: how to render them again).
 static APP_ICON: std::sync::LazyLock<std::sync::Arc<gpui::Image>> =
@@ -285,7 +288,7 @@ impl Render for SettingsWindow {
             Tab::Notifications => self.notifications(&t, cx),
             Tab::Privacy => self.privacy(&t, cx),
             Tab::Shortcuts => self.shortcuts(&t),
-            Tab::About => self.about(&t, cx),
+            Tab::About => self.about(&t, window, cx),
         };
         let hover = t.hover;
         // The top of each pane moves the window, as a title bar would.
@@ -964,16 +967,20 @@ impl SettingsWindow {
                         .bg(th.surface)
                         .when(left, |d| d.rounded_l(px(INNER)))
                         .when(right, |d| d.rounded_r(px(INNER)))
+                        // The sidebar, Compose at its top, and the hairline after it.
                         .child(
                             div()
                                 .flex_none()
                                 .w(px(22.))
                                 .h_full()
+                                .pt(px(8.))
+                                .px(px(4.))
                                 .bg(th.sidebar)
                                 .when(left, |d| d.rounded_l(px(INNER)))
-                                .border_r_1()
-                                .border_color(th.border),
+                                .child(div().h(px(5.)).rounded(px(2.)).bg(th.primary)),
                         )
+                        .child(div().flex_none().w(px(1.)).h_full().bg(th.border))
+                        // The list, its open thread picked.
                         .child(
                             div()
                                 .flex_1()
@@ -981,18 +988,40 @@ impl SettingsWindow {
                                 .flex()
                                 .flex_col()
                                 .gap(px(5.))
-                                .p(px(8.))
-                                .child(div().h(px(5.)).w(px(40.)).rounded_full().bg(th.text2))
+                                .p(px(6.))
                                 .child(
                                     div()
-                                        .h(px(4.))
-                                        .w(px(56.))
-                                        .rounded_full()
-                                        .bg(th.border_strong),
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(4.))
+                                        .p(px(4.))
+                                        .rounded(px(3.))
+                                        .bg(th.selected)
+                                        .border_1()
+                                        .border_color(th.selected_edge)
+                                        .child(
+                                            div().h(px(4.)).w(px(36.)).rounded_full().bg(th.text2),
+                                        )
+                                        .child(
+                                            div()
+                                                .h(px(3.))
+                                                .w(px(52.))
+                                                .rounded_full()
+                                                .bg(th.border_strong),
+                                        ),
                                 )
                                 .child(
                                     div()
+                                        .mx(px(5.))
                                         .h(px(4.))
+                                        .w(px(40.))
+                                        .rounded_full()
+                                        .bg(th.text3),
+                                )
+                                .child(
+                                    div()
+                                        .mx(px(5.))
+                                        .h(px(3.))
                                         .w(px(48.))
                                         .rounded_full()
                                         .bg(th.border_strong),
@@ -1357,42 +1386,88 @@ impl SettingsWindow {
             .collect()
     }
 
-    fn about(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn about(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let night = crate::night::Night::of(t);
+        let plate = div()
+            .relative()
+            .flex_none()
+            .w(px(PLATE.0))
+            .h(px(PLATE.1))
+            .child(crate::night::layer(t, radius::SHEET, window, cx))
+            .children(crate::night::stars(&night, 14, |_| 1.))
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px((PLATE.1 * crate::night::HORIZON).round()))
+                    .h(px(1.))
+                    .bg(night.edge),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top_0()
+                    .h(px((PLATE.1 * crate::night::HORIZON).round()))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .size(px(ABOUT_ICON))
+                            // The shadow follows the icon's own shape, which the image brings.
+                            .rounded(px(ABOUT_ICON / 4.))
+                            .shadow(vec![shadow(t.shadow, 14., 32., -10.)])
+                            // The icon as macOS shows it in the same appearance.
+                            .child(
+                                gpui::img(if t.dark {
+                                    APP_ICON_DARK.clone()
+                                } else {
+                                    APP_ICON.clone()
+                                })
+                                .size_full(),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(radius::SHEET))
+                    .border_1()
+                    .border_color(t.edge),
+            );
         vec![
             div()
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(14.))
+                .gap(px(space::XL))
+                .child(plate)
                 .child(
                     div()
-                        .size(px(ABOUT_ICON))
-                        // The shadow follows the icon's own shape, which the image brings.
-                        .rounded(px(ABOUT_ICON / 4.))
-                        .shadow(vec![shadow(t.shadow, 14., 32., -10.)])
-                        // The icon as macOS shows it in the same appearance.
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(space::M))
+                        .child(title_l("Nimbra", t.text))
+                        .child(meta(
+                            format!("Version {}", env!("CARGO_PKG_VERSION")),
+                            t.text3,
+                        ))
                         .child(
-                            gpui::img(if t.dark {
-                                APP_ICON_DARK.clone()
-                            } else {
-                                APP_ICON.clone()
-                            })
-                            .size_full(),
+                            div().pt(px(space::S)).child(
+                                button(t, ButtonKind::Secondary, "Keyboard Shortcuts")
+                                    .id("about-shortcuts")
+                                    .press(t)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.tab = Tab::Shortcuts;
+                                        cx.notify();
+                                    })),
+                            ),
                         ),
-                )
-                .child(title_l("Nimbra", t.text))
-                .child(meta(
-                    format!("Version {}", env!("CARGO_PKG_VERSION")),
-                    t.text3,
-                ))
-                .child(
-                    button(t, ButtonKind::Secondary, "Keyboard Shortcuts")
-                        .id("about-shortcuts")
-                        .press(t)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.tab = Tab::Shortcuts;
-                            cx.notify();
-                        })),
                 )
                 .into_any_element(),
         ]
@@ -1463,5 +1538,20 @@ fn bundled() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PLATE;
+    use crate::night::GRAIN_TEXELS;
+
+    #[test]
+    fn the_about_plate_is_whole_grain_tiles_on_every_mac_display() {
+        for scale in [1., 2.] {
+            let side = GRAIN_TEXELS / scale;
+            assert_eq!(PLATE.0 % side, 0.);
+            assert_eq!(PLATE.1 % side, 0.);
+        }
     }
 }

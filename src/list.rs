@@ -4,6 +4,7 @@
 use std::hash::{Hash, Hasher};
 
 use super::*;
+use crate::night::{self, HORIZON, Night};
 use crate::ui::motion;
 
 /// Pull-to-refresh distances, in points: where a release triggers a refresh, where the
@@ -1362,12 +1363,12 @@ impl Nimbra {
         }
     }
 
-    pub(super) fn zero(&self, t: &Theme) -> impl IntoElement {
-        let sky = Sky::of(t);
+    pub(super) fn zero(&self, t: &Theme, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let night = Night::of(t);
         let quiet = |d: Div| {
-            d.bg(sky.card)
+            d.bg(night.card)
                 .border_1()
-                .border_color(sky.edge)
+                .border_color(night.edge)
                 .rounded(px(radius::CARD))
         };
         let stat = |name: &str, label: &str, value: &str| {
@@ -1383,32 +1384,14 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .gap(px(space::S))
-                        .child(icon(name, 14., sky.soft))
-                        .child(meta(label.to_string(), sky.soft)),
+                        .child(icon(name, 14., night.soft))
+                        .child(meta(label.to_string(), night.soft)),
                 )
-                .child(display(value.to_string(), 32., sky.ink))
+                .child(display(value.to_string(), 32., night.ink))
         };
         let arrival = self.arrival.unwrap_or(Arrival::SETTLED);
         let settle = |d: Div, shown: f32| d.relative().top(px(drop_for(shown))).opacity(shown);
-        // Deterministic star field.
-        let mut seed = 7u32;
-        let mut rnd = move || {
-            seed = (seed.wrapping_mul(9301).wrapping_add(49297)) % 233280;
-            seed as f32 / 233280.
-        };
-        let stars: Vec<Div> = (0..48)
-            .map(|i| {
-                let (x, y, a) = (rnd(), rnd() * 0.42, 0.2 + rnd() * 0.6);
-                let size = if a > 0.7 { 2.5 } else { 1.5 };
-                div()
-                    .absolute()
-                    .left(relative(x))
-                    .top(relative(y))
-                    .size(px(size))
-                    .rounded_full()
-                    .bg(sky.star.opacity(sky.star.a * a * arrival.star(i)))
-            })
-            .collect();
+        let stars = night::stars(&night, 48, |i| arrival.star(i));
         let now = std::time::Instant::now();
         let falling = self
             .sky
@@ -1426,7 +1409,7 @@ impl Nimbra {
                             .top(px(dot.y - dot.size / 2.))
                             .size(px(dot.size))
                             .rounded_full()
-                            .bg(sky.star.opacity(sky.star.a * dot.alpha))
+                            .bg(night.star.opacity(night.star.a * dot.alpha))
                     }))
             });
         // The sample inbox keeps the day its mail is from.
@@ -1443,7 +1426,7 @@ impl Nimbra {
             .font_weight(FontWeight::LIGHT)
             .text_size(px(20.))
             .line_height(px(28.))
-            .text_color(sky.soft)
+            .text_color(night.soft)
             .child(crate::inspiration::line_for(
                 chrono::Local::now().date_naive(),
             ));
@@ -1456,7 +1439,9 @@ impl Nimbra {
                 .items_center()
                 .size_full()
                 .overflow_hidden()
-                .bg(sky.ground)
+                .bg(night.ground)
+                // The last light comes up with the horizon.
+                .child(night::layer(t, 0., window, cx).opacity(arrival.horizon()))
                 .children(stars)
                 .children(falling)
                 // Two halves with the horizon between: each holds its content in its middle.
@@ -1470,11 +1455,11 @@ impl Nimbra {
                         .w_full()
                         .h(relative(HORIZON))
                         .child(settle(
-                            meta(today, sky.soft).font_weight(FontWeight::MEDIUM),
+                            meta(today, night.soft).font_weight(FontWeight::MEDIUM),
                             arrival.date(),
                         ))
                         .child(div().h(px(space::L)).flex_none())
-                        .child(settle(hero("Inbox Zero", sky.ink), arrival.headline()))
+                        .child(settle(hero("Inbox Zero", night.ink), arrival.headline()))
                         // Sample content: real mail shows the headline only.
                         .when(self.is_demo(), |d| {
                             d.child(
@@ -1500,7 +1485,7 @@ impl Nimbra {
                         .flex_none()
                         .w(relative(arrival.horizon()))
                         .h(px(1.))
-                        .bg(sky.edge),
+                        .bg(night.edge),
                 )
                 .child(
                     div()
@@ -1520,7 +1505,7 @@ impl Nimbra {
                                     .pl(px(space::M))
                                     .pr(px(space::M))
                                     .py(px(space::M))
-                                    .text_color(sky.ink)
+                                    .text_color(night.ink)
                                     .child(
                                         div()
                                             .flex()
@@ -1539,7 +1524,7 @@ impl Nimbra {
                                                     .font_weight(FontWeight::SEMIBOLD)
                                                     .child("Design Crit"),
                                             )
-                                            .child(meta("2:00 PM · Studio B", sky.soft)),
+                                            .child(meta("2:00 PM · Studio B", night.soft)),
                                     )
                                     .child(button(t, ButtonKind::Secondary, "Join")),
                             )
@@ -1547,40 +1532,6 @@ impl Nimbra {
                         .child(settle(below, arrival.below())),
                 ),
         )
-    }
-}
-
-/// Inbox Zero's colours: a solid night in the dark theme, a quiet pale ground in the light.
-struct Sky {
-    ground: Hsla,
-    star: Hsla,
-    ink: Hsla,
-    soft: Hsla,
-    card: Hsla,
-    edge: Hsla,
-}
-
-impl Sky {
-    fn of(t: &Theme) -> Self {
-        if t.dark {
-            Sky {
-                ground: c(0x07070c, 1.),
-                star: c(0xffffff, 1.),
-                ink: t.text,
-                soft: c(0xffffff, 0.62),
-                card: c(0xffffff, 0.04),
-                edge: c(0xffffff, 0.12),
-            }
-        } else {
-            Sky {
-                ground: c(0xf4f4f8, 1.),
-                star: c(0x2b2a3a, 0.55),
-                ink: t.text,
-                soft: t.text2,
-                card: c(0xffffff, 1.),
-                edge: c(0x000000, 0.09),
-            }
-        }
     }
 }
 
@@ -1758,9 +1709,6 @@ impl HeaderFit {
             }
     }
 }
-
-/// How far down Inbox Zero's horizon is.
-pub(super) const HORIZON: f32 = 0.72;
 
 /// The All / Unread switch: an option's height, its padding each side of its words, the
 /// gap before Unread's count, the gap between options, and from the switch's outer edge to
