@@ -4,6 +4,7 @@
 
 ### New
 - **Address suggestions from all your mail.** To, Cc and Bcc now suggest anyone you've written to or heard from, on every account, by name, address or domain, with the people you write to first. Nimbra learns them from the mail you read and send, and once from the headers of your newest sent and received mail, read slowly in the background. They stay encrypted on your Mac.
+- **Check for mail every 10 seconds.** A new choice in Settings › General, for when you want Gmail mail sooner. Every 30 seconds is still the default.
 
 ### Fixed
 - **Buttons in dark emails.** A light button in an email that's already dark (like Vercel's) stays as the sender made it, instead of turning dark with unreadable text.

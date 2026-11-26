@@ -924,7 +924,7 @@ impl Nimbra {
                     Duration::ZERO
                 } else {
                     this.update(cx, |this, _| {
-                        Duration::from_secs(this.settings.check_every.clamp(15, 3600) as u64)
+                        Duration::from_secs(this.settings.check_every.clamp(10, 3600) as u64)
                     })
                     .unwrap_or(EVERY)
                 };
@@ -1104,7 +1104,7 @@ impl Nimbra {
             loop {
                 let wait = this
                     .update(cx, |this, _| {
-                        let every = this.settings.check_every.clamp(15, 3600) as u64;
+                        let every = this.settings.check_every.clamp(10, 3600) as u64;
                         // Sooner while changes wait there for a connection.
                         let waiting = !this.away_waiting.is_empty();
                         Duration::from_secs(if waiting { 15 } else { every })

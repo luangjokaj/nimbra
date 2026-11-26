@@ -858,14 +858,15 @@ impl SettingsWindow {
             self.choice(
                 t,
                 "every",
-                &["30 s", "1 min", "5 min"],
+                &["10 s", "30 s", "1 min", "5 min"],
                 match every {
-                    0..=45 => 0,
-                    46..=150 => 1,
-                    _ => 2,
+                    0..=20 => 0,
+                    21..=45 => 1,
+                    46..=150 => 2,
+                    _ => 3,
                 },
                 cx,
-                |n, i| n.settings.check_every = [30, 60, 300][i],
+                |n, i| n.settings.check_every = [10, 30, 60, 300][i],
             ),
         );
         let mut rows = vec![login_row, mark_row, every_row];

@@ -171,7 +171,7 @@ Nimbra has telemetry, and this is all of it. We count two things: how many Macs 
 <details>
 <summary><strong>Checking for mail</strong></summary>
 
-While the app is open it reads Gmail's change feed every 30 seconds (or 1 or 5 minutes, set in Settings › General): only what changed since the last look is fetched, the open mailbox is updated in place, and a macOS notification (sender and subject) is shown for each thread with a new unread inbox message. Clicking a notification opens that email. Notifications need the bundled `Nimbra.app` and your permission, and only arrive while Nimbra is running.
+While the app is open it reads Gmail's change feed every 30 seconds (or 10 seconds, 1 or 5 minutes, set in Settings › General): only what changed since the last look is fetched, the open mailbox is updated in place, and a macOS notification (sender and subject) is shown for each thread with a new unread inbox message. Clicking a notification opens that email. Notifications need the bundled `Nimbra.app` and your permission, and only arrive while Nimbra is running.
 
 Clicking a mailbox shows what is kept at once and asks Gmail only if something changed since it was last checked or that was over a minute ago. The content of the first 3 threads of the open mailbox is fetched ahead and stored, so opening those is instant (more would run into Gmail's limit of 6,000 units a minute). A full fetch only happens when there is no starting point yet, the point is older than Gmail keeps (about a week), or the mailbox is a search, and then only threads that changed since they were last listed are read again. The mail store keeps the newest 300 threads per mailbox, with full text for the newest 100.
 
