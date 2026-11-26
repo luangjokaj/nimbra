@@ -266,37 +266,7 @@ impl Nimbra {
     }
 
     fn skeleton_reading(&self, t: &Theme) -> Div {
-        let gap = |width: f32| div().flex_none().w(px(width));
-        let rule = || {
-            div()
-                .flex_none()
-                .w(px(1.))
-                .h(px(16.))
-                .mx(px(6.))
-                .bg(t.border_strong)
-        };
-        // In the reading toolbar's order: the list, what clears the thread, replies, the
-        // rest, then the view and the way through the list.
-        let tools = div()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .size_full()
-            .overflow_hidden()
-            .pl(px(20.))
-            .pr(px(20.))
-            .opacity(WAITING)
-            .child(icon_button(t, "list"))
-            .child(rule())
-            .children(["done", "clock"].map(|name| icon_button(t, name)))
-            .child(rule())
-            .children(["reply", "reply-all", "forward"].map(|name| icon_button(t, name)))
-            .child(rule())
-            .children(["star", "mail", "tag", "folder", "trash"].map(|name| icon_button(t, name)))
-            .child(div().flex_1())
-            .child(icon_button(t, "eye").when(self.original, |d| d.bg(t.selected)))
-            .child(gap(6.))
-            .children(["up", "down", "more"].map(|name| icon_button(t, name)));
+        let tools = toolbar_outline(t, self.original).opacity(WAITING);
 
         div()
             .flex()

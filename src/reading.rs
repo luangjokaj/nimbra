@@ -2332,8 +2332,7 @@ fn message_outline(t: &Theme, line: f32) -> AnyElement {
 
 /// The reading pane's bar as the loading screen draws it: the same controls, in the same
 /// places, out of reach.
-#[allow(dead_code, reason = "for the loading screen (`skeleton.rs`) to draw")]
-pub(super) fn toolbar_outline(t: &Theme) -> Div {
+pub(super) fn toolbar_outline(t: &Theme, original: bool) -> Div {
     let rule = || {
         div()
             .flex_none()
@@ -2357,12 +2356,9 @@ pub(super) fn toolbar_outline(t: &Theme) -> Div {
         .child(rule())
         .children(["star", "mail", "tag", "folder", "trash"].map(|name| icon_button(t, name)))
         .child(div().flex_1())
+        .child(icon_button(t, "eye").when(original, |d| d.bg(t.selected)))
+        .child(rule())
         .children(["up", "down", "more"].map(|name| icon_button(t, name)))
-}
-
-/// Done, as the toolbar and the loading screen draw it.
-pub(super) fn done_button(t: &Theme) -> Div {
-    icon_button(t, "done")
 }
 
 #[cfg(test)]

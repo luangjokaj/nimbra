@@ -967,8 +967,8 @@ pub(super) fn snooze_chip(t: &Theme, name: &'static str, when: SharedString) -> 
         .h(px(18.))
         .rounded(px(5.))
         .bg(t.amber.opacity(0.14))
-        .child(icon(name, 11., t.amber))
-        .child(caption(when, t.amber))
+        .child(icon(name, 11., t.amber_text))
+        .child(caption(when, t.amber_text))
 }
 
 /// The snooze of the thread with this id, if one is kept here: its chip's icon and text.
