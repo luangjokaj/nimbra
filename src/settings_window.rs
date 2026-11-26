@@ -827,6 +827,12 @@ impl SettingsWindow {
                     .next()
                     .map(|c| c.to_uppercase().to_string())
                     .unwrap_or_default();
+                let dragged = DraggedAccount {
+                    id: account.id.clone(),
+                    email: account.email.clone(),
+                    initials: initials.clone(),
+                    dark: t.dark,
+                };
                 let identity = div()
                     .flex()
                     .items_center()
@@ -868,7 +874,20 @@ impl SettingsWindow {
                                     t.text3
                                 },
                             )),
-                    );
+                    )
+                    // A handle that says the row can be dragged to another place.
+                    .when(several, |d| {
+                        d.child(
+                            div()
+                                .id(("account-grip", i))
+                                .flex_none()
+                                .p(px(4.))
+                                .rounded(px(6.))
+                                .cursor(gpui::CursorStyle::OpenHand)
+                                .tooltip(tip(t.dark, "Drag to reorder", ""))
+                                .child(icon("grip", 16., t.text3)),
+                        )
+                    });
                 // Under the address, lined up with it (past the 32 pt photo and its gap).
                 let actions = div()
                     .flex()
@@ -914,14 +933,26 @@ impl SettingsWindow {
                                 this.ask_remove(id, email, cx);
                             })),
                     );
+                let hover = t.hover;
                 div()
+                    .id(("account-row", i))
                     .flex()
                     .flex_col()
                     .gap(px(10.))
                     .px(px(16.))
                     .py(px(14.))
+                    .rounded(px(10.))
                     .child(identity)
                     .child(actions)
+                    // Dragged onto another row, it takes that row's place.
+                    .when(several, |d| {
+                        d.on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                            .drag_over::<DraggedAccount>(move |style, _, _, _| style.bg(hover))
+                            .on_drop(cx.listener(move |this, dragged: &DraggedAccount, _, cx| {
+                                let id = dragged.id.clone();
+                                this.owner.update(cx, |n, cx| n.move_account(&id, i, cx));
+                            }))
+                    })
                     .into_any_element()
             })
             .collect();
@@ -1550,5 +1581,46 @@ fn bundled() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         false
+    }
+}
+
+/// An account being dragged to another place in Settings › Accounts, and what follows the
+/// pointer meanwhile.
+#[derive(Clone)]
+struct DraggedAccount {
+    id: String,
+    email: String,
+    initials: String,
+    dark: bool,
+}
+
+impl Render for DraggedAccount {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let t = if self.dark {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(10.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border_strong)
+            .shadow(vec![shadow(t.shadow, 8., 24., -6.)])
+            .font_family(crate::theme::SANS)
+            .text_size(px(13.))
+            .text_color(t.text)
+            .cursor(gpui::CursorStyle::ClosedHand)
+            .child(avatar(
+                crate::data::tone_for(&self.email),
+                &self.initials,
+                24.,
+            ))
+            .child(self.email.clone())
     }
 }

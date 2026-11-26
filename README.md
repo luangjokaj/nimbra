@@ -102,7 +102,7 @@ Outlook.com, Hotmail and Microsoft 365 sign in with Microsoft in the browser (**
 
 ### Several accounts
 
-Switch from the Accounts list in the sidebar or in Settings › Accounts. Each account has its own sign-in in the keychain and its own encrypted store and key; Sign out removes only that account. One account is the default (Settings › Accounts › Make default): its profile is at the bottom of the sidebar and new messages are from it.
+Switch from the Accounts list in the sidebar or in Settings › Accounts. Each account has its own sign-in in the keychain and its own encrypted store and key; Sign out removes only that account. One account is the default (Settings › Accounts › Make default): its profile is at the bottom of the sidebar and new messages are from it. Drag an account by its handle in Settings › Accounts to change the order the sidebar and From list them in.
 
 With two or more accounts the sidebar adds **All inboxes**: every account's inbox merged, newest first, loading further as you scroll. Every account is checked for new mail and notifies, snoozes and scheduled sends run for all of them, and the Dock badge counts them all. In All inboxes, actions and replies go to the message's own account; labels stay per account.
 

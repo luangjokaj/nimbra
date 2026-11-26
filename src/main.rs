@@ -95,6 +95,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "down",
     "sparkles",
     "clip",
+    "grip",
     "more",
     "tag",
     "bell",
