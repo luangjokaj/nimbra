@@ -39,6 +39,7 @@ mod tls;
 mod toast;
 mod tooltip;
 mod ui;
+mod usage;
 mod webkeys;
 mod webview;
 mod window_frame;

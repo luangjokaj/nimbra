@@ -18,6 +18,7 @@
     <img src="https://img.shields.io/badge/Rust-2024-b7410e?style=flat&logo=rust" alt="Rust" />
     <img src="https://img.shields.io/badge/UI-GPUI-8b7cff?style=flat" alt="GPUI" />
     <img src="https://img.shields.io/badge/mail-Gmail%20%C2%B7%20IMAP-555?style=flat" alt="Gmail and IMAP" />
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3da639?style=flat" alt="MIT license" /></a>
   </p>
 
   <p>
@@ -26,7 +27,9 @@
     <a href="#connect-your-mail">Connect your mail</a> ·
     <a href="#keys">Keys</a> ·
     <a href="#privacy-and-security">Privacy</a> ·
-    <a href="#development">Development</a>
+    <a href="#telemetry">Telemetry</a> ·
+    <a href="#development">Development</a> ·
+    <a href="CONTRIBUTING.md">Contributing</a>
   </p>
 </div>
 
@@ -55,6 +58,8 @@
 ```sh
 cargo run
 ```
+
+Or download the latest signed build: [Nimbra.dmg](https://github.com/luangjokaj/nimbra/releases/latest/download/Nimbra.dmg) (see [CHANGELOG.md](CHANGELOG.md) for what's new).
 
 Without an account set up, or with `NIMBRA_DEMO=1`, Nimbra runs on built-in sample data and never touches the network.
 
@@ -103,45 +108,60 @@ With two or more accounts the sidebar adds **All inboxes**: every account's inbo
 
 ## Keys
 
+Everything has a key. The ones you'll use most:
+
 | Key | Action |
 | --- | --- |
-| `J` / `K` or arrows | Next / previous thread |
-| `←` | Move the keys to the sidebar (a hidden sidebar comes in until you leave it); `↑` `↓` or `J` `K` walk its rows, `→` or `↵` opens one, `esc` goes back to the list |
-| `Home` / `End` (or `⌘↑` / `⌘↓`) | First / last thread, or sidebar row |
-| `X` | Pick or unpick the open thread |
-| `⇧↑` / `⇧↓` (or `⇧K` / `⇧J`) | Pick more threads from the open one |
-| `O` | Open the thread in its own window |
-| `Space` / `⇧Space` | Page down / up through the message |
-| `G` then `I` `S` `B` `T` `D` `A` | Go to Inbox, Starred, Snoozed, Sent, Drafts, All mail |
-| `⌘1` … `⌘9` | All inboxes, then each account (with one account, `⌘1` is the Inbox) |
+| `J` / `K` | Next / previous thread |
+| `E` | Mark done |
+| `H` | Snooze |
+| `R` / `C` | Reply / new message |
+| `/` | Search |
+| `Z` | Undo |
 | `?` | Every shortcut on one sheet |
-| `E` | Mark done (clear them all to reach Inbox Zero) |
-| `Z`, `⌘Z` or `Ctrl+Z` | Undo the last archive, move or trash (an Undo pill also appears for a few seconds) |
-| `/` or `⌘F` | Search (Enter runs it, `esc` clears it) |
-| `S` | Star or unstar |
-| `U` | Mark the open thread as unread, or read again |
-| `H` or `⌘K` | Snooze menu |
-| `V` | Switch between the reader view and the email's original formatting |
-| `C` / `R` | Compose a new message / reply to the open thread |
-| `⌘↵` | Send (in the composer) |
-| `⌘⇧F` | Full-page composer on or off |
-| `⌫` or `⌘⌫` | Move to trash |
-| `⌘⇧L` | Toggle light and dark |
-| `⌘B` | Show or hide the sidebar (hidden, it floats in when the pointer reaches the window's left edge) |
-| `⌘⇧B` | Show or hide the message list (drag its right edge to resize it) |
-| `⌘[` / `⌘]` | Back / forward through opened threads |
-| `⌘W` | Close the window; Nimbra keeps running and checking mail (`⌘Q` quits) |
-| `⌘R` or pull the list down | Check for mail |
-| Right-click a thread | Mark read or unread, star, mark done, trash, report spam, open in Gmail |
+
+The full list is in [docs/keys.md](docs/keys.md).
 
 ## Privacy and security
 
-- **Your mail stays on your Mac.** Nimbra talks straight to Gmail or your IMAP and SMTP servers; there is no server of its own in between.
+- **Your mail stays on your Mac.** Nimbra talks straight to Gmail or your IMAP and SMTP servers; there is no server of its own in between, and your mail never goes anywhere else.
 - **Encrypted at rest.** Mailboxes, opened threads, counts, the offline queue and snoozes are kept in `~/Library/Application Support/Nimbra/store`. Each record is encrypted with ChaCha20-Poly1305 using a key kept only in the system keychain (`nimbra` / `store-key`); the files alone, or a backup of them, are unreadable. Search results are never stored. When a Google sign-in ends, that account's store and its key are deleted; a keychain that cannot be read deletes nothing.
 - **Secrets in the Keychain.** Sign-ins, refresh tokens and passwords live only in the system keychain. OAuth client files stay in `~/.config/nimbra`, never in the repo.
 - **Locked-down email.** Mail is drawn natively by default, with scripts, styles and forms dropped. **Show original** (`V`) renders the email's own HTML in a system web view with scripts off, navigation blocked, and remote scripts, frames, fonts and forms blocked by a content security policy; mail that tries to send you somewhere by itself (a meta refresh) is stopped. Only `http`, `https` and `mailto` links are clickable, and they open in your browser when you click them.
 - **Remote images.** In the reader view they stay hidden until you click **Load images**, and tracking pixels are never loaded. The original view shows them by default (senders can then tell the mail was opened); **Block images** turns them off for the open thread.
 - **TLS everywhere.** IMAP and SMTP use rustls with certificates always checked.
+- **Telemetry: two anonymous counts, nothing else.** See [Telemetry](#telemetry) for exactly what is sent and how to turn it off.
+
+## Telemetry
+
+Nimbra has telemetry, and this is all of it. We count two things: how many Macs open Nimbra each day, and how many times a day it is opened. That's how we know whether anyone uses it.
+
+**What is sent.** Each time an official build of Nimbra is launched, it sends this one event to [PostHog](https://posthog.com), hosted in the EU:
+
+```json
+{
+  "api_key": "<Nimbra's PostHog project key: public, and can only send events>",
+  "event": "app_opened",
+  "distinct_id": "<random, new for every event>",
+  "properties": {
+    "first_today": true,
+    "app_version": "0.1.0",
+    "macos_version": "26",
+    "$process_person_profile": false,
+    "$geoip_disable": true
+  }
+}
+```
+
+- `first_today` is true on the first launch of the day on that Mac. Counting those gives daily users; counting every event gives opens. The day of the last launch is kept on your Mac in `~/Library/Application Support/Nimbra/last-opened`, and never sent.
+- `distinct_id` is random and new every time, so two launches can't be linked to each other or to you.
+- `$process_person_profile: false` tells PostHog to keep no profile, and `$geoip_disable: true` to skip working out where you are. The project is also set to discard IP addresses.
+
+**What is never sent.** Your name, your addresses, your accounts or which providers you use, anything about your mail (senders, subjects, counts, labels), what you do in the app, crash data, or any ID that lasts beyond one event.
+
+**When it isn't sent.** When you turn off **Settings › Privacy & Security › Anonymous usage counts**; in debug builds and test runs; in builds made without `NIMBRA_POSTHOG_KEY`, which includes any build you make yourself; and whenever you're offline (that launch just isn't counted).
+
+**Check it yourself.** [`src/usage.rs`](src/usage.rs) is the whole thing, and a test there fails if the event ever carries anything more.
 
 ## How it works
 
@@ -199,17 +219,9 @@ Offline, archive, star, read and the like still work: changes are kept (encrypte
 
 </details>
 
-## Design
+## App icon
 
-The design lives in the [Mail Client Figma file](https://www.figma.com/design/s6tsR2l2X4MKmoA1dNlm4I/Mail-Client?node-id=7313-2):
-
-- **Nimbra — App UI:** the screens as built (the inbox in dark and light, the Snooze menu, Compose, Inbox zero), the colour variables and text styles, and the component kit.
-- **Landing:** the landing page.
-- **Brand · App icon:** the icon and its Icon Composer layers.
-
-### App icon
-
-The icon source is `assets/AppIcon.icon`, an Icon Composer document (SVG layers plus `icon.json`); the same file works for iOS. Its layers are designed in the Figma file's “Icon Composer layers · 1024” board (one 1024×1024 frame per layer, inside the Light, Eclipse and Flap groups) and exported from there as SVG into `assets/AppIcon.icon/Assets`.
+The icon source is `assets/AppIcon.icon`, an Icon Composer document (SVG layers plus `icon.json`); the same file works for iOS. Its layers are designed in Figma as one 1024×1024 frame per layer, inside the Light, Eclipse and Flap groups, and exported as SVG into `assets/AppIcon.icon/Assets`.
 
 `icon.json` gives it all of macOS's appearances: Default is the light icon (a cream-to-lavender background, the flap and disc in ink, a softer glow), Dark is the violet-to-black one with the paper-white flap, and Clear and Tinted hide the glow and the dark disc, so the mark is a ring over an envelope flap. Layers that use glass must be filled shapes: outline strokes in Figma before exporting, because an open stroke is filled as a closed shape.
 
@@ -229,9 +241,13 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 
 `NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose`, `compose-full`, `snooze` or `snooze-time` opens that screen directly on the sample data. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
 
+### Releases
+
+`./scripts/release <version>` builds, signs, notarizes and publishes a release; see [docs/releasing.md](docs/releasing.md). What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
+
 ### Live tests
 
-The IMAP and SMTP code has live tests against local Dovecot and Mailpit servers (OrbStack or Docker); see `tasks/todo.md` for the setup. Run them with `NIMBRA_TEST_CA=certs/ca.pem cargo test live -- --ignored`.
+The IMAP and SMTP code has live tests against local Dovecot and Mailpit servers (OrbStack or Docker); [docs/testing.md](docs/testing.md) has the setup.
 
 ### Sidebar blur
 
@@ -248,6 +264,7 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/servers.rs`, `src/discover.rs`, `src/dns.rs`: an account's servers and its password in the keychain; finding the servers from an address (presets, autoconfig, MX records)
 - `src/store.rs`: the encrypted on-disk mail store
 - `src/blocking.rs`: blocked senders and the Blocked label
+- `src/usage.rs`: the anonymous usage count
 - `src/scheduled.rs`, `src/sending.rs`: send later, and a message from Send until the server has it
 - `src/checking.rs`, `src/arrival.rs`, `src/quitting.rs`, `src/leaving.rs`: checks for mail, Inbox Zero at launch, and what quitting has to finish
 - `src/rich.rs`, `src/webview.rs`: HTML or plain-text mail as styled blocks, and the locked-down web view behind Show original
@@ -258,6 +275,12 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/ui.rs`, `src/input.rs`: shared building blocks and the text field
 - `assets/`: the app icon, bundled Geist and Instrument Serif fonts (OFL) and Lucide-style icons
 
+## Contributing
+
+Bug fixes are welcome; for anything bigger, start a discussion first. [CONTRIBUTING.md](CONTRIBUTING.md) has how to
+run it, what a good change looks like, and the commit style ([Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)).
+Found a security problem? Report it privately: see [SECURITY.md](SECURITY.md).
+
 ## License
 
-Nimbra will be open source. A license will be added before the first public release.
+[MIT](LICENSE)

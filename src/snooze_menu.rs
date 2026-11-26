@@ -17,8 +17,10 @@ const CAL_HEAD: f32 = 36.;
 const CAL_DAYS: f32 = 22.;
 /// The footer with Quick times and the Snooze button.
 const CAL_FOOT: f32 = 44.;
+/// The height of the footer's two buttons.
+const FOOT_BUTTON: f32 = 30.;
 /// The field to type any time in, above the hours.
-const FIELD: f32 = 30.;
+const FIELD: f32 = 38.;
 /// The Time row under the calendar, and the hours it opens to.
 const TIME_ROW: f32 = 34.;
 const CHIP: f32 = 28.;
@@ -459,7 +461,7 @@ impl SnoozeMenu {
     fn month(&self, first: NaiveDate, hours: bool, t: &Theme, cx: &mut Context<Self>) -> Div {
         let time = self.time;
         let today = Local::now().date_naive();
-        let hover = t.hover;
+        let (hover, selected) = (t.hover, t.selected);
         let prev = first
             .checked_sub_months(chrono::Months::new(1))
             .unwrap_or(first);
@@ -609,8 +611,9 @@ impl SnoozeMenu {
                         .h(px(FIELD))
                         .mt(px(CHIP_GAP))
                         .mx(px(CHIP_INSET))
-                        .px(px(10.))
-                        .rounded(px(7.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .text_size(px(14.))
                         .border_1()
                         .border_color(if self.typed_bad {
                             t.rose
@@ -667,18 +670,28 @@ impl SnoozeMenu {
                     .justify_between()
                     .px(px(4.))
                     .child(
+                        // A secondary button the Snooze button's size, so the two line up.
                         div()
                             .id("snooze-quick")
                             .flex()
+                            .flex_none()
                             .items_center()
-                            .gap(px(2.))
-                            .px(px(6.))
-                            .py(px(3.))
-                            .rounded(px(6.))
+                            .gap(px(6.))
+                            .h(px(FOOT_BUTTON))
+                            .pl(px(10.))
+                            .pr(px(14.))
+                            .rounded(px(9.))
+                            .bg(t.hover)
+                            .border_1()
+                            .border_color(t.border_strong)
                             .cursor_pointer()
-                            .hover(move |s| s.bg(hover))
+                            .hover(move |s| s.bg(selected))
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(t.text)
                             .child(icon("back", 12., t.text2))
-                            .child(meta("Quick times", t.text2))
+                            .child("Quick times")
+                            .press_soft()
                             .on_click(cx.listener(|this, _, window, cx| this.back(window, cx))),
                     )
                     .child({
@@ -686,6 +699,8 @@ impl SnoozeMenu {
                         let label = if ready { "Snooze" } else { "Pick a later time" };
                         let button = button(t, ButtonKind::Primary, label, Some("↵"))
                             .text_size(px(12.))
+                            .h(px(FOOT_BUTTON))
+                            .py_0()
                             .id("snooze-confirm")
                             .press_soft()
                             .when(!ready, |d| d.opacity(0.5).cursor_default())

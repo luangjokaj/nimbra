@@ -754,6 +754,7 @@ impl Nimbra {
             crate::microsoft::Config::load()
         };
         let settings = crate::settings::load();
+        crate::usage::opened(settings.usage_counts);
         // Without Google's sign-in set up, an account with its own servers still opens: the
         // sample mail is only for when there is nothing else to show.
         let demo =
