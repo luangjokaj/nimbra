@@ -1044,9 +1044,7 @@ pub(super) fn carry_out_due(
             snooze.since_ms,
             snooze.no_reply,
         );
-        let done = woken
-            .as_ref()
-            .map_or_else(mail::is_gone, |_| true);
+        let done = woken.as_ref().map_or_else(mail::is_gone, |_| true);
         // The list as it is by now: the account may have been opened and changed meanwhile.
         if done
             && store

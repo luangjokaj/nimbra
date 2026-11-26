@@ -22,7 +22,11 @@ pub(super) fn long_date(timestamp_ms: i64) -> String {
 /// "Plan 2.pdf", ...). Nothing already there is replaced or followed.
 fn save_to_downloads(name: &str, bytes: &[u8]) -> anyhow::Result<std::path::PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("no home folder"))?;
-    save_new_in(&std::path::PathBuf::from(home).join("Downloads"), name, bytes)
+    save_new_in(
+        &std::path::PathBuf::from(home).join("Downloads"),
+        name,
+        bytes,
+    )
 }
 
 /// Saves `bytes` in `dir` under the first free name of "name", "name 2", ...
@@ -581,7 +585,12 @@ impl Nimbra {
         });
         let keep = |url: &String| wanted.contains(url) || open.contains(&url);
         self.image_requests.retain(|url| keep(url));
-        let gone: Vec<String> = self.images.keys().filter(|url| !keep(url)).cloned().collect();
+        let gone: Vec<String> = self
+            .images
+            .keys()
+            .filter(|url| !keep(url))
+            .cloned()
+            .collect();
         for url in gone {
             if let Some(image) = self.images.remove(&url) {
                 image.remove_asset(cx);
@@ -786,9 +795,11 @@ impl Nimbra {
                 .child(text(t.text)),
             Kind::Rule => div().h(px(1.)).my(px(6.)).bg(t.border),
             Kind::Image { src, alt } => match self.images.get(src) {
-                Some(image) => {
-                    div().child(gpui::img(image.clone()).max_w_full().rounded(px(radius::ROW)))
-                }
+                Some(image) => div().child(
+                    gpui::img(image.clone())
+                        .max_w_full()
+                        .rounded(px(radius::ROW)),
+                ),
                 None => div()
                     .flex()
                     .items_center()
@@ -982,7 +993,8 @@ impl Nimbra {
                     .child(
                         gpui::canvas(
                             move |bounds, _, _| {
-                                anchor.set(Some(gpui::point(bounds.left(), bounds.bottom() + px(6.))))
+                                anchor
+                                    .set(Some(gpui::point(bounds.left(), bounds.bottom() + px(6.))))
                             },
                             |_, _, _, _| {},
                         )
@@ -995,12 +1007,15 @@ impl Nimbra {
             })
             .child(rule())
             .child(
-                tool("reply", "reply", "Reply".into(), "R")
-                    .on_click(cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx))),
+                tool("reply", "reply", "Reply".into(), "R").on_click(
+                    cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx)),
+                ),
             )
-            .child(tool("reply-all", "reply-all", "Reply All".into(), "A").on_click(
-                cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::ReplyAll, cx)),
-            ))
+            .child(
+                tool("reply-all", "reply-all", "Reply All".into(), "A").on_click(
+                    cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::ReplyAll, cx)),
+                ),
+            )
             .child(tool("forward", "forward", "Forward".into(), "F").on_click(
                 cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Forward, cx)),
             ))
@@ -1038,12 +1053,9 @@ impl Nimbra {
                         this.toggle_menu(Menu::Labels, window, cx)
                     })),
             )
-            .child(
-                tool("folder", "move-to", "Move To".into(), "")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_menu(Menu::MoveTo, window, cx)
-                    })),
-            )
+            .child(tool("folder", "move-to", "Move To".into(), "").on_click(
+                cx.listener(|this, _, window, cx| this.toggle_menu(Menu::MoveTo, window, cx)),
+            ))
             .child(
                 tool(
                     "trash",
@@ -1078,21 +1090,31 @@ impl Nimbra {
                 .child(rule())
             })
             .child(
-                tool("up", "prev", "Previous Thread".into(), if has_prev { "K" } else { "" })
-                    .when(!has_prev, |d| d.opacity(0.4))
-                    .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
+                tool(
+                    "up",
+                    "prev",
+                    "Previous Thread".into(),
+                    if has_prev { "K" } else { "" },
+                )
+                .when(!has_prev, |d| d.opacity(0.4))
+                .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
             )
             .child(
-                tool("down", "next", "Next Thread".into(), if has_next { "J" } else { "" })
-                    .when(!has_next, |d| d.opacity(0.4))
-                    .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
+                tool(
+                    "down",
+                    "next",
+                    "Next Thread".into(),
+                    if has_next { "J" } else { "" },
+                )
+                .when(!has_next, |d| d.opacity(0.4))
+                .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
             )
             .child(
                 tool("more", "more", "More".into(), "")
                     .when(self.menu == Some(Menu::More), |d| d.bg(t.selected))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_menu(Menu::More, window, cx)
-                    })),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_menu(Menu::More, window, cx)),
+                    ),
             )
     }
 
@@ -1113,8 +1135,7 @@ impl Nimbra {
         // Until the message has been fetched we cannot know whether it has an original
         // (HTML) version, so show its outline, not the reader view that would flash by first.
         let loading = self.original && !is_draft && !m.loaded;
-        let scrolled =
-            !original && !loading && f32::from(self.reader_scroll.offset().y) < -0.5;
+        let scrolled = !original && !loading && f32::from(self.reader_scroll.offset().y) < -0.5;
         let images = !self.in_spam(m);
         let divider = || div().flex_none().h(px(1.)).bg(t.border);
 
@@ -1174,7 +1195,11 @@ impl Nimbra {
                 )
                 .child(
                     div()
-                        .child(div().font_weight(FontWeight::MEDIUM).child(name.to_string()))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(name.to_string()),
+                        )
                         .child(meta(info.to_string(), t.text3)),
                 )
         };
@@ -1278,8 +1303,11 @@ impl Nimbra {
                                                     .h(px(28.))
                                                     .w(px(28. + 20. * (count - 1) as f32))
                                                     .children(
-                                                        people.into_iter().flatten().enumerate().map(
-                                                            |(n, (tone, initials))| {
+                                                        people
+                                                            .into_iter()
+                                                            .flatten()
+                                                            .enumerate()
+                                                            .map(|(n, (tone, initials))| {
                                                                 // A ring of the page between them.
                                                                 avatar(tone, &initials, 28.)
                                                                     .absolute()
@@ -1287,8 +1315,7 @@ impl Nimbra {
                                                                     .left(px(n as f32 * 20.))
                                                                     .border_2()
                                                                     .border_color(t.surface)
-                                                            },
-                                                        ),
+                                                            }),
                                                     ),
                                             )
                                             .child(meta(m.participants.clone(), t.text3).flex_1()),
@@ -1332,7 +1359,11 @@ impl Nimbra {
                                                             .pt(px(space::S))
                                                             .pb(px(space::L))
                                                             .child(self.message_header(
-                                                                t, m, k + 1, true, cx,
+                                                                t,
+                                                                m,
+                                                                k + 1,
+                                                                true,
+                                                                cx,
                                                             ))
                                                             .child(
                                                                 self.message_body(
@@ -1373,8 +1404,15 @@ impl Nimbra {
                                         .gap(px(space::L))
                                         .child(self.message_header(t, m, 0, true, cx))
                                         .child(
-                                            self.message_body(t, &m.body, 0, images, &selectable, cx)
-                                                .ml(px(40.)),
+                                            self.message_body(
+                                                t,
+                                                &m.body,
+                                                0,
+                                                images,
+                                                &selectable,
+                                                cx,
+                                            )
+                                            .ml(px(40.)),
                                         )
                                         .when(!m.loaded, |d| {
                                             d.child(
@@ -1834,34 +1872,30 @@ impl Nimbra {
                 )
             }))
             .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .mb(px(-space::XS))
-                    .child(
-                        div()
-                            .id(("detail-copy-all", index))
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .px(px(8.))
-                            .py(px(4.))
-                            .rounded(px(radius::CONTROL))
-                            .cursor_pointer()
-                            .text_color(if all_done { t.mint } else { t.text2 })
-                            .font_weight(FontWeight::MEDIUM)
-                            .hover(move |s| s.bg(hover))
-                            .press(t)
-                            .child(icon(
-                                if all_done { "done" } else { "copy" },
-                                13.,
-                                if all_done { t.mint } else { t.text2 },
-                            ))
-                            .child(if all_done { "Copied" } else { "Copy All" })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.copy_text(all_key.clone(), all.clone(), cx)
-                            })),
-                    ),
+                div().flex().justify_end().mb(px(-space::XS)).child(
+                    div()
+                        .id(("detail-copy-all", index))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(radius::CONTROL))
+                        .cursor_pointer()
+                        .text_color(if all_done { t.mint } else { t.text2 })
+                        .font_weight(FontWeight::MEDIUM)
+                        .hover(move |s| s.bg(hover))
+                        .press(t)
+                        .child(icon(
+                            if all_done { "done" } else { "copy" },
+                            13.,
+                            if all_done { t.mint } else { t.text2 },
+                        ))
+                        .child(if all_done { "Copied" } else { "Copy All" })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.copy_text(all_key.clone(), all.clone(), cx)
+                        })),
+                ),
             )
     }
 
@@ -2269,8 +2303,11 @@ impl Nimbra {
 fn message_outline(t: &Theme, line: f32) -> AnyElement {
     const PARAGRAPHS: [&[f32]; 3] = [&[0.22], &[0.97, 0.92, 0.99, 0.58], &[0.94, 0.98, 0.41]];
     let ink = t.border;
-    let outline = div().flex().flex_col().gap(px((line * 0.6).round())).children(
-        PARAGRAPHS.iter().map(|lines| {
+    let outline = div()
+        .flex()
+        .flex_col()
+        .gap(px((line * 0.6).round()))
+        .children(PARAGRAPHS.iter().map(|lines| {
             div().flex().flex_col().children(lines.iter().map(|&share| {
                 div()
                     .flex()
@@ -2279,8 +2316,7 @@ fn message_outline(t: &Theme, line: f32) -> AnyElement {
                     .w(relative(share))
                     .child(div().w_full().h(px(8.)).rounded_full().bg(ink))
             }))
-        }),
-    );
+        }));
     if crate::ui::motion::reduced() {
         return outline.into_any_element();
     }
@@ -2289,9 +2325,7 @@ fn message_outline(t: &Theme, line: f32) -> AnyElement {
         .with_animations(
             "message-outline",
             vec![pass.clone(), pass.clone(), pass],
-            |outline, _, delta| {
-                outline.opacity(0.8 + 0.2 * (delta * std::f32::consts::TAU).cos())
-            },
+            |outline, _, delta| outline.opacity(0.8 + 0.2 * (delta * std::f32::consts::TAU).cos()),
         )
         .into_any_element()
 }

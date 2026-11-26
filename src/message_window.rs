@@ -225,9 +225,11 @@ impl Render for MessageWindow {
                 drag_or_zoom(event, window, cx)
             })
             .when_some(done, |d, (name, label)| {
-                d.child(tool(name, label, "E", 3).on_click(cx.listener(
-                    |this, _, window, cx| this.act(window, cx, |n, row, cx| n.done_thread(row, cx)),
-                )))
+                d.child(
+                    tool(name, label, "E", 3).on_click(cx.listener(|this, _, window, cx| {
+                        this.act(window, cx, |n, row, cx| n.done_thread(row, cx))
+                    })),
+                )
                 .child(rule())
             })
             .child(tool("reply", "Reply", "R", 0).on_click(
@@ -243,7 +245,11 @@ impl Render for MessageWindow {
             .child(
                 tool(
                     "trash",
-                    if in_trash { "Delete Forever" } else { "Move to Trash" },
+                    if in_trash {
+                        "Delete Forever"
+                    } else {
+                        "Move to Trash"
+                    },
                     "⌫",
                     4,
                 )

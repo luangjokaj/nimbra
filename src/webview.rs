@@ -116,11 +116,11 @@ mod platform {
     use super::document;
     #[cfg(target_os = "macos")]
     use super::leaves_app;
+    use std::cell::{Cell, OnceCell};
+    use std::rc::{Rc, Weak};
     #[cfg(target_os = "macos")]
     use wry::NewWindowResponse;
     use wry::dpi::{LogicalPosition, LogicalSize};
-    use std::cell::{Cell, OnceCell};
-    use std::rc::{Rc, Weak};
     use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder};
 
     pub struct HtmlView {
