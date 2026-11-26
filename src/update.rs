@@ -14,6 +14,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -28,6 +29,25 @@ const REQUIREMENT: &str = "anchor apple generic and certificate leaf[subject.OU]
 /// A disk image bigger than this is not Nimbra.
 const MAX_DOWNLOAD: u64 = 300 * 1024 * 1024;
 
+/// Where each version's release notes are, by its tag.
+const RELEASE_NOTES: &str = "https://nimbra.me/release-notes#v";
+
+/// The release notes of `version` on the website.
+pub fn release_notes(version: &str) -> String {
+    format!("{RELEASE_NOTES}{version}")
+}
+
+/// Whether `current` runs for the first time after an update from `last_run`, the version
+/// that ran before. Versions before this was kept left none: then it is an update when
+/// Nimbra was in use already (`used_before`), and a new install when it was not.
+pub fn first_run_after_update(last_run: &str, current: &str, used_before: bool) -> bool {
+    if last_run.is_empty() {
+        used_before
+    } else {
+        newer(current, last_run)
+    }
+}
+
 /// First check, a moment after launch; then this often.
 pub const FIRST: Duration = Duration::from_secs(60);
 pub const EVERY: Duration = Duration::from_secs(6 * 60 * 60);
@@ -39,6 +59,45 @@ pub struct Manifest {
     pub url: String,
     pub sha256: String,
     pub notes: String,
+}
+
+/// How far a new version has got on its way in, for the window to show meanwhile.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Progress {
+    pub version: String,
+    pub stage: Stage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Stage {
+    /// Bytes of the disk image so far, and all of them when the server says.
+    Downloading { done: u64, total: Option<u64> },
+    /// Downloaded: its checksum, signature and notarization are being checked.
+    Verifying,
+    /// Checked and waiting: it is installed when Nimbra restarts. `check` never reports
+    /// this one; the app shows it once `check` says the version is ready.
+    Ready,
+}
+
+impl Progress {
+    /// From 0 to 1; `None` while the size is not known.
+    pub fn fraction(&self) -> Option<f32> {
+        match self.stage {
+            Stage::Downloading { done, total } => total
+                .filter(|t| *t > 0)
+                .map(|t| (done as f64 / t as f64).clamp(0., 1.) as f32),
+            Stage::Verifying | Stage::Ready => Some(1.),
+        }
+    }
+}
+
+/// Where `check` says how far it has got, read from the main thread while it works.
+pub type Reporter = Arc<Mutex<Option<Progress>>>;
+
+fn report(reporter: &Reporter, progress: Option<Progress>) {
+    if let Ok(mut slot) = reporter.lock() {
+        *slot = progress;
+    }
 }
 
 /// Whether this build can update itself at all.
@@ -101,8 +160,16 @@ fn checked(manifest: Manifest) -> Result<Manifest> {
 }
 
 /// Looks for a newer version and, if there is one, gets it ready. `Ok(Some(version))` when
-/// a newer version is waiting to be installed. Blocking: run off the main thread.
-pub fn check() -> Result<Option<String>> {
+/// a newer version is waiting to be installed. Blocking: run off the main thread. While it
+/// downloads and checks one, it says how far it has got in `reporter` (empty again when it
+/// returns).
+pub fn check(reporter: &Reporter) -> Result<Option<String>> {
+    let result = check_reporting(reporter);
+    report(reporter, None);
+    result
+}
+
+fn check_reporting(reporter: &Reporter) -> Result<Option<String>> {
     let feed = std::env::var("NIMBRA_UPDATE_FEED")
         .ok()
         .or(FEED.map(str::to_string))
@@ -133,7 +200,7 @@ pub fn check() -> Result<Option<String>> {
     let work = work_dir().ok_or_else(|| anyhow!("no home folder"))?;
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).context("making the update folder")?;
-    let result = fetch_and_unpack(&agent, &manifest, &work);
+    let result = fetch_and_unpack(&agent, &manifest, &work, reporter);
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&work);
     }
@@ -147,22 +214,54 @@ fn writable(folder: &Path) -> bool {
     ok
 }
 
-fn fetch_and_unpack(agent: &ureq::Agent, manifest: &Manifest, work: &Path) -> Result<()> {
+fn fetch_and_unpack(
+    agent: &ureq::Agent,
+    manifest: &Manifest,
+    work: &Path,
+    reporter: &Reporter,
+) -> Result<()> {
+    let progress = |stage| {
+        report(
+            reporter,
+            Some(Progress {
+                version: manifest.version.clone(),
+                stage,
+            }),
+        )
+    };
     // The disk image, no bigger than a disk image of Nimbra can be.
     let dmg = work.join("Nimbra.dmg");
+    progress(Stage::Downloading {
+        done: 0,
+        total: None,
+    });
     let response = agent
         .get(&manifest.url)
         .call()
         .context("downloading the update")?;
-    let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .take(MAX_DOWNLOAD + 1)
-        .read_to_end(&mut bytes)
-        .context("downloading the update")?;
+    // Only for the progress bar: the size limit and the checksum decide what is kept.
+    let total = response
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|t| *t <= MAX_DOWNLOAD);
+    let mut reader = response.into_reader().take(MAX_DOWNLOAD + 1);
+    let mut bytes = Vec::with_capacity(total.unwrap_or(0) as usize);
+    let mut chunk = vec![0; 64 * 1024];
+    loop {
+        let read = reader.read(&mut chunk).context("downloading the update")?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        progress(Stage::Downloading {
+            done: bytes.len() as u64,
+            total,
+        });
+    }
     if bytes.len() as u64 > MAX_DOWNLOAD {
         bail!("the update is too large");
     }
+    progress(Stage::Verifying);
     let sum = Sha256::digest(&bytes);
     let hex: String = sum.iter().map(|b| format!("{b:02x}")).collect();
     if hex != manifest.sha256.to_ascii_lowercase() {
@@ -297,6 +396,39 @@ mod tests {
     }
 
     const SHA: &str = "d0d8030a50fa031a48be09b83a7d431be96e9d6581c54e85a04cc4da604fc81a";
+
+    #[test]
+    fn progress_is_a_fraction_once_the_size_is_known() {
+        let at = |done, total| Progress {
+            version: "0.1.4".into(),
+            stage: Stage::Downloading { done, total },
+        };
+        assert_eq!(at(0, None).fraction(), None);
+        assert_eq!(at(5, Some(0)).fraction(), None);
+        assert_eq!(at(25, Some(100)).fraction(), Some(0.25));
+        assert_eq!(at(120, Some(100)).fraction(), Some(1.));
+        let verifying = Progress {
+            version: "0.1.4".into(),
+            stage: Stage::Verifying,
+        };
+        assert_eq!(verifying.fraction(), Some(1.));
+    }
+
+    #[test]
+    fn release_notes_open_only_on_the_first_run_after_an_update() {
+        // Updated from a version that kept the last one that ran.
+        assert!(first_run_after_update("0.1.3", "0.1.4", true));
+        // The same version again, or an older one put back: no.
+        assert!(!first_run_after_update("0.1.4", "0.1.4", true));
+        assert!(!first_run_after_update("0.1.5", "0.1.4", true));
+        // Nothing kept yet: an update for someone signed in, a new install otherwise.
+        assert!(first_run_after_update("", "0.1.4", true));
+        assert!(!first_run_after_update("", "0.1.4", false));
+        assert_eq!(
+            release_notes("0.1.3"),
+            "https://nimbra.me/release-notes#v0.1.3"
+        );
+    }
 
     #[test]
     fn versions_compare_as_numbers() {

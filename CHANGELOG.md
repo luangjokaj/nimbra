@@ -1,5 +1,15 @@
 # Nimbra changelog
 
+## [Unreleased]
+
+### New
+- **Watch an update come in.** When a new version is found, a card at the bottom of the window shows it downloading with a progress bar, then while it's checked. Once it's ready, the same card says so, with a Restart button.
+- **What's new, after each update.** The first time a new version opens, its release notes open in your browser. Only once, and never on a fresh install.
+
+### Changed
+- **Pick From with photos.** The composer's From shows the account's profile photo, and its menu lists each account with its photo and a check on the one you're sending from, like Settings › Composing.
+- **A tidier composer header.** From has a line under it like the other fields, and the buttons beside it sit level with it and line up with Cc Bcc.
+
 ## [0.1.3] - 2026-11-26
 
 ### New

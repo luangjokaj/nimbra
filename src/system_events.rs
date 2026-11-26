@@ -182,12 +182,8 @@ impl Nimbra {
             cx.notify();
             return;
         }
-        if let Some(version) = &self.update_ready {
-            self.notice = Some(
-                format!("Nimbra {version} is ready. Restart from the bottom of the sidebar.")
-                    .into(),
-            );
-            cx.notify();
+        if let Some(version) = self.update_ready.clone() {
+            self.show_update_ready(&version, cx);
             return;
         }
         self.start_update_check(true, cx);
@@ -203,23 +199,44 @@ impl Nimbra {
         self.update_checking = true;
         self.update_status = Some("Checking for updates…".into());
         cx.notify();
+        let reporter = crate::update::Reporter::default();
+        // How far a download has got, read a few times a second while the check runs.
+        let polled = reporter.clone();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(120))
+                    .await;
+                let now = polled.lock().ok().and_then(|p| p.clone());
+                let checking = this.update(cx, |this, cx| {
+                    if this.update_checking && this.update_progress != now {
+                        this.update_progress = now;
+                        cx.notify();
+                    }
+                    this.update_checking
+                });
+                if !matches!(checking, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let found = cx
                 .background_executor()
-                .spawn(async { crate::update::check() })
+                .spawn(async move { crate::update::check(&reporter) })
                 .await;
             this.update(cx, |this, cx| {
                 this.update_checking = false;
+                this.update_progress = None;
                 match found {
                     Ok(Some(version)) => {
                         // Count only; never more than the version.
                         eprintln!("nimbra: update {version} ready");
                         this.update_status = Some(format!("Nimbra {version} is ready.").into());
-                        if told {
-                            this.notice = Some(format!(
-                                "Nimbra {version} is ready. Restart from the bottom of the sidebar."
-                            ).into());
-                        }
+                        // Said where the download was shown, in the same card, with its
+                        // Restart button.
+                        this.show_update_ready(&version, cx);
                         this.update_ready = Some(version);
                     }
                     Ok(None) => {
@@ -247,6 +264,25 @@ impl Nimbra {
         })
         .detach();
         true
+    }
+
+    /// The first run of a new version opens its release notes in the browser, once. Only
+    /// builds that update themselves keep track, so other builds never open them.
+    pub(super) fn greet_new_version(&mut self, cx: &mut Context<Self>) {
+        if !crate::update::enabled() {
+            return;
+        }
+        let current = env!("CARGO_PKG_VERSION");
+        if self.settings.last_version == current {
+            return;
+        }
+        let used_before = !self.settings.accounts.is_empty();
+        if crate::update::first_run_after_update(&self.settings.last_version, current, used_before)
+        {
+            cx.open_url(&crate::update::release_notes(current));
+        }
+        self.settings.last_version = current.to_string();
+        self.save_settings(cx);
     }
 
     /// The sidebar's Restart: quits, and the new version opens in this one's place.
@@ -623,6 +659,85 @@ impl Nimbra {
         );
         cx.notify();
     }
+}
+
+impl Nimbra {
+    /// NIMBRA_SCREEN=update-download: the progress of a pretend download, then its notice.
+    pub(super) fn pretend_update_download(&mut self, cx: &mut Context<Self>) {
+        use crate::update::{Progress, Stage};
+        const TOTAL: u64 = 24 * 1024 * 1024;
+        cx.spawn(async move |this, cx| {
+            let set = |progress: Option<Progress>,
+                       this: &gpui::WeakEntity<Nimbra>,
+                       cx: &mut gpui::AsyncApp| {
+                this.update(cx, |this, cx| {
+                    this.update_progress = progress;
+                    cx.notify();
+                })
+                .is_ok()
+            };
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            for step in 0..=60u64 {
+                let stage = Stage::Downloading {
+                    done: TOTAL * step / 60,
+                    total: Some(TOTAL),
+                };
+                let progress = Progress {
+                    version: "0.1.4".into(),
+                    stage,
+                };
+                if !set(Some(progress), &this, cx) {
+                    return;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+            }
+            let verifying = Progress {
+                version: "0.1.4".into(),
+                stage: Stage::Verifying,
+            };
+            set(Some(verifying), &this, cx);
+            cx.background_executor().timer(Duration::from_secs(2)).await;
+            this.update(cx, |this, cx| {
+                this.show_update_ready("0.1.4", cx);
+                this.update_ready = Some("0.1.4".into());
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The update's card says `version` is ready, with its Restart button, for as long as a
+    /// notice would stay; the sidebar keeps offering the restart after that.
+    pub(super) fn show_update_ready(&mut self, version: &str, cx: &mut Context<Self>) {
+        let ready = crate::update::Progress {
+            version: version.to_string(),
+            stage: crate::update::Stage::Ready,
+        };
+        self.update_progress = Some(ready.clone());
+        let seconds = (4. + update_notice(version).chars().count() as f32 / 25.).min(20.);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs_f32(seconds))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.update_progress.as_ref() == Some(&ready) {
+                    this.update_progress = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+}
+
+/// What the update's card says once the new version is ready (beside its Restart button).
+pub(super) fn update_notice(version: &str) -> SharedString {
+    format!("Nimbra {version} is ready. Restart to update.").into()
 }
 
 #[cfg(test)]

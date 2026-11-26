@@ -225,6 +225,134 @@ pub(super) struct MenuPopup {
     pub(super) _activation: gpui::Subscription,
 }
 
+/// Where an update's progress is shown: over the main window's `frame`, in its look, and
+/// as big as the notice that takes its place when the update is ready.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct UpdatePlace {
+    pub(super) frame: gpui::Bounds<gpui::Pixels>,
+    pub(super) dark: bool,
+    pub(super) size: (f32, f32),
+}
+
+/// A new version on its way in: what is happening and a bar, at the bottom of the window
+/// until it is ready (see `Nimbra::sync_update_window`).
+pub(super) struct UpdatePill {
+    pub(super) owner: gpui::WeakEntity<Nimbra>,
+    pub(super) progress: crate::update::Progress,
+    pub(super) dark: bool,
+}
+
+impl Render for UpdatePill {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::update::Stage;
+        let t = if self.dark {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        let version = &self.progress.version;
+        let frame = div()
+            .size_full()
+            .p(px(MENU_MARGIN))
+            .font_family(crate::theme::SANS)
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(t.text);
+        let card = div()
+            .size_full()
+            .flex()
+            .rounded(px(12.))
+            .bg(t.raised)
+            .border_1()
+            .border_color(t.border_strong)
+            .shadow(vec![popup_shadow(&t)]);
+        // Ready: the same card says so, laid out as a notice with its Restart button.
+        if self.progress.stage == Stage::Ready {
+            let owner = self.owner.clone();
+            return frame
+                .child(
+                    card.items_center()
+                        .justify_between()
+                        .gap(px(toast::GAP))
+                        .pl(px(toast::LEFT))
+                        .pr(px(toast::RIGHT))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_size(px(toast::FONT))
+                                .line_height(px(toast::LINE))
+                                .child(system_events::update_notice(version)),
+                        )
+                        .child(
+                            button(&t, ButtonKind::Primary, "Restart", None)
+                                .id("restart-to-update")
+                                .justify_center()
+                                .flex_none()
+                                .w(px(toast::DISMISS.0))
+                                .h(px(toast::DISMISS.1))
+                                .press_soft()
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    owner
+                                        .update(cx, |owner, cx| owner.restart_to_update(cx))
+                                        .ok();
+                                })),
+                        ),
+                )
+                .into_any_element();
+        }
+        let (label, amount) = match self.progress.stage {
+            Stage::Downloading { done, total } => (
+                format!("Updating to Nimbra {version}…"),
+                match self.progress.fraction() {
+                    Some(f) if total.is_some() => format!("{}%", (f * 100.).floor() as u32),
+                    _ => format!("{:.1} MB", done as f64 / (1024. * 1024.)),
+                },
+            ),
+            Stage::Verifying | Stage::Ready => {
+                (format!("Checking Nimbra {version}…"), String::new())
+            }
+        };
+        let fraction = self.progress.fraction().unwrap_or(0.);
+        frame
+            .child(
+                card.flex_col()
+                    .justify_center()
+                    .gap(px(10.))
+                    .px(px(toast::LEFT))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(label),
+                            )
+                            .child(div().flex_none().text_color(t.text3).child(amount)),
+                    )
+                    .child(
+                        div().h(px(4.)).w_full().rounded_full().bg(t.hover).child(
+                            div()
+                                .h_full()
+                                .w(gpui::relative(fraction))
+                                .rounded_full()
+                                .bg(crate::ui::primary_fill(0.)),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
 /// A short message at the bottom of the window (see `Nimbra::sync_notice_window`).
 pub(super) struct NoticeToast {
     pub(super) owner: gpui::WeakEntity<Nimbra>,
@@ -1047,9 +1175,10 @@ impl Nimbra {
         let Some(frame) = self.frame else {
             return;
         };
+        let lift = self.update_lift();
         let origin = gpui::point(
             frame.origin.x + (frame.size.width - px(size.0)) / 2. - px(MENU_MARGIN),
-            frame.origin.y + frame.size.height - px(size.1 + 24.) - px(MENU_MARGIN),
+            frame.origin.y + frame.size.height - px(size.1 + 24. + lift) - px(MENU_MARGIN),
         );
         let owner = cx.weak_entity();
         let dark = self.dark;
@@ -1114,7 +1243,7 @@ impl Nimbra {
         // Long enough to read it.
         let seconds = (4. + toast.text.chars().count() as f32 / 25.).min(20.);
         // Above the Undo pill when that is showing too.
-        let lift = if self.undo_window.is_some() { 54. } else { 0. };
+        let lift = if self.undo_window.is_some() { 54. } else { 0. } + self.update_lift();
         let origin = gpui::point(
             frame.origin.x + (frame.size.width - px(width)) / 2. - px(MENU_MARGIN),
             frame.origin.y + frame.size.height - px(height + 24. + lift) - px(MENU_MARGIN),
@@ -1160,6 +1289,85 @@ impl Nimbra {
             .ok();
         })
         .detach();
+    }
+
+    /// Shows `progress` in its window at the bottom of the main window (`placed`: its frame
+    /// and look), or closes that window when there is nothing to show. The window is placed
+    /// again when the main window moves or changes look, and otherwise only redrawn.
+    pub(super) fn sync_update_window(
+        &mut self,
+        progress: Option<crate::update::Progress>,
+        placed: Option<UpdatePlace>,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(progress), Some(place)) = (progress, placed) else {
+            if let Some(handle) = self.update_window.take() {
+                remove_popup(handle, cx);
+            }
+            self.update_window_for = None;
+            return;
+        };
+        if let Some(handle) = self.update_window
+            && self.update_window_for == placed
+        {
+            let redrawn = handle.update(cx, |pill, _, cx| {
+                pill.progress = progress.clone();
+                cx.notify();
+            });
+            if redrawn.is_ok() {
+                return;
+            }
+        }
+        if let Some(handle) = self.update_window.take() {
+            remove_popup(handle, cx);
+        }
+        let owner = cx.weak_entity();
+        let UpdatePlace {
+            frame,
+            dark,
+            size: (width, height),
+        } = place;
+        let origin = gpui::point(
+            frame.origin.x + (frame.size.width - px(width)) / 2. - px(MENU_MARGIN),
+            frame.origin.y + frame.size.height - px(height + 24.) - px(MENU_MARGIN),
+        );
+        let opened = cx.open_window(
+            gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                    origin,
+                    gpui::size(px(width + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
+                ))),
+                titlebar: None,
+                kind: gpui::WindowKind::PopUp,
+                // Keyboard focus stays in the main window.
+                focus: false,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |window, cx| {
+                crate::blur::no_window_shadow(window);
+                cx.new(|_| UpdatePill {
+                    owner,
+                    progress,
+                    dark,
+                })
+            },
+        );
+        self.update_window = opened.ok();
+        self.update_window_for = self.update_window.and(placed);
+    }
+
+    /// How far the pop-ups at the bottom of the window (Undo, notices) move up to clear an
+    /// update's progress. Not at all once the update is done: its notice then takes the
+    /// progress's place while that window is still on its way out.
+    fn update_lift(&self) -> f32 {
+        match (&self.update_progress, &self.update_window_for) {
+            (Some(_), Some(place)) if self.update_window.is_some() => place.size.1 + 10.,
+            _ => 0.,
+        }
     }
 
     pub(super) fn close_undo(&mut self, cx: &mut Context<Self>) {

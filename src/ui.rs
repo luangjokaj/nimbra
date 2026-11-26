@@ -194,7 +194,7 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
 
 /// The primary button's gradient, from at rest (0) to hovered (1): brighter on hover,
 /// inside the button. (A glow around it would spill onto whatever is behind.)
-fn primary_fill(level: f32) -> gpui::Background {
+pub fn primary_fill(level: f32) -> gpui::Background {
     let mix = |rest: u32, hover: u32| {
         let (a, b) = (gpui::rgb(rest), gpui::rgb(hover));
         let lerp = |x: f32, y: f32| x + (y - x) * level;

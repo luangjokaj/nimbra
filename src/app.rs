@@ -497,6 +497,11 @@ pub struct Nimbra {
     restart_for_update: bool,
     /// A check for a new version is running (from the menu, Settings or the timer).
     update_checking: bool,
+    /// How far the new version has got while it downloads and is checked (`update.rs`).
+    update_progress: Option<crate::update::Progress>,
+    /// The window showing `update_progress`, and where it was placed (`UpdatePlace`).
+    update_window: Option<gpui::WindowHandle<UpdatePill>>,
+    update_window_for: Option<UpdatePlace>,
     /// What the last check found, for Settings › About.
     update_status: Option<SharedString>,
     /// The address suggestions' window, where it was put, and for how many rows.
@@ -918,6 +923,9 @@ impl Nimbra {
             update_ready: crate::update::staged(),
             restart_for_update: false,
             update_checking: false,
+            update_progress: None,
+            update_window: None,
+            update_window_for: None,
             update_status: None,
             notice_shown: None,
             notice_gen: 0,
@@ -1184,6 +1192,16 @@ impl Nimbra {
         if screen == "bulk" {
             this.picked = this.visible().into_iter().take(3).collect();
         }
+        // NIMBRA_SCREEN=update: a new version is ready, with its card (screenshots).
+        if screen == "update" {
+            this.update_ready = Some("0.1.4".into());
+            this.show_update_ready("0.1.4", cx);
+        }
+        // NIMBRA_SCREEN=update-download: a new version downloads, is checked, and is ready,
+        // with nothing fetched (screenshots).
+        if screen == "update-download" {
+            this.pretend_update_download(cx);
+        }
         // NIMBRA_SCREEN=about opens the About panel (screenshots).
         if screen == "about" {
             cx.defer(|_| crate::about::show());
@@ -1243,6 +1261,7 @@ impl Nimbra {
         })
         .detach();
         this.watch_for_updates(cx);
+        this.greet_new_version(cx);
         // Already signed in on a previous run: go straight to the inbox. The keychain is
         // read off the main thread because macOS may show a permission prompt for it, and
         // the window should not freeze (or fail to appear) while that is open.
@@ -2506,6 +2525,33 @@ impl Render for Nimbra {
             self.bar_fade = None;
         }
         self.frame = Some(window.bounds());
+        // The update's progress stays on screen while Nimbra is the app in use.
+        let shown = self
+            .update_progress
+            .clone()
+            .filter(|_| cx.active_window().is_some());
+        // As big as the notice it turns into once the update is ready, so that notice takes
+        // its place exactly.
+        let placed = shown.as_ref().map(|p| {
+            let room = f32::from(window.bounds().size.width);
+            let ready = system_events::update_notice(&p.version);
+            let ready = Toast::new(&ready, room, window.text_system());
+            UpdatePlace {
+                frame: window.bounds(),
+                dark: self.dark,
+                size: (ready.width, ready.height),
+            }
+        });
+        let pushed = self
+            .update_window
+            .and_then(|h| h.read(cx).ok().map(|pill| pill.progress.clone()));
+        if placed != self.update_window_for || shown != pushed {
+            cx.spawn(async move |this, cx| {
+                this.update(cx, |this, cx| this.sync_update_window(shown, placed, cx))
+                    .ok();
+            })
+            .detach();
+        }
         if self.pull_hold && !self.fetching() {
             self.pull_hold = false;
             self.pull_done = true;
