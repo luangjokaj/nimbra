@@ -5,3 +5,6 @@ tasks/
 
 # Local notes, kept outside the repo
 CLAUDE.md
+
+# Local Cargo config (scripts/local-core.sh on)
+.cargo/config.toml

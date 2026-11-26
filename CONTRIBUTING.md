@@ -52,9 +52,12 @@ given screen directly, which is how screenshots for issues and pull requests are
 
 Where things live is in [Layout](README.md#layout).
 
-The mail engine is its own repo, [nimbra-core](https://github.com/nimbra-mail/core), shared with the iOS app. Clone
-it next to this one (`../core`); Cargo builds it from there. A change to the engine is made, tested and reviewed
-there first (it has its own CONTRIBUTING.md), then this app takes it up.
+The mail engine is its own repo, [nimbra-core](https://github.com/nimbra-mail/core), shared with the iOS app. Cargo
+fetches it from GitHub at the release tag in `Cargo.toml`, so you don't need a copy of it to work on the app. A change
+to the engine is made, tested and reviewed there first (it has its own CONTRIBUTING.md), then this app takes it up
+with a new tag. To try an engine change in the app before it is released, clone the engine next to this repo
+(`../core`) and run `scripts/local-core.sh on`; run `scripts/local-core.sh off` before you commit, so `Cargo.lock`
+points at GitHub again (CI checks it). [Working on the engine](README.md#working-on-the-engine) has the details.
 
 ## What a good change looks like
 

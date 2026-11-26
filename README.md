@@ -55,12 +55,11 @@
 
 ## Get started
 
-Nimbra's mail engine is its own repo, [nimbra-core](https://github.com/nimbra-mail/core), checked out next to this one:
-
 ```sh
-git clone https://github.com/nimbra-mail/core ../core
 cargo run
 ```
+
+Nimbra's mail engine is its own repo, [nimbra-core](https://github.com/nimbra-mail/core); Cargo fetches it from GitHub at the release tag in `Cargo.toml`. To change the engine and the app together, see [Working on the engine](#working-on-the-engine).
 
 Or download a signed build from [Releases](https://github.com/nimbra-mail/desktop/releases) (see [CHANGELOG.md](CHANGELOG.md) for what's new). Nimbra is in alpha: expect rough edges.
 
@@ -249,6 +248,19 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 
 `NIMBRA_SCREEN=welcome`, `palette`, `finder` (the search panel, holding `NIMBRA_SEARCH` if set), `zero`, `loading`, `compose`, `compose-full`, `compose-suggest`, `window`, `more`, `offline`, `snooze`, `snooze-time`, `shortcuts`, `settings-accounts`, `settings-remove`, `settings-appearance`, `settings-reading`, `settings-composing` (also `settings-composing-html` and `settings-composing-preview`, on the sample's HTML signature), `settings-notifications`, `settings-privacy`, `settings-shortcuts`, `settings-about` or `about` opens that screen directly on the sample data. `NIMBRA_SHORTCUTS_TAB=<n>` switches the shortcuts sheet to tab n a second after it opens. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
 
+### Working on the engine
+
+To build the app against your own copy of [nimbra-core](https://github.com/nimbra-mail/core) instead of the release, clone it next to this repo and switch to it:
+
+```sh
+git clone https://github.com/nimbra-mail/core ../core
+scripts/local-core.sh on      # build nimbra-core from ../core
+scripts/local-core.sh status  # which one is in use
+scripts/local-core.sh off     # back to the release tag
+```
+
+`on` writes a gitignored `.cargo/config.toml` with a `[patch]` for the git dependency; `Cargo.toml` stays as it is. While it is on, `Cargo.lock` points nimbra-core at the local path: run `off` before committing (CI rejects a `Cargo.lock` without the GitHub source). To take up a new engine release, change the tag in `Cargo.toml` (both entries) and run `cargo update -p nimbra-core`.
+
 ### Releases
 
 `./scripts/release <version>` builds, signs, notarizes and publishes a release; see [docs/releasing.md](docs/releasing.md). What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
@@ -264,8 +276,8 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 ### Layout
 
 The mail engine (providers, MIME, discovery, the encrypted store, sending, contacts, signatures, snooze) is not in
-this repo: it is [nimbra-core](https://github.com/nimbra-mail/core), which the iOS app runs too. Cargo finds it in
-the sibling checkout `../core` (clone it next to this one); `crate::mail`, `crate::gmail` and the rest are its
+this repo: it is [nimbra-core](https://github.com/nimbra-mail/core), which the iOS app runs too. Cargo takes it from
+GitHub at a release tag (or from `../core`, with [`scripts/local-core.sh on`](#working-on-the-engine)); `crate::mail`, `crate::gmail` and the rest are its
 modules, brought in by name in `src/main.rs`. Changes to how mail is fetched, kept or sent go there.
 
 **The Mac app** (`src/`, GPUI):
