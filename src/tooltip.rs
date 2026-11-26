@@ -9,15 +9,16 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyView, AnyWindowHandle, App, Bounds, Context, Div, IntoElement, Pixels, Point, Render,
-    SharedString, TextRun, Window, WindowKind, WindowOptions, div, point, prelude::*, px, size,
+    Animation, AnimationExt as _, AnyElement, AnyView, AnyWindowHandle, App, Bounds, Context, Div,
+    IntoElement, Pixels, Point, Render, SharedString, TextRun, Window, WindowKind, WindowOptions,
+    div, point, prelude::*, px, size,
 };
 
-use crate::theme::Theme;
-use crate::ui::{kbd, shadow};
+use crate::theme::{Theme, radius, space};
+use crate::ui::{Elevation, caption, elevation, motion};
 
 /// See-through room around the bubble, for its shadow.
 const MARGIN: f32 = 28.;
@@ -28,6 +29,26 @@ const MISSES: u8 = 2;
 /// How far the pointer may go before the tooltip gives up. GPUI hears nothing once the
 /// pointer is over the email, so would otherwise leave it showing.
 const REACH: (f32, f32) = (260., 60.);
+/// Left of the label and right of the last text.
+const PAD: f32 = 10.;
+/// A 16pt line, 5pt above and below it, and the border.
+const HEIGHT: f32 = 28.;
+
+thread_local! {
+    /// When a tooltip last went, so that moving along a toolbar shows the next one at once.
+    static LAST_GONE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+fn gone() {
+    LAST_GONE.set(Some(Instant::now()));
+}
+
+/// Whether a tooltip opening now follows another closely enough to skip its fade.
+fn follows_another() -> bool {
+    LAST_GONE
+        .get()
+        .is_some_and(|at| at.elapsed() < motion::TIP_SKIP)
+}
 
 pub struct Tip {
     dark: bool,
@@ -48,6 +69,7 @@ pub fn build(
 ) -> AnyView {
     let tip = cx.new(|cx| {
         cx.on_release(|tip: &mut Tip, cx| {
+            gone();
             if let Some(popup) = tip.popup.take() {
                 cx.defer(move |cx| {
                     popup.update(cx, |_, window, _| window.remove_window()).ok();
@@ -96,18 +118,16 @@ impl Tip {
                     .width,
             )
         };
-        // The same paddings as `bubble`: around the label, then around the key.
         let label = measure(self.label.clone(), crate::theme::SANS, 12.).ceil() + 1.;
-        let (tail, height) = if self.key.is_empty() {
-            (10., 28.)
+        let key = if self.key.is_empty() {
+            0.
         } else {
-            let key = measure(self.key.into(), crate::theme::MONO, 11.).ceil() + 1.;
-            // The key is mono 11 at medium, in 5pt of padding and a border, at least 18 wide.
-            (8. + (key + 12.).max(18.) + 6., 32.)
+            space::S + measure(self.key.into(), crate::theme::MONO, 11.).ceil() + 1.
         };
+        let height = HEIGHT;
         let view = owner.viewport_size();
         let (view_w, view_h) = (f32::from(view.width), f32::from(view.height));
-        let width = (10. + label + tail + 2.).min(view_w);
+        let width = (PAD + label + key + PAD + 2.).min(view_w);
 
         // Below and right of the pointer, flipped where that leaves the window.
         let (mut x, mut y) = (f32::from(at.x) + 1., f32::from(at.y) + GAP);
@@ -166,6 +186,7 @@ impl Tip {
                                 let keep =
                                     active && near && missed < MISSES && !crate::blur::mouse_down();
                                 if !keep {
+                                    gone();
                                     window.remove_window();
                                 }
                                 keep
@@ -176,7 +197,12 @@ impl Tip {
                         }
                     })
                     .detach();
-                    Popup { dark, label, key }
+                    Popup {
+                        dark,
+                        label,
+                        key,
+                        instant: follows_another(),
+                    }
                 })
             },
         );
@@ -193,7 +219,7 @@ impl Render for Tip {
             // The outer padding keeps the tooltip off the pointer.
             div()
                 .pt(px(6.))
-                .child(bubble(self.dark, &self.label, self.key))
+                .child(fade_in(bubble(self.dark, &self.label, self.key), false))
         }
     }
 }
@@ -202,35 +228,50 @@ struct Popup {
     dark: bool,
     label: SharedString,
     key: &'static str,
+    instant: bool,
 }
 
 impl Render for Popup {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .p(px(MARGIN))
-            .child(bubble(self.dark, &self.label, self.key).size_full())
+        div().size_full().p(px(MARGIN)).child(fade_in(
+            bubble(self.dark, &self.label, self.key).size_full(),
+            self.instant,
+        ))
     }
 }
 
+/// The label, then its key as quiet text, the way macOS help tags show one.
 fn bubble(dark: bool, label: &SharedString, key: &'static str) -> Div {
     let t = if dark { Theme::dark() } else { Theme::light() };
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
-        .pl(px(10.))
-        .pr(px(if key.is_empty() { 10. } else { 6. }))
-        .py(px(5.))
-        .rounded(px(8.))
+        .gap(px(space::S))
+        .h(px(HEIGHT))
+        .px(px(PAD))
+        .rounded(px(radius::CONTROL))
         .bg(t.raised)
         .border_1()
-        .border_color(t.border_strong)
-        .shadow(vec![shadow(t.shadow, 8., 20., -4.)])
+        .border_color(t.edge)
+        .shadow(elevation(&t, Elevation::Pop))
         .font_family(crate::theme::SANS)
         .text_size(px(12.))
         .line_height(px(16.))
         .text_color(t.text)
         .child(div().whitespace_nowrap().child(label.clone()))
-        .when(!key.is_empty(), |d| d.child(kbd(&t, key)))
+        .when(!key.is_empty(), |d| d.child(caption(key, t.text3)))
+}
+
+fn fade_in(bubble: Div, instant: bool) -> AnyElement {
+    if instant {
+        bubble.into_any_element()
+    } else {
+        bubble
+            .with_animation(
+                "tip-in",
+                Animation::new(motion::TIP).with_easing(motion::ease_out),
+                |bubble, delta| bubble.opacity(delta),
+            )
+            .into_any_element()
+    }
 }

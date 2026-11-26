@@ -314,7 +314,7 @@ impl Nimbra {
                 .pl(px(12.))
                 .pt(px(10.))
                 .pb(px(6.))
-                .child(overline(label.to_string(), t.faint))
+                .child(overline(t, label.to_string()))
         };
         let mut rows: Vec<AnyElement> = Vec::new();
         if empty {
@@ -478,7 +478,7 @@ impl Nimbra {
                                             d.child(div().size(px(6.)).rounded_full().bg(t.mint))
                                         })
                                         .child(div().flex_1())
-                                        .child(mono(hit.time.clone(), t.text3)),
+                                        .child(caption(hit.time.clone(), t.text3)),
                                 )
                                 // Subject and preview on a line each, cut at the edge, so
                                 // every result is the same height.
@@ -616,7 +616,7 @@ impl Nimbra {
                             .child(hint(&["↵"], "Open"))
                             .child(hint(&["esc"], "Close"))
                             .child(div().flex_1())
-                            .child(serif("Nimbra", 18., t.text2)),
+                            .child(display("Nimbra", 18., t.text2)),
                     ),
             )
     }

@@ -391,13 +391,12 @@ impl Nimbra {
                         -10.,
                     )])
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(serif(
+                    .child(title_s(
                         if matches!(self.label_sheet, LabelSheet::Rename(_)) {
                             "Rename label"
                         } else {
                             "New label"
                         },
-                        28.,
                         t.text,
                     ))
                     .child(
@@ -426,8 +425,8 @@ impl Nimbra {
                             .justify_end()
                             .gap(px(8.))
                             .child(
-                                button(t, ButtonKind::Ghost, "Cancel", None)
-                                    .id("label-cancel").press_soft()
+                                button(t, ButtonKind::Ghost, "Cancel")
+                                    .id("label-cancel").press(t)
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.close_new_label(cx)),
                                     ),
@@ -438,10 +437,9 @@ impl Nimbra {
                                     t,
                                     ButtonKind::Primary,
                                     if matches!(self.label_sheet, LabelSheet::Rename(_)) { "Rename" } else { "Create" },
-                                    Some("↵"),
                                 )
-                                    .id("label-create").press_soft()
-                                    .on_click(cx.listener(|this, _, _, cx| this.create_label(cx))), "label-create", true)),
+                                    .id("label-create").press(t)
+                                    .on_click(cx.listener(|this, _, _, cx| this.create_label(cx))), "label-create")),
                     ),
             )
     }

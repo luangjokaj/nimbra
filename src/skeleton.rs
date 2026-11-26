@@ -235,12 +235,8 @@ impl Nimbra {
                             .opacity(WAITING)
                             .child(switch)
                             .child(match compose {
-                                ComposeLook::Keyed => {
-                                    button(t, ButtonKind::Secondary, "Compose", Some("C"))
-                                        .h(px(34.))
-                                }
-                                ComposeLook::Plain => {
-                                    button(t, ButtonKind::Secondary, "Compose", None).h(px(34.))
+                                ComposeLook::Keyed | ComposeLook::Plain => {
+                                    button(t, ButtonKind::Secondary, "Compose").h(px(34.))
                                 }
                                 ComposeLook::Icon => icon_button(t, "draft")
                                     .size(px(34.))
@@ -298,9 +294,9 @@ impl Nimbra {
             .children(["reply", "reply-all", "forward"].map(|name| icon_button(t, name)))
             .child(rule())
             .child(if self.original {
-                button(t, ButtonKind::Ghost, "Reader view", Some("V")).bg(t.selected)
+                button(t, ButtonKind::Ghost, "Reader view").bg(t.selected)
             } else {
-                button(t, ButtonKind::Ghost, "Show original", Some("V"))
+                button(t, ButtonKind::Ghost, "Show original")
             })
             .child(div().flex_1())
             .children(["up", "down", "more"].map(|name| icon_button(t, name)));

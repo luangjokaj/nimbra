@@ -313,7 +313,7 @@ impl Render for SettingsWindow {
                                         .flex()
                                         .flex_col()
                                         .gap(px(6.))
-                                        .child(serif(tab.label(), 34., t.text))
+                                        .child(title_s(tab.label(), t.text))
                                         .child(meta(tab.blurb(), t.text3)),
                                 )
                             })
@@ -332,11 +332,7 @@ fn group(t: &Theme, title: Option<&str>, rows: Vec<AnyElement>) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(8.))
-        .children(title.map(|title| {
-            div()
-                .pl(px(4.))
-                .child(overline(title.to_uppercase(), t.text3))
-        }))
+        .children(title.map(|title| div().pl(px(4.)).child(overline(t, title.to_uppercase()))))
         .child(
             div()
                 .flex()
@@ -669,9 +665,9 @@ impl SettingsWindow {
                     )
                     .when(several && !is_default, |d| {
                         d.child(
-                            button(t, ButtonKind::Ghost, "Make default", None)
+                            button(t, ButtonKind::Ghost, "Make default")
                                 .id(("default-account", i))
-                                .press_soft()
+                                .press(t)
                                 .tooltip(tip(
                                     t.dark,
                                     "Its profile in the sidebar, and new messages from it",
@@ -685,9 +681,9 @@ impl SettingsWindow {
                     })
                     .when(!shown, |d| {
                         d.child(
-                            button(t, ButtonKind::Secondary, "Switch to", None)
+                            button(t, ButtonKind::Secondary, "Switch to")
                                 .id(("switch-account", i))
-                                .press_soft()
+                                .press(t)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let id = id.clone();
                                     this.owner.update(cx, |n, cx| n.switch_account(id, cx));
@@ -711,9 +707,9 @@ impl SettingsWindow {
             .gap(px(8.))
             .when(can_add, |d| {
                 d.child(
-                    button(t, ButtonKind::Secondary, "Add account", None)
+                    button(t, ButtonKind::Secondary, "Add account")
                         .id("add-account")
-                        .press_soft()
+                        .press(t)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.tab = Tab::Accounts;
                             this.owner
@@ -731,10 +727,9 @@ impl SettingsWindow {
                         } else {
                             "Sign out of this account"
                         },
-                        None,
                     )
                     .id("sign-out")
-                    .press_soft()
+                    .press(t)
                     .when(armed, |d| d.text_color(t.rose))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if this.arm("sign-out", cx) {
@@ -744,9 +739,9 @@ impl SettingsWindow {
                 )
             });
         let check_again = |cx: &mut Context<Self>| {
-            button(t, ButtonKind::Secondary, "Check again", None)
+            button(t, ButtonKind::Secondary, "Check again")
                 .id("check-photo")
-                .press_soft()
+                .press(t)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.owner.update(cx, |n, cx| n.check_photo_again(cx));
                 }))
@@ -756,9 +751,9 @@ impl SettingsWindow {
                 t,
                 "Show your Google photo",
                 "This sign-in predates profile photos. Allow your basic profile once in your browser, choosing this same account.",
-                button(t, ButtonKind::Secondary, "Allow", None)
+                button(t, ButtonKind::Secondary, "Allow")
                     .id("allow-photo")
-                    .press_soft()
+                    .press(t)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.owner.update(cx, |n, cx| n.allow_profile_photo(cx));
                     })),
@@ -1100,9 +1095,9 @@ impl SettingsWindow {
                         t,
                         "Try it",
                         "Shows a sample notification.",
-                        button(t, ButtonKind::Secondary, "Send a test", None)
+                        button(t, ButtonKind::Secondary, "Send a test")
                             .id("notify-test")
-                            .press_soft()
+                            .press(t)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let sound = this.owner.read(cx).settings.notify_sound;
                                 crate::notify::show(
@@ -1187,10 +1182,9 @@ impl SettingsWindow {
                         } else {
                             "Clear"
                         },
-                        None,
                     )
                     .id("clear-store")
-                    .press_soft()
+                    .press(t)
                     .when(armed, |d| d.text_color(t.rose))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if this.arm("clear", cx) {
@@ -1299,7 +1293,7 @@ impl SettingsWindow {
                             .size_full(),
                         ),
                 )
-                .child(serif("Nimbra", 44., t.text))
+                .child(title_l("Nimbra", t.text))
                 .child(meta(format!("Version {}", env!("CARGO_PKG_VERSION")), t.text3))
                 .child(
                     div()
@@ -1309,9 +1303,9 @@ impl SettingsWindow {
                         .child("A calm, fast Gmail client for the Mac. Your mail stays in Gmail; this Mac keeps an encrypted copy so it opens instantly."),
                 )
                 .child(
-                    button(t, ButtonKind::Secondary, "Keyboard shortcuts", None)
+                    button(t, ButtonKind::Secondary, "Keyboard shortcuts")
                         .id("about-shortcuts")
-                        .press_soft()
+                        .press(t)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.tab = Tab::Shortcuts;
                             cx.notify();

@@ -34,10 +34,29 @@ pub fn set_badge(count: u32) {
 #[cfg(not(target_os = "macos"))]
 pub fn set_badge(_count: u32) {}
 
-/// Whether the Mac is set to reduce motion (System Settings › Accessibility).
+/// Whether the Mac is set to reduce motion (System Settings › Accessibility). Asked of
+/// AppKit at most once a second, as animations ask every frame.
+pub fn reduces_motion() -> bool {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static ASKED: Cell<Option<(Instant, bool)>> = const { Cell::new(None) };
+    }
+    const FRESH: Duration = Duration::from_secs(1);
+    ASKED.with(|asked| match asked.get() {
+        Some((at, reduce)) if at.elapsed() < FRESH => reduce,
+        _ => {
+            let reduce = ask_reduce_motion();
+            asked.set(Some((Instant::now(), reduce)));
+            reduce
+        }
+    })
+}
+
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
-pub fn reduces_motion() -> bool {
+fn ask_reduce_motion() -> bool {
     use objc::runtime::{BOOL, NO, Object};
     use objc::{class, msg_send, sel, sel_impl};
     // SAFETY: main thread; the shared workspace lives as long as the app.
@@ -52,7 +71,7 @@ pub fn reduces_motion() -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn reduces_motion() -> bool {
+fn ask_reduce_motion() -> bool {
     false
 }
 

@@ -71,7 +71,7 @@ impl Nimbra {
             .pt(px(18.))
             .pb(px(8.))
             .cursor_pointer()
-            .child(overline(label, t.text3).group_hover("section", move |s| s.text_color(bright)))
+            .child(overline(t, label).group_hover("section", move |s| s.text_color(bright)))
             .child(
                 icon(if open { "down" } else { "next" }, 11., t.text3)
                     .group_hover("section", move |s| s.text_color(bright)),
@@ -953,7 +953,7 @@ impl Nimbra {
                                             .font_weight(FontWeight::MEDIUM)
                                             .child("Inbox zero streak"),
                                     )
-                                    .child(mono("7d", t.text3)),
+                                    .child(caption("7d", t.text3)),
                             )
                             .child(div().flex().items_end().gap(px(5.)).h(px(22.)).children(
                                 bars.map(|h: f32| {
@@ -1212,7 +1212,7 @@ pub(super) fn nav(
                 .child(label.to_string()),
         )
         // Not violet, nor is the icon: on glass over a bright desktop it cannot be seen.
-        .children(count.map(|n| mono(n, if selected { t.text } else { t.text3 })))
+        .children(count.map(|n| caption(n, if selected { t.text } else { t.text3 })))
 }
 
 /// Laid over a row: once `armed`, scrolls `handle` so the row is in view, at least `top`

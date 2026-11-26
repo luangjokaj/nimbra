@@ -20,11 +20,11 @@ use crate::mail::{self, View};
 use crate::rich::{self, Block, Kind};
 use crate::scheduled::{self, Outcome, Scheduled};
 use crate::sending::{Job, QueuedMail, Stage};
-use crate::theme::{Accent, SERIF, Theme, Tone, c, fade, gradient};
+use crate::theme::{Accent, SANS, Theme, Tone, c, fade, gradient};
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Press, TOP_BAR, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill,
-    shadow, tip,
+    ButtonKind, Press, TOP_BAR, avatar, button, caption, display, hero, icon, icon_button, kbd,
+    meta, overline, pill, shadow, tip, title_l, title_m, title_s,
 };
 use crate::webview::HtmlView;
 
@@ -552,10 +552,6 @@ pub struct Nimbra {
     search: Entity<TextInput>,
     query: String,
     _search_events: gpui::Subscription,
-    /// The toolbar button under the mouse (what it does, its shortcut). Shown in the strip
-    /// above an email in the original view, where a floating tooltip would be hidden
-    /// behind the native web view.
-    hint: Option<(&'static str, &'static str)>,
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
@@ -895,7 +891,6 @@ impl Nimbra {
             counts: HashMap::new(),
             labels: Vec::new(),
             checks: Checks::default(),
-            hint: None,
             menu_at: (0., 0.),
             row_actions: Vec::new(),
             menu_for: None,
@@ -1157,23 +1152,6 @@ impl Nimbra {
         }
     }
 
-    fn set_hint(
-        &mut self,
-        hovered: bool,
-        label: &'static str,
-        key: &'static str,
-        cx: &mut Context<Self>,
-    ) {
-        if hovered {
-            self.hint = Some((label, key));
-        } else if self.hint.is_some_and(|(current, _)| current == label) {
-            // Only clear our own hint: moving straight to the next button sets its hint
-            // first, and that one must stay.
-            self.hint = None;
-        }
-        cx.notify();
-    }
-
     /// The store record (and sync point) of a mailbox. Labels are kept by their Gmail id,
     /// so creating or deleting a label never mixes up what another label holds.
     fn record_for(&self, view: View) -> String {
@@ -1201,7 +1179,7 @@ impl Nimbra {
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .child(div().pb(px(2.)).child(overline(*title, t.text3)))
+                .child(div().pb(px(2.)).child(overline(t, *title)))
                 .children(keys.iter().map(|(chips, what)| {
                     div()
                         .flex()
@@ -1276,7 +1254,7 @@ impl Nimbra {
                             .flex()
                             .items_end()
                             .justify_between()
-                            .child(serif("Keyboard shortcuts", 28., t.text))
+                            .child(title_s("Keyboard shortcuts", t.text))
                             .child(meta("esc to close".to_string(), t.text3)),
                     )
                     .child(
@@ -1350,7 +1328,7 @@ impl Nimbra {
                         -10.,
                     )])
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(serif(&title, 28., t.text))
+                    .child(title_s(&title, t.text))
                     .child(div().text_color(t.text2).child(body))
                     .child(
                         div()
@@ -1359,18 +1337,18 @@ impl Nimbra {
                             .gap(px(8.))
                             .pt(px(6.))
                             .child(
-                                button(t, ButtonKind::Ghost, "Cancel", Some("esc"))
+                                button(t, ButtonKind::Ghost, "Cancel")
                                     .id("confirm-cancel")
-                                    .press_soft()
+                                    .press(t)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.confirm = None;
                                         cx.notify();
                                     })),
                             )
                             .child(
-                                button(t, ButtonKind::Secondary, yes, None)
+                                button(t, ButtonKind::Secondary, yes)
                                     .id("confirm-yes")
-                                    .press_soft()
+                                    .press(t)
                                     .text_color(t.rose)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         match this.confirm.take() {
@@ -1863,7 +1841,10 @@ fn balance_title(text: &str, size: f32, width: f32, cx: &App) -> String {
         return text.to_string();
     }
     let system = cx.text_system();
-    let font_id = system.resolve_font(&gpui::font(crate::theme::SERIF));
+    let font_id = system.resolve_font(&gpui::Font {
+        weight: crate::ui::display_weight(size),
+        ..gpui::font(SANS)
+    });
     let measure = |s: &str| -> f32 {
         s.chars()
             .map(|c| {
@@ -1916,25 +1897,6 @@ fn balance_title(text: &str, size: f32, width: f32, cx: &App) -> String {
         out.push_str(word);
     }
     out
-}
-
-fn serif(text: &str, size: f32, color: Hsla) -> Div {
-    // The tail of the title (after the last comma, or the last word) is set in italic.
-    let start = text
-        .rfind(", ")
-        .map(|i| i + 2)
-        .or(text.rfind(' ').map(|i| i + 1))
-        .unwrap_or(text.len());
-    let italic = HighlightStyle {
-        font_style: Some(FontStyle::Italic),
-        ..Default::default()
-    };
-    div()
-        .font_family(SERIF)
-        .text_size(px(size))
-        .line_height(px((size * 1.14).round()))
-        .text_color(color)
-        .child(StyledText::new(text.to_string()).with_highlights([(start..text.len(), italic)]))
 }
 
 /// Shortens text to `max` characters with an ellipsis.
@@ -2068,7 +2030,7 @@ impl Nimbra {
             .justify_center()
             .gap(px(14.))
             .bg(t.surface)
-            .child(serif(title, 56., t.text))
+            .child(title_l(title, t.text))
             .child(
                 div()
                     .max_w(px(460.))
@@ -2084,9 +2046,9 @@ impl Nimbra {
                     .flex()
                     .gap(px(8.))
                     .child(crate::ui::glow(
-                        button(t, ButtonKind::Primary, label, None)
+                        button(t, ButtonKind::Primary, label)
                             .id("status-action")
-                            .press_soft()
+                            .press(t)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if matches!(this.status, Status::Failed(_)) {
                                     this.try_again(cx);
@@ -2095,14 +2057,13 @@ impl Nimbra {
                                 }
                             })),
                         "status-action",
-                        true,
                     ))
                     // Signed out of Gmail (or never in): any other address works too.
                     .when(self.status == Status::SignedOut && !own_servers, |d| {
                         d.child(
-                            button(t, ButtonKind::Secondary, "Use another address", None)
+                            button(t, ButtonKind::Secondary, "Use another address")
                                 .id("status-other")
-                                .press_soft()
+                                .press(t)
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.open_account_sheet(None, cx)),
                                 ),

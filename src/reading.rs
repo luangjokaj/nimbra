@@ -520,9 +520,9 @@ impl Nimbra {
                                 .child("Remote images are hidden to protect your privacy."),
                         )
                         .child(
-                            button(t, ButtonKind::Secondary, "Load images", None)
+                            button(t, ButtonKind::Secondary, "Load images")
                                 .id(("load-images", base))
-                                .press_soft()
+                                .press(t)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.load_images(sources.clone(), cx)
                                 })),
@@ -701,7 +701,7 @@ impl Nimbra {
                         .border_color(t.border_strong),
                 )
                 .child(div().flex_1().child(text.to_string()))
-                .child(mono(due.to_string(), t.amber))
+                .child(caption(due.to_string(), t.amber))
         };
         // GPUI has no gradient strokes, so the border is a 1px gradient frame around the card.
         div()
@@ -809,7 +809,7 @@ impl Nimbra {
                         .text_color(t.text3)
                         .child(short(snippet, 110)),
                 )
-                .child(mono(when.to_string(), t.faint))
+                .child(caption(when.to_string(), t.faint))
         };
 
         let attachment = |name: &str, info: &str, from: u32, to: u32| {
@@ -877,43 +877,31 @@ impl Nimbra {
                             .id("toggle-list")
                             .press(t)
                             .tooltip(tip(t.dark, "Show or hide message list", "⌘⇧B"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Show or hide message list", "⌘⇧B", cx)
-                            }))
                             .when(!self.list_open, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
                     )
                     .child(div().w(px(6.)))
                     .when(is_draft, |d| {
                         d.child(crate::ui::glow(
-                            button(t, ButtonKind::Primary, "Edit draft", None)
+                            button(t, ButtonKind::Primary, "Edit draft")
                                 .id("edit-draft")
-                                .press_soft()
+                                .press(t)
                                 .tooltip(tip(t.dark, "Open this draft in the editor", ""))
-                                .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
-                                    crate::ui::glow_hovered("edit-draft", *hovered, window);
-                                    this.set_hint(*hovered, "Open this draft in the editor", "", cx)
-                                }))
                                 .on_click(
                                     cx.listener(|this, _, _, cx| {
                                         this.open_draft(this.selected, cx)
                                     }),
                                 ),
                             "edit-draft",
-                            false,
                         ))
                         .child(div().w(px(8.)))
                     })
                     .child(div().w(px(6.)))
-                    // The key is part of the button: it lights up and clicks with it.
                     .child(
                         done_button(t)
                             .id("mark-done")
                             .press(t)
                             .tooltip(tip(t.dark, "Mark done (archive)", "E"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Mark done (archive)", "E", cx)
-                            }))
                             .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
                     )
                     .child(div().w(px(6.)))
@@ -925,9 +913,6 @@ impl Nimbra {
                             .relative()
                             .press(t)
                             .tooltip(tip(t.dark, "Snooze", "H"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Snooze", "H", cx)
-                            }))
                             .child(
                                 gpui::canvas(
                                     move |bounds, _, _| {
@@ -950,9 +935,6 @@ impl Nimbra {
                             .id("star")
                             .press(t)
                             .tooltip(tip(t.dark, "Star", "S"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Star", "S", cx)
-                            }))
                             .when(m.starred, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
                     )
@@ -961,9 +943,6 @@ impl Nimbra {
                             .id("toggle-unread")
                             .press(t)
                             .tooltip(tip(t.dark, "Mark as unread or read", "U"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Mark as unread or read", "U", cx)
-                            }))
                             // Lit while the open thread is unread.
                             .when(m.unread, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_unread(cx))),
@@ -973,9 +952,6 @@ impl Nimbra {
                             .id("label")
                             .press(t)
                             .tooltip(tip(t.dark, "Add a label", ""))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Add a label", "", cx)
-                            }))
                             .when(self.menu == Some(Menu::Labels), |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_menu(Menu::Labels, window, cx)
@@ -986,9 +962,6 @@ impl Nimbra {
                             .id("move-to")
                             .press(t)
                             .tooltip(tip(t.dark, "Move to", ""))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Move to", "", cx)
-                            }))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_menu(Menu::MoveTo, window, cx)
                             })),
@@ -998,9 +971,6 @@ impl Nimbra {
                             .id("trash")
                             .press(t)
                             .tooltip(tip(t.dark, "Move to trash", "⌫"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Move to trash", "⌫", cx)
-                            }))
                             .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
                     )
                     .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
@@ -1009,9 +979,6 @@ impl Nimbra {
                             .id("reply")
                             .press(t)
                             .tooltip(tip(t.dark, "Reply", "R"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Reply", "R", cx)
-                            }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::Reply, cx)
                             })),
@@ -1021,9 +988,6 @@ impl Nimbra {
                             .id("reply-all")
                             .press(t)
                             .tooltip(tip(t.dark, "Reply all", "A"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Reply all", "A", cx)
-                            }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::ReplyAll, cx)
                             })),
@@ -1033,9 +997,6 @@ impl Nimbra {
                             .id("forward")
                             .press(t)
                             .tooltip(tip(t.dark, "Forward", "F"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Forward", "F", cx)
-                            }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::Forward, cx)
                             })),
@@ -1050,32 +1011,20 @@ impl Nimbra {
                             } else {
                                 "Show original"
                             },
-                            Some("V"),
                         )
                         .id("original")
-                        .press_soft()
+                        .press(t)
                         .tooltip(tip(t.dark, "Switch between original and reader view", "V"))
-                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                            this.set_hint(
-                                *hovered,
-                                "Switch between original and reader view",
-                                "V",
-                                cx,
-                            )
-                        }))
                         .when(original, |d| d.bg(t.selected))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_original(cx))),
                     )
                     .child(div().flex_1())
-                    .child(mono(format!("{pos} / {}", visible.len()), t.text3).mr(px(6.)))
+                    .child(caption(format!("{pos} / {}", visible.len()), t.text3).mr(px(6.)))
                     .child(
                         icon_button(t, "up")
                             .id("prev")
                             .press(t)
                             .tooltip(tip(t.dark, "Previous thread", "K"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Previous thread", "K", cx)
-                            }))
                             .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
                     )
                     .child(
@@ -1083,9 +1032,6 @@ impl Nimbra {
                             .id("next")
                             .press(t)
                             .tooltip(tip(t.dark, "Next thread", "J"))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Next thread", "J", cx)
-                            }))
                             .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
                     )
                     .child(
@@ -1093,9 +1039,6 @@ impl Nimbra {
                             .id("more")
                             .press(t)
                             .tooltip(tip(t.dark, "More actions", ""))
-                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "More actions", "", cx)
-                            }))
                             .when(self.menu == Some(Menu::More), |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_menu(Menu::More, window, cx)
@@ -1161,7 +1104,7 @@ impl Nimbra {
                                             ))
                                         }),
                                 )
-                                .child(self.subject_row(t, m, 38., column - 128., cx))
+                                .child(self.subject_row(t, m, 30., column - 128., cx))
                                 .child(self.thread_banners(t, m, cx))
                                 .child(
                                     div()
@@ -1197,7 +1140,7 @@ impl Nimbra {
                                                 ),
                                         )
                                         .child(meta(m.participants.clone(), t.text3).flex_1())
-                                        .child(mono(m.time.clone(), t.text3)),
+                                        .child(caption(m.time.clone(), t.text3)),
                                 )
                                 .when(!m.brief.is_empty(), |d| d.child(self.brief(t, m)))
                                 .when(!m.earlier.is_empty(), |d| {
@@ -1353,9 +1296,9 @@ impl Nimbra {
             return line.child("Loading message…");
         }
         line.child("This message could not be loaded.").child(
-            button(t, ButtonKind::Secondary, "Try again", None)
+            button(t, ButtonKind::Secondary, "Try again")
                 .id("message-retry")
-                .press_soft()
+                .press(t)
                 .on_click(move |_, _, cx| {
                     let (id, account) = key.clone();
                     owner.update(cx, |n, cx| n.load_body(id, account, cx));
@@ -1528,7 +1471,7 @@ impl Nimbra {
                                 super::threads::snooze_chip(t, name, format!("Until {when}").into())
                             }),
                     )
-                    .child(mono(time, t.text3).flex_none()),
+                    .child(caption(time, t.text3).flex_none()),
             )
             .when(open && !header.from.address.is_empty(), |d| {
                 d.child(self.details_card(t, header, &card_thread, index, &person, cx))
@@ -1958,9 +1901,9 @@ impl Nimbra {
                             "In Trash. Gmail deletes it for good after 30 days."
                         }))
                         .child(
-                            button(t, ButtonKind::Secondary, "Restore", None)
+                            button(t, ButtonKind::Secondary, "Restore")
                                 .id("restore")
-                                .press_soft()
+                                .press(t)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let (key, account) = &restore;
                                     if let Some(row) = this.row_to_act_on(key, account, cx) {
@@ -1987,9 +1930,9 @@ impl Nimbra {
                             "This message is in Spam. Be careful with its links and attachments.",
                         ))
                         .child(
-                            button(t, ButtonKind::Secondary, "Not spam", None)
+                            button(t, ButtonKind::Secondary, "Not spam")
                                 .id("not-spam")
-                                .press_soft()
+                                .press(t)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let (key, account) = &not_spam;
                                     if let Some(row) = this.row_to_act_on(key, account, cx) {
@@ -2022,7 +1965,7 @@ impl Nimbra {
             .flex()
             .items_start()
             .gap(px(GAP))
-            .child(serif(&title, size, t.text).flex_1().min_w(px(0.)))
+            .child(display(title, size, t.text).flex_1().min_w(px(0.)))
             .when_some(link, |d, link| {
                 // Where it goes is the sender's choice, so the tooltip says.
                 let hint = match url::Url::parse(&link).ok() {
@@ -2033,14 +1976,14 @@ impl Nimbra {
                     _ => "Prepares an unsubscribe email for you to send".to_string(),
                 };
                 d.child(
-                    button(t, ButtonKind::Secondary, "Unsubscribe", None)
+                    button(t, ButtonKind::Secondary, "Unsubscribe")
                         .id("unsubscribe")
                         .justify_center()
                         .w(px(BUTTON_W))
                         .h(px(BUTTON_H))
                         // Centred on the subject's first line.
                         .mt(px(((size * 1.14).round() - BUTTON_H) / 2.))
-                        .press_soft()
+                        .press(t)
                         .tooltip(tip(t.dark, hint, ""))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             let host = window
@@ -2077,7 +2020,7 @@ impl Nimbra {
                     .pb(px(12.))
                     .border_b_1()
                     .border_color(t.border)
-                    .child(self.subject_row(t, m, 26., pane_w - 56., cx))
+                    .child(self.subject_row(t, m, 22., pane_w - 56., cx))
                     .child(self.thread_banners(t, m, cx))
                     .child(self.message_header(t, m, 0, false, cx)),
             )
@@ -2154,12 +2097,7 @@ impl Nimbra {
     }
 }
 
-/// Done, with its key inside the button (the toolbar's and the loading screen's).
+/// Done, as the toolbar and the loading screen draw it.
 pub(super) fn done_button(t: &Theme) -> Div {
     icon_button(t, "done")
-        .w_auto()
-        .pl(px(7.))
-        .pr(px(6.))
-        .gap(px(6.))
-        .child(kbd(t, "E"))
 }

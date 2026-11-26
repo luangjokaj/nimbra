@@ -147,12 +147,12 @@ impl Render for NoticeToast {
                             .child(self.toast.text.clone()),
                     )
                     .child(
-                        button(&t, ButtonKind::Secondary, "Dismiss", None)
+                        button(&t, ButtonKind::Secondary, "Dismiss")
                             .id("dismiss-notice")
                             .justify_center()
                             .w(px(toast::DISMISS.0))
                             .h(px(toast::DISMISS.1))
-                            .press_soft()
+                            .press(&t)
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 owner
                                     .update(cx, |owner, cx| {
@@ -210,9 +210,9 @@ impl Render for UndoToast {
                             .child(self.label.clone()),
                     )
                     .child(
-                        button(&t, ButtonKind::Ghost, "Undo", Some("⌘Z"))
+                        button(&t, ButtonKind::Ghost, "Undo")
                             .id("undo")
-                            .press_soft()
+                            .press(&t)
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 owner.update(cx, |owner, cx| owner.undo(cx)).ok();
                             })),

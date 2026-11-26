@@ -241,10 +241,9 @@ impl Render for MessageWindow {
                         } else {
                             "Show original"
                         },
-                        None,
                     )
                     .id("message-window-view")
-                    .press_soft()
+                    .press(&t)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.original = !this.original;
                         cx.notify();
@@ -257,7 +256,7 @@ impl Render for MessageWindow {
                 .flex()
                 .flex_col()
                 .gap(px(12.))
-                .child(n.subject_row(&t, &m, 28., title_w, cx))
+                .child(n.subject_row(&t, &m, 24., title_w, cx))
                 .child(n.thread_banners(&t, &m, cx))
         };
 

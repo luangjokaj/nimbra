@@ -535,13 +535,12 @@ impl Nimbra {
                         -10.,
                     )])
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(serif(
+                    .child(title_s(
                         if asking_again {
                             "Sign in again"
                         } else {
                             "Add account"
                         },
-                        28.,
                         t.text,
                     ))
                     .when(!asking_again, |d| {
@@ -571,11 +570,7 @@ impl Nimbra {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(
-                    div()
-                        .pl(px(4.))
-                        .child(overline(title.to_uppercase(), t.text3)),
-                )
+                .child(div().pl(px(4.)).child(overline(t, title.to_uppercase())))
                 .child(
                     div()
                         .flex()
@@ -635,9 +630,9 @@ impl Nimbra {
                     .child(square(0x00A4EF))
                     .child(square(0xFFB900)),
             );
-        button(t, ButtonKind::Secondary, "Continue with Microsoft", None)
+        button(t, ButtonKind::Secondary, "Continue with Microsoft")
             .id("account-microsoft")
-            .press_soft()
+            .press(t)
             .justify_center()
             .gap(px(10.))
             // The logo is added after the label: shown before it.
@@ -648,9 +643,9 @@ impl Nimbra {
 
     /// Continue with Google, with Google's logo.
     fn google_button(&self, t: &Theme, cx: &mut Context<Self>) -> Stateful<Div> {
-        button(t, ButtonKind::Secondary, "Continue with Google", None)
+        button(t, ButtonKind::Secondary, "Continue with Google")
             .id("account-google")
-            .press_soft()
+            .press(t)
             .justify_center()
             .gap(px(10.))
             // The logo is added after the label: shown before it.
@@ -858,9 +853,9 @@ impl Nimbra {
                             .justify_end()
                             .gap(px(8.))
                             .child(
-                                button(t, ButtonKind::Ghost, "Cancel", None)
+                                button(t, ButtonKind::Ghost, "Cancel")
                                     .id("account-cancel")
-                                    .press_soft()
+                                    .press(t)
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.close_account_sheet(cx)),
                                     ),
@@ -871,13 +866,12 @@ impl Nimbra {
                                     t,
                                     ButtonKind::Primary,
                                     if sheet.busy { "Checking…" } else if asking_again { "Sign in" } else { "Add" },
-                                    Some("↵"),
                                 )
                                 .id("account-continue")
-                                .press_soft()
+                                .press(t)
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.account_sheet_continue(cx)),
-                                ), "account-continue", true)),
+                                ), "account-continue")),
                     )
     }
 }

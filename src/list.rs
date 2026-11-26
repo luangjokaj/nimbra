@@ -87,9 +87,9 @@ impl Nimbra {
     pub(super) fn bulk_pane(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.targets().len();
         let action = |id: &'static str, name: &'static str, label: &'static str| {
-            button(t, ButtonKind::Secondary, label, None)
+            button(t, ButtonKind::Secondary, label)
                 .id(id)
-                .press_soft()
+                .press(t)
                 .child(icon(name, 14., t.text2))
         };
         let inbox_like = inbox_like(self.mailbox);
@@ -103,11 +103,7 @@ impl Nimbra {
             .justify_center()
             .gap(px(18.))
             .bg(t.surface)
-            .child(serif(
-                &format!("{count} conversations, selected"),
-                44.,
-                t.text,
-            ))
+            .child(title_l(format!("{count} conversations, selected"), t.text))
             .child(meta(
                 "⌘-click adds or removes one, Shift-click picks a range, Esc clears.",
                 t.text3,
@@ -180,9 +176,9 @@ impl Nimbra {
                     ),
             )
             .child(
-                button(t, ButtonKind::Ghost, "Clear selection", Some("esc"))
+                button(t, ButtonKind::Ghost, "Clear selection")
                     .id("bulk-clear")
-                    .press_soft()
+                    .press(t)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.picked.clear();
                         cx.notify();
@@ -518,7 +514,7 @@ impl Nimbra {
                                     .overflow_hidden()
                                     .child(short(&m.sender, sender_max)),
                             )
-                            .children(m.thread.clone().map(|n| mono(n, t.text3)))
+                            .children(m.thread.clone().map(|n| caption(n, t.text3)))
                             .when(m.starred, |d| d.child(icon("star", 13., t.amber)))
                             .children(tag.map(|(label, a)| pill(t, &label, t.accent(a))))
                             .child(div().flex_1())
@@ -528,7 +524,7 @@ impl Nimbra {
                                 super::threads::snooze_chip(t, name, when.clone())
                             }))
                             .when(!selected && snoozed.is_none(), |d| {
-                                d.child(mono(m.time.clone(), t.text3))
+                                d.child(caption(m.time.clone(), t.text3))
                             })
                             // Quick actions on the open row: done, snooze, remind me.
                             .when(selected, |d| {
@@ -666,7 +662,7 @@ impl Nimbra {
                 .pl(px(14.))
                 .pt(px(14.))
                 .pb(px(6.))
-                .child(overline(label.to_string(), t.faint))
+                .child(overline(t, label.to_string()))
         };
         let today: Vec<usize> = visible
             .iter()
@@ -710,7 +706,7 @@ impl Nimbra {
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(if active { t.text } else { t.text3 })
                 .child(label.to_string())
-                .children(count.map(|(n, color)| mono(n.to_string(), color)))
+                .children(count.map(|(n, color)| caption(n.to_string(), color)))
         };
         // The highlight: where it is, and where it was before the last switch.
         let spot = |unread: bool| {
@@ -839,10 +835,9 @@ impl Nimbra {
                     .when(self.offline, |d| d.child(self.offline_pill(t, fit.words)))
                     .child(
                         match fit.compose {
-                            ComposeLook::Keyed => {
-                                button(t, ButtonKind::Secondary, "Compose", Some("C"))
+                            ComposeLook::Keyed | ComposeLook::Plain => {
+                                button(t, ButtonKind::Secondary, "Compose")
                             }
-                            ComposeLook::Plain => button(t, ButtonKind::Secondary, "Compose", None),
                             ComposeLook::Icon => icon_button(t, "draft")
                                 .size(px(34.))
                                 .bg(t.hover)
@@ -851,7 +846,7 @@ impl Nimbra {
                         }
                         .id("compose")
                         .h(px(34.))
-                        .press_soft()
+                        .press(t)
                         .tooltip(tip(t.dark, "New message", "C"))
                         .on_click(
                             cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::New, cx)),
@@ -1005,7 +1000,7 @@ impl Nimbra {
             .justify_center()
             .gap(px(14.))
             .bg(t.surface)
-            .child(serif(&title, 56., t.text))
+            .child(title_l(&title, t.text))
             .child(
                 div()
                     .text_size(px(15.))
@@ -1016,9 +1011,9 @@ impl Nimbra {
             // The filter's own switch is in the list's header, which is not drawn here.
             .when(filtered, |d| {
                 d.child(
-                    button(t, ButtonKind::Secondary, "Show all", None)
+                    button(t, ButtonKind::Secondary, "Show all")
                         .id("show-all")
-                        .press_soft()
+                        .press(t)
                         .on_click(cx.listener(|this, _, _, cx| this.set_unread_only(false, cx))),
                 )
             })
@@ -1090,14 +1085,7 @@ impl Nimbra {
                         .child(icon(name, 16., color))
                         .child(meta(label.to_string(), soft)),
                 )
-                .child(
-                    div()
-                        .font_family(SERIF)
-                        .text_size(px(40.))
-                        .line_height(px(44.))
-                        .text_color(ink)
-                        .child(value.to_string()),
-                )
+                .child(display(value.to_string(), 40., ink))
         };
         let arrival = self.arrival.unwrap_or(Arrival::SETTLED);
         let settle = |d: Div, shown: f32| d.relative().top(px(drop_for(shown))).opacity(shown);
@@ -1193,9 +1181,8 @@ impl Nimbra {
                 .w_full()
                 .px(px(32.))
                 .text_center()
-                .font_family(SERIF)
-                .italic()
-                .text_size(px(24.))
+                .font_weight(FontWeight::LIGHT)
+                .text_size(px(22.))
                 .line_height(px(30.))
                 .text_color(soft)
                 .child(crate::inspiration::line_for(
@@ -1229,9 +1216,9 @@ impl Nimbra {
                         .justify_center()
                         .w_full()
                         .h(relative(HORIZON))
-                        .child(settle(overline(today, c(0xffffff, 0.55)), arrival.date()))
+                        .child(settle(overline(t, today).text_color(c(0xffffff, 0.55)), arrival.date()))
                         .child(div().h(px(18.)).flex_none())
-                        .child(settle(serif("Inbox zero.", 120., ink), arrival.headline()))
+                        .child(settle(hero("Inbox zero.", ink), arrival.headline()))
                         .child(div().h(px(14.)).flex_none())
                         .child(
                             settle(div(), arrival.line())
@@ -1319,7 +1306,6 @@ impl Nimbra {
                                         &Theme::dark(),
                                         ButtonKind::Secondary,
                                         "Join",
-                                        Some("J"),
                                     )),
                             )
                         })

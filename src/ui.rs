@@ -5,7 +5,10 @@ use gpui::{
     prelude::*, px, svg,
 };
 
-use crate::theme::{MONO, Theme, Tone, c, gradient};
+use crate::theme::{
+    GRADIENT_GLOW, GRADIENT_PRIMARY, GRADIENT_PRIMARY_PRESSED, MONO, SANS, Theme, Tone, c, over,
+    radius, space,
+};
 
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg()
@@ -19,7 +22,8 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
 /// it on y = 25, the line of the traffic lights, with the same space above and below.
 pub const TOP_BAR: f32 = 51.;
 
-pub fn mono(text: impl Into<SharedString>, color: Hsla) -> Div {
+/// Timestamps, counts and keys: Geist Mono 11/14 medium.
+pub fn caption(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .font_family(MONO)
         .font_weight(FontWeight::MEDIUM)
@@ -30,16 +34,18 @@ pub fn mono(text: impl Into<SharedString>, color: Hsla) -> Div {
         .child(text.into())
 }
 
-pub fn overline(text: impl Into<SharedString>, color: Hsla) -> Div {
+/// A section head: Geist Mono 10/12 medium in `text3`.
+pub fn overline(t: &Theme, text: impl Into<SharedString>) -> Div {
     div()
         .font_family(MONO)
         .font_weight(FontWeight::MEDIUM)
         .text_size(px(10.))
         .line_height(px(12.))
-        .text_color(color)
+        .text_color(t.text3)
         .child(text.into())
 }
 
+/// A secondary line: 12/16.
 pub fn meta(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .text_size(px(12.))
@@ -48,6 +54,65 @@ pub fn meta(text: impl Into<SharedString>, color: Hsla) -> Div {
         .child(text.into())
 }
 
+/// Body text at semibold: an unread sender, a label that leads its row.
+#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
+pub fn strong(text: impl Into<SharedString>, color: Hsla) -> Div {
+    div()
+        .text_size(px(13.))
+        .line_height(px(18.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(color)
+        .child(text.into())
+}
+
+/// The weight a display title takes at `size`: lighter as it grows, so large type reads as
+/// light rather than as bulk.
+pub fn display_weight(size: f32) -> FontWeight {
+    if size >= 40. {
+        FontWeight::LIGHT
+    } else if size >= 26. {
+        FontWeight::NORMAL
+    } else {
+        FontWeight::MEDIUM
+    }
+}
+
+fn display_set(text: impl Into<SharedString>, size: f32, line: f32, color: Hsla) -> Div {
+    div()
+        .font_family(SANS)
+        .font_weight(display_weight(size))
+        .text_size(px(size))
+        .line_height(px(line))
+        .text_color(color)
+        .child(text.into())
+}
+
+/// Sora as a display face at any size. Prefer the named sizes below.
+pub fn display(text: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
+    display_set(text, size, (size * 1.2).round(), color)
+}
+
+/// Sheets, confirmations, the shortcuts list, a settings tab: 22/26.
+pub fn title_s(text: impl Into<SharedString>, color: Hsla) -> Div {
+    display(text, 22., color)
+}
+
+/// The reader's subject: 30/36.
+pub fn title_m(text: impl Into<SharedString>, color: Hsla) -> Div {
+    display(text, 30., color)
+}
+
+/// Empty and status screens: 40/48.
+pub fn title_l(text: impl Into<SharedString>, color: Hsla) -> Div {
+    display(text, 40., color)
+}
+
+/// Inbox zero only: 96/104.
+pub fn hero(text: impl Into<SharedString>, color: Hsla) -> Div {
+    display_set(text, 96., 104., color)
+}
+
+/// A key as a chip. Only where keys are the content: the `?` sheet and Settings › Shortcuts.
 pub fn kbd(t: &Theme, key: &str) -> Div {
     div()
         .flex()
@@ -56,11 +121,11 @@ pub fn kbd(t: &Theme, key: &str) -> Div {
         .min_w(px(18.))
         .px(px(5.))
         .py(px(2.))
-        .rounded(px(5.))
+        .rounded(px(radius::CHIP))
         .bg(t.kbd_bg)
         .border_1()
         .border_color(t.kbd_border)
-        .child(mono(key.to_string(), t.text2))
+        .child(caption(key.to_string(), t.text2))
 }
 
 pub fn avatar(tone: Tone, initials: &str, size: f32) -> Div {
@@ -109,7 +174,7 @@ pub fn icon_button(t: &Theme, name: &str) -> Div {
         .items_center()
         .justify_center()
         .size(px(30.))
-        .rounded(px(8.))
+        .rounded(px(radius::CONTROL))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(icon(name, 16., t.text2).group_hover("icon-button", move |s| s.text_color(bright)))
@@ -117,21 +182,37 @@ pub fn icon_button(t: &Theme, name: &str) -> Div {
 
 /// The pressed look for anything clickable, so a click is felt the moment it lands.
 pub trait Press {
-    /// Icon buttons, rows and menu items: a firmer background while held.
+    /// Buttons, icon buttons, rows and menu items: `pressed` while held.
     fn press(self, t: &Theme) -> Self;
-    /// Text buttons (their own colours stay): dimmed a little while held.
-    fn press_soft(self) -> Self;
+    /// A selected or picked row: its selection stays visible under the press.
+    #[allow(dead_code, reason = "part of the shared kit the screens adopt")]
+    fn press_selected(self, t: &Theme) -> Self;
 }
 
 impl Press for Stateful<Div> {
     fn press(self, t: &Theme) -> Self {
-        let held = t.selected;
+        let held = t.pressed;
         self.active(move |s| s.bg(held))
     }
 
-    fn press_soft(self) -> Self {
-        self.active(|s| s.opacity(0.72))
+    fn press_selected(self, t: &Theme) -> Self {
+        let held = over(t.pressed, t.selected);
+        self.active(move |s| s.bg(held))
     }
+}
+
+/// Keyboard focus as a 1pt ring laid over its element (which needs `.relative()`), so
+/// gaining or losing focus never moves anything.
+#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
+pub fn focus_ring(t: &Theme, corner: f32) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .rounded(px(corner))
+        .border_1()
+        .border_color(t.focus)
 }
 
 pub fn shadow(color: Hsla, y: f32, blur: f32, spread: f32) -> BoxShadow {
@@ -143,53 +224,63 @@ pub fn shadow(color: Hsla, y: f32, blur: f32, spread: f32) -> BoxShadow {
     }
 }
 
+/// Depth as soft light: a shadow for lift, plus accent light where the eye should go.
+/// Pair a raised surface with a `t.edge` hairline border.
+#[derive(Clone, Copy)]
+#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
+pub enum Elevation {
+    /// Menus, tooltips, toasts.
+    Pop,
+    /// Palette, finder, confirm, shortcuts, composer: lifted, with a faint violet aura.
+    Sheet,
+    /// The primary action or the focused field: accent light without lift.
+    Glow,
+}
+
+pub fn elevation(t: &Theme, level: Elevation) -> Vec<BoxShadow> {
+    match level {
+        Elevation::Pop => vec![shadow(t.shadow, 6., 16., -4.)],
+        Elevation::Sheet => vec![
+            shadow(t.shadow_sheet, 24., 64., -16.),
+            shadow(t.glow.opacity(0.4), 0., 48., -8.),
+        ],
+        Elevation::Glow => vec![shadow(t.glow, 4., 20., -4.)],
+    }
+}
+
 pub enum ButtonKind {
+    /// The one main action of a surface. Wrap it in `glow` for its hover and press.
     Primary,
     Secondary,
     Ghost,
 }
 
-pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Div {
+/// A text button. Its key, if it has one, goes in its tooltip (`tip`).
+pub fn button(t: &Theme, kind: ButtonKind, label: &str) -> Div {
     let base = div()
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(8.))
-        .pl(px(14.))
-        .pr(px(if key.is_some() { 10. } else { 14. }))
+        .gap(px(space::S))
+        .px(px(14.))
         .py(px(6.))
-        .rounded(px(9.))
+        .rounded(px(radius::CONTROL))
         .cursor_pointer()
-        .font_weight(FontWeight::SEMIBOLD);
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(label.to_string());
     let (hover, strong, selected) = (t.hover, t.border_strong, t.selected);
     match kind {
         ButtonKind::Primary => base
-            .bg(gradient(90., c(0x8b7cff, 1.), c(0xff7ab6, 1.)))
-            // Brighter on hover, eased in and out by `glow`.
+            .bg(GRADIENT_PRIMARY.along(90.))
             .shadow(vec![glow_shadow(0.)])
-            .text_color(gpui::white())
-            .child(label.to_string())
-            .children(key.map(|k| {
-                div()
-                    .px(px(5.))
-                    .py(px(2.))
-                    .rounded(px(5.))
-                    .bg(c(0xffffff, 0.18))
-                    .child(mono(k.to_string(), gpui::white()))
-            })),
+            .text_color(gpui::white()),
         ButtonKind::Secondary => base
             .bg(t.hover)
             .border_1()
             .border_color(t.border_strong)
             .hover(move |s| s.bg(selected).border_color(strong))
-            .text_color(t.text)
-            .child(label.to_string())
-            .children(key.map(|k| kbd(t, k))),
-        ButtonKind::Ghost => base
-            .hover(move |s| s.bg(hover))
-            .text_color(t.text)
-            .child(label.to_string())
-            .children(key.map(|k| kbd(t, k))),
+            .text_color(t.text),
+        ButtonKind::Ghost => base.hover(move |s| s.bg(hover)).text_color(t.text),
     }
 }
 
@@ -197,7 +288,7 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
 fn glow_shadow(level: f32) -> BoxShadow {
     let mix = |a: f32, b: f32| a + (b - a) * level;
     shadow(
-        c(0x8b7cff, mix(0.35, 0.6)),
+        c(GRADIENT_GLOW.from, mix(0.35, 0.6)),
         mix(6., 8.),
         mix(18., 24.),
         mix(-4., -2.),
@@ -217,11 +308,7 @@ thread_local! {
         Default::default();
 }
 
-const GLOW_TIME: std::time::Duration = std::time::Duration::from_millis(220);
-
-/// Tells a primary button's glow whether the pointer is on it. For a button that has its
-/// own hover listener (one per element); others use `glow`, which listens itself.
-pub fn glow_hovered(key: &'static str, hovered: bool, window: &mut gpui::Window) {
+fn glow_hovered(key: &'static str, hovered: bool, window: &mut gpui::Window) {
     GLOWS.with_borrow_mut(|glows| {
         let glow = glows.entry(key).or_default();
         if glow.hovered != hovered {
@@ -233,20 +320,15 @@ pub fn glow_hovered(key: &'static str, hovered: bool, window: &mut gpui::Window)
 }
 
 /// A primary button whose glow brightens and fades over a moment instead of jumping, from
-/// wherever it is when the pointer comes or goes. `key` names it for its whole life.
-pub fn glow(
-    button: Stateful<Div>,
-    key: &'static str,
-    listen: bool,
-) -> gpui::AnimationElement<Stateful<Div>> {
+/// wherever it is when the pointer comes or goes, and that darkens while held. `key` names
+/// it for its whole life.
+pub fn glow(button: Stateful<Div>, key: &'static str) -> gpui::AnimationElement<Stateful<Div>> {
     let now = GLOWS.with_borrow(|glows| glows.get(key).copied().unwrap_or_default());
     let to = if now.hovered { 1. } else { 0. };
     let from = now.level;
-    let button = if listen {
-        button.on_hover(move |hovered, window, _| glow_hovered(key, *hovered, window))
-    } else {
-        button
-    };
+    let button = button
+        .active(|s| s.bg(GRADIENT_PRIMARY_PRESSED.along(90.)))
+        .on_hover(move |hovered, window, _| glow_hovered(key, *hovered, window));
     // A button gone while hovered (Send closes the message) is not hovered when it is back:
     // whenever it is drawn, where the pointer really is wins.
     let button = button.relative().child(
@@ -274,7 +356,7 @@ pub fn glow(
     );
     button.with_animation(
         (key, now.turns),
-        gpui::Animation::new(GLOW_TIME).with_easing(|t| 1. - (1. - t).powi(3)),
+        gpui::Animation::new(motion::GLOW).with_easing(motion::ease_out),
         move |button, delta| {
             let level = from + (to - from) * delta;
             GLOWS.with_borrow_mut(|glows| glows.entry(key).or_default().level = level);
@@ -283,7 +365,8 @@ pub fn glow(
     )
 }
 
-/// Builds the tooltip for a button. Pass an empty `key` when there is no shortcut.
+/// Builds the tooltip for a button. Pass an empty `key` when there is no shortcut, and a
+/// key only while it would do something.
 pub fn tip(
     dark: bool,
     label: impl Into<SharedString>,
@@ -291,4 +374,295 @@ pub fn tip(
 ) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView + 'static {
     let label = label.into();
     move |window, cx| crate::tooltip::build(dark, label.clone(), key, window, cx)
+}
+
+/// Shared curves, durations and the one way state-driven motion is drawn.
+///
+/// Every transition is either a `Tween` (state-driven and interruptible: it restarts from
+/// where it is) or GPUI's `with_animation` keyed by a generation number. Either way frames
+/// are asked for only while something moves, and progress comes from real elapsed time.
+/// Under Reduce Motion, travel (position, size, rotation) is instant; fades keep their time.
+#[allow(dead_code, reason = "part of the shared kit the screens adopt")]
+pub mod motion {
+    use std::time::{Duration, Instant};
+
+    pub const PRESS: Duration = Duration::from_millis(120);
+    pub const TIP: Duration = Duration::from_millis(150);
+    /// A tooltip that opens this soon after another closed shows at once.
+    pub const TIP_SKIP: Duration = Duration::from_millis(300);
+    pub const MENU_IN: Duration = Duration::from_millis(160);
+    pub const MENU_OUT: Duration = Duration::from_millis(110);
+    pub const SLIDE: Duration = Duration::from_millis(240);
+    pub const FOLD: Duration = Duration::from_millis(200);
+    pub const PILL: Duration = Duration::from_millis(200);
+    pub const SWITCH: Duration = Duration::from_millis(150);
+    pub const TOAST_IN: Duration = Duration::from_millis(220);
+    pub const TOAST_OUT: Duration = Duration::from_millis(150);
+    pub const GLOW: Duration = Duration::from_millis(220);
+    /// A crossfade between two states of the same thing.
+    pub const FADE: Duration = Duration::from_millis(180);
+
+    /// A CSS-style `cubic-bezier(x1, y1, x2, y2)` easing.
+    pub fn bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 + Copy {
+        move |t| cubic(x1, y1, x2, y2, t)
+    }
+
+    /// Enter and exit: `cubic-bezier(0.23, 1, 0.32, 1)`.
+    pub fn ease_out(t: f32) -> f32 {
+        cubic(0.23, 1., 0.32, 1., t)
+    }
+
+    /// Something moving from one place on screen to another: `cubic-bezier(0.77, 0, 0.175, 1)`.
+    pub fn ease_in_out(t: f32) -> f32 {
+        cubic(0.77, 0., 0.175, 1., t)
+    }
+
+    /// Panels and drawers: `cubic-bezier(0.32, 0.72, 0, 1)`.
+    pub fn drawer(t: f32) -> f32 {
+        cubic(0.32, 0.72, 0., 1., t)
+    }
+
+    pub fn reduced() -> bool {
+        crate::system::reduces_motion()
+    }
+
+    fn cubic(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
+        if t <= 0. {
+            return 0.;
+        }
+        if t >= 1. {
+            return 1.;
+        }
+        // Each axis is a cubic in the curve parameter s: a*s^3 + b*s^2 + c*s.
+        let coefficients = |p1: f32, p2: f32| {
+            let c = 3. * p1;
+            let b = 3. * (p2 - p1) - c;
+            (1. - c - b, b, c)
+        };
+        let (ax, bx, cx) = coefficients(x1, x2);
+        let (ay, by, cy) = coefficients(y1, y2);
+        let x_at = |s: f32| ((ax * s + bx) * s + cx) * s;
+        let slope_at = |s: f32| (3. * ax * s + 2. * bx) * s + cx;
+
+        let mut s = t;
+        for _ in 0..8 {
+            let error = x_at(s) - t;
+            if error.abs() < 1e-6 {
+                return ((ay * s + by) * s + cy) * s;
+            }
+            let slope = slope_at(s);
+            if slope.abs() < 1e-6 {
+                break;
+            }
+            s -= error / slope;
+        }
+        let (mut lo, mut hi) = (0f32, 1f32);
+        s = t;
+        while hi - lo > 1e-6 {
+            if x_at(s) < t {
+                lo = s;
+            } else {
+                hi = s;
+            }
+            s = (lo + hi) / 2.;
+        }
+        ((ay * s + by) * s + cy) * s
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Kind {
+        Fade,
+        Travel,
+    }
+
+    /// A value easing toward a target. Retargeting starts from wherever it is now.
+    #[derive(Clone, Copy)]
+    pub struct Tween {
+        from: f32,
+        to: f32,
+        start: Instant,
+        length: Duration,
+        curve: fn(f32) -> f32,
+        kind: Kind,
+    }
+
+    impl Tween {
+        /// Opacity or colour, at rest at `at`. Keeps its time under Reduce Motion.
+        pub fn fade(at: f32, length: Duration, curve: fn(f32) -> f32) -> Self {
+            Self::resting(at, length, curve, Kind::Fade)
+        }
+
+        /// Position, size or rotation, at rest at `at`. Instant under Reduce Motion.
+        pub fn travel(at: f32, length: Duration, curve: fn(f32) -> f32) -> Self {
+            Self::resting(at, length, curve, Kind::Travel)
+        }
+
+        fn resting(at: f32, length: Duration, curve: fn(f32) -> f32, kind: Kind) -> Self {
+            Self {
+                from: at,
+                to: at,
+                start: Instant::now(),
+                length,
+                curve,
+                kind,
+            }
+        }
+
+        pub fn target(&self) -> f32 {
+            self.to
+        }
+
+        pub fn value(&self) -> f32 {
+            self.value_at(Instant::now())
+        }
+
+        pub fn moving(&self) -> bool {
+            self.moving_at(Instant::now())
+        }
+
+        /// Heads for `to` from the current value. Asking again for the same target changes
+        /// nothing, so this can be called on every render.
+        pub fn retarget(&mut self, to: f32) {
+            self.retarget_at(to, Instant::now(), reduced());
+        }
+
+        /// At `to` now, without moving there.
+        pub fn jump(&mut self, to: f32) {
+            self.from = to;
+            self.to = to;
+        }
+
+        /// The value to draw now. Asks for the next frame while it is still on its way.
+        pub fn frame(&self, window: &mut gpui::Window) -> f32 {
+            let now = Instant::now();
+            if self.moving_at(now) {
+                window.request_animation_frame();
+            }
+            self.value_at(now)
+        }
+
+        fn progress(&self, now: Instant) -> f32 {
+            if self.length.is_zero() {
+                return 1.;
+            }
+            (now.saturating_duration_since(self.start).as_secs_f32() / self.length.as_secs_f32())
+                .min(1.)
+        }
+
+        fn value_at(&self, now: Instant) -> f32 {
+            self.from + (self.to - self.from) * (self.curve)(self.progress(now))
+        }
+
+        fn moving_at(&self, now: Instant) -> bool {
+            self.from != self.to && self.progress(now) < 1.
+        }
+
+        fn retarget_at(&mut self, to: f32, now: Instant, reduce: bool) {
+            if to == self.to {
+                return;
+            }
+            if reduce && self.kind == Kind::Travel {
+                self.jump(to);
+                return;
+            }
+            self.from = self.value_at(now);
+            self.to = to;
+            self.start = now;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn curves_start_at_zero_and_end_at_one() {
+            for curve in [ease_out, ease_in_out, drawer] {
+                assert_eq!(curve(0.), 0.);
+                assert_eq!(curve(1.), 1.);
+            }
+        }
+
+        #[test]
+        fn curves_never_step_back() {
+            for curve in [ease_out, ease_in_out, drawer] {
+                let mut last = 0.;
+                for i in 1..=200 {
+                    let y = curve(i as f32 / 200.);
+                    assert!(y + 1e-5 >= last, "{last} then {y}");
+                    last = y;
+                }
+            }
+        }
+
+        #[test]
+        fn ease_out_is_most_of_the_way_by_half_time() {
+            assert!(ease_out(0.5) > 0.9, "{}", ease_out(0.5));
+        }
+
+        #[test]
+        fn linear_bezier_is_the_identity() {
+            let linear = bezier(0.25, 0.25, 0.75, 0.75);
+            for i in 0..=10 {
+                let t = i as f32 / 10.;
+                assert!((linear(t) - t).abs() < 1e-4);
+            }
+        }
+
+        #[test]
+        fn ease_in_out_eases_at_both_ends() {
+            assert!(ease_in_out(0.1) < 0.1);
+            assert!(ease_in_out(0.9) > 0.9);
+        }
+
+        fn linear(t: f32) -> f32 {
+            t
+        }
+
+        #[test]
+        fn tween_runs_from_real_elapsed_time() {
+            let mut tween = Tween::fade(0., Duration::from_millis(100), linear);
+            let start = Instant::now();
+            tween.retarget_at(1., start, false);
+            let half = tween.value_at(start + Duration::from_millis(50));
+            assert!((half - 0.5).abs() < 1e-3);
+            assert!(!tween.moving_at(start + Duration::from_millis(100)));
+        }
+
+        #[test]
+        fn retargeting_starts_from_where_it_is() {
+            let mut tween = Tween::fade(0., Duration::from_millis(100), linear);
+            let start = Instant::now();
+            tween.retarget_at(1., start, false);
+            let midway = start + Duration::from_millis(40);
+            tween.retarget_at(0., midway, false);
+            assert!((tween.value_at(midway) - 0.4).abs() < 1e-3);
+        }
+
+        #[test]
+        fn asking_for_the_same_target_does_not_restart() {
+            let mut tween = Tween::fade(0., Duration::from_millis(100), linear);
+            let start = Instant::now();
+            tween.retarget_at(1., start, false);
+            tween.retarget_at(1., start + Duration::from_millis(60), false);
+            assert!((tween.value_at(start + Duration::from_millis(60)) - 0.6).abs() < 1e-3);
+        }
+
+        #[test]
+        fn reduced_motion_makes_travel_instant() {
+            let mut tween = Tween::travel(0., Duration::from_millis(100), linear);
+            let start = Instant::now();
+            tween.retarget_at(1., start, true);
+            assert_eq!(tween.value_at(start), 1.);
+            assert!(!tween.moving_at(start));
+        }
+
+        #[test]
+        fn reduced_motion_keeps_fades() {
+            let mut tween = Tween::fade(0., Duration::from_millis(100), linear);
+            let start = Instant::now();
+            tween.retarget_at(1., start, true);
+            assert!(tween.moving_at(start));
+        }
+    }
 }

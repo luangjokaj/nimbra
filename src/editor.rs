@@ -114,8 +114,8 @@ fn parse(body: &str) -> Option<EditorEvent> {
 fn page(nonce: &str) -> String {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
-    static REGULAR: &[u8] = include_bytes!("../assets/fonts/Geist-Regular.ttf");
-    static BOLD: &[u8] = include_bytes!("../assets/fonts/Geist-SemiBold.ttf");
+    static REGULAR: &[u8] = include_bytes!("../assets/fonts/Sora-Regular.ttf");
+    static BOLD: &[u8] = include_bytes!("../assets/fonts/Sora-Bold.ttf");
     include_str!("editor.html")
         .replace("__NONCE__", nonce)
         .replace("__REGULAR__", &STANDARD.encode(REGULAR))

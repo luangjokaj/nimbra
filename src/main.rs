@@ -121,6 +121,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "archive",
     "pulse",
     "eye",
+    "plus",
 ];
 
 struct Assets;
@@ -163,17 +164,13 @@ fn main() {
     app.run(|cx: &mut App| {
         cx.text_system()
             .add_fonts(vec![
-                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Regular.ttf").as_slice()),
-                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Medium.ttf").as_slice()),
-                Cow::Borrowed(include_bytes!("../assets/fonts/Geist-SemiBold.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/Sora-Light.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/Sora-Regular.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/Sora-Medium.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/Sora-SemiBold.ttf").as_slice()),
+                Cow::Borrowed(include_bytes!("../assets/fonts/Sora-Bold.ttf").as_slice()),
                 Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-Regular.ttf").as_slice()),
                 Cow::Borrowed(include_bytes!("../assets/fonts/GeistMono-Medium.ttf").as_slice()),
-                Cow::Borrowed(
-                    include_bytes!("../assets/fonts/InstrumentSerif-Regular.ttf").as_slice(),
-                ),
-                Cow::Borrowed(
-                    include_bytes!("../assets/fonts/InstrumentSerif-Italic.ttf").as_slice(),
-                ),
             ])
             .expect("bundled fonts should load");
 

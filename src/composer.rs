@@ -2205,11 +2205,13 @@ impl Nimbra {
                             .pt(px(16.))
                             .pb(px(8.))
                             // A new message has no title: its From is the first row.
-                            .children(
-                                title.map(|title| {
-                                    serif(title, if full { 38. } else { 26. }, t.text)
-                                }),
-                            )
+                            .children(title.map(|title| {
+                                if full {
+                                    title_m(title, t.text)
+                                } else {
+                                    title_s(title, t.text)
+                                }
+                            }))
                             // A new message: who it is from, and a menu to change it.
                             .when(self.can_change_from(), |d| {
                                 // The account it is changing to shows at once, with what
@@ -2639,9 +2641,9 @@ impl Nimbra {
                                     ),
                             )
                             .child(
-                                button(t, ButtonKind::Secondary, "Send later", None)
+                                button(t, ButtonKind::Secondary, "Send later")
                                     .id("send-later")
-                                    .press_soft()
+                                    .press(t)
                                     .tooltip(tip(
                                         t.dark,
                                         "Sent from this Mac while Nimbra is running",
@@ -2652,13 +2654,12 @@ impl Nimbra {
                                     })),
                             )
                             .child(crate::ui::glow(
-                                button(t, ButtonKind::Primary, "Send", Some("⌘↵"))
+                                button(t, ButtonKind::Primary, "Send")
                                     .id("send")
-                                    .press_soft()
+                                    .press(t)
                                     .when(composer.sending, |d| d.opacity(0.5))
                                     .on_click(cx.listener(|this, _, _, cx| this.send_mail(cx))),
                                 "send",
-                                true,
                             )),
                     ),
             )
@@ -2735,7 +2736,7 @@ impl Nimbra {
                                 .border_1()
                                 .border_color(t.border_strong)
                                 .shadow(vec![shadow(c(0x000000, 0.35), 18., 50., -8.)])
-                                .child(serif("Save this draft?", 24., t.text))
+                                .child(title_s("Save this draft?", t.text))
                                 .child(meta(
                                     "Keep it in Drafts to finish later, or discard what you wrote.",
                                     t.text2,
@@ -2747,9 +2748,9 @@ impl Nimbra {
                                         .gap(px(8.))
                                         .pt(px(4.))
                                         .child(
-                                            button(t, ButtonKind::Ghost, "Discard", None)
+                                            button(t, ButtonKind::Ghost, "Discard")
                                                 .id("ask-discard")
-                                                .press_soft()
+                                                .press(t)
                                                 .text_color(t.rose)
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.answer_close_compose(false, cx)
@@ -2757,22 +2758,21 @@ impl Nimbra {
                                         )
                                         .child(div().flex_1())
                                         .child(
-                                            button(t, ButtonKind::Secondary, "Cancel", Some("esc"))
+                                            button(t, ButtonKind::Secondary, "Cancel")
                                                 .id("ask-cancel")
-                                                .press_soft()
+                                                .press(t)
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.request_close_compose(cx)
                                                 })),
                                         )
                                         .child(crate::ui::glow(
-                                            button(t, ButtonKind::Primary, "Save draft", None)
+                                            button(t, ButtonKind::Primary, "Save draft")
                                                 .id("ask-save")
-                                                .press_soft()
+                                                .press(t)
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.answer_close_compose(true, cx)
                                                 })),
                                             "ask-save",
-                                            true,
                                         )),
                                 ),
                         ),

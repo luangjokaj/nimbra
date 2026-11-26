@@ -74,7 +74,7 @@ impl Nimbra {
                             .pl(px(12.))
                             .pt(px(12.))
                             .pb(px(6.))
-                            .child(overline(h, t.faint))
+                            .child(overline(t, h))
                             .into_any_element()
                     });
                     let row = div()
@@ -226,15 +226,7 @@ impl Nimbra {
                             .child(hint(&["↵"], "Snooze"))
                             .child(hint(&["esc"], "Close"))
                             .child(div().flex_1())
-                            .child(
-                                div()
-                                    .font_family(SERIF)
-                                    .italic()
-                                    .text_size(px(18.))
-                                    .line_height(px(20.))
-                                    .text_color(t.text3)
-                                    .child("Nimbra"),
-                            ),
+                            .child(display("Nimbra", 18., t.text3)),
                     ),
             )
     }

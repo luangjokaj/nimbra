@@ -684,17 +684,17 @@ impl SnoozeMenu {
                     .child({
                         let ready = self.chosen().is_some();
                         let label = if ready { "Snooze" } else { "Pick a later time" };
-                        let button = button(t, ButtonKind::Primary, label, Some("↵"))
+                        let button = button(t, ButtonKind::Primary, label)
                             .text_size(px(12.))
                             .id("snooze-confirm")
-                            .press_soft()
+                            .press(t)
                             .when(!ready, |d| d.opacity(0.5).cursor_default())
                             .when(ready, |d| {
                                 d.on_click(
                                     cx.listener(|this, _, window, cx| this.confirm(window, cx)),
                                 )
                             });
-                        crate::ui::glow(button, "snooze-confirm", true)
+                        crate::ui::glow(button, "snooze-confirm")
                     }),
             )
     }
