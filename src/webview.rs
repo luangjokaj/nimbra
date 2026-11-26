@@ -155,13 +155,17 @@ mod platform {
                     if link == "about:blank" {
                         return true;
                     }
-                    if leaves_app(&link, click::followed()) {
+                    if leaves_app(&link, click::followed())
+                        && !crate::integration::mailto_from_mail(&link, None)
+                    {
                         open_in_browser(&link);
                     }
                     false
                 })
                 .with_new_window_req_handler(|link, _| {
-                    if leaves_app(&link, click::followed()) {
+                    if leaves_app(&link, click::followed())
+                        && !crate::integration::mailto_from_mail(&link, None)
+                    {
                         open_in_browser(&link);
                     }
                     NewWindowResponse::Deny

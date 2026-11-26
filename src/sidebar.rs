@@ -83,9 +83,13 @@ impl Nimbra {
                     this.settings.collapsed.retain(|k| k != key);
                 }
                 this.fold_gen += 1;
+                this.save_settings(cx);
+                if crate::system::reduces_motion() {
+                    cx.notify();
+                    return;
+                }
                 this.folding
                     .insert(key, (std::time::Instant::now(), this.fold_gen));
-                this.save_settings(cx);
                 // Once folded, the rows leave the layout.
                 cx.spawn(async move |this, cx| {
                     cx.background_executor()
@@ -202,7 +206,7 @@ impl Nimbra {
             .map(|place| place.x);
         self.peek.reset();
         self.sidebar_open = !self.sidebar_open;
-        self.sidebar_toggled = Some(std::time::Instant::now());
+        self.sidebar_toggled = (!crate::system::reduces_motion()).then(std::time::Instant::now);
         if self.sidebar_open {
             self.focus_restore = None;
         }
@@ -310,6 +314,9 @@ impl Nimbra {
             .peek
             .look(pointer, right, hold && !self.window_covered())
         {
+            if crate::system::reduces_motion() {
+                self.peek.settle();
+            }
             cx.notify();
         }
         // Nothing can happen while inactive except becoming active: look less often.
@@ -1067,7 +1074,15 @@ impl Nimbra {
                         icon_button(t, if self.dark { "sun" } else { "moon" })
                             .id("theme")
                             .press(t)
-                            .tooltip(tip(t.dark, "Light or dark theme", "⌘⇧L"))
+                            .tooltip(tip(
+                                t.dark,
+                                match self.settings.theme {
+                                    crate::settings::ThemeChoice::System => "Appearance: System",
+                                    crate::settings::ThemeChoice::Light => "Appearance: Light",
+                                    crate::settings::ThemeChoice::Dark => "Appearance: Dark",
+                                },
+                                "⌘⇧L",
+                            ))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
                     ),
             );

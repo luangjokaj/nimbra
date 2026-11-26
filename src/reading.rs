@@ -664,7 +664,11 @@ impl Nimbra {
                 // Links open in the system browser; only http, https and mailto get this far.
                 let (ranges, urls): (Vec<_>, Vec<_>) = links.into_iter().unzip();
                 gpui::InteractiveText::new(("link-text", id), styled)
-                    .on_click(ranges, move |index, _, cx| cx.open_url(&urls[index]))
+                    .on_click(ranges, move |index, _, cx| {
+                        if !crate::integration::mailto_from_mail(&urls[index], None) {
+                            cx.open_url(&urls[index]);
+                        }
+                    })
                     .into_any_element()
             };
             // Selecting: press on the text, drag (across blocks too, see `selection.rs`),

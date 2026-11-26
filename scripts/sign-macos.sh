@@ -17,5 +17,12 @@ if [ -z "$IDENTITY" ]; then
   echo "No signing certificate found; leaving $TARGET unsigned (Keychain will ask on every rebuild)." >&2
   exit 0
 fi
-codesign --force --sign "$IDENTITY" --identifier com.riangle.nimbra "$TARGET"
+# The app gets the hardened runtime, needed for notarization (a bare dev binary does not, so a
+# debugger can still attach). No entitlements: WebKit runs its JIT in its own processes, and
+# nothing here loads other code. A Developer ID build also gets a secure timestamp.
+FLAGS=""
+case "$TARGET" in *.app) FLAGS="--options runtime" ;; esac
+case "$IDENTITY" in "Developer ID Application"*) FLAGS="$FLAGS --timestamp" ;; esac
+# shellcheck disable=SC2086 # FLAGS is a list of flags
+codesign --force $FLAGS --sign "$IDENTITY" --identifier com.riangle.nimbra "$TARGET"
 echo "Signed $TARGET as: $IDENTITY"

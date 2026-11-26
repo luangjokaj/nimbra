@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+
 use gpui::SharedString;
 
 use crate::mail;
@@ -24,8 +28,8 @@ pub struct Mail {
     pub brief: SharedString,
     pub participants: SharedString,
     /// Older messages in the thread, shown collapsed above the latest one.
-    pub earlier: Vec<Earlier>,
-    pub body: Vec<Block>,
+    pub earlier: Shared<Vec<Earlier>>,
+    pub body: Shared<Vec<Block>>,
     /// The demo hero thread shows action items and attachments.
     pub rich: bool,
     /// Whether `body` and `earlier` have been fetched.
@@ -49,6 +53,60 @@ pub struct Mail {
     /// The account this thread belongs to, when the list mixes accounts (All inboxes).
     #[serde(default)]
     pub account: Option<String>,
+}
+
+/// A thread's messages, shared between the copies of its row (the list, the cache of each
+/// mailbox, what is being saved) instead of copied for each. Changed in place only where no
+/// other copy has it; stored as the value itself.
+#[derive(Default, Debug, PartialEq)]
+pub struct Shared<T>(Arc<T>);
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Shared(self.0.clone())
+    }
+}
+
+impl<T> Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Shared(Arc::new(value))
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Shared<T>
+where
+    &'a T: IntoIterator,
+{
+    type Item = <&'a T as IntoIterator>::Item;
+    type IntoIter = <&'a T as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        (&*self.0).into_iter()
+    }
+}
+
+impl<T: serde::Serialize> serde::Serialize for Shared<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Shared<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer).map(Shared::from)
+    }
 }
 
 /// What a message says about itself, for the header block in the reading pane.
@@ -133,8 +191,8 @@ impl Mail {
             tag: None,
             yesterday: earlier,
             brief: "".into(),
-            earlier: Vec::new(),
-            body: Vec::new(),
+            earlier: Shared::default(),
+            body: Shared::default(),
             rich: false,
             loaded: false,
             reply: None,
@@ -179,10 +237,12 @@ impl Mail {
                 )
             });
             self.html = latest.html.map(Into::into);
-            self.body = latest.blocks;
-            if self.body.is_empty() {
-                self.body = rich::from_text(vec![latest.snippet]);
+            self.body = if latest.blocks.is_empty() {
+                rich::from_text(vec![latest.snippet])
+            } else {
+                latest.blocks
             }
+            .into();
         }
         self.earlier = messages
             .into_iter()
@@ -197,7 +257,8 @@ impl Mail {
                 blocks: message.blocks,
                 expanded: false,
             })
-            .collect();
+            .collect::<Vec<_>>()
+            .into();
         self.loaded = true;
     }
 }
@@ -208,13 +269,17 @@ impl Mail {
 /// A thread keeps its cached messages only while its snippet and message count are
 /// unchanged; a new reply changes both, which makes it load again.
 pub fn merge(cached: &[Mail], fresh: Vec<Mail>) -> Vec<Mail> {
+    // Thread ids are each account's own (All inboxes mixes accounts).
+    let loaded: HashMap<(&str, Option<&str>), &Mail> = cached
+        .iter()
+        .filter(|old| old.loaded)
+        .filter_map(|old| Some(((old.id.as_deref()?, old.account.as_deref()), old)))
+        .collect();
     fresh
         .into_iter()
         .map(|mut mail| {
-            if let Some(old) = cached
-                .iter()
-                // Thread ids are each account's own (All inboxes mixes accounts).
-                .find(|old| old.loaded && old.id == mail.id && old.account == mail.account)
+            let key = mail.id.as_deref().map(|id| (id, mail.account.as_deref()));
+            if let Some(old) = key.and_then(|key| loaded.get(&key))
                 && old.snippet == mail.snippet
                 && old.thread == mail.thread
             {
@@ -296,8 +361,8 @@ fn mail(
         yesterday: false,
         brief: snippet.into(),
         participants: format!("{sender} and you").into(),
-        earlier: Vec::new(),
-        body: Vec::new(),
+        earlier: Shared::default(),
+        body: Shared::default(),
         rich: false,
         loaded: true,
         timestamp_ms: 0,
@@ -389,14 +454,14 @@ pub fn inbox() -> Vec<Mail> {
                     expanded: false,
                     header: Header::default(),
                 },
-            ],
+            ].into(),
             brief: "Mira needs your sign-off by Friday. Public launch moves to Dec 9 so onboarding gets one more test round; budget is unchanged.".into(),
             body: paragraphs(&[
                 "Hi Luan,",
                 "Final deck is attached with the updated timeline. We pushed the public launch to December 9 so the new onboarding flow gets one more round of testing. Budget stays exactly where it was.",
                 "Two things before Friday: the pricing tiers on slide 14, and a date for the press embargo.",
                 "Thanks,\nMira",
-            ]),
+            ]).into(),
             ..mail(
                 "Mira Kovač",
                 "MK",
@@ -413,7 +478,7 @@ pub fn inbox() -> Vec<Mail> {
                 "Hi Luan,",
                 "Your payout of €24,180.00 is on its way and should arrive on November 22 in the account ending 4421.",
                 "You can see the full breakdown in your dashboard.",
-            ]),
+            ]).into(),
             ..mail(
                 "Stripe",
                 "S",
@@ -431,7 +496,7 @@ pub fn inbox() -> Vec<Mail> {
                 "Hey,",
                 "Went through Button and Input end to end. Two edge cases with focus rings in dark mode, otherwise solid.",
                 "I can pair on it tomorrow morning if that works.",
-            ]),
+            ]).into(),
             ..mail(
                 "Jonah Reyes",
                 "JR",
@@ -448,7 +513,7 @@ pub fn inbox() -> Vec<Mail> {
                 "Hi all,",
                 "Flights are booked. Everyone lands Thursday afternoon and the hotel confirmation is inside.",
                 "Dinner on the first night is at 8:30, a short walk from the hotel.",
-            ]),
+            ]).into(),
             ..mail(
                 "Ana Petrović",
                 "AP",
@@ -464,7 +529,7 @@ pub fn inbox() -> Vec<Mail> {
                 "NIM-214 Command palette fuzzy matching",
                 "NIM-219 Snooze presets",
                 "NIM-223 Keyboard hints overlap on narrow windows",
-            ]),
+            ]).into(),
             // An HTML message with no styling of its own, to check the web view's defaults.
             html: Some(
                 "<p><b>3 issues</b> were assigned to you in <a href=\"https://example.com\">Nimbra</a>.</p>\
@@ -486,7 +551,7 @@ pub fn inbox() -> Vec<Mail> {
             thread: Some("2".into()),
             yesterday: true,
             // An HTML message, to exercise the rich-text viewer.
-            body: rich::from_html(SAMPLE_HTML),
+            body: rich::from_html(SAMPLE_HTML).into(),
             html: Some(SAMPLE_HTML.into()),
             ..mail(
                 "Elena Brooks",
@@ -499,7 +564,7 @@ pub fn inbox() -> Vec<Mail> {
         },
         Mail {
             yesterday: true,
-            body: paragraphs(&["Clause 4.2 is updated per legal. Ready to countersign when you are."]),
+            body: paragraphs(&["Clause 4.2 is updated per legal. Ready to countersign when you are."]).into(),
             ..mail(
                 "Daniel Osei",
                 "DO",
@@ -511,7 +576,7 @@ pub fn inbox() -> Vec<Mail> {
         },
         Mail {
             yesterday: true,
-            body: paragraphs(&["“Can the unread counts be a touch quieter?”"]),
+            body: paragraphs(&["“Can the unread counts be a touch quieter?”"]).into(),
             ..mail(
                 "Figma",
                 "F",
@@ -523,7 +588,7 @@ pub fn inbox() -> Vec<Mail> {
         },
         Mail {
             yesterday: true,
-            body: paragraphs(&["Design crit is now Thursday 2:00 PM in Studio B. Agenda attached."]),
+            body: paragraphs(&["Design crit is now Thursday 2:00 PM in Studio B. Agenda attached."]).into(),
             ..mail(
                 "Google Calendar",
                 "GC",
@@ -541,7 +606,7 @@ pub fn inbox() -> Vec<Mail> {
                 ..Header::default()
             },
             yesterday: true,
-            body: paragraphs(&["12 pages updated and 4 new comments in Roadmap 2027."]),
+            body: paragraphs(&["12 pages updated and 4 new comments in Roadmap 2027."]).into(),
             ..mail(
                 "Notion",
                 "N",
@@ -597,10 +662,10 @@ mod tests {
     #[test]
     fn merge_keeps_downloaded_threads_and_refetches_changed_ones() {
         let mut same = thread("a", "hello");
-        same.body = rich::from_text(vec!["Downloaded body".into()]);
+        same.body = rich::from_text(vec!["Downloaded body".into()]).into();
         same.loaded = true;
         let mut changed = thread("b", "old reply");
-        changed.body = rich::from_text(vec!["Stale body".into()]);
+        changed.body = rich::from_text(vec!["Stale body".into()]).into();
         changed.loaded = true;
         let cached = vec![same, changed];
 
@@ -621,5 +686,40 @@ mod tests {
         assert_eq!(merged[1].body[0].text, "Downloaded body");
         assert!(!merged[0].loaded && merged[0].body.is_empty());
         assert!(!merged[2].loaded && merged[2].body.is_empty());
+    }
+
+    #[test]
+    fn merge_keeps_each_accounts_thread_apart() {
+        let mut mine = thread("a", "hello");
+        mine.body = rich::from_text(vec!["Mine".into()]).into();
+        mine.loaded = true;
+        let mut fresh_theirs = thread("a", "hello");
+        fresh_theirs.account = Some("bbbbbbbbbbbb".into());
+        let merged = merge(&[mine], vec![fresh_theirs, thread("a", "hello")]);
+        assert!(
+            !merged[0].loaded,
+            "another account's thread with the same id"
+        );
+        assert_eq!(merged[1].body[0].text, "Mine");
+    }
+
+    #[test]
+    fn a_copied_row_shares_its_messages_until_one_copy_changes_them() {
+        let mut row = thread("a", "hello");
+        row.body = rich::from_text(vec!["Body".into()]).into();
+        let copy = row.clone();
+        assert!(std::ptr::eq(row.body.as_ptr(), copy.body.as_ptr()));
+        row.body[0].text = "Changed".into();
+        assert_eq!(copy.body[0].text, "Body");
+    }
+
+    #[test]
+    fn rows_stored_before_messages_were_shared_still_load() {
+        let mut row = thread("a", "hello");
+        row.body = rich::from_text(vec!["Body".into()]).into();
+        let stored = serde_json::to_value(&row).unwrap();
+        assert!(stored["body"].is_array(), "stored as the list itself");
+        let back: Mail = serde_json::from_value(stored).unwrap();
+        assert_eq!(back.body[0].text, "Body");
     }
 }
