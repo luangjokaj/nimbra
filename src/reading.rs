@@ -1684,6 +1684,7 @@ impl Nimbra {
                 )
             }
         };
+        let time_w = text_width(&time, 11., crate::theme::MONO, cx);
         let thread = mail.id.clone().unwrap_or_default();
         let open = self.details.as_ref() == Some(&(thread.clone(), index));
         let card_thread = thread.clone();
@@ -1734,6 +1735,7 @@ impl Nimbra {
             .child(
                 div()
                     .group("message-header")
+                    .relative()
                     .flex()
                     .items_center()
                     .gap(px(space::M))
@@ -1787,13 +1789,21 @@ impl Nimbra {
                                     .child(icon(if open { "up" } else { "down" }, 12., t.text3)),
                             ),
                     )
-                    // Replying to this message in particular: there while the pointer is on it.
+                    // Replying to this message in particular: there while the pointer is on it,
+                    // over the header beside the time rather than holding room the name needs
+                    // in a narrow column.
                     .when(actions, |d| {
                         d.child(
                             div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right(px(time_w + space::M))
                                 .flex()
-                                .flex_none()
+                                .items_center()
                                 .gap(px(2.))
+                                .pl(px(space::S))
+                                .bg(t.surface)
                                 .invisible()
                                 .group_hover("message-header", |s| s.visible())
                                 .child(reply_button(
