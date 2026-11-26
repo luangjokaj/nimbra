@@ -838,73 +838,65 @@ impl SettingsWindow {
                     initials: initials.clone(),
                     dark: t.dark,
                 };
-                let identity = div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
+                let (kind, provider) = provider_of(account);
+                // The photo, with where its mail comes from in a badge on its corner.
+                let photo = div()
+                    .relative()
+                    .flex_none()
+                    .size(px(36.))
                     .child(if let Some(photo) = photos.get(&account.id) {
-                        me_avatar(Some(photo), &initials, 32.)
+                        me_avatar(Some(photo), &initials, 36.)
                     } else if shown {
-                        me_avatar(None, &initials, 32.)
+                        me_avatar(None, &initials, 36.)
                     } else {
-                        avatar(crate::data::tone_for(&account.email), &initials, 32.)
+                        avatar(crate::data::tone_for(&account.email), &initials, 36.)
                             .into_any_element()
                     })
                     .child(
                         div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(account.email.clone()),
-                            )
-                            .child(meta(
-                                {
-                                    // Gmail, or the IMAP server it reads from.
-                                    let provider = account
-                                        .servers
-                                        .as_ref()
-                                        .map_or("Gmail".to_string(), |s| s.imap.host.clone());
-                                    match (is_default, shown) {
-                                        (true, true) => format!("Default · Shown now · {provider}"),
-                                        (true, false) => format!("Default · {provider}"),
-                                        (false, true) => format!("Shown now · {provider}"),
-                                        (false, false) => provider,
-                                    }
-                                },
-                                if shown || is_default {
-                                    t.violet
-                                } else {
-                                    t.text3
-                                },
-                            )),
-                    )
-                    // A handle that says the row can be dragged to another place.
-                    .when(several, |d| {
-                        d.child(
-                            div()
-                                .id(("account-grip", i))
-                                .flex_none()
-                                .p(px(4.))
-                                .rounded(px(6.))
-                                .cursor(gpui::CursorStyle::OpenHand)
-                                .tooltip(tip(t.dark, "Drag to reorder", ""))
-                                .child(icon("grip", 16., t.text3)),
-                        )
-                    });
-                // Under the address, lined up with it (past the 32 pt photo and its gap).
-                let actions = div()
+                            .id(("account-provider", i))
+                            .absolute()
+                            .right(px(-4.))
+                            .bottom(px(-4.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(18.))
+                            .rounded_full()
+                            .bg(t.raised)
+                            .border_1()
+                            .border_color(t.border_strong)
+                            .tooltip(tip(t.dark, provider.clone(), ""))
+                            .child(provider_logo(t, kind, 10.)),
+                    );
+                // Small text buttons, quieter than the card's other buttons.
+                let quiet = |label: &'static str| {
+                    let hover = t.hover;
+                    let text = t.text;
+                    div()
+                        .flex()
+                        .items_center()
+                        .h(px(24.))
+                        .px(px(8.))
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(t.text2)
+                        .hover(move |s| s.bg(hover).text_color(text))
+                        .child(label)
+                };
+                let details = div()
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(8.))
-                    .pl(px(44.))
+                    .gap(px(2.))
+                    // The provider in words, then what can be done with it.
+                    .child(div().mr(px(6.)).child(meta(provider, t.text3)))
                     .when(!shown, |d| {
                         d.child(
-                            button(t, ButtonKind::Secondary, "Switch to", None)
+                            quiet("Switch to")
                                 .id(("switch-account", i))
-                                .press_soft()
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let id = id.clone();
                                     this.owner.update(cx, |n, cx| n.switch_account(id, cx));
@@ -913,9 +905,8 @@ impl SettingsWindow {
                     })
                     .when(several && !is_default, |d| {
                         d.child(
-                            button(t, ButtonKind::Secondary, "Make default", None)
+                            quiet("Make default")
                                 .id(("default-account", i))
-                                .press_soft()
                                 .tooltip(tip(
                                     t.dark,
                                     "Its profile in the sidebar, and new messages from it",
@@ -926,24 +917,79 @@ impl SettingsWindow {
                                     this.owner.update(cx, |n, cx| n.set_default_account(id, cx));
                                 })),
                         )
-                    })
-                    // Asks first, in a dialog.
+                    });
+                let text = div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .gap(px(4.))
+                    // The address, with Default and Shown now as pills by it.
                     .child(
-                        button(t, ButtonKind::Secondary, "Remove", None)
+                        div()
+                            .flex()
+                            .items_center()
+                            .h(px(22.))
+                            .gap(px(8.))
+                            .min_w(px(0.))
+                            .child(
+                                div()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(account.email.clone()),
+                            )
+                            .when(is_default, |d| d.child(pill(t, "Default", t.violet)))
+                            .when(shown, |d| d.child(pill(t, "Shown now", t.mint))),
+                    )
+                    .child(details);
+                let rose = t.rose;
+                let ends = div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(4.))
+                    // Remove asks first, in a dialog.
+                    .child(
+                        div()
                             .id(("remove-account", i))
-                            .press_soft()
-                            .text_color(t.rose)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(30.))
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(rose.opacity(0.12)))
+                            .tooltip(tip(t.dark, "Remove account", ""))
+                            .group(SharedString::from(format!("remove-account-{i}")))
+                            .child(icon("trash", 15., t.text3).group_hover(
+                                SharedString::from(format!("remove-account-{i}")),
+                                move |s| s.text_color(rose),
+                            ))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let (id, email) = remove.clone();
                                 this.ask_remove(id, email, cx);
                             })),
-                    );
+                    )
+                    // A handle that says the row can be dragged to another place.
+                    .when(several, |d| {
+                        d.child(
+                            div()
+                                .id(("account-grip", i))
+                                .flex_none()
+                                .p(px(6.))
+                                .rounded(px(6.))
+                                .cursor(gpui::CursorStyle::OpenHand)
+                                .tooltip(tip(t.dark, "Drag to reorder", ""))
+                                .child(icon("grip", 16., t.text3)),
+                        )
+                    });
                 let hover = t.hover;
                 div()
                     .id(("account-row", i))
                     .flex()
-                    .flex_col()
-                    .gap(px(10.))
+                    .items_center()
+                    .gap(px(14.))
                     .px(px(16.))
                     .py(px(14.))
                     // Highlighted while another is dragged over it: square where it meets the
@@ -953,8 +999,9 @@ impl SettingsWindow {
                     .when(i + 1 == accounts.len() && !photo_row, |d| {
                         d.rounded_b(px(13.))
                     })
-                    .child(identity)
-                    .child(actions)
+                    .child(photo)
+                    .child(text)
+                    .child(ends)
                     // Dragged onto another row, it takes that row's place.
                     .when(several, |d| {
                         d.on_drag(dragged, |dragged, _, window, cx| {
@@ -1645,5 +1692,116 @@ impl Render for DraggedAccount {
                 24.,
             ))
             .child(self.email.clone())
+    }
+}
+
+/// Where an account's mail comes from, for the logo at the end of its row.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Provider {
+    Gmail,
+    Microsoft,
+    Other,
+}
+
+/// The account's provider, and the words for its tooltip.
+fn provider_of(account: &crate::settings::AccountRef) -> (Provider, String) {
+    let Some(servers) = &account.servers else {
+        return (Provider::Gmail, "Gmail".into());
+    };
+    let host = servers.imap.host.to_lowercase();
+    if account.oauth.as_deref() == Some("microsoft")
+        || host.ends_with("outlook.com")
+        || host.ends_with("office365.com")
+    {
+        (Provider::Microsoft, "Microsoft · Outlook".into())
+    } else if host == "imap.gmail.com" || host == "imap.googlemail.com" {
+        (Provider::Gmail, "Gmail · IMAP".into())
+    } else {
+        (Provider::Other, format!("IMAP · {}", servers.imap.host))
+    }
+}
+
+/// Gmail's "M" in its colours: a PNG made from `assets/gmail.svg`
+/// (`rsvg-convert -w 64 assets/gmail.svg -o assets/gmail.png`), as GPUI draws an SVG
+/// image with its red and blue swapped.
+static GMAIL_LOGO: std::sync::LazyLock<std::sync::Arc<gpui::Image>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            include_bytes!("../assets/gmail.png").to_vec(),
+        ))
+    });
+
+/// The provider's logo, about `size` wide.
+fn provider_logo(t: &Theme, kind: Provider, size: f32) -> AnyElement {
+    match kind {
+        Provider::Gmail => gpui::img(GMAIL_LOGO.clone())
+            .w(px(size))
+            .h(px(size * 0.75))
+            .into_any_element(),
+        // Microsoft's four squares.
+        Provider::Microsoft => {
+            let side = (size - 1.) / 2.;
+            let square = |hex: u32| div().size(px(side)).bg(c(hex, 1.));
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(1.))
+                        .child(square(0xf25022))
+                        .child(square(0x7fba00)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(1.))
+                        .child(square(0x00a4ef))
+                        .child(square(0xffb900)),
+                )
+                .into_any_element()
+        }
+        Provider::Other => icon("mail", size, t.text2).into_any_element(),
+    }
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+    use crate::servers::{Security, Server, Servers};
+
+    fn account(host: Option<&str>, oauth: Option<&str>) -> crate::settings::AccountRef {
+        let server = |host: &str| Server {
+            host: host.into(),
+            port: 993,
+            security: Security::Tls,
+        };
+        crate::settings::AccountRef {
+            id: "a".into(),
+            email: "a@example.com".into(),
+            servers: host.map(|host| Servers {
+                username: "a@example.com".into(),
+                imap: server(host),
+                smtp: server(host),
+            }),
+            oauth: oauth.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn each_account_shows_where_its_mail_comes_from() {
+        assert_eq!(provider_of(&account(None, None)).0, Provider::Gmail);
+        assert_eq!(
+            provider_of(&account(Some("imap.gmail.com"), None)).0,
+            Provider::Gmail
+        );
+        assert_eq!(
+            provider_of(&account(Some("outlook.office365.com"), Some("microsoft"))).0,
+            Provider::Microsoft
+        );
+        let zoho = provider_of(&account(Some("imap.zoho.com"), None));
+        assert_eq!(zoho, (Provider::Other, "IMAP · imap.zoho.com".to_string()));
     }
 }
