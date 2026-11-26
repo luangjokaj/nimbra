@@ -131,6 +131,8 @@ mod platform {
         frame: std::cell::Cell<(f32, f32, f32, f32)>,
         hole: std::cell::Cell<Option<(f32, f32, f32, f32)>>,
         applied: std::cell::Cell<Option<((f32, f32, f32, f32), Option<(f32, f32, f32, f32)>)>>,
+        /// Whether the view is on screen (`set_visible`), so ⌘C goes to it only then.
+        shown: std::cell::Cell<bool>,
         /// The account of the mail shown, for the `mailto:` links in it.
         #[cfg(target_os = "macos")]
         account: std::rc::Rc<std::cell::RefCell<Option<String>>>,
@@ -198,6 +200,7 @@ mod platform {
                 #[cfg(target_os = "windows")]
                 loads,
                 frame: std::cell::Cell::new((0., 0., 0., 0.)),
+                shown: std::cell::Cell::new(false),
                 hole: std::cell::Cell::new(None),
                 applied: std::cell::Cell::new(None),
                 #[cfg(target_os = "macos")]
@@ -265,12 +268,41 @@ mod platform {
         }
 
         pub fn set_visible(&self, visible: bool) {
+            self.shown.set(visible);
             let _ = self.view.set_visible(visible);
             // A hidden view keeps no hole (its click-through view would block the app).
             if !visible && self.applied.get().is_some_and(|(_, hole)| hole.is_some()) {
                 self.hole.set(None);
                 self.apply_hole();
             }
+        }
+
+        /// ⌘C: copies what is selected in the email, as WebKit does itself (text with its
+        /// formatting). The app takes ⌘C as its own key before the view sees it, so it is
+        /// handed on here. False when the view isn't on screen.
+        pub fn copy(&self) -> bool {
+            if !self.shown.get() {
+                return false;
+            }
+            #[cfg(target_os = "macos")]
+            #[allow(unexpected_cfgs)] // emitted by the objc crate's macros
+            {
+                use objc::runtime::Object;
+                use objc::{msg_send, sel, sel_impl};
+                use wry::WebViewExtMacOS as _;
+                let webview = self.view.webview();
+                let webview = &*webview as *const _ as *mut Object;
+                let nothing: *mut Object = std::ptr::null_mut();
+                // SAFETY: main thread, a live WKWebView; copy: is its NSResponder action.
+                unsafe {
+                    let _: () = msg_send![webview, copy: nothing];
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = self.view.evaluate_script("document.execCommand('copy')");
+            }
+            true
         }
 
         /// Opens the system print panel for what the view shows.
@@ -791,6 +823,9 @@ mod platform {
         pub fn set_hole(&self, _hole: Option<(f32, f32, f32, f32)>) {}
         pub fn set_dark(&self, _dark: bool, _darken: bool) {}
         pub fn print(&self) {}
+        pub fn copy(&self) -> bool {
+            false
+        }
         pub fn scroll_page(&self, _down: bool) {}
     }
 }

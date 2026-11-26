@@ -270,13 +270,19 @@ impl Nimbra {
         .size_0()
     }
 
-    /// ⌘C in the main window's reader.
+    /// ⌘C in the main window's reader: the text picked in the reader, or else what is
+    /// selected in the email shown in its original formatting.
     pub(super) fn copy_reader_selection(&mut self, cx: &mut Context<Self>) {
-        let (Some(place), Some(mail)) = (self.main_place(), self.mails.get(self.selected)) else {
+        if let (Some(place), Some(mail)) = (self.main_place(), self.mails.get(self.selected))
+            && self.selection_in(&place).is_some()
+        {
+            let mail = mail.clone();
+            self.copy_selection(&place, &mail, cx);
             return;
-        };
-        let mail = mail.clone();
-        self.copy_selection(&place, &mail, cx);
+        }
+        if let Some(view) = &self.html_view {
+            view.copy();
+        }
     }
 
     /// ⌘C where `place` shows `mail`: the selected text, a blank line between blocks.

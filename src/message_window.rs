@@ -424,9 +424,15 @@ impl Render for MessageWindow {
             .child(watch)
             .on_action(cx.listener(|this, _: &crate::input::Copy, _, cx| {
                 let place = super::selection::Place::Window(this.key.clone());
-                let mail = this.mail(cx);
-                this.owner
-                    .update(cx, |n, cx| n.copy_selection(&place, &mail, cx));
+                // The text picked in this window's reader, or else the email's own selection.
+                let picked = this.owner.read(cx).selection_in(&place).is_some();
+                if picked {
+                    let mail = this.mail(cx);
+                    this.owner
+                        .update(cx, |n, cx| n.copy_selection(&place, &mail, cx));
+                } else if let Some(view) = &this.html_view {
+                    view.copy();
+                }
             }))
             // The same single-letter keys as in the main window, unless a reply is open here.
             .key_context(if compose.is_some() {
