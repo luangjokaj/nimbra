@@ -18,10 +18,34 @@ use gpui::{
 };
 
 use crate::theme::{Theme, radius, space};
-use crate::ui::{Elevation, caption, elevation, motion};
+use crate::ui::{caption, motion, shadow};
 
 /// See-through room around the bubble, for its shadow.
 const MARGIN: f32 = 28.;
+
+/// How every pop-up window's glass (tooltips, menus, toasts) sits off the window: one faint,
+/// neutral shadow. Each layer is (down, blur, spread, strength).
+pub const LIFT: [(f32, f32, f32, f32); 1] = [(4., 6., -2., 0.5)];
+
+pub fn lift(t: &Theme) -> Vec<gpui::BoxShadow> {
+    LIFT.iter()
+        .map(|&(down, blur, spread, strength)| {
+            shadow(t.shadow.opacity(t.shadow.a * strength), down, blur, spread)
+        })
+        .collect()
+}
+
+/// Raised glass's hairline edge, laid over it so it takes no room. Give its owner
+/// `.relative()` and make this its last child.
+pub fn edge(t: &Theme, corner: f32) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(corner))
+        .border_1()
+        .border_color(t.rim)
+}
+
 /// Between the pointer and the bubble.
 const GAP: f32 = 7.;
 /// How often the window looks at the pointer, which GPUI cannot see over the email.
@@ -35,7 +59,7 @@ const MISSES: u8 = 2;
 const REACH: (f32, f32) = (260., 60.);
 /// Left of the label and right of the last text.
 const PAD: f32 = 10.;
-/// A 16pt line, 5pt above and below it, and the border.
+/// A 16pt line with 6pt above and below it.
 const HEIGHT: f32 = 28.;
 
 thread_local! {
@@ -131,7 +155,7 @@ impl Tip {
         let height = HEIGHT;
         let view = owner.viewport_size();
         let (view_w, view_h) = (f32::from(view.width), f32::from(view.height));
-        let width = (PAD + label + key + PAD + 2.).min(view_w);
+        let width = (PAD + label + key + PAD).min(view_w);
 
         // Below and right of the pointer, flipped where that leaves the window.
         let (mut x, mut y) = (f32::from(at.x) + 1., f32::from(at.y) + GAP);
@@ -255,10 +279,11 @@ impl Render for Popup {
     }
 }
 
-/// The label, then its key as quiet text, the way macOS help tags show one.
+/// The label, then its key as quiet text, on the same glass as the menus.
 fn bubble(dark: bool, label: &SharedString, key: &'static str) -> Div {
     let t = if dark { Theme::dark() } else { Theme::light() };
     div()
+        .relative()
         .flex()
         .items_center()
         .gap(px(space::S))
@@ -266,15 +291,14 @@ fn bubble(dark: bool, label: &SharedString, key: &'static str) -> Div {
         .px(px(PAD))
         .rounded(px(radius::CONTROL))
         .bg(t.raised)
-        .border_1()
-        .border_color(t.edge)
-        .shadow(elevation(&t, Elevation::Pop))
+        .shadow(lift(&t))
         .font_family(crate::theme::SANS)
         .text_size(px(12.))
         .line_height(px(16.))
         .text_color(t.text)
         .child(div().whitespace_nowrap().child(label.clone()))
         .when(!key.is_empty(), |d| d.child(caption(key, t.text3)))
+        .child(edge(&t, radius::CONTROL))
 }
 
 fn fade_in(bubble: Div, instant: bool) -> AnyElement {
@@ -288,5 +312,21 @@ fn fade_in(bubble: Div, instant: bool) -> AnyElement {
                 |bubble, delta| bubble.opacity(delta),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GPUI draws a shadow out to 3 times its blur; past the window's edge it is cut off,
+    /// which shows as a box around the glass.
+    #[test]
+    fn every_layer_of_the_lift_fades_inside_the_window() {
+        for (down, blur, spread, _) in LIFT {
+            let below = down + spread + 3. * blur;
+            let sides = spread + 3. * blur;
+            assert!(below <= MARGIN && sides <= MARGIN, "{below} {sides}");
+        }
     }
 }

@@ -25,9 +25,9 @@ use crate::theme::{
 };
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Depth, Elevation, GUTTER, Press, TOP_BAR, TOP_LINE, aura, avatar, button, caption,
-    display, elevation, focus_ring, hero, icon, icon_button, kbd, meta, overline, panel, pill, rim,
-    shadow, tip, title_l, title_m, title_s,
+    ButtonKind, Depth, GUTTER, Press, TOP_BAR, TOP_LINE, aura, avatar, button, caption, display,
+    focus_ring, hero, icon, icon_button, kbd, meta, overline, panel, pill, rim, shadow, tip,
+    title_l, title_m, title_s,
 };
 use crate::webview::HtmlView;
 
@@ -1205,6 +1205,8 @@ impl Nimbra {
 
     /// ?: every shortcut, grouped. Escape, ? or a click outside closes it.
     fn shortcuts_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        // Wide enough for the longest action beside its keys.
+        const COLUMN: f32 = 240.;
         let group = |(title, keys): &(&'static str, &'static [keyboard::Shortcut])| {
             div()
                 .flex()
@@ -1239,7 +1241,7 @@ impl Nimbra {
                 .flex()
                 .flex_col()
                 .gap(px(20.))
-                .w(px(228.))
+                .w(px(COLUMN))
                 .children(column.iter().map(|i| group(&keyboard::SHORTCUTS[*i])))
         });
         div()
@@ -1260,35 +1262,42 @@ impl Nimbra {
                 }),
             )
             .child(
+                // The rim stays put while the list scrolls under it.
                 div()
-                    .id("shortcuts")
-                    .max_w(px(3. * 228. + 2. * 32. + 2. * 24. + 2.))
-                    .max_h_full()
-                    .overflow_y_scroll()
+                    .relative()
                     .flex()
-                    .flex_col()
-                    .gap(px(16.))
-                    .p(px(space::XL))
+                    .max_h_full()
                     .rounded(px(radius::SHEET))
                     .bg(t.raised)
-                    .border_1()
-                    .border_color(t.edge)
-                    .shadow(elevation(t, Elevation::Sheet))
+                    .shadow(sheet_shadow(t))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(title_s("Keyboard Shortcuts", t.text))
                     .child(
                         div()
+                            .id("shortcuts")
+                            .max_w(px(3. * COLUMN + 2. * 32. + 2. * space::XL))
+                            .overflow_y_scroll()
                             .flex()
-                            .flex_wrap()
-                            .gap_x(px(32.))
-                            .gap_y(px(20.))
-                            .children(columns),
-                    ),
+                            .flex_col()
+                            .gap(px(space::XL))
+                            .p(px(space::XL))
+                            .child(title_s("Keyboard Shortcuts", t.text))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_x(px(32.))
+                                    .gap_y(px(20.))
+                                    .children(columns),
+                            ),
+                    )
+                    .child(edge(t, radius::SHEET)),
             )
     }
 
     /// The yes-or-no sheet for permanent actions.
     fn confirm_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        // Permanent loss gets a quiet warning colour; granting access is the main action.
+        let lit = matches!(self.confirm, Some(Ask::GrantFullAccess(_)));
         let (title, body, yes): (String, String, &str) = match &self.confirm {
             Some(Ask::DeleteForever(ids)) => (
                 if ids.len() == 1 {
@@ -1331,25 +1340,30 @@ impl Nimbra {
             .child(
                 div()
                     .id("confirm")
+                    .relative()
                     .w(px(440.))
                     .flex()
                     .flex_col()
-                    .gap(px(12.))
+                    .gap(px(space::S))
                     .p(px(space::XL))
                     .rounded(px(radius::SHEET))
                     .bg(t.raised)
-                    .border_1()
-                    .border_color(t.edge)
-                    .shadow(elevation(t, Elevation::Sheet))
+                    .shadow(sheet_shadow(t))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(title_s(&title, t.text))
-                    .child(div().text_color(t.text2).child(body))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .line_height(px(20.))
+                            .text_color(t.text2)
+                            .child(body),
+                    )
                     .child(
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(8.))
-                            .pt(px(6.))
+                            .gap(px(space::S))
+                            .pt(px(space::L))
                             .child(
                                 button(t, ButtonKind::Ghost, "Cancel")
                                     .id("confirm-cancel")
@@ -1359,28 +1373,55 @@ impl Nimbra {
                                         cx.notify();
                                     })),
                             )
-                            .child(
-                                button(t, ButtonKind::Secondary, yes)
-                                    .id("confirm-yes")
-                                    .press(t)
-                                    .text_color(t.rose)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        match this.confirm.take() {
-                                            Some(Ask::DeleteForever(ids)) => {
-                                                this.delete_forever(ids, cx)
-                                            }
-                                            Some(Ask::GrantFullAccess(ids)) => {
-                                                this.grant_full_access(ids, cx)
-                                            }
-                                            Some(Ask::DeleteLabel(id, _)) => {
-                                                this.delete_label(id, cx)
-                                            }
-                                            None => {}
+                            .child({
+                                let yes = if lit {
+                                    primary_button(t, "confirm-yes", yes)
+                                } else {
+                                    // Rose text needs a dark ground to read; light mode has
+                                    // a white label on solid rose instead.
+                                    let (rest, hover, held, label) = if t.dark {
+                                        let wash = |a: f32| t.rose.opacity(a);
+                                        (wash(0.14), wash(0.18), wash(0.24), t.rose)
+                                    } else {
+                                        let shade = |a: f32| over(c(0x000000, a), t.rose);
+                                        (t.rose, shade(0.08), shade(0.16), gpui::white())
+                                    };
+                                    // Shaped like `button`, which sets its own hover.
+                                    div()
+                                        .flex()
+                                        .flex_none()
+                                        .items_center()
+                                        .px(px(14.))
+                                        .py(px(6.))
+                                        .rounded(px(radius::CONTROL))
+                                        .border_1()
+                                        .border_color(t.rose.opacity(0.32))
+                                        .bg(rest)
+                                        .cursor_pointer()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(label)
+                                        .hover(move |s| s.bg(hover))
+                                        .child(yes.to_string())
+                                        .id("confirm-yes")
+                                        .active(move |s| s.bg(held))
+                                };
+                                let yes = yes.on_click(cx.listener(|this, _, _, cx| {
+                                    match this.confirm.take() {
+                                        Some(Ask::DeleteForever(ids)) => {
+                                            this.delete_forever(ids, cx)
                                         }
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
+                                        Some(Ask::GrantFullAccess(ids)) => {
+                                            this.grant_full_access(ids, cx)
+                                        }
+                                        Some(Ask::DeleteLabel(id, _)) => this.delete_label(id, cx),
+                                        None => {}
+                                    }
+                                    cx.notify();
+                                }));
+                                yes
+                            }),
+                    )
+                    .child(edge(t, radius::SHEET)),
             )
     }
 
@@ -2142,7 +2183,7 @@ impl Nimbra {
             .child(title_l(title, t.text))
             .child(
                 div()
-                    .max_w(px(440.))
+                    .max_w(px(520.))
                     .text_center()
                     .text_size(px(15.))
                     .line_height(px(24.))
@@ -2154,18 +2195,17 @@ impl Nimbra {
                     .pt(px(space::M))
                     .flex()
                     .gap(px(space::S))
-                    .child(crate::ui::glow(
-                        button(t, ButtonKind::Primary, label)
-                            .id("status-action")
-                            .on_click(cx.listener(|this, _, _, cx| {
+                    .child(
+                        primary_button(t, "status-action", label).on_click(cx.listener(
+                            |this, _, _, cx| {
                                 if matches!(this.status, Status::Failed(_)) {
                                     this.try_again(cx);
                                 } else {
                                     this.sign_in(cx);
                                 }
-                            })),
-                        "status-action",
-                    ))
+                            },
+                        )),
+                    )
                     // Signed out of Gmail (or never in): any other address works too.
                     .when(self.status == Status::SignedOut && !own_servers, |d| {
                         d.child(

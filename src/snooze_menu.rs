@@ -25,9 +25,9 @@ const WIDTH: f32 = 288.;
 const ROW: f32 = 32.;
 const HEADER: f32 = 28.;
 const DIVIDER: f32 = 9.;
-/// The card's padding and border, top and bottom together.
-const CHROME: f32 = 2. * 6. + 2.;
-const CELL: f32 = (WIDTH - 2. * 6. - 2.) / 7.;
+/// The card's padding, top and bottom together.
+const CHROME: f32 = 2. * CARD_PAD;
+const CELL: f32 = (WIDTH - CHROME) / 7.;
 const CAL_HEAD: f32 = 36.;
 const CAL_DAYS: f32 = 22.;
 /// The footer with Quick Times and the Snooze button.
@@ -444,7 +444,11 @@ impl SnoozeMenu {
                 .px(px(10.))
                 .rounded(px(radius::CONTROL))
                 .cursor_pointer()
-                .when(lit, |d| d.bg(t.selected))
+                .when(lit, |d| {
+                    d.relative()
+                        .bg(t.selected)
+                        .child(lit_edge(t, radius::CONTROL))
+                })
                 .press_selected(t)
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                     if *hovered && this.sel != index {
@@ -526,7 +530,8 @@ impl SnoozeMenu {
     fn month(&self, first: NaiveDate, hours: bool, t: &Theme, cx: &mut Context<Self>) -> Div {
         let time = self.time;
         let today = Local::now().date_naive();
-        let hover = t.hover;
+        let (hover, lit, pressed) = (t.hover, t.selected, t.pressed);
+        let (solid, ..) = solid_violet(t);
         let prev = first
             .checked_sub_months(chrono::Months::new(1))
             .unwrap_or(first);
@@ -545,7 +550,9 @@ impl SnoozeMenu {
                 .size(px(26.))
                 .rounded(px(radius::CONTROL))
                 .child(icon(name, 14., if enabled { t.text2 } else { t.faint }))
-                .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
+                .when(enabled, |d| {
+                    d.cursor_pointer().hover(move |s| s.bg(hover)).press(t)
+                })
         };
         // Weeks start on Monday; six rows hold every month.
         let lead = first.weekday().num_days_from_monday() as i64;
@@ -566,6 +573,7 @@ impl SnoozeMenu {
                 .size(px(CELL))
                 .child(
                     div()
+                        .id(("snooze-day-face", i as usize))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -578,9 +586,10 @@ impl SnoozeMenu {
                         } else {
                             gpui::transparent_black()
                         })
-                        .when(picked_day, |d| d.bg(t.violet))
+                        .when(picked_day, |d| d.bg(solid))
                         .when(open && !picked_day, |d| {
                             d.group_hover("snooze-day", move |s| s.bg(hover))
+                                .group_active("snooze-day", move |s| s.bg(pressed))
                         })
                         .text_color(if picked_day {
                             gpui::white()
@@ -662,6 +671,7 @@ impl SnoozeMenu {
                     .rounded(px(radius::CONTROL))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
+                    .press(t)
                     .when(hours, |d| d.bg(hover))
                     .child(icon("clock", 16., t.violet))
                     .child(div().flex_1().child("Time"))
@@ -712,16 +722,16 @@ impl SnoozeMenu {
                                 .rounded(px(radius::CONTROL))
                                 .text_size(px(12.))
                                 .cursor_pointer()
+                                .press(t)
                                 .border_1()
                                 .when(chosen, |d| {
-                                    d.bg(t.violet)
-                                        .border_color(t.violet)
-                                        .text_color(gpui::white())
+                                    d.bg(solid).border_color(solid).text_color(gpui::white())
                                 })
                                 .when(!chosen, |d| {
-                                    d.border_color(t.border)
+                                    d.bg(hover)
+                                        .border_color(gpui::transparent_black())
                                         .text_color(t.text2)
-                                        .hover(move |s| s.bg(hover))
+                                        .hover(move |s| s.bg(lit))
                                 })
                                 .child(
                                     chrono::NaiveTime::from_hms_opt(hour, 0, 0)
@@ -753,22 +763,21 @@ impl SnoozeMenu {
                             .rounded(px(radius::CHIP))
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
+                            .press(t)
                             .child(icon("back", 12., t.text2))
                             .child(meta("Quick Times", t.text2))
                             .on_click(cx.listener(|this, _, window, cx| this.back(window, cx))),
                     )
                     .child({
                         let ready = self.chosen().is_some();
-                        let button = button(t, ButtonKind::Primary, "Snooze")
+                        primary_button(t, "snooze-confirm", "Snooze")
                             .text_size(px(12.))
-                            .id("snooze-confirm")
                             .when(!ready, |d| d.opacity(0.5).cursor_default())
                             .when(ready, |d| {
                                 d.on_click(cx.listener(|this, _, window, cx| {
                                     this.confirm(false, window, cx)
                                 }))
-                            });
-                        crate::ui::glow(button, "snooze-confirm")
+                            })
                     }),
             )
     }
@@ -803,7 +812,7 @@ impl Render for SnoozeMenu {
                         .flex()
                         .flex_col()
                         .size_full()
-                        .p(px(6.))
+                        .p(px(CARD_PAD))
                         .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                             if !this.reveal.leaving() {
                                 this.dismiss(false, window, cx)
