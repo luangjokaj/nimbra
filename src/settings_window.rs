@@ -97,6 +97,11 @@ pub(super) struct SettingsWindow {
     slides: std::collections::HashMap<&'static str, (usize, Instant, usize)>,
     /// A switch that just flipped: when, and a count that keys its slide.
     flips: std::collections::HashMap<&'static str, (Instant, usize)>,
+    /// Which app opens email links, as last read (read again whenever this window is
+    /// brought forward: it is changed in other apps too).
+    mail_app: Option<crate::integration::MailApp>,
+    making_default: bool,
+    _activation: Option<gpui::Subscription>,
     _subscriptions: Vec<gpui::Subscription>,
 }
 
@@ -151,8 +156,61 @@ impl SettingsWindow {
             armed: None,
             slides: std::collections::HashMap::new(),
             flips: std::collections::HashMap::new(),
+            mail_app: None,
+            making_default: false,
+            _activation: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Asks macOS which app opens email links, off the main thread.
+    fn read_mail_app(&mut self, cx: &mut Context<Self>) {
+        if !bundled() {
+            return;
+        }
+        // Badges may have been turned on or off in System Settings meanwhile too.
+        crate::notify::refresh_settings();
+        cx.spawn(async move |this, cx| {
+            let app = cx
+                .background_spawn(async { crate::integration::default_mail_app() })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.mail_app != app {
+                    this.mail_app = app;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn make_default_mail_app(&mut self, cx: &mut Context<Self>) {
+        if self.making_default {
+            return;
+        }
+        self.making_default = true;
+        cx.notify();
+        let done = cx.register_url_scheme("mailto");
+        cx.spawn(async move |this, cx| {
+            let result = done.await;
+            this.update(cx, |this, cx| {
+                this.making_default = false;
+                if result.is_err() {
+                    this.owner.update(cx, |n, cx| {
+                        n.notice = Some(
+                            "macOS did not make Nimbra the default mail app. Try again in a moment."
+                                .into(),
+                        );
+                        cx.notify();
+                    });
+                }
+                this.read_mail_app(cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn signature_changed(&mut self, cx: &mut Context<Self>) {
@@ -199,6 +257,14 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self._activation.is_none() {
+            self.read_mail_app(cx);
+            self._activation = Some(cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.read_mail_app(cx);
+                }
+            }));
+        }
         if let Some(focus) = self.pending_focus.take() {
             window.focus(&focus);
         }
@@ -639,7 +705,33 @@ impl SettingsWindow {
                 |n, i| n.settings.check_every = [30, 60, 300][i],
             ),
         );
-        vec![group(t, None, vec![login_row, mark_row, every_row])]
+        let mut rows = vec![login_row, mark_row, every_row];
+        if bundled() {
+            rows.insert(0, self.mail_app_row(t, cx));
+        }
+        vec![group(t, None, rows)]
+    }
+
+    fn mail_app_row(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let control = match &self.mail_app {
+            None => div(),
+            Some(app) if app.ours => div().child(meta("Nimbra", t.text2)),
+            Some(app) => div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .when(!app.name.is_empty(), |d| {
+                    d.child(meta(app.name.clone(), t.text3))
+                })
+                .child(
+                    button(t, ButtonKind::Secondary, "Make Default")
+                        .id("default-mail-app")
+                        .press(t)
+                        .when(self.making_default, |b| b.opacity(0.5))
+                        .on_click(cx.listener(|this, _, _, cx| this.make_default_mail_app(cx))),
+                ),
+        };
+        row(t, "Default Mail App", "", control)
     }
 
     fn accounts(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -850,11 +942,7 @@ impl SettingsWindow {
 
     fn appearance(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let n = self.owner.read(cx);
-        let (theme, size, badge) = (
-            n.settings.theme,
-            n.settings.reader_text,
-            n.settings.dock_badge,
-        );
+        let (theme, size) = (n.settings.theme, n.settings.reader_text);
         // Small previews of each look.
         let tile =
             |id: usize, label: &'static str, choice: ThemeChoice, light: bool, dark: bool| {
@@ -941,19 +1029,8 @@ impl SettingsWindow {
                             .when(on, |d| d.font_weight(FontWeight::MEDIUM))
                             .child(label),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let system_dark = matches!(
-                            window.appearance(),
-                            gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark
-                        );
-                        this.set(cx, move |n| {
-                            n.settings.theme = choice;
-                            n.dark = match choice {
-                                ThemeChoice::Light => false,
-                                ThemeChoice::Dark => true,
-                                ThemeChoice::System => system_dark,
-                            };
-                        })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.owner.update(cx, |n, cx| n.set_theme(choice, cx));
                     }))
             };
         let tiles = div()
@@ -984,18 +1061,9 @@ impl SettingsWindow {
                 },
             ),
         );
-        let badge_row = self.toggle(
-            t,
-            "dock-badge",
-            "Unread Count in Dock",
-            "",
-            badge,
-            cx,
-            |n| n.settings.dock_badge = !n.settings.dock_badge,
-        );
         vec![
             group(t, Some("Theme"), vec![tiles]),
-            group(t, None, vec![size_row, badge_row]),
+            group(t, None, vec![size_row]),
         ]
     }
 
@@ -1115,50 +1183,74 @@ impl SettingsWindow {
 
     fn notifications(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let n = self.owner.read(cx);
-        let (on, sound) = (n.settings.notifications, n.settings.notify_sound);
-        vec![
-            group(
-                t,
-                None,
-                vec![
-                    self.toggle(
-                        t,
-                        "notify",
-                        "New Mail",
-                        "While Nimbra is open.",
-                        on,
-                        cx,
-                        |n| n.settings.notifications = !n.settings.notifications,
-                    ),
-                    self.toggle(t, "sound", "Sound", "", sound, cx, |n| {
-                        n.settings.notify_sound = !n.settings.notify_sound
-                    }),
-                    row(
-                        t,
-                        "Test Notification",
-                        "",
-                        button(t, ButtonKind::Secondary, "Send Test")
-                            .id("notify-test")
-                            .press(t)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let sound = this.owner.read(cx).settings.notify_sound;
-                                crate::notify::show(
-                                    "test",
-                                    "Nimbra",
-                                    "This is how new mail looks.",
-                                    sound,
-                                );
-                            })),
-                    ),
-                ],
-            ),
-            meta(
-                "If nothing appears, allow Nimbra in System Settings › Notifications.",
-                t.text3,
-            )
-            .px(px(4.))
-            .into_any_element(),
-        ]
+        let (on, sound, badge) = (
+            n.settings.notifications,
+            n.settings.notify_sound,
+            n.settings.dock_badge,
+        );
+        // Said only when macOS is the reason nothing shows (read again on activation).
+        const BLOCKED: &str = "Turned off for Nimbra in System Settings › Notifications.";
+        let sound_row = if on {
+            self.toggle(t, "sound", "Sound", "", sound, cx, |n| {
+                n.settings.notify_sound = !n.settings.notify_sound
+            })
+        } else {
+            // A sound belongs to a notification: with none, the switch is there but inert.
+            div()
+                .opacity(0.45)
+                .child(row(t, "Sound", "", self.switch_for(t, "sound", sound)))
+                .into_any_element()
+        };
+        vec![group(
+            t,
+            None,
+            vec![
+                self.toggle(
+                    t,
+                    "notify",
+                    "New Mail",
+                    if crate::notify::alerts_allowed() {
+                        "While Nimbra is open."
+                    } else {
+                        BLOCKED
+                    },
+                    on,
+                    cx,
+                    |n| n.settings.notifications = !n.settings.notifications,
+                ),
+                sound_row,
+                self.toggle(
+                    t,
+                    "dock-badge",
+                    "Unread Count in Dock",
+                    if crate::notify::badges_allowed() {
+                        ""
+                    } else {
+                        BLOCKED
+                    },
+                    badge,
+                    cx,
+                    |n| n.settings.dock_badge = !n.settings.dock_badge,
+                ),
+                row(
+                    t,
+                    "Test Notification",
+                    "",
+                    button(t, ButtonKind::Secondary, "Send Test")
+                        .id("notify-test")
+                        .press(t)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let sound = this.owner.read(cx).settings.notify_sound;
+                            crate::notify::show(
+                                "test",
+                                "Nimbra",
+                                "This is how new mail looks.",
+                                sound,
+                            );
+                        })),
+                ),
+            ],
+        )]
     }
 
     fn privacy(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1357,5 +1449,17 @@ impl Sign {
         } else {
             "Your mail on the server is untouched and downloads again as needed."
         }
+    }
+}
+
+/// Running as Nimbra.app, which is what macOS registers handlers and defaults for.
+fn bundled() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::notify::available()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
     }
 }

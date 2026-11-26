@@ -44,8 +44,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSHumanReadableCopyright</key><string>© 2026 Luan Gjokaj</string>
   <!-- Attachments saved from mail are marked as downloaded, so Gatekeeper checks them. -->
   <key>LSFileQuarantineEnabled</key><true/>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>Email Address URL</string>
+      <key>CFBundleURLSchemes</key><array><string>mailto</string></array>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST

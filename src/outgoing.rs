@@ -46,6 +46,18 @@ pub(super) fn catch_up(
     Ok(done)
 }
 
+/// The offline queue read from a store, without the `caught_up` changes at its start that
+/// were made since it was read, and with what was queued meanwhile after it.
+fn with_caught_up(
+    mut read: Outbox,
+    caught_up: usize,
+    mut meanwhile: Vec<(String, mail::Change)>,
+) -> Outbox {
+    read.changes.drain(..caught_up.min(read.changes.len()));
+    read.changes.append(&mut meanwhile);
+    read
+}
+
 /// Send, while From is changing and the files are still being read from the old account.
 const MOVING_ATTACHMENTS: &str =
     "The attachments are still moving to the account you picked. Try again in a moment.";
@@ -64,8 +76,9 @@ impl Nimbra {
             .filter(|job| job.account == self.account_id)
     }
 
-    /// Adds to the queue of an account that is not shown, in its store, in order with
-    /// `drop_caught_up`, which takes from it the same way. Whether it has a store to go in.
+    /// Adds to the queue of an account that is not shown, in its store (handed to its
+    /// writer at once, so that it follows what is already there and quitting waits for it).
+    /// Whether it has a store to keep it in.
     pub(super) fn queue_away(
         &mut self,
         account: &str,
@@ -74,10 +87,11 @@ impl Nimbra {
         let Some(store) = self.other_stores.get(account) else {
             return false;
         };
-        drop(store.update_later("outbox", move |outbox: &mut Outbox| {
+        drop(store.update_soon("outbox", move |outbox: &mut Outbox| {
             outbox.changes.extend(changes)
         }));
         self.away_waiting.insert(account.to_string());
+        self.away_queued += 1;
         true
     }
 
@@ -109,33 +123,49 @@ impl Nimbra {
                 catch_up(&*client, &changes, &[]).map_or(0, |done| done.changes)
             })
             .await;
-        let dropped = this.update(cx, |this, cx| {
+        let Ok(left) = this.update(cx, |this, cx| {
             this.catching_up.remove(account);
+            let queued = this.away_queued;
+            let left = this.drop_caught_up(account, Some(&store), made, true, cx);
             cx.notify();
-            this.drop_caught_up(account, Some(&store), made)
-        });
-        // Shown by now, its queue is the one in memory; a failed write leaves it waiting.
-        let Ok(Some(dropped)) = dropped else {
+            (left, queued)
+        }) else {
             return;
         };
-        if dropped.await == Some(false) {
-            this.update(cx, |this, cx| {
+        let (Some(left), queued) = left else {
+            return;
+        };
+        let left = left.await;
+        this.update(cx, |this, _| {
+            // Not if something was put in it since, or it is shown (or gone) by now.
+            let same = this
+                .other_stores
+                .get(account)
+                .is_some_and(|now| Arc::ptr_eq(now, &store));
+            if same && this.away_queued == queued && matches!(left, Ok(Ok(false))) {
                 this.away_waiting.remove(account);
-                cx.notify();
-            })
-            .ok();
-        }
+            }
+        })
+        .ok();
     }
 
     /// Takes the changes a catch-up got through out of its account's queue, whichever is
-    /// shown by now. For one kept in a store, whether any are left once that is written.
+    /// shown by now. `away`: it took them from the store, not from `outbox`. When they are
+    /// taken out of a store, the answer says whether anything is left in it.
     fn drop_caught_up(
         &mut self,
         account: &str,
         store: Option<&Arc<crate::store::Store>>,
         changes: usize,
-    ) -> Option<crate::store::Later<bool>> {
-        if account == self.account_id && (self.store.is_some() || store.is_none()) {
+        away: bool,
+        _cx: &mut Context<Self>,
+    ) -> Option<futures::channel::oneshot::Receiver<anyhow::Result<bool>>> {
+        let shown = account == self.account_id;
+        if let (true, true, Some(read_since)) = (shown, away, self.outbox_pending.as_mut()) {
+            // The queue being read is from before these were taken out: so is what it
+            // finds. Taken out of that when it comes (`outbox_read`).
+            *read_since += changes;
+        } else if shown && (self.store.is_some() || store.is_none()) {
             if changes > 0 {
                 self.outbox
                     .changes
@@ -144,10 +174,37 @@ impl Nimbra {
             }
             return None;
         }
-        Some(store?.update_later("outbox", move |outbox: &mut Outbox| {
+        let store = store?;
+        Some(store.update_soon("outbox", move |outbox: &mut Outbox| {
             outbox.changes.drain(..changes.min(outbox.changes.len()));
             !outbox.changes.is_empty()
         }))
+    }
+
+    /// The shown account's offline queue, read from its store as it opened: what waited
+    /// there, without what a catch-up took out since, then what was queued meanwhile.
+    pub(super) fn outbox_read(
+        &mut self,
+        generation: u64,
+        read: Option<Outbox>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.account_gen != generation {
+            return;
+        }
+        let Some(caught_up) = self.outbox_pending.take() else {
+            return;
+        };
+        let queued_meanwhile = !self.outbox.changes.is_empty();
+        let meanwhile = std::mem::take(&mut self.outbox.changes);
+        self.outbox = with_caught_up(read.unwrap_or_default(), caught_up, meanwhile);
+        if queued_meanwhile || caught_up > 0 {
+            self.save_outbox();
+        }
+        if !self.outbox.changes.is_empty() {
+            self.went_offline(cx);
+        }
+        cx.notify();
     }
 
     /// Gmail could not be reached: keep checking, then send what is waiting.
@@ -167,7 +224,9 @@ impl Nimbra {
         eprintln!("nimbra: offline");
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(15)).await;
+                // Sooner when the Mac wakes or the network comes back.
+                crate::integration::pause(cx.background_executor().timer(Duration::from_secs(15)))
+                    .await;
                 let next = this.update(cx, |this, _| {
                     if this.retry_gen != attempt {
                         return Err(()); // another loop's turn, or none's
@@ -199,7 +258,7 @@ impl Nimbra {
                     this.catching_up.remove(&account);
                     let changed = result.as_ref().map_or(0, |done| done.changes);
                     if changed > 0 {
-                        drop(this.drop_caught_up(&account, store.as_ref(), changed));
+                        drop(this.drop_caught_up(&account, store.as_ref(), changed, false, cx));
                     }
                     let left = |job: &Arc<Job>| matches!(job.stage(), Stage::Held | Stage::Out);
                     let through: Vec<_> =
@@ -249,11 +308,16 @@ impl Nimbra {
         .detach();
     }
 
-    /// Saves the offline queue on the store's writer, in order with the saves before it;
-    /// quitting waits for it.
+    /// Hands the offline queue to the store's writer now: written in order with the rest,
+    /// and quitting waits for it.
     pub(super) fn save_outbox(&self) {
-        if let Some(store) = &self.store {
-            drop(store.save_later("outbox", self.outbox.clone()));
+        // While it is being read, what is here is only part of it (`outbox_read` saves).
+        if let Some(store) = self
+            .store
+            .as_ref()
+            .filter(|_| self.outbox_pending.is_none())
+        {
+            store.save_soon("outbox", self.outbox.clone());
         }
     }
 
@@ -496,13 +560,24 @@ impl Nimbra {
     /// Quitting: what was sent goes now, undo delay or not; what is being written goes to
     /// Drafts; and what is on its way is waited for.
     pub(super) fn finish_before_quit(&mut self, cx: &mut Context<Self>) {
+        let deadline = std::time::Instant::now() + QUIT_WAIT;
         let leaving = self.leaving(cx);
-        if leaving.is_empty() {
-            return;
+        let written = crate::store::flush(std::time::Instant::now());
+        if !leaving.is_empty() || !written {
+            // Nothing on screen can answer while this waits.
+            cx.hide();
         }
-        // Nothing on screen can answer while this waits.
-        cx.hide();
-        leaving.finish(std::time::Instant::now() + QUIT_WAIT);
+        if !leaving.is_empty() {
+            leaving.finish(deadline);
+        }
+        // What was handed to the writers, the settings and the records, is on disk first.
+        if !crate::settings::flush() {
+            eprintln!("nimbra: the settings may not be saved");
+        }
+        let at_least = std::time::Instant::now() + Duration::from_secs(5);
+        if !crate::store::flush(deadline.max(at_least)) {
+            eprintln!("nimbra: some of the mail store may not be saved");
+        }
     }
 
     /// Whether an account is still signed in here: nothing is written down for one that is
@@ -670,7 +745,9 @@ impl Nimbra {
             .filter(|step| self.keeps(&step.account))
             .map(|step| (of(&step.account), step))
             .collect();
-        let queued = (self.store.is_none()
+        // Not in the store yet: it has none, or what is here waits for its queue to be read
+        // (`outbox_read`), and goes after that.
+        let queued = ((self.store.is_none() || self.outbox_pending.is_some())
             && !self.outbox.changes.is_empty()
             && self.keeps(&self.account_id))
         .then(|| of(&self.account_id));
@@ -779,16 +856,25 @@ impl Nimbra {
     pub(super) fn add_scheduled(&mut self, item: Scheduled, cx: &mut Context<Self>) {
         let (owner, store) = (self.account_id.clone(), self.store.clone());
         let (at, subject) = (item.at_ms, short(&item.subject, 40));
+        if let Some(store) = store {
+            let adding = scheduled::add_soon(&store, item);
+            cx.spawn(async move |this, cx| {
+                let added = adding.await.ok().and_then(Result::ok);
+                this.update(cx, |this, cx| {
+                    this.scheduled_added(&owner, at, &subject, added, cx)
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
+        // Just switched to, and its store is still opening.
         cx.spawn(async move |this, cx| {
             let key = owner.clone();
             let added = cx
                 .background_executor()
                 .spawn(async move {
-                    // Just switched to, its store may still be opening.
-                    let store = match store {
-                        Some(store) => store,
-                        None => Arc::new(crate::store::Store::open_quietly(&key)?),
-                    };
+                    let store = crate::store::Store::open_quietly(&key)?;
                     scheduled::add(&store, item)
                 })
                 .await;
@@ -1072,4 +1158,43 @@ pub(super) fn carry_out_due(
         }
     }
     back
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change(id: &str) -> (String, mail::Change) {
+        (id.to_string(), mail::Change::Archive)
+    }
+
+    #[test]
+    fn the_queue_read_as_the_store_opens_loses_what_was_caught_up_and_keeps_the_rest() {
+        let read = Outbox {
+            changes: vec![change("a"), change("b"), change("c")],
+            ..Outbox::default()
+        };
+        let merged = with_caught_up(read, 2, vec![change("d")]);
+        let ids: Vec<&str> = merged.changes.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["c", "d"]);
+    }
+
+    #[test]
+    fn a_queue_handed_to_the_writer_is_on_disk_once_quitting_has_flushed() {
+        let (store, release) = crate::store::Store::temp_held();
+        let outbox = Outbox {
+            changes: vec![change("a"), change("b")],
+            ..Outbox::default()
+        };
+        store.save_soon("outbox", outbox.clone());
+        drop(release);
+        // What a later launch reads, through a store of its own.
+        let reader = crate::store::Store::temp_like(&store);
+        assert!(crate::store::flush_store(
+            &store,
+            std::time::Instant::now() + Duration::from_secs(30)
+        ));
+        let back: Outbox = reader.load("outbox").unwrap();
+        assert_eq!(back.changes.len(), 2);
+    }
 }

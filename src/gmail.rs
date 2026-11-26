@@ -1069,7 +1069,7 @@ impl Client {
                     .and_then(|payload| find_part(payload, "text/html"))
                     .and_then(decode_part)
                     // Very large bodies stay in the native reader only.
-                    .filter(|bytes| bytes.len() <= 2 * 1024 * 1024)
+                    .filter(|bytes| bytes.len() <= mime::MAX_HTML_BYTES)
                     .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
             })
             .collect();
@@ -1251,7 +1251,7 @@ impl Client {
                 .as_ref()
                 .and_then(|payload| find_part(payload, "text/html"))
                 .and_then(decode_part)
-                .filter(|bytes| bytes.len() <= 2 * 1024 * 1024)
+                .filter(|bytes| bytes.len() <= mime::MAX_HTML_BYTES)
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
             reply: is_message_id(&in_reply_to).then(|| ReplyTo {
                 thread_id: thread_id.to_string(),
@@ -1985,16 +1985,22 @@ fn body_text(payload: &Part) -> String {
         return String::from_utf8_lossy(&bytes).into_owned();
     }
     if let Some(bytes) = find_part(payload, "text/html").and_then(decode_part) {
-        return html2text::from_read(bytes.as_slice(), 10_000).unwrap_or_default();
+        let html = String::from_utf8_lossy(&bytes);
+        return html2text::from_read(html_prefix(&html).as_bytes(), 10_000).unwrap_or_default();
     }
     String::new()
+}
+
+/// As much of an HTML body as is read, as for IMAP mail.
+fn html_prefix(html: &str) -> &str {
+    mime::prefix(html, mime::MAX_HTML_BYTES)
 }
 
 /// The message as styled blocks: the HTML alternative when it has one (it carries
 /// the formatting), otherwise the plain text.
 fn body_blocks(payload: &Part) -> Vec<crate::rich::Block> {
     if let Some(bytes) = find_part(payload, "text/html").and_then(decode_part) {
-        let blocks = crate::rich::from_html(&String::from_utf8_lossy(&bytes));
+        let blocks = crate::rich::from_html(html_prefix(&String::from_utf8_lossy(&bytes)));
         if !blocks.is_empty() {
             return blocks;
         }
@@ -2005,6 +2011,27 @@ fn body_blocks(payload: &Part) -> Vec<crate::rich::Block> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn html_payload(html: &str) -> Part {
+        serde_json::from_value(serde_json::json!({
+            "mimeType": "text/html",
+            "body": { "data": URL_SAFE_NO_PAD.encode(html) },
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn html_past_the_size_cap_is_not_read() {
+        let payload = html_payload(&format!("{}<p>late</p>", " ".repeat(mime::MAX_HTML_BYTES)));
+        let blocks = body_blocks(&payload);
+        assert!(blocks.iter().all(|b| !b.text.contains("late")));
+    }
+
+    #[test]
+    fn html_within_the_size_cap_is_read() {
+        let blocks = body_blocks(&html_payload("<p>early</p>"));
+        assert_eq!(blocks[0].text, "early");
+    }
 
     #[test]
     fn done_and_all_mail_go_message_by_message_as_gmail_does() {

@@ -2,8 +2,11 @@
 //! (the keychain refused the store's key). Quit again, soon after, quits.
 //!
 //! GPUI has no say in quitting: its app delegate lacks `applicationShouldTerminate:`, so
-//! that is added. macOS asks it for ⌘Q, the Dock and logging out alike. Elsewhere nothing
-//! is put off.
+//! that is added. macOS asks it for ⌘Q, the Dock and logging out alike, and the answer is
+//! given there and then: ⌘Q reaches it from inside a main queue block, where the main queue
+//! does not run again until it returns, so the app cannot be asked. The app keeps
+//! `set_would_lose` current instead, and hears of a quit put off as `Event::QuitPutOff`.
+//! Elsewhere nothing is put off.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
@@ -16,7 +19,6 @@ use std::time::{Duration, Instant};
 const MEANT: Duration = Duration::from_secs(20);
 
 static WOULD_LOSE: AtomicBool = AtomicBool::new(false);
-static PUT_OFF: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "macos")]
 static ASKED: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -25,19 +27,13 @@ pub fn set_would_lose(would_lose: bool) {
     WOULD_LOSE.store(would_lose, Ordering::Relaxed);
 }
 
-/// Whether quitting was put off since this was last asked.
-pub fn take_put_off() -> bool {
-    PUT_OFF.swap(false, Ordering::Relaxed)
-}
-
 #[cfg(target_os = "macos")]
 fn may_quit() -> bool {
     let mut asked = ASKED.lock().unwrap_or_else(PoisonError::into_inner);
     let quit = allowed(WOULD_LOSE.load(Ordering::Relaxed), *asked, Instant::now());
     if !quit {
         *asked = Some(Instant::now());
-        PUT_OFF.store(true, Ordering::Relaxed);
-        crate::checking::OUTSIDE.ring();
+        crate::integration::post(crate::integration::Event::QuitPutOff);
     }
     quit
 }

@@ -44,6 +44,19 @@ pub fn add(store: &Store, item: Scheduled) -> anyhow::Result<Vec<Scheduled>> {
     })
 }
 
+/// The same, handed to the store's writer: on disk before quitting ends. The answer is the
+/// list as it then is, once written.
+pub fn add_soon(
+    store: &std::sync::Arc<Store>,
+    item: Scheduled,
+) -> futures::channel::oneshot::Receiver<anyhow::Result<Vec<Scheduled>>> {
+    store.update_soon(LIST, move |list: &mut Vec<Scheduled>| {
+        list.retain(|kept| kept.draft_id != item.draft_id);
+        list.push(item);
+        list.clone()
+    })
+}
+
 /// Sends one, unless someone else is on it or has sent it. `None`: nothing came of it, and
 /// it stays on the list. One whose request may have reached the server is never sent again:
 /// with `can_tell` it comes off the list as `Unsure`; without, it waits on the list for

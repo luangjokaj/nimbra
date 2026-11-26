@@ -213,7 +213,7 @@ impl Leaving {
             writes,
         } = self;
         // The saves handed to the stores' writers first: the queues below are read back.
-        crate::store::settle(deadline);
+        crate::store::flush(deadline);
         // On disk before anything is waited for: being killed while waiting loses nothing.
         for item in &unfinished {
             item.job.keep();
@@ -247,7 +247,7 @@ impl Leaving {
         for queue in &queues {
             queue.save();
         }
-        crate::store::settle(deadline);
+        crate::store::flush(deadline);
     }
 }
 
@@ -360,6 +360,31 @@ mod tests {
         assert!(next.run_with(|| Ok(())).is_ok());
         assert_eq!(steps.settle("", "t").len(), 2);
         assert!(Arc::ptr_eq(&steps.all()[0], &other));
+    }
+
+    #[test]
+    fn quitting_keeps_what_was_queued_while_the_stored_queue_was_read_after_it() {
+        let (store, release) = Store::temp_held();
+        let mut stored = crate::app::Outbox::default();
+        stored.changes.push(("a".into(), mail::Change::Archive));
+        store.save_soon("outbox", stored);
+        let quitting = std::thread::spawn({
+            let store = store.clone();
+            move || {
+                Queue::keep(Changes {
+                    account: String::new(),
+                    store: Some(store),
+                    unsaved: vec![("b".into(), mail::Change::MarkRead)],
+                    steps: Vec::new(),
+                })
+                .is_some()
+            }
+        });
+        release.send(()).unwrap();
+        assert!(quitting.join().unwrap());
+        let kept: crate::app::Outbox = Store::temp_like(&store).load("outbox").unwrap();
+        let ids: Vec<&str> = kept.changes.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
     }
 
     #[test]

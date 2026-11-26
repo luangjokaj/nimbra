@@ -35,51 +35,6 @@ impl Hit {
     }
 }
 
-/// One thread of the mail on this Mac, as the search panel looks for words in it: made once
-/// when the panel opens, not on every keystroke.
-pub(super) struct Indexed {
-    id: Option<String>,
-    account: Option<String>,
-    subject: SharedString,
-    timestamp_ms: i64,
-    /// Sender, address, subject, preview and participants, lowercased.
-    words: String,
-}
-
-impl Indexed {
-    fn of(mail: &Mail) -> Self {
-        Self {
-            id: mail.id.clone(),
-            account: mail.account.clone(),
-            subject: mail.subject.clone(),
-            timestamp_ms: mail.timestamp_ms,
-            words: format!(
-                "{} {} {} {} {}",
-                mail.sender,
-                mail.header.from.address,
-                mail.subject,
-                mail.snippet,
-                mail.participants
-            )
-            .to_lowercase(),
-        }
-    }
-
-    fn matches(&self, words: &[String]) -> bool {
-        words.iter().all(|w| self.words.contains(w.as_str()))
-    }
-
-    /// Whether this is that thread. Sample mail has no ids: matched by subject.
-    fn is(&self, mail: &Mail) -> bool {
-        match &self.id {
-            Some(id) => mail.id.as_ref() == Some(id) && mail.account == self.account,
-            None => mail.id.is_none() && mail.subject == self.subject,
-        }
-    }
-}
-
-/// The words of a query that are looked for in the mail on this Mac. Operators like `from:`
-/// are left to the server.
 /// A tip as it goes into the field: an operator waiting for its value, or a whole term and
 /// a space.
 fn tip_text(tip: &str) -> String {
@@ -88,15 +43,6 @@ fn tip_text(tip: &str) -> String {
     } else {
         format!("{tip} ")
     }
-}
-
-fn query_words(query: &str) -> Vec<String> {
-    query
-        .to_lowercase()
-        .split_whitespace()
-        .filter(|w| !w.contains(':'))
-        .map(str::to_string)
-        .collect()
 }
 
 /// Search tips shown while the search box is empty and nothing was searched yet: what to
@@ -108,6 +54,58 @@ pub(super) const SEARCH_TIPS: &[(&str, &str)] = &[
     ("newer_than:7d", "From the last week"),
 ];
 
+/// Local results shown at most.
+const LOCAL_HITS: usize = 8;
+/// Up to this many mails are searched on the spot; more go to a background thread.
+const SEARCH_INLINE: usize = 2000;
+
+/// A mail's text to search, lowercased once when the panel is first typed in, and where
+/// the mail is: in the list on screen (`view` None) or kept for a mailbox.
+pub(super) struct Searchable {
+    text: String,
+    view: Option<View>,
+    row: usize,
+    identity: (Option<String>, String),
+    timestamp_ms: i64,
+}
+
+/// What tells a thread apart in the search: its account and id (each account has its own
+/// ids), or the subject for sample mail.
+fn identity(mail: &Mail) -> (Option<&str>, &str) {
+    (
+        mail.account.as_deref(),
+        mail.id.as_deref().unwrap_or(&mail.subject),
+    )
+}
+
+pub(super) fn search_text(mail: &Mail) -> String {
+    format!(
+        "{} {} {} {} {}",
+        mail.sender, mail.header.from.address, mail.subject, mail.snippet, mail.participants
+    )
+    .to_lowercase()
+}
+
+/// The words of a query to look for here, lowercased; Gmail operators are left to Gmail.
+pub(super) fn search_words(query: &str) -> Vec<String> {
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .filter(|w| !w.contains(':'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The entries holding every word, newest first, at most `limit`.
+pub(super) fn matching(index: &[Searchable], words: &[String], limit: usize) -> Vec<usize> {
+    let mut found: Vec<usize> = (0..index.len())
+        .filter(|&k| words.iter().all(|w| index[k].text.contains(w.as_str())))
+        .collect();
+    found.sort_by(|a, b| index[*b].timestamp_ms.cmp(&index[*a].timestamp_ms));
+    found.truncate(limit);
+    found
+}
+
 impl Nimbra {
     /// / or ⌘F: the search panel.
     pub(super) fn focus_search(&mut self, cx: &mut Context<Self>) {
@@ -116,7 +114,7 @@ impl Nimbra {
         }
         self.menu = None;
         self.finder_open = true;
-        self.finder_index = self.index_mail();
+        self.finder_index = None;
         let query = self.query.clone();
         // The field is made once; the theme may have changed since.
         let t = self.theme();
@@ -132,10 +130,10 @@ impl Nimbra {
 
     pub(super) fn close_finder(&mut self, cx: &mut Context<Self>) {
         self.finder_open = false;
+        self.finder_index = None;
         self.finder_gen += 1;
         self.finder_loading = false;
         self.finder_task = None;
-        self.finder_index = Vec::new();
         self.pending_focus = Some(self.focus.clone());
         cx.notify();
     }
@@ -144,11 +142,11 @@ impl Nimbra {
     /// short pause) the server's own search, merged in below.
     pub(super) fn finder_changed(&mut self, cx: &mut Context<Self>) {
         let query = self.finder.read(cx).text().trim().to_string();
-        self.finder_hits = self.local_hits(&query);
-        self.finder_scroll.scroll_to_item(0);
-        self.finder_sel = if self.finder_hits.is_empty() { 0 } else { 1 };
         self.finder_gen += 1;
         let generation = self.finder_gen;
+        self.finder_hits = self.local_hits(&query, generation, cx);
+        self.finder_scroll.scroll_to_item(0);
+        self.finder_sel = if self.finder_hits.is_empty() { 0 } else { 1 };
         self.finder_loading = false;
         // A newer keystroke drops the wait (and the answer) of the one before.
         self.finder_task = None;
@@ -203,46 +201,97 @@ impl Nimbra {
         }));
     }
 
-    /// The mail on this Mac (the open list and every mailbox kept in memory), each thread
-    /// once.
-    fn index_mail(&self) -> Vec<Indexed> {
-        let mut seen = HashSet::new();
-        self.mails
-            .iter()
-            .chain(self.cache.values().flatten())
-            .filter(|mail| {
-                seen.insert((
-                    mail.id.clone().unwrap_or_else(|| mail.subject.to_string()),
-                    mail.account.clone(),
-                ))
-            })
-            .map(Indexed::of)
-            .collect()
-    }
-
-    /// Mail on this Mac matching every word typed, newest first.
-    fn local_hits(&self, query: &str) -> Vec<Hit> {
-        let words = query_words(query);
+    /// Mail on this Mac matching every word typed (Gmail operators like `from:` are left to
+    /// Gmail), newest first. A small corpus is searched at once; a large one off the main
+    /// thread, its hits put in when they come if nothing was typed since.
+    fn local_hits(&mut self, query: &str, generation: u64, cx: &mut Context<Self>) -> Vec<Hit> {
+        let words = search_words(query);
         if words.is_empty() {
             return Vec::new();
         }
-        let mut found: Vec<&Indexed> = self
-            .finder_index
-            .iter()
-            .filter(|thread| thread.matches(&words))
-            .collect();
-        found.sort_by_key(|thread| std::cmp::Reverse(thread.timestamp_ms));
-        // Looked up as they are now: a thread may have changed or gone since the panel opened.
-        found
-            .into_iter()
-            .filter_map(|thread| {
-                self.mails
-                    .iter()
-                    .chain(self.cache.values().flatten())
-                    .find(|mail| thread.is(mail))
+        let index = match &self.finder_index {
+            Some(index) => index.clone(),
+            None => {
+                let index: Arc<[Searchable]> = self.searchables().into();
+                self.finder_index = Some(index.clone());
+                index
+            }
+        };
+        if index.len() <= SEARCH_INLINE {
+            return self.hits_at(&index, &matching(&index, &words, LOCAL_HITS));
+        }
+        cx.spawn(async move |this, cx| {
+            let found = {
+                let index = index.clone();
+                cx.background_spawn(async move { matching(&index, &words, LOCAL_HITS) })
+                    .await
+            };
+            this.update(cx, |this, cx| {
+                if this.finder_gen != generation {
+                    return;
+                }
+                let mut hits = this.hits_at(&index, &found);
+                hits.retain(|h| {
+                    h.id.is_none() || !this.finder_hits.iter().any(|old| old.id == h.id)
+                });
+                let fetched = std::mem::take(&mut this.finder_hits);
+                hits.extend(fetched);
+                hits.truncate(12);
+                this.finder_hits = hits;
+                if this.finder_sel == 0 && !this.finder_hits.is_empty() {
+                    this.finder_sel = 1;
+                }
+                cx.notify();
             })
-            .take(8)
-            .map(Hit::from_mail)
+            .ok();
+        })
+        .detach();
+        Vec::new()
+    }
+
+    /// Every mail on this Mac once, with its text to search.
+    fn searchables(&self) -> Vec<Searchable> {
+        let listed = self
+            .mails
+            .iter()
+            .enumerate()
+            .map(|(row, mail)| (None, row, mail));
+        let kept = self.cache.iter().flat_map(|(view, mails)| {
+            mails
+                .iter()
+                .enumerate()
+                .map(move |(row, mail)| (Some(*view), row, mail))
+        });
+        let mut seen = HashSet::new();
+        listed
+            .chain(kept)
+            .filter(|(_, _, mail)| seen.insert(identity(mail)))
+            .map(|(view, row, mail)| Searchable {
+                text: search_text(mail),
+                view,
+                row,
+                identity: {
+                    let (account, id) = identity(mail);
+                    (account.map(str::to_string), id.to_string())
+                },
+                timestamp_ms: mail.timestamp_ms,
+            })
+            .collect()
+    }
+
+    /// The hits for these entries, leaving out any whose mail has moved since.
+    fn hits_at(&self, index: &[Searchable], found: &[usize]) -> Vec<Hit> {
+        found
+            .iter()
+            .filter_map(|&k| {
+                let entry = &index[k];
+                let mail = match entry.view {
+                    None => self.mails.get(entry.row),
+                    Some(view) => self.cache.get(&view)?.get(entry.row),
+                }?;
+                let (account, id) = &entry.identity;
+                (identity(mail) == (account.as_deref(), id.as_str())).then(|| Hit::from_mail(mail))
+            })
             .collect()
     }
 
@@ -732,32 +781,57 @@ impl Nimbra {
 mod tests {
     use super::*;
 
-    fn mail(id: &str, account: Option<&str>, subject: &str) -> Mail {
+    fn entry(text: &str, timestamp_ms: i64) -> Searchable {
+        Searchable {
+            text: text.to_lowercase(),
+            view: None,
+            row: 0,
+            identity: (None, String::new()),
+            timestamp_ms,
+        }
+    }
+
+    #[test]
+    fn a_query_keeps_its_words_lowercased_and_leaves_operators_to_gmail() {
+        assert_eq!(search_words("  Mira  from:ana DECK "), ["mira", "deck"]);
+        assert!(search_words("is:unread").is_empty());
+    }
+
+    #[test]
+    fn every_word_must_match_and_the_newest_come_first_up_to_the_limit() {
+        let index = [
+            entry("Mira Q4 launch plan deck", 10),
+            entry("Stripe payout", 30),
+            entry("mira deck review", 20),
+            entry("deck only", 40),
+        ];
+        let words = search_words("DECK mira");
+        assert_eq!(matching(&index, &words, 8), [2, 0]);
+        assert_eq!(matching(&index, &search_words("deck"), 2), [3, 2]);
+        assert!(matching(&index, &search_words("nothing"), 8).is_empty());
+    }
+
+    #[test]
+    fn a_mail_is_found_by_sender_address_subject_snippet_and_participants() {
         let mut mail = crate::data::inbox().remove(0);
-        mail.id = Some(id.into());
-        mail.account = account.map(Into::into);
-        mail.subject = subject.to_string().into();
-        mail
-    }
-
-    #[test]
-    fn operators_are_left_to_the_server() {
-        assert_eq!(query_words("From:Mira  Launch"), vec!["launch"]);
-        assert!(query_words("has:attachment").is_empty());
-    }
-
-    #[test]
-    fn every_word_must_appear_whatever_its_case() {
-        let thread = Indexed::of(&mail("a", None, "Q4 Launch Plan"));
-        assert!(thread.matches(&query_words("launch q4")));
-        assert!(!thread.matches(&query_words("launch budget")));
+        mail.header.from.address = "Someone@Example.org".into();
+        let text = search_text(&mail);
+        assert!(text.contains("someone@example.org"));
+        assert!(text.contains(&mail.subject.to_lowercase()));
+        assert_eq!(text, text.to_lowercase());
     }
 
     #[test]
     fn the_same_thread_id_in_another_account_is_another_thread() {
-        let thread = Indexed::of(&mail("a", Some("work"), "Plan"));
-        assert!(thread.is(&mail("a", Some("work"), "Plan, renamed")));
-        assert!(!thread.is(&mail("a", Some("home"), "Plan")));
+        let mut work = crate::data::inbox().remove(0);
+        work.id = Some("a".into());
+        work.account = Some("work".into());
+        let mut home = work.clone();
+        home.account = Some("home".into());
+        assert_ne!(identity(&work), identity(&home));
+        home.account = Some("work".into());
+        home.subject = "Renamed".into();
+        assert_eq!(identity(&work), identity(&home));
     }
 
     #[test]

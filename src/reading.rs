@@ -54,22 +54,6 @@ fn save_new_in(
     anyhow::bail!("too many files with that name")
 }
 
-/// Saves `bytes` for Quick Look, in a private temporary folder of its own.
-fn save_for_preview(name: &str, bytes: &[u8]) -> anyhow::Result<std::path::PathBuf> {
-    let mut id = [0u8; 8];
-    getrandom::fill(&mut id).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let parent = std::env::temp_dir().join("nimbra-previews");
-    std::fs::create_dir_all(&parent)?;
-    let dir = parent.join(id.iter().map(|b| format!("{b:02x}")).collect::<String>());
-    let mut folder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut folder, 0o700);
-    folder.create(&dir)?;
-    let path = dir.join(name);
-    write_new(&path, bytes)?;
-    Ok(path)
-}
-
 /// Creates `path` (only if nothing is there, not even a link), readable by the user alone
 /// and quarantined like any download, then writes `bytes` to it.
 fn write_new(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -85,6 +69,112 @@ fn write_new(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(path);
     }
     written
+}
+
+fn previews_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("nimbra-previews")
+}
+
+/// The folder of an account's Quick Look copies.
+fn account_previews(root: &std::path::Path, account: &str) -> Option<std::path::PathBuf> {
+    mail::is_account_id(account).then(|| root.join(format!("account-{account}")))
+}
+
+/// A private temporary folder for one Quick Look preview of `account`'s mail.
+pub(super) fn preview_dir(account: &str) -> anyhow::Result<std::path::PathBuf> {
+    previews_in(&previews_root(), account)
+}
+
+fn previews_in(root: &std::path::Path, account: &str) -> anyhow::Result<std::path::PathBuf> {
+    let folder =
+        account_previews(root, account).ok_or_else(|| anyhow::anyhow!("unexpected account id"))?;
+    private(root)?;
+    private_folder_in(&folder)
+}
+
+fn private_folder_in(root: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let mut id = [0u8; 8];
+    getrandom::fill(&mut id).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let dir = root.join(id.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    private(root)?;
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir)?;
+    Ok(dir)
+}
+
+/// Makes `folder` (and what leads to it) if it is not there, and only the user's.
+fn private(folder: &std::path::Path) -> anyhow::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        builder.mode(0o700);
+        builder.create(folder)?;
+        if std::fs::symlink_metadata(folder)?.file_type().is_symlink() {
+            anyhow::bail!("the previews folder is a link");
+        }
+        // Made before this version kept it private.
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    builder.create(folder)?;
+    Ok(())
+}
+
+/// The Quick Look copies there are now (they are mail, decrypted), to remove off the main
+/// thread with `remove_previews`: none made after this is among them. At launch.
+pub(crate) fn previews_now() -> Vec<std::path::PathBuf> {
+    previews_now_in(&previews_root())
+}
+
+fn previews_now_in(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let children = |folder: &std::path::Path| -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(folder)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default()
+    };
+    children(root)
+        .into_iter()
+        .flat_map(|path| {
+            let is_folder = std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir());
+            let of_account = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("account-"));
+            // Earlier versions kept every preview right in the root.
+            if is_folder && of_account {
+                children(&path)
+            } else {
+                vec![path]
+            }
+        })
+        .collect()
+}
+
+/// Blocking.
+pub(crate) fn remove_previews(previews: Vec<std::path::PathBuf>) {
+    for path in previews {
+        let is_folder = std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir());
+        let _ = if is_folder {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+    }
+}
+
+/// Removes an account's Quick Look copies, on signing out. Blocking.
+pub(crate) fn forget_previews(account: &str) {
+    forget_previews_in(&previews_root(), account);
+}
+
+fn forget_previews_in(root: &std::path::Path, account: &str) {
+    if let Some(folder) = account_previews(root, account) {
+        let _ = std::fs::remove_dir_all(folder);
+    }
 }
 
 /// Marks a file as downloaded from the internet, so that macOS asks before it opens or
@@ -263,7 +353,7 @@ impl Nimbra {
                 // Never shown, but it needs a page's size to lay the document out.
                 view.set_bounds(0., 0., 800., 1000.);
                 view.print_when_loaded();
-                view.show(&doc, images);
+                view.show(&doc, images, None);
             }
         }
         let Some((mail, (thread, account))) = self.original_target() else {
@@ -302,7 +392,7 @@ impl Nimbra {
             // The page follows Nimbra's theme. Both take effect as the mail loads, so a
             // change of either loads it again.
             view.set_dark(self.dark, darkened);
-            view.show(&html, images);
+            view.show(&html, images, Some(&account));
             self.html_shown = Some((format!("{account}:{thread}"), images, self.dark, darkened));
         }
         view.set_visible(true);
@@ -408,6 +498,7 @@ impl Nimbra {
         }
         let key = att.attachment_id.clone();
         let shown_name = short(&att.name, 48);
+        let from = account.unwrap_or(&self.account_id).to_string();
         self.attachment_busy.insert(key.clone(), save);
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -421,7 +512,7 @@ impl Nimbra {
                     if save {
                         save_to_downloads(&name, &bytes)
                     } else {
-                        save_for_preview(&name, &bytes)
+                        save_new_in(&preview_dir(&from)?, &name, &bytes)
                     }
                 })
                 .await;
@@ -628,6 +719,7 @@ impl Nimbra {
         base: usize,
         images: bool,
         selectable: &super::selection::Selectable,
+        account: &str,
         cx: &mut Context<Self>,
     ) -> Div {
         let sources = rich::image_sources(blocks);
@@ -675,7 +767,7 @@ impl Nimbra {
                 blocks
                     .iter()
                     .enumerate()
-                    .map(|(i, block)| self.block(t, block, base + i, selectable, cx)),
+                    .map(|(i, block)| self.block(t, block, base + i, selectable, account, cx)),
             )
     }
 
@@ -685,6 +777,7 @@ impl Nimbra {
         block: &Block,
         id: usize,
         selectable: &super::selection::Selectable,
+        account: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let text = |color: Hsla| {
@@ -729,8 +822,16 @@ impl Nimbra {
             } else {
                 // Links open in the system browser; only http, https and mailto get this far.
                 let (ranges, urls): (Vec<_>, Vec<_>) = links.into_iter().unzip();
+                let account = account.to_string();
                 gpui::InteractiveText::new(("link-text", id), styled)
-                    .on_click(ranges, move |index, _, cx| cx.open_url(&urls[index]))
+                    .on_click(ranges, move |index, window, cx| {
+                        let link = &urls[index];
+                        let from = Some(account.clone());
+                        let here = Some(window.window_handle());
+                        if !crate::integration::mailto_from_mail(link, from, here) {
+                            cx.open_url(link);
+                        }
+                    })
                     .into_any_element()
             };
             // Selecting: press on the text, drag (across blocks too, see `selection.rs`),
@@ -903,8 +1004,15 @@ impl Nimbra {
         m: &Mail,
         original: bool,
         is_draft: bool,
+        width: f32,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        // A narrow pane drops what has another way in, so that the rest stays on the bar:
+        // the arrows first (the list, J and K), then reply, reply all and forward (each
+        // message's own, and R, A and F). In points: the whole bar, and what the arrows take.
+        let whole = if is_draft { 680. } else { 600. };
+        let arrows = width >= whole;
+        let answers = width >= whole - 64.;
         let visible = self.visible();
         let pos = visible.iter().position(|i| *i == self.selected);
         let has_prev = pos.is_some_and(|p| p > 0);
@@ -994,20 +1102,22 @@ impl Nimbra {
                         this.open_snooze(this.snooze_anchor.get(), window, cx)
                     }))
             })
-            .child(rule())
-            .child(
-                tool("reply", "reply", "Reply".into(), "R").on_click(
-                    cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx)),
-                ),
-            )
-            .child(
-                tool("reply-all", "reply-all", "Reply All".into(), "A").on_click(
-                    cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::ReplyAll, cx)),
-                ),
-            )
-            .child(tool("forward", "forward", "Forward".into(), "F").on_click(
-                cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Forward, cx)),
-            ))
+            .when(answers, |d| {
+                d.child(rule())
+                    .child(tool("reply", "reply", "Reply".into(), "R").on_click(
+                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Reply, cx)),
+                    ))
+                    .child(
+                        tool("reply-all", "reply-all", "Reply All".into(), "A").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.open_compose(ComposeKind::ReplyAll, cx)
+                            }),
+                        ),
+                    )
+                    .child(tool("forward", "forward", "Forward".into(), "F").on_click(
+                        cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::Forward, cx)),
+                    ))
+            })
             .child(rule())
             .child(
                 tool(
@@ -1078,26 +1188,28 @@ impl Nimbra {
                 )
                 .child(rule())
             })
-            .child(
-                tool(
-                    "up",
-                    "prev",
-                    "Previous Thread".into(),
-                    if has_prev { "K" } else { "" },
+            .when(arrows, |d| {
+                d.child(
+                    tool(
+                        "up",
+                        "prev",
+                        "Previous Thread".into(),
+                        if has_prev { "K" } else { "" },
+                    )
+                    .when(!has_prev, |d| d.opacity(0.4))
+                    .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
                 )
-                .when(!has_prev, |d| d.opacity(0.4))
-                .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
-            )
-            .child(
-                tool(
-                    "down",
-                    "next",
-                    "Next Thread".into(),
-                    if has_next { "J" } else { "" },
+                .child(
+                    tool(
+                        "down",
+                        "next",
+                        "Next Thread".into(),
+                        if has_next { "J" } else { "" },
+                    )
+                    .when(!has_next, |d| d.opacity(0.4))
+                    .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
                 )
-                .when(!has_next, |d| d.opacity(0.4))
-                .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),
-            )
+            })
             .child(
                 tool("more", "more", "More".into(), "")
                     .when(self.menu == Some(Menu::More), |d| d.bg(t.selected))
@@ -1155,7 +1267,13 @@ impl Nimbra {
                         .whitespace_nowrap()
                         .overflow_hidden()
                         .text_color(t.text3)
-                        .child(short(snippet, 110)),
+                        // Cut by characters to what the column leaves beside the name and
+                        // the time, so it ends with an ellipsis rather than mid-letter.
+                        .child(short(snippet, {
+                            let taken = 8. * name.chars().count() as f32
+                                + 7.5 * when.chars().count() as f32;
+                            ((column - 160. - taken) / 7.).clamp(8., 110.) as usize
+                        })),
                 )
                 .child(caption(when.to_string(), t.text3))
         };
@@ -1209,7 +1327,7 @@ impl Nimbra {
             .child(self.selection_watch(self.reader_layouts.clone(), cx))
             // While a panel slides, the email keeps one width and the extra is cut off here.
             .overflow_hidden()
-            .child(self.reading_toolbar(t, m, original, is_draft, cx))
+            .child(self.reading_toolbar(t, m, original, is_draft, pane_w, cx))
             // Under the bar: there while something is under it, as the reader is once it
             // scrolls, and always over an email in its own formatting.
             .child(divider().when(!(original || loading || scrolled), |d| d.opacity(0.)))
@@ -1359,6 +1477,7 @@ impl Nimbra {
                                                                     (k + 1) * 1000,
                                                                     images,
                                                                     &selectable,
+                                                                    self.account_of(m),
                                                                     cx,
                                                                 )
                                                                 .ml(px(40.)),
@@ -1397,6 +1516,7 @@ impl Nimbra {
                                                 0,
                                                 images,
                                                 &selectable,
+                                                self.account_of(m),
                                                 cx,
                                             )
                                             .ml(px(40.)),
@@ -2404,5 +2524,120 @@ mod tests {
         assert!(!shows_thread("a@x.co:1234", "a@x.co", "123"));
         assert!(!shows_thread("b@x.co:123", "a@x.co", "123"));
         assert!(!shows_thread("a@x.co:123", "a@x.c", "o:123"));
+    }
+
+    use std::path::{Path, PathBuf};
+
+    /// An empty folder of the test's own, removed when it ends.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let mut id = [0u8; 8];
+            getrandom::fill(&mut id).unwrap();
+            let dir = std::env::temp_dir().join(format!("nimbra-test-{}", u64::from_le_bytes(id)));
+            std::fs::create_dir(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[test]
+    fn save_new_writes_the_bytes_under_the_name() {
+        let scratch = Scratch::new();
+        let path = save_new_in(&scratch.0, "Plan.pdf", b"pdf").unwrap();
+        assert_eq!(
+            (path.file_name().unwrap(), std::fs::read(&path).unwrap()),
+            ("Plan.pdf".as_ref(), b"pdf".to_vec())
+        );
+    }
+
+    #[test]
+    fn save_new_never_writes_through_a_dangling_link() {
+        let scratch = Scratch::new();
+        let target = scratch.0.join("elsewhere.plist");
+        std::os::unix::fs::symlink(&target, scratch.0.join("report.pdf")).unwrap();
+        save_new_in(&scratch.0, "report.pdf", b"payload").unwrap();
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn save_new_skips_a_dangling_link_for_the_next_name() {
+        let scratch = Scratch::new();
+        std::os::unix::fs::symlink(scratch.0.join("gone"), scratch.0.join("report.pdf")).unwrap();
+        let path = save_new_in(&scratch.0, "report.pdf", b"payload").unwrap();
+        assert_eq!(path, scratch.0.join("report 2.pdf"));
+    }
+
+    #[test]
+    fn preview_folders_are_private() {
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        let dir = private_folder_in(&root).unwrap();
+        assert_eq!((mode(&root), mode(&dir)), (0o700, 0o700));
+    }
+
+    #[test]
+    fn an_existing_preview_root_is_made_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        private_folder_in(&root).unwrap();
+        assert_eq!(mode(&root), 0o700);
+    }
+
+    #[test]
+    fn signing_out_forgets_that_accounts_previews_only() {
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        let gone = previews_in(&root, "").unwrap();
+        let kept = previews_in(&root, "a1").unwrap();
+        std::fs::write(gone.join("mail.pdf"), b"secret").unwrap();
+        forget_previews_in(&root, "");
+        assert!(!gone.exists());
+        assert!(kept.exists());
+    }
+
+    #[test]
+    fn previews_are_kept_per_account_and_private() {
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        let dir = previews_in(&root, "a1").unwrap();
+        let folder = dir.parent().unwrap();
+        assert_eq!(folder, root.join("account-a1"));
+        assert_eq!(
+            (mode(&root), mode(folder), mode(&dir)),
+            (0o700, 0o700, 0o700)
+        );
+        assert!(previews_in(&root, "../x").is_err());
+    }
+
+    #[test]
+    fn a_launch_forgets_the_previews_there_were_and_not_one_made_since() {
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        let older = previews_in(&root, "").unwrap();
+        let earlier_version = private_folder_in(&root).unwrap();
+        let there = previews_now_in(&root);
+        let since = previews_in(&root, "").unwrap();
+        remove_previews(there);
+        assert!(!older.exists() && !earlier_version.exists());
+        assert!(since.exists());
     }
 }

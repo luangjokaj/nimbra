@@ -340,7 +340,7 @@ impl Nimbra {
                 let for_account = sheet.for_account.clone();
                 let credential = Credential::Password(password);
                 if let Err(error) =
-                    self.keep_imap_account(for_account, email, credential, servers, cx)
+                    self.keep_imap_account(for_account, email, credential, servers, true, cx)
                     && let Some(sheet) = &mut self.account_sheet
                 {
                     sheet.error = Some(error);
@@ -404,7 +404,7 @@ impl Nimbra {
                     Ok((email, tokens, servers)) => {
                         let for_account = sheet.for_account.clone();
                         let credential = Credential::Microsoft(tokens);
-                        this.keep_imap_account(for_account, email, credential, servers, cx)
+                        this.keep_imap_account(for_account, email, credential, servers, true, cx)
                     }
                     Err(step) => Err(step.explain()),
                 };
@@ -421,13 +421,16 @@ impl Nimbra {
     }
 
     /// Keeps an account whose servers took its password or Microsoft sign-in: that in the
-    /// keychain, the servers in the settings, and the account shown. Why not, if it is not.
+    /// keychain (off the main thread, as macOS may ask about it; the sheet says it is busy
+    /// meanwhile), the servers in the settings, and the account shown. Why not, if it is
+    /// not: at once, or where it was asked from once the keychain has answered.
     pub(super) fn keep_imap_account(
         &mut self,
         for_account: Option<String>,
         email: String,
         credential: Credential,
         servers: Servers,
+        from_sheet: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), SharedString> {
         let existing = for_account.or_else(|| {
@@ -437,6 +440,7 @@ impl Nimbra {
                 .find(|a| a.email.eq_ignore_ascii_case(&email))
                 .map(|a| a.id.clone())
         });
+        let new = existing.is_none();
         let id = match existing {
             Some(id) if !id.is_empty() => id,
             // The first account of an old install is Gmail's and has no id of its own.
@@ -446,26 +450,77 @@ impl Nimbra {
                 SharedString::from("Couldn’t add the account. Try again.")
             })?,
         };
-        let keychain = |error: anyhow::Error| {
-            eprintln!("nimbra: the keychain refused a sign-in: {error:#}");
-            SharedString::from("Couldn’t save to the Keychain. Unlock it and try again.")
-        };
-        // Saved for this account, and whichever it signed in with before forgotten.
-        let (credential, oauth) = match credential {
-            Credential::Password(password) => {
-                crate::servers::store_password(&id, &password).map_err(keychain)?;
-                crate::microsoft::forget_refresh_token(&id);
-                (Credential::Password(password), None)
-            }
-            Credential::Microsoft(tokens) => {
-                let saved = tokens.saved_as(&id).map_err(keychain)?;
-                crate::servers::forget_password(&id);
-                (
-                    Credential::Microsoft(Arc::new(saved)),
-                    Some(crate::microsoft::PROVIDER.to_string()),
-                )
-            }
-        };
+        let asked_in = self
+            .account_sheet
+            .as_mut()
+            .filter(|_| from_sheet)
+            .map(|sheet| {
+                sheet.busy = true;
+                sheet.error = None;
+                sheet.attempt += 1;
+                sheet.attempt
+            });
+        let generation = self.account_gen;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let key = id.clone();
+            let saved = cx
+                .background_executor()
+                .spawn(async move { save_credential(&key, credential) })
+                .await;
+            this.update(cx, |this, cx| {
+                // Closed or started again (the sheet), or another account shown meanwhile:
+                // nothing is kept.
+                let wanted = match asked_in {
+                    Some(attempt) => this
+                        .account_sheet
+                        .as_ref()
+                        .is_some_and(|sheet| sheet.attempt == attempt),
+                    None => this.account_gen == generation,
+                };
+                if !wanted {
+                    if new && saved.is_ok() {
+                        std::thread::spawn(move || {
+                            crate::servers::forget_password(&id);
+                            crate::microsoft::forget_refresh_token(&id);
+                        });
+                    }
+                    return;
+                }
+                match saved {
+                    Ok((credential, oauth)) => {
+                        this.imap_account_kept(id, email, credential, oauth, servers, cx)
+                    }
+                    Err(error) => {
+                        match &mut this.account_sheet {
+                            Some(sheet) if asked_in.is_some() => {
+                                sheet.busy = false;
+                                sheet.error = Some(error);
+                            }
+                            _ => {
+                                this.status = Status::SignedOut;
+                                this.notice = Some(error);
+                            }
+                        }
+                        cx.notify();
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+        Ok(())
+    }
+
+    fn imap_account_kept(
+        &mut self,
+        id: String,
+        email: String,
+        credential: Credential,
+        oauth: Option<String>,
+        servers: Servers,
+        cx: &mut Context<Self>,
+    ) {
         match self.settings.accounts.iter_mut().find(|a| a.id == id) {
             Some(entry) => {
                 entry.email = email.clone();
@@ -496,7 +551,6 @@ impl Nimbra {
             self.open_store(cx);
         }
         cx.notify();
-        Ok(())
     }
 
     /// The sheet over the main window: a card with the title, Google, and the form.
@@ -1013,6 +1067,35 @@ fn typed_servers(sheet: &AccountSheet, cx: &mut Context<Nimbra>) -> anyhow::Resu
     };
     servers.check()?;
     Ok(servers)
+}
+
+/// Saves an account's sign-in in the keychain, and forgets whichever it signed in with
+/// before. Blocking: macOS may ask first.
+/// Saved for this account, and whichever it signed in with before forgotten. Blocking: the
+/// keychain may ask the user.
+fn save_credential(
+    id: &str,
+    credential: Credential,
+) -> Result<(Credential, Option<String>), SharedString> {
+    let keychain = |error: anyhow::Error| {
+        eprintln!("nimbra: the keychain refused a sign-in: {error:#}");
+        SharedString::from("Couldn’t save to the Keychain. Unlock it and try again.")
+    };
+    match credential {
+        Credential::Password(password) => {
+            crate::servers::store_password(id, &password).map_err(keychain)?;
+            crate::microsoft::forget_refresh_token(id);
+            Ok((Credential::Password(password), None))
+        }
+        Credential::Microsoft(tokens) => {
+            let saved = tokens.saved_as(id).map_err(keychain)?;
+            crate::servers::forget_password(id);
+            Ok((
+                Credential::Microsoft(Arc::new(saved)),
+                Some(crate::microsoft::PROVIDER.to_string()),
+            ))
+        }
+    }
 }
 
 /// Against the local test servers (see `imap_mail::live`): `cargo test -- --ignored live`.

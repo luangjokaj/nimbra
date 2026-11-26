@@ -753,12 +753,12 @@ pub(crate) fn people(list: &str) -> Vec<Person> {
 }
 
 /// A file name that is safe to create in a folder: no path separators, no leading dots,
-/// no control characters, no marks that turn text around (which make `fdp.command` read
-/// as `dnammoc.pdf`), and not too long.
+/// no control characters, nothing invisible that reorders or hides its letters (a
+/// right-to-left override turns "fdp.app" into "ppa.pdf"), and not too long.
 pub fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .filter(|c| !is_direction_mark(*c))
+        .filter(|&c| !is_format(c))
         .map(|c| {
             if c.is_control() || "/\\:".contains(c) {
                 '_'
@@ -776,10 +776,33 @@ pub fn safe_file_name(name: &str) -> String {
     }
 }
 
-fn is_direction_mark(c: char) -> bool {
+/// Unicode's invisible format characters (category Cf), except the joiners some scripts
+/// and emoji need to be spelled right.
+fn is_format(c: char) -> bool {
     matches!(
         c,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        '\u{AD}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61C}'
+            | '\u{6DD}'
+            | '\u{70F}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8E2}'
+            | '\u{180E}'
+            | '\u{200B}'
+            | '\u{200E}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
     )
 }
 
@@ -1167,6 +1190,32 @@ pub type Client = dyn Provider;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_file_name_drops_a_right_to_left_override() {
+        assert_eq!(safe_file_name("Invoice\u{202E}fdp.app"), "Invoicefdp.app");
+    }
+
+    #[test]
+    fn safe_file_name_drops_bidi_isolates_and_marks() {
+        assert_eq!(
+            safe_file_name("a\u{2066}b\u{2067}c\u{2068}d\u{2069}e\u{200E}f\u{200F}g\u{061C}h.pdf"),
+            "abcdefgh.pdf"
+        );
+    }
+
+    #[test]
+    fn safe_file_name_drops_invisible_format_characters() {
+        assert_eq!(
+            safe_file_name("re\u{200B}port\u{FEFF}\u{2060}\u{00AD}\u{E0041}.pdf"),
+            "report.pdf"
+        );
+    }
+
+    #[test]
+    fn safe_file_name_keeps_joiners_that_spell_words() {
+        assert_eq!(safe_file_name("می\u{200C}خواهم.pdf"), "می\u{200C}خواهم.pdf");
+    }
 
     #[test]
     fn a_sent_message_has_its_own_headers_and_no_bcc() {

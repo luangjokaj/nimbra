@@ -1,5 +1,5 @@
-//! The local mail store: what Nimbra has already fetched, kept on disk so the app opens
-//! straight into your mail instead of waiting on Gmail.
+//! An encrypted local store for mail: cached message lists and the like live on disk, so
+//! Nimbra starts fast and works offline.
 //!
 //! Everything is encrypted (ChaCha20-Poly1305) with a 256-bit key that is generated on
 //! first use and kept only in the system keychain, so the files on disk (and in backups)
@@ -10,22 +10,21 @@
 //! Records hold either mail fetched from the server, which can always be fetched again, or
 //! the user's own work that exists nowhere else yet (`is_own`): a message being sent, the
 //! offline queue, send later, snoozes, blocked senders. Those are flushed to the disk before
-//! a save returns, and survive clearing the mail kept here.
+//! a write counts as done, and survive clearing the mail kept here.
 //!
-//! Writes never wait on each other across records: only two writes of the same record do,
-//! and only for the rename. `save_later` and `update_later` hand a write to the store's own
-//! writer thread, in order, so the UI thread never waits on the disk; `load` sees those
-//! writes even before they land, and quitting waits for them (`settle`).
+//! The main thread never writes or waits: it hands records to one writer thread
+//! (`save_soon`, `update_soon`), which writes them in the order they were handed over, the
+//! newest copy of a record only. Reads wait for what was handed over before them, and
+//! quitting waits for all of it (`flush`). What the writer has of a record is shared by
+//! every `Store` of its account (keyed by its path), as one account often has two at once.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::future::Future;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak, mpsc};
-use std::task::{Context, Poll};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -44,93 +43,201 @@ const FORMAT: u8 = 2;
 /// The size of a saved empty list: format, nonce, `[]`, and the cipher's tag.
 const EMPTY_LIST: u64 = 1 + 12 + 2 + 16;
 const WRITER: &str = "nimbra-store";
-/// A temporary file this old was left by a write that never finished (the app was killed).
+/// A temporary file this old was left by a write that never finished (the app was killed),
+/// not by another copy of Nimbra writing right now: those are seconds old at most.
 const STALE_TEMP: Duration = Duration::from_secs(60 * 60);
+/// The writer's lane for what changes every record (no record has an empty name).
+const EVERY_RECORD: &str = "";
+/// How long a read waits for the writer before it reads what is on disk all the same.
+const READ_WAIT: Duration = Duration::from_secs(10);
 
 /// One key is made at a time: a second would replace the one just written with.
 static MAKING_KEY: Mutex<()> = Mutex::new(());
 /// The accounts whose key could not be read when it was last asked for.
 static UNREADABLE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
-/// One lock per record file, shared by every `Store` of the folder.
-static RECORDS: Mutex<Option<HashMap<PathBuf, Weak<Mutex<()>>>>> = Mutex::new(None);
-/// Writes handed to writer threads that have not landed yet, in every store.
-static QUEUED: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+static LANES: LazyLock<Mutex<HashMap<PathBuf, Lane>>> = LazyLock::new(Default::default);
+/// Held while a record's file is replaced or removed, and by `update` for as long as it
+/// reads, changes and writes it, by every store of the folder.
+static RECORDS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = LazyLock::new(Default::default);
+/// The snapshot each record saved with `save_newest` has.
+static NEWEST: LazyLock<Mutex<HashMap<PathBuf, u64>>> = LazyLock::new(Default::default);
+static SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
+
+thread_local! {
+    static ON_WRITER: Cell<bool> = const { Cell::new(false) };
+}
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The user's own work, as opposed to mail that can be fetched again: flushed to the disk
-/// on every save, and kept when the mail kept on this Mac is cleared.
+/// on every write, and kept when the mail kept on this Mac is cleared.
 pub fn is_own(name: &str) -> bool {
     name.starts_with("sending-")
         || name.starts_with("due-")
         || matches!(name, "outbox" | "scheduled" | "snoozed" | "blocked")
 }
 
-/// The lock of one record: held while its file is replaced or removed, and by `update` for
-/// as long as it reads, changes and writes it.
-fn record_lock(path: &Path) -> Arc<Mutex<()>> {
-    let mut all = locked(&RECORDS);
-    let all = all.get_or_insert_default();
-    if let Some(lock) = all.get(path).and_then(Weak::upgrade) {
-        return lock;
-    }
-    if all.len() > 256 {
-        all.retain(|_, lock| lock.strong_count() > 0);
-    }
-    let lock = Arc::new(Mutex::new(()));
-    all.insert(path.to_path_buf(), Arc::downgrade(&lock));
-    lock
+type Task = Box<dyn FnOnce() + Send>;
+
+/// One thread that does the stores' writes, in the order they were asked for.
+struct Writer {
+    queue: Mutex<Option<mpsc::Sender<Task>>>,
+    /// Tasks handed over, and tasks done.
+    counts: Mutex<(u64, u64)>,
+    done: Condvar,
 }
 
-type Job = Box<dyn FnOnce() + Send>;
-
-/// What a write handed to the writer thread came to: `None` if it failed.
-pub struct Later<T>(oneshot::Receiver<T>);
-
-impl<T> Future for Later<T> {
-    type Output = Option<T>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
-        Pin::new(&mut self.0).poll(cx).map(Result::ok)
+impl Writer {
+    fn new() -> Arc<Self> {
+        Arc::new(Writer {
+            queue: Mutex::new(None),
+            counts: Mutex::new((0, 0)),
+            done: Condvar::new(),
+        })
     }
-}
 
-/// Counts a queued write off when it has run, whether or not it worked (or panicked).
-struct Queued {
-    store: Arc<Store>,
-    name: String,
-}
+    fn global() -> Arc<Self> {
+        static GLOBAL: OnceLock<Arc<Writer>> = OnceLock::new();
+        GLOBAL.get_or_init(Writer::new).clone()
+    }
 
-impl Drop for Queued {
-    fn drop(&mut self) {
-        {
-            let mut queued = locked(&self.store.queued);
-            if let Some(count) = queued.get_mut(&self.name) {
-                *count -= 1;
-                if *count == 0 {
-                    queued.remove(&self.name);
-                }
+    #[cfg(test)]
+    fn hand_over(self: &Arc<Self>, task: Task) {
+        self.hand_over_marked(|_| {}, task);
+    }
+
+    /// Hands a task over, after `mark` is told its place in the queue.
+    fn hand_over_marked(self: &Arc<Self>, mark: impl FnOnce(u64), task: Task) {
+        let mut queue = locked(&self.queue);
+        let ticket = {
+            let mut counts = locked(&self.counts);
+            counts.0 += 1;
+            counts.0
+        };
+        mark(ticket);
+        if queue.is_none() {
+            let (sender, tasks) = mpsc::channel::<Task>();
+            let writer = Arc::downgrade(self);
+            let started = std::thread::Builder::new()
+                .name(WRITER.into())
+                .spawn(move || {
+                    ON_WRITER.set(true);
+                    for task in tasks {
+                        // A task that panics must not take the writes after it down too.
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+                        if let Some(writer) = writer.upgrade() {
+                            locked(&writer.counts).1 += 1;
+                            writer.done.notify_all();
+                        }
+                    }
+                });
+            match started {
+                Ok(_) => *queue = Some(sender),
+                Err(_) => eprintln!("nimbra: the store's writer did not start; writing in place"),
             }
         }
-        self.store.drained.notify_all();
-        *locked(&QUEUED.0) -= 1;
-        QUEUED.1.notify_all();
+        let task = match queue.as_ref() {
+            Some(sender) => match sender.send(task) {
+                Ok(()) => return,
+                Err(mpsc::SendError(task)) => task,
+            },
+            None => task,
+        };
+        drop(queue);
+        // No thread to write on: written here rather than lost.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task));
+        locked(&self.counts).1 += 1;
+        self.done.notify_all();
     }
+
+    /// Whether something handed over is not written yet.
+    fn busy(&self) -> bool {
+        let counts = locked(&self.counts);
+        counts.1 < counts.0
+    }
+
+    /// Waits until everything handed over so far is written, or `deadline`. Whether it was.
+    fn flush(&self, deadline: Instant) -> bool {
+        let asked = locked(&self.counts).0;
+        self.wait_for(asked, Some(deadline))
+    }
+
+    /// Waits until the task with this place in the queue is done, or `deadline`.
+    fn wait_for(&self, ticket: u64, deadline: Option<Instant>) -> bool {
+        let counts = locked(&self.counts);
+        let behind = |counts: &mut (u64, u64)| counts.1 < ticket;
+        let counts = match deadline {
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                self.done
+                    .wait_timeout_while(counts, left, behind)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
+            }
+            None => self
+                .done
+                .wait_while(counts, behind)
+                .unwrap_or_else(PoisonError::into_inner),
+        };
+        counts.1 >= ticket
+    }
+}
+
+/// Quitting: waits until every record handed to the writer is on disk, or `deadline`.
+/// Whether everything was.
+pub fn flush(deadline: Instant) -> bool {
+    Writer::global().flush(deadline)
+}
+
+/// Whether a record handed to the writer is not on disk yet.
+pub fn writing() -> bool {
+    Writer::global().busy()
+}
+
+/// `flush` for the writer of one store (tests have writers of their own).
+#[cfg(test)]
+pub fn flush_store(store: &Store, deadline: Instant) -> bool {
+    store.writer.flush(deadline)
+}
+
+/// What the writer has of one record.
+struct Lane {
+    /// Handed over and not written yet.
+    waiting: usize,
+    /// The newest whole copy handed over, and the newest change or read.
+    saved: u64,
+    changed: u64,
+    /// The writer of the last task handed over, and its place in that writer's queue.
+    last: (Arc<Writer>, u64),
+}
+
+/// Runs `work` while holding the record at `key`, for every store of the process.
+fn holding<R>(key: &Path, work: impl FnOnce() -> R) -> R {
+    let record = locked(&RECORDS)
+        .entry(key.to_path_buf())
+        .or_default()
+        .clone();
+    let result = {
+        let _writing = locked(&record);
+        work()
+    };
+    let mut records = locked(&RECORDS);
+    drop(record);
+    if records
+        .get(key)
+        .is_some_and(|record| Arc::strong_count(record) == 1)
+    {
+        records.remove(key);
+    }
+    result
 }
 
 pub struct Store {
     dir: PathBuf,
     cipher: ChaCha20Poly1305,
-    snapshots: AtomicU64,
-    /// The snapshot each record saved with `save_newest` has.
-    newest: Mutex<HashMap<String, u64>>,
-    /// The writer thread, started by the first write handed to it.
-    writer: OnceLock<mpsc::Sender<Job>>,
-    /// Writes of each record still waiting for the writer thread.
-    queued: Mutex<HashMap<String, usize>>,
-    drained: Condvar,
+    writer: Arc<Writer>,
 }
 
 impl Store {
@@ -167,17 +274,17 @@ impl Store {
     }
 
     fn open_at(dir: PathBuf, key: &[u8; 32]) -> Result<Self> {
+        Self::open_with(dir, key, Writer::global())
+    }
+
+    fn open_with(dir: PathBuf, key: &[u8; 32], writer: Arc<Writer>) -> Result<Self> {
         std::fs::create_dir_all(&dir).context("creating the mail store folder")?;
         restrict(&dir, 0o700);
         remove_stale_temps(&dir);
         Ok(Self {
             dir,
             cipher: ChaCha20Poly1305::new(&Key::from(*key)),
-            snapshots: AtomicU64::new(0),
-            newest: Mutex::new(HashMap::new()),
-            writer: OnceLock::new(),
-            queued: Mutex::new(HashMap::new()),
-            drained: Condvar::new(),
+            writer,
         })
     }
 
@@ -190,17 +297,35 @@ impl Store {
     /// A store in a fresh temporary folder, for tests elsewhere.
     #[cfg(test)]
     pub fn temp() -> Self {
-        let mut id = [0u8; 8];
-        getrandom::fill(&mut id).unwrap();
-        let name: String = id.iter().map(|b| format!("{b:02x}")).collect();
         Self::open_at(
-            std::env::temp_dir().join(format!("nimbra-test-{name}")),
-            &[7; 32],
+            std::env::temp_dir().join(format!("nimbra-test-{}", random_suffix().unwrap())),
+            &[9; 32],
         )
         .unwrap()
     }
 
-    /// Saves a record under `name`, replacing any previous one. Blocking.
+    /// A store in a fresh temporary folder with a writer of its own, which waits to start
+    /// until the sender is used or dropped.
+    #[cfg(test)]
+    pub fn temp_held() -> (Arc<Self>, mpsc::Sender<()>) {
+        let dir = std::env::temp_dir().join(format!("nimbra-test-{}", random_suffix().unwrap()));
+        let store = Arc::new(Store::open_with(dir, &[9; 32], Writer::new()).unwrap());
+        let (release, held) = mpsc::channel::<()>();
+        store.writer.hand_over(Box::new(move || {
+            held.recv().ok();
+        }));
+        (store, release)
+    }
+
+    /// Another store over the same folder and key, with nothing handed to its writer: what
+    /// a later launch would read.
+    #[cfg(test)]
+    pub fn temp_like(other: &Store) -> Self {
+        Store::open_with(other.dir.clone(), &[9; 32], Writer::new()).unwrap()
+    }
+
+    /// Saves a record under `name`, replacing any previous one, after what was handed to
+    /// the writer for it. Blocking.
     pub fn save<T: Serialize + ?Sized>(&self, name: &str, value: &T) -> Result<()> {
         self.save_if(name, value, || true).map(drop)
     }
@@ -214,14 +339,21 @@ impl Store {
         value: &T,
         wanted: impl FnOnce() -> bool,
     ) -> Result<bool> {
+        self.wait_for_writer(name, None);
         let path = self.path(name)?;
         let temp = self.stage(name, &path, &self.seal(name, value)?)?;
-        let landed = {
-            let lock = record_lock(&path);
-            let _record = locked(&lock);
+        let rename = holding(&self.key(name), || {
             wanted().then(|| std::fs::rename(&temp, &path))
-        };
-        self.landed(name, &temp, landed)
+        });
+        self.landed(name, &temp, rename)
+    }
+
+    /// Writes a record now, on whatever thread holds it.
+    fn write<T: Serialize + ?Sized>(&self, name: &str, value: &T) -> Result<()> {
+        let path = self.path(name)?;
+        let temp = self.stage(name, &path, &self.seal(name, value)?)?;
+        self.landed(name, &temp, Some(std::fs::rename(&temp, &path)))
+            .map(drop)
     }
 
     /// After a staged file took its record's place, or did not.
@@ -244,23 +376,17 @@ impl Store {
         }
     }
 
-    /// Reads a record. Anything missing, from an older format, or that fails to decrypt
-    /// (tampered with, or written with another key) reads as nothing. A write of it handed
-    /// to the writer thread is waited for, so what was saved is what is read.
+    /// Reads a record, after what was handed to the writer for it. Anything missing, from an
+    /// older format, or that fails to decrypt (tampered with, or written with another key)
+    /// reads as nothing. Blocking.
     pub fn load<T: DeserializeOwned>(&self, name: &str) -> Option<T> {
-        // On the writer itself the write waited for could be the one running.
-        if std::thread::current().name() == Some(WRITER) {
-            return self.load_now(name);
+        if !self.wait_for_writer(name, Some(READ_WAIT)) {
+            eprintln!("nimbra: read “{name}” before the writer got to it");
         }
-        drop(
-            self.drained
-                .wait_while(locked(&self.queued), |queued| queued.contains_key(name))
-                .unwrap_or_else(PoisonError::into_inner),
-        );
-        self.load_now(name)
+        self.read(name)
     }
 
-    fn load_now<T: DeserializeOwned>(&self, name: &str) -> Option<T> {
+    fn read<T: DeserializeOwned>(&self, name: &str) -> Option<T> {
         let file = std::fs::read(self.path(name).ok()?).ok()?;
         if file.len() < 13 || file[0] != FORMAT {
             return None;
@@ -280,7 +406,7 @@ impl Store {
 
     /// Numbers a copy that is about to be saved in the background, for `save_newest`.
     pub fn snapshot(&self) -> u64 {
-        self.snapshots.fetch_add(1, Ordering::Relaxed) + 1
+        SNAPSHOTS.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Saves a copy unless a newer one already is: background saves land in any order.
@@ -290,12 +416,13 @@ impl Store {
         value: &T,
         taken: u64,
     ) -> Result<()> {
+        let key = self.key(name);
         self.save_if(name, value, || {
-            let mut newest = locked(&self.newest);
-            if newest.get(name).is_some_and(|saved| *saved > taken) {
+            let mut newest = locked(&NEWEST);
+            if newest.get(&key).is_some_and(|saved| *saved > taken) {
                 return false;
             }
-            newest.insert(name.to_string(), taken);
+            newest.insert(key.clone(), taken);
             true
         })
         .map(drop)
@@ -307,89 +434,176 @@ impl Store {
         name: &str,
         change: impl FnOnce(&mut T),
     ) -> Result<T> {
-        let path = self.path(name)?;
-        let lock = record_lock(&path);
-        let _record = locked(&lock);
-        let mut value: T = self.load_now(name).unwrap_or_default();
-        change(&mut value);
-        let temp = self.stage(name, &path, &self.seal(name, &value)?)?;
-        self.landed(name, &temp, Some(std::fs::rename(&temp, &path)))?;
-        Ok(value)
+        self.wait_for_writer(name, None);
+        holding(&self.key(name), || {
+            let mut value: T = self.read(name).unwrap_or_default();
+            change(&mut value);
+            self.write(name, &value)?;
+            Ok(value)
+        })
     }
 
-    /// Saves a record on the store's writer thread, after the writes handed to it before.
-    /// Never waits on the disk.
-    pub fn save_later<T: Serialize + Send + 'static>(
-        self: &Arc<Self>,
-        name: &str,
-        value: T,
-    ) -> Later<()> {
-        let owned = name.to_string();
-        self.later(name, move |store| store.save(&owned, &value))
+    /// Hands a copy of a record to the writer and returns at once. A newer copy handed over
+    /// before this one is written replaces it.
+    pub fn save_soon<T: Serialize + Send + 'static>(self: &Arc<Self>, name: &str, value: T) {
+        let taken = self.snapshot();
+        self.hand_over(
+            name,
+            |lane| lane.saved = taken,
+            move |store, name| {
+                let replaced = store
+                    .lane(name, |lane| lane.saved > taken && lane.changed < taken)
+                    .unwrap_or(false);
+                if !replaced && let Err(error) = store.write(name, &value) {
+                    eprintln!("nimbra: could not save “{name}”: {error:#}");
+                }
+            },
+        );
     }
 
-    /// `update` on the store's writer thread, after the writes handed to it before; gives
-    /// back what `change` returns once the record is on disk. Never waits on the disk.
-    pub fn update_later<T, R>(
+    /// Hands a change of a record to the writer, which makes it to the record as it is by
+    /// then. The answer says what `change` returned, once it is on disk.
+    pub fn update_soon<T, R>(
         self: &Arc<Self>,
         name: &str,
         change: impl FnOnce(&mut T) -> R + Send + 'static,
-    ) -> Later<R>
+    ) -> oneshot::Receiver<Result<R>>
     where
         T: Serialize + DeserializeOwned + Default,
         R: Send + 'static,
     {
-        let owned = name.to_string();
-        self.later(name, move |store| {
-            let mut out = None;
-            store.update(&owned, |value: &mut T| out = Some(change(value)))?;
-            out.ok_or_else(|| anyhow!("the change was not made"))
-        })
+        let (answer, answered) = oneshot::channel();
+        let taken = self.snapshot();
+        self.hand_over(
+            name,
+            |lane| lane.changed = taken,
+            move |store, name| {
+                let mut value: T = store.read(name).unwrap_or_default();
+                let said = change(&mut value);
+                let written = store.write(name, &value).map(|()| said);
+                if let Err(error) = &written {
+                    eprintln!("nimbra: could not save “{name}”: {error:#}");
+                }
+                answer.send(written).ok();
+            },
+        );
+        answered
     }
 
-    /// Deletes the mail kept here on the writer thread: everything but the user's own work
-    /// (`is_own`), which exists nowhere else.
-    pub fn clear_mail_later(self: &Arc<Self>) -> Later<()> {
-        self.later("", |store| {
-            clear_dir(&store.dir, true);
-            Ok(())
-        })
-    }
-
-    fn later<R: Send + 'static>(
+    /// Reads a record on the writer, after everything handed to it before, whichever store
+    /// of the account it was handed to.
+    pub fn read_soon<T: DeserializeOwned + Send + 'static>(
         self: &Arc<Self>,
         name: &str,
-        write: impl FnOnce(&Store) -> Result<R> + Send + 'static,
-    ) -> Later<R> {
-        *locked(&self.queued).entry(name.to_string()).or_default() += 1;
-        *locked(&QUEUED.0) += 1;
-        let queued = Queued {
-            store: self.clone(),
-            name: name.to_string(),
-        };
-        let (done, answer) = oneshot::channel();
-        let job: Job = Box::new(move || {
-            match write(&queued.store) {
-                Ok(value) => drop(done.send(value)),
-                Err(error) => eprintln!("nimbra: could not save {}: {error:#}", queued.name),
-            }
-            drop(queued);
-        });
-        let writer = self.writer.get_or_init(|| {
-            let (sender, jobs) = mpsc::channel::<Job>();
-            // Ends once the store is gone: every queued job holds it, so none is dropped.
-            let started = std::thread::Builder::new()
-                .name(WRITER.into())
-                .spawn(move || jobs.into_iter().for_each(|job| job()));
-            if started.is_err() {
-                eprintln!("nimbra: the store's writer did not start; writing in place");
-            }
-            sender
-        });
-        if let Err(mpsc::SendError(job)) = writer.send(job) {
-            job();
+    ) -> oneshot::Receiver<Option<T>> {
+        let (answer, answered) = oneshot::channel();
+        let taken = self.snapshot();
+        // Marked as a change, so that a copy handed over before it is written, not replaced.
+        self.hand_over(
+            name,
+            |lane| lane.changed = taken,
+            move |store, name| {
+                answer.send(store.read(name)).ok();
+            },
+        );
+        answered
+    }
+
+    /// Deletes the mail kept here, after what was handed to the writer before: everything
+    /// but the user's own work (`is_own`), which exists nowhere else. Answers once done.
+    pub fn clear_mail_soon(self: &Arc<Self>) -> oneshot::Receiver<()> {
+        let (answer, answered) = oneshot::channel();
+        self.hand_over(
+            EVERY_RECORD,
+            |_| {},
+            move |store, _| {
+                clear_dir(&store.dir, true);
+                answer.send(()).ok();
+            },
+        );
+        answered
+    }
+
+    /// Deletes every stored record, the user's own work included (keeps the key, so the
+    /// store can be reused), after what was handed to the writer before: for a store that
+    /// turned out to hold another account's mail.
+    pub fn clear_soon(self: &Arc<Self>) {
+        self.hand_over(
+            EVERY_RECORD,
+            |_| {},
+            |store, _| clear_dir(&store.dir, false),
+        );
+    }
+
+    fn hand_over(
+        self: &Arc<Self>,
+        name: &str,
+        mark: impl FnOnce(&mut Lane),
+        work: impl FnOnce(&Store, &str) + Send + 'static,
+    ) {
+        let key = self.key(name);
+        let writer = self.writer.clone();
+        let (store, name, landing) = (self.clone(), name.to_string(), key.clone());
+        self.writer.hand_over_marked(
+            move |ticket| {
+                let mut lanes = locked(&LANES);
+                let lane = lanes.entry(key).or_insert_with(|| Lane {
+                    waiting: 0,
+                    saved: 0,
+                    changed: 0,
+                    last: (writer.clone(), ticket),
+                });
+                lane.waiting += 1;
+                lane.last = (writer, ticket);
+                mark(lane);
+            },
+            Box::new(move || {
+                // Counted as written however the work ends, or the lane would stay forever.
+                struct Landed<'a>(&'a Path);
+                impl Drop for Landed<'_> {
+                    fn drop(&mut self) {
+                        let mut lanes = locked(&LANES);
+                        if let Some(lane) = lanes.get_mut(self.0) {
+                            lane.waiting -= 1;
+                            if lane.waiting == 0 {
+                                lanes.remove(self.0);
+                            }
+                        }
+                    }
+                }
+                let _landed = Landed(&landing);
+                holding(&landing, || work(&store, &name));
+            }),
+        );
+    }
+
+    /// Where the writer keeps what it has of a record, for every store of the process.
+    fn key(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+
+    fn lane<R>(&self, name: &str, look: impl FnOnce(&Lane) -> R) -> Option<R> {
+        locked(&LANES).get(&self.key(name)).map(look)
+    }
+
+    /// Waits until what was handed to a writer for `name`, by any store of the account, is
+    /// written, or `patience` runs out. Whether it was.
+    fn wait_for_writer(&self, name: &str, patience: Option<Duration>) -> bool {
+        // On the writer, everything handed over before is written already.
+        if ON_WRITER.get() {
+            return true;
         }
-        Later(answer)
+        let waits: Vec<(Arc<Writer>, u64)> = {
+            let lanes = locked(&LANES);
+            [self.key(name), self.key(EVERY_RECORD)]
+                .iter()
+                .filter_map(|key| lanes.get(key).map(|lane| lane.last.clone()))
+                .collect()
+        };
+        let deadline = patience.map(|patience| Instant::now() + patience);
+        waits
+            .iter()
+            .all(|(writer, ticket)| writer.wait_for(*ticket, deadline))
     }
 
     /// The records whose name starts with `prefix`.
@@ -421,17 +635,19 @@ impl Store {
     }
 
     /// Deletes a record and its claim. Waits only for a write of it that is landing right
-    /// now, so that none lands after this.
+    /// now, so that none lands after this; a copy of it still waiting for the writer is
+    /// dropped, as a newer one would be.
     pub fn remove(&self, name: &str) {
         let Ok(path) = self.path(name) else {
             return;
         };
-        {
-            let lock = record_lock(&path);
-            let _record = locked(&lock);
+        if let Some(lane) = locked(&LANES).get_mut(&self.key(name)) {
+            lane.saved = self.snapshot();
+        }
+        holding(&self.key(name), || {
             let _ = std::fs::remove_file(&path);
             let _ = std::fs::remove_file(path.with_extension("lock"));
-        }
+        });
         if is_own(name) {
             let dir = self.dir.clone();
             std::thread::spawn(move || sync_dir(&dir));
@@ -443,12 +659,6 @@ impl Store {
     /// the store is open and `load` has the real answer, and for nothing else.
     pub fn saved_empty(account: &str, name: &str) -> bool {
         default_dir(account).is_ok_and(|dir| empty_list_at(&dir, name))
-    }
-
-    /// Deletes every stored record, the user's own work included (keeps the key, so the
-    /// store can be reused). Blocking.
-    pub fn clear(&self) {
-        clear_dir(&self.dir, false);
     }
 
     fn path(&self, name: &str) -> Result<PathBuf> {
@@ -481,10 +691,7 @@ impl Store {
     /// Writes the new file beside the record, under a name of its own, so that writes of
     /// the same record at once never share one. The user's own work is flushed to the disk.
     fn stage(&self, name: &str, path: &Path, sealed: &[u8]) -> Result<PathBuf> {
-        let mut nonce = [0u8; 8];
-        getrandom::fill(&mut nonce).map_err(|e| anyhow!("no secure random source: {e}"))?;
-        let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
-        let temp = path.with_extension(format!("{nonce}.tmp"));
+        let temp = path.with_extension(format!("{}.tmp", random_suffix()?));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -504,19 +711,10 @@ impl Store {
     }
 }
 
-/// Whether a write handed to a writer thread has not landed yet.
-pub fn writing() -> bool {
-    *locked(&QUEUED.0) > 0
-}
-
-/// Waits until every write handed to a writer thread has landed, or the deadline.
-pub fn settle(deadline: Instant) {
-    let left = deadline.saturating_duration_since(Instant::now());
-    drop(
-        QUEUED
-            .1
-            .wait_timeout_while(locked(&QUEUED.0), left, |queued| *queued > 0),
-    );
+fn random_suffix() -> Result<String> {
+    let mut id = [0u8; 8];
+    getrandom::fill(&mut id).map_err(|e| anyhow!("no secure random source: {e}"))?;
+    Ok(id.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn record_path(dir: &Path, name: &str) -> Result<PathBuf> {
@@ -755,6 +953,174 @@ mod tests {
         std::fs::remove_dir_all(&store.dir).unwrap();
     }
 
+    fn held_store() -> (Arc<Store>, mpsc::Sender<()>) {
+        Store::temp_held()
+    }
+
+    /// Counts how often it is written out.
+    #[derive(Clone)]
+    struct Counted(u32, Arc<AtomicU64>);
+
+    impl Serialize for Counted {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            self.0.serialize(serializer)
+        }
+    }
+
+    #[test]
+    fn only_the_newest_copy_handed_over_is_written() {
+        let (store, release) = held_store();
+        let writes = Arc::new(AtomicU64::new(0));
+        for n in 1..=5 {
+            store.save_soon("outbox", Counted(n, writes.clone()));
+        }
+        release.send(()).unwrap();
+        assert_eq!(store.load::<u32>("outbox"), Some(5));
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn a_change_handed_over_after_a_copy_is_made_to_that_copy() {
+        let (store, release) = held_store();
+        store.save_soon("snoozed", vec![1]);
+        let changed = store.update_soon("snoozed", |list: &mut Vec<u32>| {
+            list.push(2);
+            list.len()
+        });
+        store.save_soon("other", vec![7]);
+        release.send(()).unwrap();
+        assert_eq!(futures::executor::block_on(changed).unwrap().unwrap(), 2);
+        assert_eq!(store.load::<Vec<u32>>("snoozed").unwrap(), [1, 2]);
+        assert!(flush_store(
+            &store,
+            Instant::now() + Duration::from_secs(30)
+        ));
+        std::fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    /// Two stores over one folder, sharing a writer: one account's store that a background
+    /// check holds, and the one opened when that account is switched to.
+    fn two_stores_of_one_account() -> (Arc<Store>, Arc<Store>) {
+        let writer = Writer::new();
+        let dir = std::env::temp_dir().join(format!("nimbra-test-{}", random_suffix().unwrap()));
+        let open = || Arc::new(Store::open_with(dir.clone(), &[9; 32], writer.clone()).unwrap());
+        (open(), open())
+    }
+
+    #[test]
+    fn a_change_on_one_store_of_an_account_waits_for_one_queued_on_another() {
+        let (shown, away) = two_stores_of_one_account();
+        shown.save("snoozed", &vec![1u32]).unwrap();
+        let (entered, has_entered) = mpsc::channel();
+        let (go, gate) = mpsc::channel::<()>();
+        let added = shown.update_soon("snoozed", move |list: &mut Vec<u32>| {
+            entered.send(()).unwrap();
+            gate.recv().ok();
+            list.push(2);
+        });
+        has_entered.recv().unwrap();
+        let (removed, has_removed) = mpsc::channel();
+        let woken = std::thread::spawn({
+            let away = away.clone();
+            move || {
+                let done = away.update("snoozed", |list: &mut Vec<u32>| list.retain(|n| *n != 1));
+                removed.send(()).ok();
+                done
+            }
+        });
+        // Time for a change that does not wait to land first.
+        has_removed.recv_timeout(Duration::from_millis(200)).ok();
+        go.send(()).unwrap();
+        futures::executor::block_on(added).unwrap().unwrap();
+        assert_eq!(woken.join().unwrap().unwrap(), [2]);
+        assert_eq!(
+            Store::temp_like(&shown)
+                .load::<Vec<u32>>("snoozed")
+                .unwrap(),
+            [2]
+        );
+        std::fs::remove_dir_all(&shown.dir).unwrap();
+    }
+
+    #[test]
+    fn a_store_opened_again_reads_after_what_the_earlier_one_queued() {
+        let (old, release) = held_store();
+        drop(old.update_soon("snoozed", |list: &mut Vec<u32>| list.push(5)));
+        let fresh = Store::open_with(old.dir.clone(), &[9; 32], old.writer.clone()).unwrap();
+        let (read, has_read) = mpsc::channel();
+        std::thread::spawn(move || read.send(fresh.load::<Vec<u32>>("snoozed")).unwrap());
+        let early = has_read.recv_timeout(Duration::from_millis(200)).ok();
+        release.send(()).unwrap();
+        let read = early.unwrap_or_else(|| has_read.recv().unwrap());
+        assert_eq!(read, Some(vec![5]));
+        std::fs::remove_dir_all(&old.dir).unwrap();
+    }
+
+    #[test]
+    fn a_read_between_two_saves_sees_the_first() {
+        let (store, release) = held_store();
+        store.save_soon("outbox", vec![1u32]);
+        let read = store.read_soon::<Vec<u32>>("outbox");
+        store.save_soon("outbox", vec![2u32]);
+        release.send(()).unwrap();
+        assert_eq!(futures::executor::block_on(read).unwrap(), Some(vec![1]));
+        assert_eq!(store.load::<Vec<u32>>("outbox"), Some(vec![2]));
+        std::fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn a_read_or_a_blocking_change_waits_for_what_was_handed_over() {
+        let (store, release) = held_store();
+        store.save_soon("outbox", vec![1]);
+        let reader = {
+            let store = store.clone();
+            std::thread::spawn(move || store.update("outbox", |list: &mut Vec<u32>| list.push(2)))
+        };
+        release.send(()).unwrap();
+        assert_eq!(reader.join().unwrap().unwrap(), [1, 2]);
+        std::fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn flushing_waits_until_everything_handed_over_is_on_disk() {
+        let (store, release) = held_store();
+        store.save_soon("outbox", vec![3]);
+        assert!(
+            !store.writer.flush(Instant::now()),
+            "held up: not written yet"
+        );
+        release.send(()).unwrap();
+        assert!(store.writer.flush(Instant::now() + Duration::from_secs(30)));
+        // On disk: another store over the same folder, with nothing handed over, reads it.
+        let other = Store::open_with(store.dir.clone(), &[9; 32], Writer::new()).unwrap();
+        assert_eq!(other.load::<Vec<u32>>("outbox").unwrap(), [3]);
+        std::fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn clearing_comes_after_what_was_handed_over_before_it_and_before_what_after() {
+        let (store, release) = held_store();
+        store.save_soon("view-0", vec![1]);
+        store.clear_soon();
+        store.save_soon("view-1", vec![2]);
+        release.send(()).unwrap();
+        assert_eq!(store.load::<Vec<u32>>("view-0"), None);
+        assert_eq!(store.load::<Vec<u32>>("view-1").unwrap(), [2]);
+        std::fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn a_write_that_panics_does_not_stop_the_writer() {
+        let (store, release) = held_store();
+        store.writer.hand_over(Box::new(|| panic!("a bad record")));
+        store.save_soon("meta", 4);
+        release.send(()).unwrap();
+        assert_eq!(store.load::<u32>("meta"), Some(4));
+        std::fs::remove_dir_all(&store.dir).unwrap();
+    }
+
     #[test]
     fn a_removal_waits_for_a_write_landing_so_none_lands_after_it() {
         let store = temp_store(9);
@@ -777,18 +1143,19 @@ mod tests {
 
     #[test]
     fn writes_handed_to_the_writer_land_in_order_and_read_back() {
-        let store = Arc::new(temp_store(10));
+        let (store, release) = held_store();
+        drop(release);
         for n in 0..50 {
-            drop(store.save_later("outbox", vec![n; 1000]));
+            store.save_soon("outbox", vec![n; 1000]);
         }
-        let length = store.update_later("outbox", |list: &mut Vec<u32>| {
+        let length = store.update_soon("outbox", |list: &mut Vec<u32>| {
             list.push(7);
             list.len()
         });
         assert_eq!(store.load::<Vec<u32>>("outbox").unwrap()[..2], [49, 49]);
-        assert_eq!(futures::executor::block_on(length), Some(1001));
-        settle(Instant::now() + Duration::from_secs(5));
-        assert!(!writing());
+        assert_eq!(futures::executor::block_on(length).unwrap().unwrap(), 1001);
+        assert!(flush_store(&store, Instant::now() + Duration::from_secs(5)));
+        assert!(!store.writer.busy());
         std::fs::remove_dir_all(&store.dir).unwrap();
     }
 
@@ -806,7 +1173,7 @@ mod tests {
             store.save(name, &name).unwrap();
         }
         let claim = store.claim("sending-ab").unwrap();
-        futures::executor::block_on(store.clear_mail_later()).unwrap();
+        futures::executor::block_on(store.clear_mail_soon()).unwrap();
         let mut left = store.names("");
         left.sort();
         assert_eq!(left, ["outbox", "scheduled", "sending-ab", "snoozed"]);

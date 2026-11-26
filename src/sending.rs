@@ -717,4 +717,108 @@ pub(crate) mod tests {
         assert_eq!(rewritten["mail"]["outgoing"]["files"][0]["bytes"], "aGk=");
         std::fs::remove_dir_all(store.dir()).unwrap();
     }
+    fn imap_client() -> Arc<mail::Client> {
+        let server =
+            |port| crate::servers::Server::new("localhost", port, crate::servers::Security::Tls);
+        Arc::new(crate::imap_mail::Client::new(
+            String::new(),
+            String::new(),
+            crate::servers::Servers {
+                username: "me".into(),
+                imap: server(1),
+                smtp: server(1),
+            },
+            crate::imap_mail::Credential::Password(String::new()),
+        ))
+    }
+
+    fn with_file(bytes: &[u8]) -> QueuedMail {
+        QueuedMail {
+            draft_id: None,
+            outgoing: mail::Outgoing {
+                subject: "Report".into(),
+                files: vec![mail::OutgoingFile {
+                    name: "a.bin".into(),
+                    mime: "application/octet-stream".into(),
+                    bytes: bytes.into(),
+                }],
+                ..mail::Outgoing::default()
+            },
+        }
+    }
+
+    #[test]
+    fn taking_back_does_not_wait_for_a_write_and_leaves_nothing_on_disk() {
+        let (store, release) = Store::temp_held();
+        let job = Job::new(
+            String::new(),
+            1,
+            imap_client(),
+            Some(store.clone()),
+            with_file(&[1; 64]),
+        )
+        .unwrap();
+        // Its record is busy on the writer, so a write of it waits.
+        drop(store.read_soon::<u32>(&job.name));
+        let writing = std::thread::spawn({
+            let job = job.clone();
+            move || job.keep()
+        });
+        job.forget();
+        assert_eq!(job.stage(), Stage::Over);
+        release.send(()).unwrap();
+        assert!(!writing.join().unwrap());
+        assert!(store.load::<serde_json::Value>(&job.name).is_none());
+        assert!(job.send().is_none(), "taken back: never sent");
+    }
+
+    #[test]
+    fn a_kept_message_is_written_compactly_and_reads_back() {
+        let store = Arc::new(Store::temp());
+        let bytes: Vec<u8> = (0..=255).cycle().take(30_000).collect();
+        let job = Job::new(
+            String::new(),
+            1,
+            imap_client(),
+            Some(store.clone()),
+            with_file(&bytes),
+        )
+        .unwrap();
+        assert!(job.keep() && job.kept());
+        let raw: serde_json::Value = store.load(&job.name).unwrap();
+        let written = raw["mail"]["outgoing"]["files"][0]["bytes"]
+            .as_str()
+            .unwrap();
+        assert!(
+            written.len() < bytes.len() * 3 / 2,
+            "base64, not a list of numbers"
+        );
+        drop(job.locked().claim.take());
+        let found = Job::left_behind("", &imap_client(), &store);
+        assert_eq!(*found[0].mail().outgoing.files[0].bytes, *bytes);
+        assert_eq!(found[0].stage(), Stage::Held);
+    }
+
+    #[test]
+    fn a_message_kept_by_an_earlier_version_still_reads_back() {
+        let store = Arc::new(Store::temp());
+        // As written before files were base64: each byte a number.
+        let old = serde_json::json!({
+            "stage": "Held",
+            "mail": {
+                "draft_id": "r123",
+                "outgoing": {
+                    "to": "ana@example.com", "cc": "", "bcc": "", "subject": "Old",
+                    "body": "Hi", "html": null, "kept": [], "reply": null,
+                    "files": [{"name": "a.txt", "mime": "text/plain", "bytes": [104, 105, 0, 255]}]
+                }
+            }
+        });
+        store.save("sending-0123456789abcdef", &old).unwrap();
+        let found = Job::left_behind("", &imap_client(), &store);
+        let mail = found[0].mail();
+        assert_eq!(mail.draft_id.as_deref(), Some("r123"));
+        assert_eq!(*mail.outgoing.files[0].bytes, [104, 105, 0, 255]);
+        assert_eq!(found[0].subject(), "Old");
+    }
 }

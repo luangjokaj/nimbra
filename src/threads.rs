@@ -18,6 +18,18 @@ pub(super) struct Snooze {
     pub(super) mail: Mail,
 }
 
+/// A row without its messages, to keep with a snooze: they are downloaded again when it
+/// is opened, and are not written into the snoozed list each time it changes.
+fn row_only(mail: &Mail) -> Mail {
+    Mail {
+        loaded: false,
+        body: Default::default(),
+        earlier: Default::default(),
+        html: None,
+        ..mail.clone()
+    }
+}
+
 /// A time to snooze until.
 #[derive(Clone)]
 pub(super) struct SnoozeChoice {
@@ -216,14 +228,7 @@ impl Nimbra {
                     until_ms: choice.until_ms,
                     no_reply: choice.no_reply,
                     since_ms: mail.timestamp_ms,
-                    // The row only: its messages are fetched again when it is opened.
-                    mail: Mail {
-                        body: Default::default(),
-                        earlier: Default::default(),
-                        html: None,
-                        loaded: false,
-                        ..mail.clone()
-                    },
+                    mail: row_only(mail),
                 },
             ));
         }
@@ -279,12 +284,12 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Changes the snoozed list here at once, and in the store off the main thread, each as
-    /// it is: saving this copy could undo what a background check just took out.
+    /// Changes the snoozed list here and in the store, each as it is: saving this copy
+    /// could undo what a background check just took out.
     fn change_snoozed(&mut self, change: impl Fn(&mut Vec<Snooze>) + Send + Sync + 'static) {
         change(&mut self.snoozed);
-        if let Some(store) = self.store.clone() {
-            self.change_stored_snoozed(store, change);
+        if let Some(store) = &self.store {
+            drop(store.update_soon("snoozed", move |kept| change(kept)));
         }
     }
 
@@ -295,25 +300,46 @@ impl Nimbra {
         account: &str,
         change: impl Fn(&mut Vec<Snooze>) + Send + Sync + 'static,
     ) {
-        match self.other_stores.get(account).cloned() {
+        match self.other_stores.get(account) {
             Some(store) if account != self.account_id => {
-                if let Some(kept) = self.flow.other_snoozed.get_mut(account) {
-                    change(kept);
-                }
-                self.change_stored_snoozed(store, change);
+                let (changes, list) = self.snoozed_away.entry(account.to_string()).or_default();
+                *changes += 1;
+                change(list);
+                drop(store.update_soon("snoozed", move |kept| change(kept)));
                 self.read_snoozed_elsewhere();
             }
             _ => self.change_snoozed(change),
         }
     }
 
-    /// A store's snoozed list, changed off the main thread. Quitting waits for it.
-    fn change_stored_snoozed(
-        &self,
-        store: Arc<crate::store::Store>,
-        change: impl FnOnce(&mut Vec<Snooze>) + Send + 'static,
-    ) {
-        drop(store.update_later("snoozed", change));
+    /// Takes another account's snoozed list as its store has it now, unless it was changed
+    /// here meanwhile.
+    pub(super) fn reread_snoozed_of(&mut self, account: String, cx: &mut Context<Self>) {
+        let Some(store) = self.other_stores.get(&account).cloned() else {
+            return;
+        };
+        let changes = self.snoozed_away.get(&account).map_or(0, |(n, _)| *n);
+        cx.spawn(async move |this, cx| {
+            let reading = store.clone();
+            let list: Vec<Snooze> = cx
+                .background_executor()
+                .spawn(async move { reading.load("snoozed").unwrap_or_default() })
+                .await;
+            this.update(cx, |this, cx| {
+                let same_store = this
+                    .other_stores
+                    .get(&account)
+                    .is_some_and(|now| Arc::ptr_eq(now, &store));
+                let unchanged = this.snoozed_away.get(&account).map_or(0, |(n, _)| *n) == changes;
+                if same_store && unchanged {
+                    this.snoozed_away.insert(account, (changes, list));
+                    this.read_snoozed_elsewhere();
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Forgets the snoozes of these threads, whichever account's list has them. Nothing is
@@ -331,10 +357,9 @@ impl Nimbra {
             let theirs = if *account == self.account_id {
                 listed(&self.snoozed)
             } else {
-                self.flow
-                    .other_snoozed
+                self.snoozed_away
                     .get(account)
-                    .is_none_or(|list| listed(list))
+                    .is_none_or(|(_, list)| listed(list))
             };
             let here = *account != self.account_id && listed(&self.snoozed);
             if !theirs && !here {
@@ -357,7 +382,6 @@ impl Nimbra {
     /// The shown account's snoozes (or reminders) as rows of Snoozed (or Reminders), with
     /// the time they come back where the time they arrived would be.
     pub(super) fn snoozed_rows(&mut self, reminders: bool) -> Vec<Mail> {
-        self.read_snoozed_elsewhere();
         self.snoozed
             .iter()
             .filter(|s| {
@@ -377,18 +401,15 @@ impl Nimbra {
             .collect()
     }
 
-    /// The other signed-in accounts' snoozes, each marked with its account so its row acts
-    /// there. From memory: each list is read off the main thread when its store opens, and
-    /// kept up to date by the checks that change it there.
+    /// The other signed-in accounts' snoozes, from their lists as last read, each marked
+    /// with its account so its row acts there.
     pub(super) fn read_snoozed_elsewhere(&mut self) {
-        // The shown account's list is `snoozed`; a copy from before it was shown is old.
-        self.flow.other_snoozed.remove(&self.account_id);
         let mut found = Vec::new();
         for account in self.other_stores.keys() {
             if *account == self.account_id || !self.others.contains_key(account) {
                 continue;
             }
-            let Some(list) = self.flow.other_snoozed.get(account) else {
+            let Some((_, list)) = self.snoozed_away.get(account) else {
                 continue;
             };
             for snooze in list {
@@ -404,34 +425,26 @@ impl Nimbra {
         self.snoozed_elsewhere = found;
     }
 
-    /// Another account's snoozed list as its store now has it, read off the main thread.
-    pub(super) fn took_snoozed(&mut self, account: String, list: Vec<Snooze>) {
-        self.flow.other_snoozed.insert(account, list);
-        self.read_snoozed_elsewhere();
-    }
-
     /// A reply came in while a thread was snoozed: it is back in the inbox by itself (as
     /// Gmail does), so it is not brought back again later. `fresh` is an inbox's listing.
     pub(super) fn unsnooze_answered(&mut self, fresh: &[Mail]) {
-        self.read_snoozed_elsewhere();
-        let mut answered = Vec::new();
-        for mail in fresh {
-            let Some(id) = &mail.id else {
-                continue;
-            };
-            let account = self.account_of(mail);
-            let elsewhere = (account != self.account_id)
-                .then(|| self.flow.other_snoozed.get(account))
-                .flatten();
-            let snoozed = self
-                .snoozed
-                .iter()
-                .chain(elsewhere.into_iter().flatten())
-                .any(|s| s.thread_id == *id && mail.timestamp_ms > s.since_ms);
-            if snoozed {
-                answered.push((account.to_string(), id.clone()));
-            }
-        }
+        let answered: Vec<(String, String)> = fresh
+            .iter()
+            .filter_map(|mail| {
+                let id = mail.id.as_ref()?;
+                let account = self.account_of(mail);
+                let away = (account != self.account_id)
+                    .then(|| self.snoozed_away.get(account))
+                    .flatten()
+                    .map(|(_, list)| list.as_slice())
+                    .unwrap_or_default();
+                self.snoozed
+                    .iter()
+                    .chain(away)
+                    .any(|s| s.thread_id == *id && mail.timestamp_ms > s.since_ms)
+                    .then(|| (account.to_string(), id.clone()))
+            })
+            .collect();
         if !answered.is_empty() {
             self.forget_snoozes_of(&answered);
         }
@@ -824,6 +837,13 @@ impl Nimbra {
             .rev()
             .find(|(kind, _)| matches!(kind, Parked::Sending | Parked::Discarded))
             .map(|(_, c)| c.serial)
+    }
+
+    /// Pressing `Z` in the main window now would bring something back.
+    pub(super) fn can_undo(&self) -> bool {
+        // With the composer in this window, Z is a letter.
+        let typing = self.compose.is_some() && self.compose_host.is_none();
+        !typing && (self.held_back().is_some() || !self.history.is_empty())
     }
 
     /// `Z`: brings back the last thread that was archived, moved or trashed.

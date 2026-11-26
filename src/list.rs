@@ -249,6 +249,68 @@ impl Nimbra {
         self.done.iter().all(|done| *done)
     }
 
+    /// Relabels the rows' times ("9:41" becomes "Wed") and moves them from Today to Earlier
+    /// once the day is over. Checked against the wall clock at each frame, a cheap read
+    /// that also catches waking from sleep, and woken at midnight by one timer when
+    /// nothing else is drawn.
+    pub(super) fn roll_day(&mut self, cx: &mut Context<Self>) {
+        if self.is_demo() {
+            return;
+        }
+        let now = std::time::SystemTime::now();
+        match self.day_ends {
+            Some(end) if now < end => {
+                if self.day_timer.is_none() {
+                    self.wake_at_day_end(end.duration_since(now).unwrap_or_default(), cx);
+                }
+                return;
+            }
+            Some(_) => {
+                for mail in self
+                    .mails
+                    .iter_mut()
+                    .chain(self.cache.values_mut().flatten())
+                {
+                    mail.refresh_time();
+                }
+            }
+            None => {}
+        }
+        let end = std::time::SystemTime::from(next_day_start(&chrono::Local::now()));
+        self.day_ends = Some(end);
+        self.wake_at_day_end(end.duration_since(now).unwrap_or_default(), cx);
+    }
+
+    fn wake_at_day_end(&mut self, wait: Duration, cx: &mut Context<Self>) {
+        self.day_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(wait + Duration::from_millis(500))
+                .await;
+            this.update(cx, |this, cx| {
+                this.day_timer = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// What `save_if_zero_changed` goes by, taken without walking the rows' accounts: it
+    /// runs on every redraw request, animation frames included.
+    pub(super) fn zero_inputs(&self) -> ZeroInputs {
+        ZeroInputs {
+            mailbox: self.mailbox,
+            ready: self.status == Status::Ready,
+            whole: self.all_inboxes_whole,
+            account_gen: self.account_gen,
+            rows: (self.mails.as_ptr() as usize, self.mails.len()),
+            left: self.done.iter().filter(|done| !**done).count(),
+            saved_empty: self.inbox_saved_empty,
+            saved_empty_elsewhere: self.inboxes_saved_empty.values().filter(|e| **e).count(),
+            accounts: self.settings.accounts.len(),
+            stores: usize::from(self.store.is_some()) + self.other_stores.len(),
+        }
+    }
+
     /// Everything listed was cleared and more is on its way: that is loading, not empty.
     pub(super) fn next_page_coming(&self) -> bool {
         !self.is_demo() && self.all_cleared() && self.more().is_some()
@@ -607,9 +669,7 @@ impl Nimbra {
             Accent::Mint,
         ];
         let tag = m.tag.clone().or_else(|| {
-            self.thread_labels(m)
-                .into_iter()
-                .next()
+            self.first_label(m)
                 .map(|(index, label)| (label.name.clone().into(), accents[index % accents.len()]))
         });
         let sans = |weight| gpui::Font {
@@ -1591,6 +1651,39 @@ pub(super) fn compose_button(look: ComposeLook) -> Div {
     }
 }
 
+/// When the day after `now` starts: its midnight, or the first moment of it where a
+/// clock change skips midnight.
+pub(super) fn next_day_start<Tz: chrono::TimeZone>(
+    now: &chrono::DateTime<Tz>,
+) -> chrono::DateTime<Tz> {
+    let zone = now.timezone();
+    now.date_naive()
+        .succ_opt()
+        .and_then(|day| {
+            (0..24).find_map(|hour| {
+                zone.from_local_datetime(&day.and_hms_opt(hour, 0, 0)?)
+                    .earliest()
+            })
+        })
+        .unwrap_or_else(|| now.clone() + chrono::Duration::days(1))
+}
+
+/// See `Nimbra::zero_inputs`. The rows are told apart by where they are kept, which changes
+/// whenever a listing replaces them; marking done in place changes `left`.
+#[derive(Clone, PartialEq)]
+pub(super) struct ZeroInputs {
+    mailbox: View,
+    ready: bool,
+    whole: bool,
+    account_gen: u64,
+    rows: (usize, usize),
+    left: usize,
+    saved_empty: bool,
+    saved_empty_elsewhere: usize,
+    accounts: usize,
+    stores: usize,
+}
+
 /// The space either side of a row's avatar, and at the row's right. With the list's own
 /// 10pt margin it puts the avatars on `LIST_LEFT`.
 pub(super) const ROW_PAD: f32 = 14.;
@@ -1744,5 +1837,20 @@ mod tests {
         assert_eq!((wide.words, wide.compose), (true, ComposeLook::Labelled));
         let narrow = HeaderFit::new(300. - 1. - LIST_LEFT - LIST_RIGHT, 131., Some(126.));
         assert_eq!(narrow.compose, ComposeLook::Icon);
+    }
+
+    #[test]
+    fn the_day_ends_at_the_next_midnight_in_its_own_zone() {
+        use chrono::{FixedOffset, TimeZone, Utc};
+        let late = Utc.with_ymd_and_hms(2026, 11, 26, 23, 59, 30).unwrap();
+        assert_eq!((next_day_start(&late) - late).num_seconds(), 30);
+        let midnight = Utc.with_ymd_and_hms(2026, 11, 27, 0, 0, 0).unwrap();
+        assert_eq!((next_day_start(&midnight) - midnight).num_hours(), 24);
+        let zone = FixedOffset::east_opt(9 * 3600).unwrap();
+        let tokyo = zone.with_ymd_and_hms(2026, 12, 31, 18, 0, 0).unwrap();
+        assert_eq!(
+            next_day_start(&tokyo),
+            zone.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap()
+        );
     }
 }

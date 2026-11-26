@@ -21,7 +21,7 @@ use crate::mail::{
 type Parsed<'a> = mail_parser::Message<'a>;
 
 /// Larger HTML bodies stay in the native reader only, as with Gmail.
-const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
 /// The most that images embedded in a message (`cid:` links) may add to its HTML, counted
 /// per link as written: a link repeated a thousand times costs a thousand copies.
 pub(crate) const INLINE_IMAGE_BUDGET: usize = 4 * 1024 * 1024;
@@ -322,7 +322,7 @@ fn address_text<'a>(lists: impl IntoIterator<Item = &'a Address<'a>>) -> String 
 }
 
 /// At most `max` bytes of `text`, cut at a character boundary.
-fn prefix(text: &str, max: usize) -> &str {
+pub(crate) fn prefix(text: &str, max: usize) -> &str {
     let mut end = max.min(text.len());
     while !text.is_char_boundary(end) {
         end -= 1;
@@ -764,6 +764,34 @@ mod tests {
         for id in ["", "0", "1", "-2", "+2", " 2", "99", "99999999999999", "2a"] {
             assert_eq!(attachment(&raw, id), None, "{id:?}");
         }
+    }
+
+    #[test]
+    fn one_image_linked_many_times_does_not_multiply_the_html() {
+        let image = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 100_000]);
+        let raw = crlf(&format!(
+            "From: ana@example.com\n\
+             Content-Type: multipart/related; boundary=\"rel\"\n\
+             \n\
+             --rel\n\
+             Content-Type: text/html; charset=utf-8\n\
+             \n\
+             <p>{}</p>\n\
+             --rel\n\
+             Content-Type: image/png\n\
+             Content-ID: <a>\n\
+             Content-Transfer-Encoding: base64\n\
+             \n\
+             {image}\n\
+             --rel--\n",
+            "<img src=\"cid:a\">".repeat(200)
+        ));
+        let html = message(&raw, "uid-1").unwrap().html.unwrap();
+        assert!(
+            html.len() <= MAX_HTML_BYTES + INLINE_IMAGE_BUDGET,
+            "{} bytes",
+            html.len()
+        );
     }
 
     #[test]

@@ -7,10 +7,6 @@ use gpui::{BackgroundExecutor, FutureExt as _};
 use std::collections::HashSet;
 use std::future::Future;
 use std::hash::Hash;
-use std::pin::Pin;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Each request has a timeout of its own, but not while the address is being looked up,
@@ -83,71 +79,6 @@ pub async fn on_own_thread<T: Send + 'static>(
         })
         .ok()?;
     result.await.ok()
-}
-
-/// Rung by the notification and quit handlers, which run outside GPUI.
-pub static OUTSIDE: Bell = Bell::new();
-
-/// Something rang from outside GPUI (a clicked notification, a quit put off), for a task
-/// that waits for it instead of looking every so often.
-pub struct Bell {
-    rings: AtomicU64,
-    waiting: Mutex<Option<Waker>>,
-}
-
-impl Bell {
-    pub const fn new() -> Self {
-        Self {
-            rings: AtomicU64::new(0),
-            waiting: Mutex::new(None),
-        }
-    }
-
-    #[cfg(any(target_os = "macos", test))]
-    pub fn ring(&self) {
-        self.rings.fetch_add(1, Ordering::SeqCst);
-        if let Some(waker) = self
-            .waiting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            waker.wake();
-        }
-    }
-
-    /// Done once it has rung more than `heard` times; gives the count to wait past next.
-    pub fn after(&self, heard: u64) -> impl Future<Output = u64> + '_ {
-        Rung { bell: self, heard }
-    }
-}
-
-impl Default for Bell {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-struct Rung<'a> {
-    bell: &'a Bell,
-    heard: u64,
-}
-
-impl Future for Rung<'_> {
-    type Output = u64;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<u64> {
-        let rang = |bell: &Bell| bell.rings.load(Ordering::SeqCst);
-        if rang(self.bell) != self.heard {
-            return Poll::Ready(rang(self.bell));
-        }
-        *self.bell.waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
-        // A ring between the first look and the waker being left would go unheard.
-        match rang(self.bell) {
-            now if now != self.heard => Poll::Ready(now),
-            _ => Poll::Pending,
-        }
-    }
 }
 
 /// What is on its way, by key: a second request for the same thing waits for the first.
@@ -346,21 +277,6 @@ mod tests {
         assert!(held.clone().all(|at| !pace.at_once(at)));
         let after = start + Duration::from_millis(33 * 19) + Pace::GAP;
         assert!(pace.at_once(after));
-    }
-
-    #[test]
-    fn a_bell_rung_before_anyone_waits_is_still_heard() {
-        let bell = Bell::new();
-        bell.ring();
-        let heard = futures::executor::block_on(bell.after(0));
-        assert_eq!(heard, 1);
-        let waiter = std::thread::scope(|scope| {
-            let waiting = scope.spawn(|| futures::executor::block_on(bell.after(heard)));
-            std::thread::sleep(Duration::from_millis(20));
-            bell.ring();
-            waiting.join().unwrap()
-        });
-        assert_eq!(waiter, 2);
     }
 
     #[test]

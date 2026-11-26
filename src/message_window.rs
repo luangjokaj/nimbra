@@ -59,6 +59,10 @@ impl MessageWindow {
         &self.key
     }
 
+    pub(super) fn account(&self) -> &str {
+        &self.account
+    }
+
     /// The thread, fresh from the app when it still has it.
     fn mail(&mut self, cx: &App) -> Mail {
         let n = self.owner.read(cx);
@@ -149,7 +153,7 @@ impl MessageWindow {
         if self.html_shown.as_ref() != Some(&shown) {
             view.set_dark(dark, darkened);
             if let Some(html) = &mail.html {
-                view.show(html, images);
+                view.show(html, images, Some(&self.account));
             }
             self.html_shown = Some(shown);
         }
@@ -379,6 +383,7 @@ impl Render for MessageWindow {
                                     (k + 1) * 1000,
                                     images,
                                     &selectable,
+                                    n.account_of(&m),
                                     cx,
                                 )
                                 .ml(px(40.)),
@@ -404,8 +409,16 @@ impl Render for MessageWindow {
                         .gap(px(16.))
                         .child(n.message_header(&t, &m, 0, false, cx))
                         .child(
-                            n.message_body(&t, &m.body, 0, images, &selectable, cx)
-                                .ml(px(40.)),
+                            n.message_body(
+                                &t,
+                                &m.body,
+                                0,
+                                images,
+                                &selectable,
+                                n.account_of(&m),
+                                cx,
+                            )
+                            .ml(px(40.)),
                         )
                         .when(!m.header.attachments.is_empty(), |d| {
                             d.child(

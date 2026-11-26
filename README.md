@@ -47,6 +47,7 @@
 - **Every account in one place.** Several Gmail and IMAP accounts, All inboxes merged newest first, and replies that go out from the right address.
 - **Writing that gets out of the way.** A formatted editor, address suggestions, attachments by drag and drop, drafts that save themselves, undo send and send later.
 - **Works offline.** Archive, star, read and send while offline; Nimbra sends it all once it can.
+- **At home on the Mac.** Nimbra can be the default mail app for email links, notifications can be archived or marked read where they appear, the Dock icon has a menu and the unread count, and mail is checked the moment the Mac wakes or the network returns.
 - **Light and dark,** following the Mac's appearance, with emails darkened to match in dark mode, and an app icon with every macOS appearance (light, dark, clear and tinted).
 
 ## Get started
@@ -261,6 +262,8 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/app.rs`: the app's state, key actions and the window's layout; the rest of the `Nimbra` type continues in `accounts.rs`, `mailbox.rs`, `threads.rs`, `labels.rs`, `finder.rs`, `composer.rs`, `outgoing.rs` and `menus.rs`
 - `src/sidebar.rs`, `src/list.rs`, `src/reading.rs`, `src/snooze_menu.rs`, `src/skeleton.rs`: the sidebar, the thread list (with Inbox Zero), the reading pane, the Snooze menu and the loading screen
 - `src/menus.rs`, `src/toast.rs`, `src/tooltip.rs`, `src/finder.rs`: menus, notices and the Undo pill, tooltips, and search
+- `src/integration.rs`, `src/system_events.rs`, `src/notify.rs`, `src/system.rs`: what macOS tells the app (links, notification answers, wake, network, appearance, display options) and what the app does with it; notifications, the Dock badge and opening at login
+- `src/mailto.rs`, `src/window_frame.rs`: email links (RFC 6068), and the main window's place across launches
 - `src/ui.rs`, `src/input.rs`: shared building blocks and the text field
 - `assets/`: the app icon, bundled Sora and Geist Mono fonts (OFL) and Lucide-style icons
 

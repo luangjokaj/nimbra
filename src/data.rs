@@ -55,26 +55,20 @@ pub struct Mail {
     pub account: Option<String>,
 }
 
-/// A heavy part of a thread (its messages), cloned with it on every listing, save and cache
-/// but rarely changed: clones share it, and a change copies it first.
-#[derive(Default)]
+/// A thread's messages, shared between the copies of its row (the list, the cache of each
+/// mailbox, what is being saved) instead of copied for each. Changed in place only where no
+/// other copy has it; stored as the value itself.
+#[derive(Default, Debug, PartialEq)]
 pub struct Shared<T>(Arc<T>);
 
 impl<T> Clone for Shared<T> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-}
-
-impl<T> From<T> for Shared<T> {
-    fn from(value: T) -> Self {
-        Self(Arc::new(value))
+        Shared(self.0.clone())
     }
 }
 
 impl<T> Deref for Shared<T> {
     type Target = T;
-
     fn deref(&self) -> &T {
         &self.0
     }
@@ -86,12 +80,20 @@ impl<T: Clone> DerefMut for Shared<T> {
     }
 }
 
-impl<'a, T> IntoIterator for &'a Shared<Vec<T>> {
-    type Item = &'a T;
-    type IntoIter = std::slice::Iter<'a, T>;
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Shared(Arc::new(value))
+    }
+}
 
+impl<'a, T> IntoIterator for &'a Shared<T>
+where
+    &'a T: IntoIterator,
+{
+    type Item = <&'a T as IntoIterator>::Item;
+    type IntoIter = <&'a T as IntoIterator>::IntoIter;
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        (&*self.0).into_iter()
     }
 }
 
@@ -103,7 +105,7 @@ impl<T: serde::Serialize> serde::Serialize for Shared<T> {
 
 impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Shared<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        T::deserialize(deserializer).map(Self::from)
+        T::deserialize(deserializer).map(Shared::from)
     }
 }
 
@@ -268,29 +270,31 @@ impl Mail {
 /// unchanged; a new reply changes both, which makes it load again.
 pub fn merge(cached: &[Mail], fresh: Vec<Mail>) -> Vec<Mail> {
     // Thread ids are each account's own (All inboxes mixes accounts).
-    let loaded: HashMap<(&Option<String>, &Option<String>), &Mail> = cached
+    let loaded: HashMap<(&str, Option<&str>), &Mail> = cached
         .iter()
         .filter(|old| old.loaded)
-        .map(|old| ((&old.id, &old.account), old))
+        .filter_map(|old| Some(((old.id.as_deref()?, old.account.as_deref()), old)))
         .collect();
-    let mut merged = Vec::with_capacity(fresh.len());
-    for mut mail in fresh {
-        if let Some(old) = loaded.get(&(&mail.id, &mail.account))
-            && old.snippet == mail.snippet
-            && old.thread == mail.thread
-        {
-            mail.body = old.body.clone();
-            mail.earlier = old.earlier.clone();
-            mail.participants = old.participants.clone();
-            mail.reply = old.reply.clone();
-            mail.header = old.header.clone();
-            mail.reply_all = old.reply_all.clone();
-            mail.html = old.html.clone();
-            mail.loaded = true;
-        }
-        merged.push(mail);
-    }
-    merged
+    fresh
+        .into_iter()
+        .map(|mut mail| {
+            let key = mail.id.as_deref().map(|id| (id, mail.account.as_deref()));
+            if let Some(old) = key.and_then(|key| loaded.get(&key))
+                && old.snippet == mail.snippet
+                && old.thread == mail.thread
+            {
+                mail.body = old.body.clone();
+                mail.earlier = old.earlier.clone();
+                mail.participants = old.participants.clone();
+                mail.reply = old.reply.clone();
+                mail.header = old.header.clone();
+                mail.reply_all = old.reply_all.clone();
+                mail.html = old.html.clone();
+                mail.loaded = true;
+            }
+            mail
+        })
+        .collect()
 }
 
 /// Up to two initials: "Mira Kovač" gives "MK", "stripe" gives "S".
@@ -450,8 +454,7 @@ pub fn inbox() -> Vec<Mail> {
                     expanded: false,
                     header: Header::default(),
                 },
-            ]
-            .into(),
+            ].into(),
             brief: "Mira needs your sign-off by Friday. Public launch moves to Dec 9 so onboarding gets one more test round; budget is unchanged.".into(),
             body: paragraphs(&[
                 "Hi Luan,",
@@ -655,5 +658,40 @@ mod tests {
         assert_eq!(merged[1].body[0].text, "Downloaded body");
         assert!(!merged[0].loaded && merged[0].body.is_empty());
         assert!(!merged[2].loaded && merged[2].body.is_empty());
+    }
+
+    #[test]
+    fn merge_keeps_each_accounts_thread_apart() {
+        let mut mine = thread("a", "hello");
+        mine.body = rich::from_text(vec!["Mine".into()]).into();
+        mine.loaded = true;
+        let mut fresh_theirs = thread("a", "hello");
+        fresh_theirs.account = Some("bbbbbbbbbbbb".into());
+        let merged = merge(&[mine], vec![fresh_theirs, thread("a", "hello")]);
+        assert!(
+            !merged[0].loaded,
+            "another account's thread with the same id"
+        );
+        assert_eq!(merged[1].body[0].text, "Mine");
+    }
+
+    #[test]
+    fn a_copied_row_shares_its_messages_until_one_copy_changes_them() {
+        let mut row = thread("a", "hello");
+        row.body = rich::from_text(vec!["Body".into()]).into();
+        let copy = row.clone();
+        assert!(std::ptr::eq(row.body.as_ptr(), copy.body.as_ptr()));
+        row.body[0].text = "Changed".into();
+        assert_eq!(copy.body[0].text, "Body");
+    }
+
+    #[test]
+    fn rows_stored_before_messages_were_shared_still_load() {
+        let mut row = thread("a", "hello");
+        row.body = rich::from_text(vec!["Body".into()]).into();
+        let stored = serde_json::to_value(&row).unwrap();
+        assert!(stored["body"].is_array(), "stored as the list itself");
+        let back: Mail = serde_json::from_value(stored).unwrap();
+        assert_eq!(back.body[0].text, "Body");
     }
 }
