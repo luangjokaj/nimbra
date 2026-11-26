@@ -471,7 +471,7 @@ impl Nimbra {
         let hover = t.hover;
         // How many characters fit on a row at the list's current width (the text is cut
         // with an ellipsis by character count, so this follows the resize handle).
-        let line = ((self.list_width - 104.) / 7.4).max(8.) as usize;
+        let line = ((self.list_width - 120.) / 7.4).max(8.) as usize;
         // On a narrow list the tag gives way so the sender's name stays readable.
         let tag = m
             .tag
@@ -545,8 +545,8 @@ impl Nimbra {
                         .absolute()
                         .left(px((ROW_PAD - 6.) / 2.))
                         // Level with the avatar's middle: the row's padding (12), then half
-                        // of its two lines and their gap (22 + 3 + 18).
-                        .top(px(12. + 43. / 2. - 3.))
+                        // of its two lines and their gap.
+                        .top(px(12. + (22. + LINE_GAP + 18.) / 2. - 3.))
                         .size(px(6.))
                         .rounded_full()
                         .bg(t.violet),
@@ -566,7 +566,7 @@ impl Nimbra {
                     .flex_col()
                     .flex_1()
                     .min_w(px(0.))
-                    .gap(px(3.))
+                    .gap(px(LINE_GAP))
                     .child(
                         div()
                             .flex()
@@ -858,7 +858,10 @@ impl Nimbra {
                     .flex_none()
                     .items_center()
                     .gap(px(HEADER_GAP))
-                    .h(px(TOP_BAR - 1.))
+                    // With a line along its bottom, level with the reading toolbar's.
+                    .h(px(TOP_BAR))
+                    .border_b_1()
+                    .border_color(t.border)
                     .pl(px(LIST_LEFT))
                     .pr(px(LIST_RIGHT))
                     .on_mouse_down(MouseButton::Left, drag_or_zoom)
@@ -901,26 +904,22 @@ impl Nimbra {
                     )
                     .child(div().flex_1().min_w(px(0.)).mx(px(-HEADER_GAP / 2.)))
                     .when(self.offline, |d| d.child(self.offline_pill(t, fit.words)))
-                    .child(
-                        match fit.compose {
-                            ComposeLook::Keyed => {
-                                button(t, ButtonKind::Secondary, "Compose", Some("C"))
-                            }
-                            ComposeLook::Plain => button(t, ButtonKind::Secondary, "Compose", None),
-                            ComposeLook::Icon => icon_button(t, "draft")
-                                .size(px(34.))
-                                .bg(t.hover)
-                                .border_1()
-                                .border_color(t.border_strong),
-                        }
-                        .id("compose")
-                        .h(px(34.))
-                        .press_soft()
-                        .tooltip(tip(t.dark, "New message", "C"))
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.open_compose(ComposeKind::New, cx)),
-                        ),
-                    ),
+                    // Compose as the reading toolbar's actions are: its icon and word (just
+                    // the icon where the list is narrow). The word ends as far from the line
+                    // as the rest of the bar's edges.
+                    .child({
+                        let worded = fit.compose != ComposeLook::Icon;
+                        super::reading::action_button(t, "draft", "Compose", worded)
+                            .id("compose")
+                            .mr(px(if worded { -9. } else { -7. }))
+                            .press(t)
+                            .tooltip(tip(t.dark, "New message", "C"))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.open_compose(ComposeKind::New, cx)
+                                }),
+                            )
+                    }),
             )
             // While mail is checked, a thin bar glides along the top of the list. Its 2px
             // strip is always there, so nothing below it moves.
@@ -1021,7 +1020,10 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_1()
-            .px(px(10.))
+            // The rows (a picked one's highlight) start and end where the header's switch
+            // and Compose do.
+            .pl(px(LIST_LEFT))
+            .pr(px(LIST_RIGHT))
             .pb(px(10.))
             .overflow_y_scroll()
             .track_scroll(&self.list_scroll)
@@ -1461,12 +1463,12 @@ pub(super) struct ZeroInputs {
     stores: usize,
 }
 
-/// The space either side of a row's avatar, and at the row's right. With the list's own
-/// 10pt margin it puts the avatars on `LIST_LEFT`.
+/// The space either side of a row's avatar, and at the row's right.
 pub(super) const ROW_PAD: f32 = 14.;
 
-/// The list header's margins: the list's text starts and ends on them.
-pub(super) const LIST_LEFT: f32 = 24.;
+/// The list header's margins: All / Unread and Compose sit this far from the lines either
+/// side, as far as the reading toolbar's first icon does from its edge.
+pub(super) const LIST_LEFT: f32 = 18.;
 
 pub(super) const LIST_RIGHT: f32 = 18.;
 
@@ -1483,9 +1485,9 @@ pub(super) enum ComposeLook {
 impl ComposeLook {
     pub(super) fn width(self) -> f32 {
         match self {
-            ComposeLook::Keyed => 112.,
-            ComposeLook::Plain => 88.,
-            ComposeLook::Icon => 34.,
+            // The button, less the 9 or 7 it reaches into the margin.
+            ComposeLook::Keyed | ComposeLook::Plain => 92.,
+            ComposeLook::Icon => 24.,
         }
     }
 }
@@ -1517,7 +1519,11 @@ impl HeaderFit {
 /// The list's fixed heights, so the rows out of view can be left out and stood in for
 /// exactly: a thread's row (its padding, its two lines and the gap between them), a day's
 /// heading, a placeholder row while the next page loads, and the space between any two.
-pub(super) const ROW_H: f32 = 12. + 22. + 3. + 18. + 12.;
+pub(super) const ROW_H: f32 = 12. + 22. + LINE_GAP + 18. + 12.;
+
+/// Between a row's two lines: with the room above the subject's letters, as much as a
+/// label on the first line has beside it (8).
+pub(super) const LINE_GAP: f32 = 5.;
 const HEADER_H: f32 = 14. + 12. + 6.;
 const WAITING_H: f32 = 14. + 3. + 9. + 8. + 9. + 14.;
 const SLOT_GAP: f32 = 2.;

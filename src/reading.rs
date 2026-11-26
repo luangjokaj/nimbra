@@ -1030,9 +1030,11 @@ impl Nimbra {
                     .flex_none()
                     .items_center()
                     .gap(px(2.))
-                    // Nothing to clear: the window controls leave with the sidebar.
-                    .pl(px(20.))
-                    .pr(px(20.))
+                    // Nothing to clear: the window controls leave with the sidebar. The first
+                    // and last icons' glyphs sit as far from the edges as Compose does from
+                    // the list's line (LIST_RIGHT), past their buttons' own 7pt.
+                    .pl(px(LIST_RIGHT - 7.))
+                    .pr(px(LIST_RIGHT - 7.))
                     .h(px(TOP_BAR))
                     .border_b_1()
                     .border_color(t.border)
@@ -1048,28 +1050,31 @@ impl Nimbra {
                             .when(!self.list_open, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
                     )
-                    .child(div().w(px(6.)))
                     .when(is_draft, |d| {
-                        d.child(crate::ui::glow(
-                            button(t, ButtonKind::Primary, "Edit draft", None)
-                                .id("edit-draft")
-                                .press_soft()
-                                .tooltip(tip(t.dark, "Open this draft in the editor", ""))
-                                .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
-                                    crate::ui::glow_hovered("edit-draft", *hovered, window);
-                                    this.set_hint(*hovered, "Open this draft in the editor", "", cx)
-                                }))
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| {
+                        d.child(div().w(px(6.)))
+                            .child(crate::ui::glow(
+                                button(t, ButtonKind::Primary, "Edit draft", None)
+                                    .id("edit-draft")
+                                    .press_soft()
+                                    .tooltip(tip(t.dark, "Open this draft in the editor", ""))
+                                    .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                                        crate::ui::glow_hovered("edit-draft", *hovered, window);
+                                        this.set_hint(
+                                            *hovered,
+                                            "Open this draft in the editor",
+                                            "",
+                                            cx,
+                                        )
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| {
                                         this.open_draft(this.selected, cx)
-                                    }),
-                                ),
-                            "edit-draft",
-                            false,
-                        ))
-                        .child(div().w(px(8.)))
+                                    })),
+                                "edit-draft",
+                                false,
+                            ))
+                            .child(div().w(px(8.)))
                     })
-                    .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
+                    .child(toolbar_rule(t, 7., if narrow { 7. } else { 9. }))
                     // What is done to a thread: as words, which the narrow pane drops.
                     .child(
                         action_button(t, "done", "Done", !narrow)
@@ -1196,7 +1201,7 @@ impl Nimbra {
                     )
                     // The previous and next thread (also J and K, and the list).
                     .when(!narrow, |d| {
-                        d.child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
+                        d.child(toolbar_rule(t, 7., 7.))
                             .child(
                                 icon_button(t, "up")
                                     .id("prev")
@@ -1863,7 +1868,8 @@ impl Nimbra {
                 div()
                     .flex()
                     .justify_end()
-                    .pt(px(4.))
+                    // As much room above Copy all as the card leaves below it.
+                    .pt(px(8.))
                     .mt(px(2.))
                     .border_t_1()
                     .border_color(t.border)
@@ -2199,12 +2205,12 @@ impl Nimbra {
                     .flex_none()
                     .flex_col()
                     .gap(px(12.))
-                    .px(px(28.))
+                    .px(px(ORIGINAL_SIDE))
                     .pt(px(16.))
                     .pb(px(12.))
                     .border_b_1()
                     .border_color(t.border)
-                    .child(self.subject_row(t, m, 26., pane_w - 56., cx))
+                    .child(self.subject_row(t, m, 26., pane_w - 2. * ORIGINAL_SIDE, cx))
                     .child(self.thread_banners(t, m, cx))
                     .child(self.message_header(t, m, 0, false, cx)),
             )
@@ -2252,7 +2258,7 @@ impl Nimbra {
             .flex_none()
             .flex_col()
             .gap(px(10.))
-            .px(px(28.))
+            .px(px(ORIGINAL_SIDE))
             .pt(px(12.))
             .pb(px(14.))
             .bg(t.surface)
@@ -2279,6 +2285,26 @@ impl Nimbra {
             )
             .child(self.attachment_row(t, attachments, 0, account, cx))
     }
+}
+
+/// The original view's side margin (its header, attachments and the email's page): in
+/// line with the toolbar's first icon, whose glyph starts this far in.
+pub(super) const ORIGINAL_SIDE: f32 = 20.;
+
+/// The blank edge inside a 16pt icon (Lucide draws in 2 of its 24 units from each side).
+const GLYPH_INSET: f32 = 16. * 2. / 24.;
+
+/// A divider in a toolbar, with as much room on each side as Compose has from the list's
+/// line (LIST_RIGHT), counted to the glyphs: `before` and `after` are the inner padding of
+/// the buttons beside it, and the toolbar's 2pt gap is on both sides too.
+pub(super) fn toolbar_rule(t: &Theme, before: f32, after: f32) -> Div {
+    div()
+        .flex_none()
+        .w(px(1.))
+        .h(px(16.))
+        .ml(px(LIST_RIGHT - before - 2. - GLYPH_INSET))
+        .mr(px(LIST_RIGHT - after - 2. - GLYPH_INSET))
+        .bg(t.border_strong)
 }
 
 /// A toolbar action as an icon and a word (Done, Snooze, Reply, Forward); just the icon

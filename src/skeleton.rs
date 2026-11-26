@@ -11,7 +11,7 @@
 use super::*;
 
 /// A row's height with the 2pt under it: its padding and two lines of text.
-const ROW_H: f32 = 69.;
+const ROW_H: f32 = super::list::ROW_H + 2.;
 /// The rows above EARLIER.
 const TODAY: usize = 4;
 /// How dim the bars' controls are until there is mail to use them on.
@@ -177,7 +177,7 @@ impl Nimbra {
                         .flex_col()
                         .flex_1()
                         .min_w(px(0.))
-                        .gap(px(3.))
+                        .gap(px(super::list::LINE_GAP))
                         .child(top_line)
                         .child(
                             div()
@@ -208,7 +208,9 @@ impl Nimbra {
                 div()
                     .relative()
                     .flex_none()
-                    .h(px(TOP_BAR - 1.))
+                    .h(px(TOP_BAR))
+                    .border_b_1()
+                    .border_color(t.border)
                     .child(
                         div()
                             .flex()
@@ -219,19 +221,12 @@ impl Nimbra {
                             .pr(px(LIST_RIGHT))
                             .opacity(WAITING)
                             .child(switch)
-                            .child(match compose {
-                                ComposeLook::Keyed => {
-                                    button(t, ButtonKind::Secondary, "Compose", Some("C"))
-                                        .h(px(34.))
-                                }
-                                ComposeLook::Plain => {
-                                    button(t, ButtonKind::Secondary, "Compose", None).h(px(34.))
-                                }
-                                ComposeLook::Icon => icon_button(t, "draft")
-                                    .size(px(34.))
-                                    .bg(t.hover)
-                                    .border_1()
-                                    .border_color(t.border_strong),
+                            .child(div().flex_1())
+                            // As the real bar (`list.rs`).
+                            .child({
+                                let worded = compose != ComposeLook::Icon;
+                                super::reading::action_button(t, "draft", "Compose", worded)
+                                    .mr(px(if worded { -9. } else { -7. }))
                             }),
                     )
                     .child(shield()),
@@ -246,20 +241,13 @@ impl Nimbra {
                     .min_h(px(0.))
                     .overflow_hidden()
                     .gap(px(2.))
-                    .px(px(10.))
+                    .pl(px(LIST_LEFT))
+                    .pr(px(LIST_RIGHT))
                     .children(rows),
             )
     }
 
     fn skeleton_reading(&self, t: &Theme) -> Div {
-        let rule = || {
-            div()
-                .flex_none()
-                .w(px(1.))
-                .h(px(16.))
-                .mx(px(6.))
-                .bg(t.border_strong)
-        };
         let worded = self
             .frame
             .is_none_or(|f| f32::from(f.size.width) - self.pane_left() >= 600.);
@@ -269,12 +257,16 @@ impl Nimbra {
             .gap(px(2.))
             .size_full()
             .overflow_hidden()
-            .pl(px(20.))
-            .pr(px(20.))
+            .pl(px(LIST_RIGHT - 7.))
+            .pr(px(LIST_RIGHT - 7.))
             .opacity(WAITING)
             // As the real toolbar (`reading.rs`).
             .child(icon_button(t, "list"))
-            .child(rule())
+            .child(super::reading::toolbar_rule(
+                t,
+                7.,
+                if worded { 9. } else { 7. },
+            ))
             .child(super::reading::action_button(t, "done", "Done", worded))
             .child(super::reading::action_button(t, "clock", "Snooze", worded))
             .child(super::reading::action_button(t, "reply", "Reply", worded))
@@ -284,7 +276,7 @@ impl Nimbra {
             .child(div().flex_1())
             .children(["star", "tag", "folder", "trash", "more"].map(|name| icon_button(t, name)))
             .when(worded, |d| {
-                d.child(rule())
+                d.child(super::reading::toolbar_rule(t, 7., 7.))
                     .children(["up", "down"].map(|name| icon_button(t, name)))
             });
 
@@ -309,7 +301,7 @@ impl Nimbra {
                 // Whichever view mail opens in.
                 if self.original {
                     d.child(self.skeleton_original_head(t))
-                        .child(self.skeleton_email(t, 28., 20.))
+                        .child(self.skeleton_email(t, super::reading::ORIGINAL_SIDE, 20.))
                 } else {
                     d.child(self.skeleton_reader_head(t))
                         .child(self.skeleton_email(t, 64., 8.))
@@ -325,7 +317,7 @@ impl Nimbra {
             .flex_col()
             .flex_none()
             .gap(px(12.))
-            .px(px(28.))
+            .px(px(super::reading::ORIGINAL_SIDE))
             .pt(px(16.))
             .pb(px(12.))
             .border_b_1()

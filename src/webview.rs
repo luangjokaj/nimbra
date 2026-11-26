@@ -27,12 +27,12 @@
 /// `:where()` gives these rules zero specificity, so anything the email sets wins, and they
 /// only touch inherited text properties, never table or image sizing.
 ///
-/// The one rule that does win is the space around the email: 28pt on every side, as the
-/// subject and sender above it have, whatever margins the email sets (many set none, and
+/// The one rule that does win is the space around the email: 20pt on every side, as the
+/// subject and sender above it have (in line with the toolbar's first icon), whatever margins the email sets (many set none, and
 /// their content would touch the edges). It is the page's padding, so the email's own
 /// background still fills the view (a body's background spreads to the whole page).
 const DEFAULTS: &str = ":where(html){font:14px/1.5 -apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif}\
-html{padding:28px!important}body{margin:0!important}\
+html{padding:20px!important}body{margin:0!important}\
 :where(pre,code,tt){font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.92em}";
 
 pub fn document(body: &str, images: bool) -> String {
@@ -850,7 +850,7 @@ mod tests {
         assert!(!blocked.contains("<body>"));
         // Our defaults never outrank the email's own styles or touch its layout, except for
         // the space around it (the page's padding and the body's margin).
-        let space = ["html{padding:28px!important", "body{margin:0!important"];
+        let space = ["html{padding:20px!important", "body{margin:0!important"];
         assert!(
             DEFAULTS
                 .split('}')
