@@ -1474,7 +1474,7 @@ impl Nimbra {
                                 .rounded_full()
                                 .bg(t.moon)
                                 .shadow(vec![shadow(
-                                    c(0x8a5cff, if t.dark { 0.32 } else { 0.22 }),
+                                    c(crate::eclipse::GLOW, if t.dark { 0.32 } else { 0.22 }),
                                     0.,
                                     120.,
                                     16.,

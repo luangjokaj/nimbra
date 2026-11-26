@@ -13,6 +13,9 @@ use crate::ui::shadow;
 /// The sun's light, top left to bottom right, the same in both themes.
 pub const SUN: (u32, u32) = (0xffb36b, 0xe0569a);
 
+/// The violet light a large eclipse throws around itself (Inbox Zero).
+pub const GLOW: u32 = 0x8a5cff;
+
 /// How much of the sun the moon covers when `done` of `done + left` is done.
 pub fn covered(done: usize, left: usize) -> f32 {
     match (done, left) {

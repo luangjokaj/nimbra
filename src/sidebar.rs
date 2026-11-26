@@ -1116,15 +1116,34 @@ impl Nimbra {
         };
         let progress = format!("{SAMPLE_DONE} of {} done today", SAMPLE_DONE + left);
         let (hover, bright) = (t.hover, t.text);
-        let first_time = !self.settings.eclipse_seen;
-        div()
+        // In the column, not over it: a short sidebar keeps every row in view.
+        let caption = (!self.settings.eclipse_seen).then(|| {
+            div()
+                .id("eclipse-caption")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.settings.eclipse_seen = true;
+                    this.save_settings(cx);
+                    cx.notify();
+                }))
+                .mx(px(space::XS))
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(px(radius::ROW))
+                .bg(t.raised)
+                .border_1()
+                .border_color(t.edge)
+                .shadow(crate::ui::elevation(t, crate::ui::Elevation::Pop))
+                .whitespace_nowrap()
+                .child(meta("Covers as today’s mail is done", t.text2))
+        });
+        let row = div()
             .id("streak")
             .group("streak")
             .relative()
             .flex()
             .items_center()
             .gap(px(space::M))
-            .mt(px(space::L2))
             .h(px(56.))
             .px(px(space::S))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
@@ -1154,23 +1173,6 @@ impl Nimbra {
                     )
                     .child(meta(under, t.text3)),
             )
-            .when(first_time, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .bottom(px(56.))
-                        .left(px(space::XS))
-                        .px(px(10.))
-                        .py(px(6.))
-                        .rounded(px(radius::ROW))
-                        .bg(t.raised)
-                        .border_1()
-                        .border_color(t.edge)
-                        .shadow(crate::ui::elevation(t, crate::ui::Elevation::Pop))
-                        .whitespace_nowrap()
-                        .child(meta("Covers as today’s mail is done", t.text2)),
-                )
-            })
             .child(
                 div()
                     .id("hide-streak")
@@ -1198,7 +1200,14 @@ impl Nimbra {
                         this.save_settings(cx);
                         cx.notify();
                     })),
-            )
+            );
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(space::XS))
+            .mt(px(space::L2))
+            .children(caption)
+            .child(row)
     }
 }
 
