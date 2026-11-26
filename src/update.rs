@@ -9,7 +9,7 @@
 //! names. Only then is it kept.
 //!
 //! A build without `NIMBRA_UPDATE_FEED` (any build that isn't a release) never updates.
-//! Settings › General › Update automatically turns the checks off.
+//! Settings › Privacy & Security › Update automatically turns the checks off.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
