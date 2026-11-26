@@ -9,8 +9,8 @@ pub const GAP: f32 = 12.;
 pub const LEFT: f32 = 16.;
 pub const RIGHT: f32 = 12.;
 pub const DISMISS: f32 = 24.;
-const PAD_Y: f32 = 12.;
-const BORDER: f32 = 1.;
+/// One line comes out as tall as the Undo pill.
+const PAD_Y: f32 = 13.;
 const WIDEST: f32 = 620.;
 const LEAST_TEXT: f32 = 120.;
 /// Longer than this ends in an ellipsis: the toast must not cover the mail it is about.
@@ -28,7 +28,7 @@ pub struct Toast {
 impl Toast {
     /// `room` is how wide the window under it is.
     pub fn new(text: &str, room: f32, text_system: &WindowTextSystem) -> Self {
-        let chrome = LEFT + GAP + DISMISS + RIGHT + 2. * BORDER;
+        let chrome = LEFT + GAP + DISMISS + RIGHT;
         let wrap = ((room - 48.).min(WIDEST) - chrome).max(LEAST_TEXT);
         let measure = |text: &str| -> (usize, f32) {
             let run = TextRun {
@@ -64,7 +64,7 @@ impl Toast {
             text: text.into(),
             text_width,
             width: text_width + chrome,
-            height: (lines as f32 * LINE).max(DISMISS) + 2. * (PAD_Y + BORDER),
+            height: (lines as f32 * LINE).max(DISMISS) + 2. * PAD_Y,
         }
     }
 }

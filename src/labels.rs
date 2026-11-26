@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::theme::{radius, space};
-use crate::ui::{Elevation, elevation};
 
 /// What the label sheet does with the name typed in it.
 #[derive(Clone, PartialEq)]
@@ -445,11 +444,10 @@ impl Nimbra {
                     .flex_col()
                     .gap(px(space::M))
                     .p(px(space::XL))
+                    .relative()
                     .rounded(px(radius::SHEET))
                     .bg(t.raised)
-                    .border_1()
-                    .border_color(t.edge)
-                    .shadow(elevation(t, Elevation::Sheet))
+                    .shadow(sheet_shadow(t))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(title_s(
                         if renaming {
@@ -489,17 +487,16 @@ impl Nimbra {
                                         cx.listener(|this, _, _, cx| this.close_new_label(cx)),
                                     ),
                             )
-                            .child(crate::ui::glow(
-                                button(
+                            .child(
+                                primary_button(
                                     t,
-                                    ButtonKind::Primary,
+                                    "label-create",
                                     if renaming { "Rename" } else { "Create" },
                                 )
-                                .id("label-create")
                                 .on_click(cx.listener(|this, _, _, cx| this.create_label(cx))),
-                                "label-create",
-                            )),
-                    ),
+                            ),
+                    )
+                    .child(edge(t, radius::SHEET)),
             )
     }
 

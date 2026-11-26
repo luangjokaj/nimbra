@@ -2,8 +2,7 @@
 //! listed), and running the search on the account's server.
 
 use super::*;
-use crate::theme::{GRADIENT_PRIMARY, radius, space};
-use crate::ui::{Elevation, elevation};
+use crate::theme::{radius, space};
 
 /// One result in the search panel.
 #[derive(Clone)]
@@ -374,7 +373,12 @@ impl Nimbra {
                 .py(px(space::S))
                 .rounded(px(radius::ROW))
                 .cursor_pointer()
-                .when(active, |d| d.bg(t.selected).press_selected(t))
+                .when(active, |d| {
+                    d.relative()
+                        .bg(t.selected)
+                        .child(lit_edge(t, radius::ROW))
+                        .press_selected(t)
+                })
                 .when(!active, |d| d.hover(move |s| s.bg(hover)).press(t))
         };
         let section = |label: &str| {
@@ -498,8 +502,7 @@ impl Nimbra {
                             .justify_center()
                             .size(px(28.))
                             .rounded(px(radius::CONTROL))
-                            .bg(GRADIENT_PRIMARY.along(135.))
-                            .shadow(elevation(t, Elevation::Glow))
+                            .bg(solid_violet(t).0)
                             .child(icon("search", 15., gpui::white())),
                     )
                     .child(
@@ -631,11 +634,10 @@ impl Nimbra {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
+                    .relative()
                     .rounded(px(radius::SHEET))
                     .bg(t.raised)
-                    .border_1()
-                    .border_color(t.edge)
-                    .shadow(elevation(t, Elevation::Sheet))
+                    .shadow(sheet_shadow(t))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
@@ -666,7 +668,8 @@ impl Nimbra {
                             .track_scroll(&self.finder_scroll)
                             .p(px(space::S))
                             .children(rows),
-                    ),
+                    )
+                    .child(edge(t, radius::SHEET)),
             )
     }
 

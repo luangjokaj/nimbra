@@ -86,39 +86,85 @@ pub(super) fn remove_popup<V: 'static>(handle: gpui::WindowHandle<V>, cx: &mut A
     }
 }
 
-/// What a menu row has beside its label: the card's border (1) and padding (6) and the row's
-/// padding (10) on each side, and the icon (16) with its gap (10).
-pub(super) const MENU_ROW_CHROME: f32 = 2. * (1. + 6. + 10.) + 16. + 10.;
+/// What a menu row has beside its label: the card's padding (7) and the row's padding (10)
+/// on each side, and the icon (16) with its gap (10).
+pub(super) const MENU_ROW_CHROME: f32 = 2. * (CARD_PAD + 10.) + 16. + 10.;
+
+/// From a pop-up card's edge to its rows, the rim's hairline included.
+pub(super) const CARD_PAD: f32 = 7.;
 
 /// Transparent space around the menu inside its window, so its shadow is not cut off.
 pub(super) const MENU_MARGIN: f32 = 28.;
 
-/// A pop-up window's card (menus, the Undo and notice pills): its lift, and a faint accent
-/// light around it. Both have to fade out inside the window's margin: GPUI draws a shadow out
-/// to 3 times its blur, and what reaches the window's edge is cut off there, which shows as a
-/// box around the card.
-pub(super) fn popup_shadow(t: &Theme) -> Vec<gpui::BoxShadow> {
-    let (down, blur, spread) = POPUP_SHADOW;
-    let (glow_blur, glow_spread) = POPUP_GLOW;
-    vec![
-        shadow(t.shadow, down, blur, spread),
-        shadow(t.glow.opacity(0.3), 0., glow_blur, glow_spread),
-    ]
-}
+/// A pop-up's lift (offset down, blur, spread).
+#[cfg(test)]
+pub(super) const POPUP_SHADOW: (f32, f32, f32) = {
+    let (down, blur, spread, _) = crate::tooltip::LIFT[0];
+    (down, blur, spread)
+};
 
-/// Offset down, blur, spread.
-pub(super) const POPUP_SHADOW: (f32, f32, f32) = (4., 8., -2.);
-/// Blur and spread of the accent light, which has no offset.
-const POPUP_GLOW: (f32, f32) = (8., 0.);
-
-/// The card every pop-up window draws: raised, with a luminous hairline edge.
+/// The glass every pop-up window draws (menus, the Undo and notice pills): raised, with a
+/// hairline edge and a faint neutral shadow. The edge is laid over it and takes no room, so
+/// its content sits `CARD_PAD` in.
 pub(super) fn popup_card(t: &Theme) -> Div {
     div()
+        .relative()
         .rounded(px(radius::CARD))
         .bg(t.raised)
+        .shadow(crate::tooltip::lift(t))
+        .child(edge(t, radius::CARD))
+}
+
+pub(super) use crate::tooltip::edge;
+
+/// Glass laid over the main window (the finder and the sheets): one faint, neutral shadow.
+pub(super) fn sheet_shadow(t: &Theme) -> Vec<gpui::BoxShadow> {
+    vec![shadow(
+        t.shadow_sheet.opacity(t.shadow_sheet.a * 0.6),
+        16.,
+        40.,
+        -12.,
+    )]
+}
+
+/// The lit row of a menu or the finder: a violet tint under it and, laid over it, a violet
+/// hairline. Give the row `.relative()`.
+pub(super) fn lit_edge(t: &Theme, corner: f32) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(px(corner))
         .border_1()
-        .border_color(t.edge)
-        .shadow(popup_shadow(t))
+        .border_color(t.violet.opacity(0.32))
+}
+
+/// Solid violet for what is chosen or is the one main action, deep enough under a white
+/// label in both themes: (at rest, hovered, held).
+pub(super) fn solid_violet(t: &Theme) -> (Hsla, Hsla, Hsla) {
+    let depth = if t.dark { 0.28 } else { 0.1 };
+    let shade = |a: f32| over(c(0x000000, a), t.violet);
+    (shade(depth), shade(depth - 0.08), shade(depth + 0.08))
+}
+
+/// A sheet's one main action: flat solid violet with a white label, lighter on hover and
+/// darker while held. Shaped like `ui::button`.
+pub(super) fn primary_button(t: &Theme, id: &'static str, label: &str) -> Stateful<Div> {
+    let (rest, hover, held) = solid_violet(t);
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .px(px(14.))
+        .py(px(6.))
+        .rounded(px(radius::CONTROL))
+        .bg(rest)
+        .cursor_pointer()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(gpui::white())
+        .hover(move |s| s.bg(hover))
+        .child(label.to_string())
+        .id(id)
+        .active(move |s| s.bg(held))
 }
 
 /// How a pop-up's card comes and goes: fading in while it travels `from` points (up when
@@ -355,13 +401,16 @@ impl Render for UndoToast {
             Theme::light()
         };
         let owner = self.owner.clone();
+        // The button sits as far in from the right as from the top and bottom, and the
+        // label as far in from the left as the button's own label is from the right.
+        let (button_x, button_y) = (14., 7.);
         let card = popup_card(&t)
             .flex()
             .items_center()
             .gap(px(space::M))
             .size_full()
-            .pl(px(space::L))
-            .pr(px(6.))
+            .pl(px(button_y + button_x))
+            .pr(px(button_y))
             .child(
                 div()
                     .flex_1()
@@ -373,6 +422,7 @@ impl Render for UndoToast {
             .child(
                 button(&t, ButtonKind::Ghost, "Undo")
                     .id("undo")
+                    .text_color(t.violet)
                     .press(&t)
                     .on_click(cx.listener(move |_, _, _, cx| {
                         owner.update(cx, |owner, cx| owner.undo(cx)).ok();
@@ -514,7 +564,11 @@ impl Render for MenuPopup {
                     d.child(caption(item.key, t.text3))
                 })
                 .when(!enabled, |d| d.text_color(t.text3))
-                .when(lit, |d| d.bg(t.selected))
+                .when(lit, |d| {
+                    d.relative()
+                        .bg(t.selected)
+                        .child(lit_edge(&t, radius::CONTROL))
+                })
                 .when(enabled, |d| {
                     d.cursor_pointer()
                         .press_selected(&t)
@@ -533,7 +587,7 @@ impl Render for MenuPopup {
             .flex()
             .flex_col()
             .size_full()
-            .p(px(6.))
+            .p(px(CARD_PAD))
             .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                 if !this.reveal.leaving() {
                     this.dismiss(false, window, cx)
@@ -1184,12 +1238,11 @@ impl Nimbra {
             .flex()
             .flex_col()
             .min_w(px(MENU_WIDTH))
-            .p(px(6.))
+            .p(px(CARD_PAD))
             .rounded(px(radius::CARD))
             .bg(t.raised)
-            .border_1()
-            .border_color(t.edge)
-            .shadow(popup_shadow(t))
+            .shadow(crate::tooltip::lift(t))
+            .child(edge(t, radius::CARD))
             .occlude()
             // Any click outside the menu closes it.
             .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
@@ -1281,9 +1334,12 @@ mod tests {
         }
     }
 
+    /// GPUI draws a shadow out to 3 times its blur, and cuts it off at the window's edge.
     #[test]
-    fn the_pop_up_glow_fades_inside_its_window() {
-        let (blur, spread) = POPUP_GLOW;
-        assert!(spread + 3. * blur <= MENU_MARGIN);
+    fn every_layer_of_a_pop_ups_lift_fades_inside_its_window() {
+        for (down, blur, spread, _) in crate::tooltip::LIFT {
+            let below = down + spread + 3. * blur;
+            assert!(below <= MENU_MARGIN && spread + 3. * blur <= MENU_MARGIN);
+        }
     }
 }
