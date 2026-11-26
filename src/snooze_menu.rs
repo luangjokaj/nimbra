@@ -20,7 +20,7 @@ const CAL_FOOT: f32 = 44.;
 /// The height of the footer's two buttons.
 const FOOT_BUTTON: f32 = 30.;
 /// The field to type any time in, above the hours.
-const FIELD: f32 = 30.;
+const FIELD: f32 = 38.;
 /// The Time row under the calendar, and the hours it opens to.
 const TIME_ROW: f32 = 34.;
 const CHIP: f32 = 28.;
@@ -611,8 +611,9 @@ impl SnoozeMenu {
                         .h(px(FIELD))
                         .mt(px(CHIP_GAP))
                         .mx(px(CHIP_INSET))
-                        .px(px(10.))
-                        .rounded(px(7.))
+                        .px(px(12.))
+                        .rounded(px(8.))
+                        .text_size(px(14.))
                         .border_1()
                         .border_color(if self.typed_bad {
                             t.rose
