@@ -1070,6 +1070,13 @@ impl Nimbra {
                 composer.full = screen == "compose-full";
             }
         }
+        // NIMBRA_SCREEN=welcome: what a new user sees first (signed out, no account), with
+        // nothing read from the keychain (screenshots).
+        if screen == "welcome" {
+            this.status = Status::SignedOut;
+            this.mails.clear();
+            this.settings.accounts.clear();
+        }
         // NIMBRA_SCREEN=compose-suggest: a new message with "j" typed in To, so the address
         // suggestions show (screenshots).
         if screen == "compose-suggest" {
@@ -2069,7 +2076,8 @@ impl Nimbra {
             Status::SignedOut => (
                 "Connect your inbox",
                 "Nimbra opens Google in your browser to sign in. It can read and archive \
-                 your mail, and send what you write. It cannot permanently delete anything."
+                 your mail, and send what you write. Deleting mail forever asks Google for \
+                 your permission first."
                     .into(),
                 Some("Connect Gmail"),
             ),
@@ -2088,6 +2096,50 @@ impl Nimbra {
                 None,
             ),
         };
+        // The first thing a new user sees (signed out, no account yet): the icon, and the
+        // screen coming in one part after another.
+        let welcome = self.status == Status::SignedOut && self.settings.accounts.is_empty();
+        let motion = welcome && !crate::system::reduces_motion();
+        let enter = |part: usize, element: AnyElement| -> AnyElement {
+            if motion {
+                welcome_entrance(part, element)
+            } else {
+                element
+            }
+        };
+        let icon = welcome.then(|| enter(0, welcome_icon(t, motion)));
+        let action_row = action.map(|label| {
+            div()
+                .pt(px(10.))
+                .flex()
+                .gap(px(8.))
+                .child(crate::ui::glow(
+                    button(t, ButtonKind::Primary, label, None)
+                        .id("status-action")
+                        .press_soft()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if matches!(this.status, Status::Failed(_)) {
+                                this.try_again(cx);
+                            } else {
+                                this.sign_in(cx);
+                            }
+                        })),
+                    "status-action",
+                    true,
+                ))
+                // Signed out of Gmail (or never in): any other address works too.
+                .when(self.status == Status::SignedOut && !own_servers, |d| {
+                    d.child(
+                        button(t, ButtonKind::Secondary, "Use another address", None)
+                            .id("status-other")
+                            .press_soft()
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.open_account_sheet(None, cx)),
+                            ),
+                    )
+                })
+                .into_any_element()
+        });
         div()
             .flex_1()
             .min_w(px(0.))
@@ -2098,48 +2150,79 @@ impl Nimbra {
             .justify_center()
             .gap(px(14.))
             .bg(t.surface)
-            .child(serif(title, 56., t.text))
-            .child(
+            .children(icon)
+            .child(enter(1, serif(title, 56., t.text).into_any_element()))
+            .child(enter(
+                2,
                 div()
-                    .max_w(px(460.))
+                    .max_w(px(560.))
                     .text_center()
                     .text_size(px(15.))
                     .line_height(px(24.))
                     .text_color(t.text2)
-                    .child(message),
-            )
-            .children(action.map(|label| {
-                div()
-                    .pt(px(10.))
-                    .flex()
-                    .gap(px(8.))
-                    .child(crate::ui::glow(
-                        button(t, ButtonKind::Primary, label, None)
-                            .id("status-action")
-                            .press_soft()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if matches!(this.status, Status::Failed(_)) {
-                                    this.try_again(cx);
-                                } else {
-                                    this.sign_in(cx);
-                                }
-                            })),
-                        "status-action",
-                        true,
-                    ))
-                    // Signed out of Gmail (or never in): any other address works too.
-                    .when(self.status == Status::SignedOut && !own_servers, |d| {
-                        d.child(
-                            button(t, ButtonKind::Secondary, "Use another address", None)
-                                .id("status-other")
-                                .press_soft()
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.open_account_sheet(None, cx)),
-                                ),
-                        )
-                    })
-            }))
+                    .child(message)
+                    .into_any_element(),
+            ))
+            .children(action_row.map(|row| enter(3, row)))
     }
+}
+
+/// How long the welcome screen takes to come in, and how far apart its parts start.
+const WELCOME_IN: Duration = Duration::from_millis(1400);
+const WELCOME_PART: f32 = 0.12;
+/// One part's own rise, as a share of `WELCOME_IN`.
+const WELCOME_RISE: f32 = 0.55;
+
+/// A part of the welcome screen rising into place and fading in, after the ones above it.
+fn welcome_entrance(part: usize, element: AnyElement) -> AnyElement {
+    div()
+        .relative()
+        .child(element)
+        .with_animation(
+            ("welcome-in", part),
+            Animation::new(WELCOME_IN),
+            move |d, delta| {
+                let start = part as f32 * WELCOME_PART;
+                let local = ((delta - start) / WELCOME_RISE).clamp(0., 1.);
+                // Ease out (quint): quick at first, settling softly.
+                let eased = 1. - (1. - local).powi(5);
+                d.opacity(eased).top(px(14. * (1. - eased)))
+            },
+        )
+        .into_any_element()
+}
+
+/// The app icon over a soft glow that slowly breathes (still when the Mac asks for less
+/// motion).
+fn welcome_icon(t: &Theme, motion: bool) -> AnyElement {
+    const SIZE: f32 = 112.;
+    let image = gpui::img(if t.dark {
+        settings_window::APP_ICON_DARK.clone()
+    } else {
+        settings_window::APP_ICON.clone()
+    })
+    .size_full();
+    let glow = |level: f32| shadow(c(0x8b7cff, 0.28 + 0.2 * level), 16., 40. + 16. * level, -8.);
+    let icon = div()
+        .size(px(SIZE))
+        .rounded(px(SIZE / 4.))
+        .shadow(vec![glow(0.)])
+        .child(image);
+    let icon = if motion {
+        icon.with_animation(
+            "welcome-glow",
+            Animation::new(Duration::from_millis(4200)).repeat(),
+            move |d, delta| {
+                // Up and down once a cycle, smoothly.
+                let level = 0.5 - 0.5 * (delta * std::f32::consts::TAU).cos();
+                d.shadow(vec![glow(level)])
+            },
+        )
+        .into_any_element()
+    } else {
+        icon.into_any_element()
+    };
+    div().pb(px(10.)).child(icon).into_any_element()
 }
 
 impl Render for Nimbra {
