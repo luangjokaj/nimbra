@@ -20,15 +20,24 @@ jobs:
       run:
         working-directory: desktop
     steps:
-      # The app and, next to it, the mail engine it builds from (`../core` in Cargo.toml).
-      # Once Cargo.toml takes nimbra-core from git at a tag, the second checkout goes.
+      # The mail engine (nimbra-core) comes from git at the tag in Cargo.toml.
       - uses: actions/checkout@v4
         with:
           path: desktop
-      - uses: actions/checkout@v4
-        with:
-          repository: nimbra-mail/core
-          path: core
+      # A Cargo.lock made with scripts/local-core.sh on points nimbra-core at ../core;
+      # it must name the GitHub release instead.
+      - name: Check the mail engine's source
+        run: |
+          source=$(awk '/^name = "nimbra-core"$/ { found = 1; next }
+                        found && /^source = / { print; exit }
+                        found && /^$/ { exit }' Cargo.lock)
+          case "$source" in
+            'source = "git+https://github.com/nimbra-mail/core?tag='*) echo "$source" ;;
+            *)
+              echo "::error file=Cargo.lock::nimbra-core is not from github.com/nimbra-mail/core (${source:-a local path}). Run scripts/local-core.sh off and commit Cargo.lock again."
+              exit 1
+              ;;
+          esac
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
