@@ -1624,15 +1624,7 @@ impl SettingsWindow {
         let hover = t.hover;
 
         // The account: its photo and address, and with several a list to pick another.
-        let initials = email
-            .chars()
-            .next()
-            .map(|c| c.to_uppercase().to_string())
-            .unwrap_or_default();
-        let face = match &photo {
-            Some(photo) => me_avatar(Some(photo), &initials, 24.),
-            None => avatar(crate::data::tone_for(&email), &initials, 24.).into_any_element(),
-        };
+        let face = super::menus::account_face(&email, photo.as_ref(), 24.);
         let anchor = self.sig_anchor.clone();
         let field = div()
             .id("signature-account")
@@ -2207,19 +2199,22 @@ impl SettingsWindow {
             return;
         }
         let n = self.owner.read(cx);
-        let accounts: Vec<(String, String, Option<Arc<gpui::Image>>)> = n
+        let selected = self.sig_account(cx).map(|(id, _)| id).unwrap_or_default();
+        let accounts: Vec<super::menus::AccountChoice> = n
             .signature_accounts()
             .into_iter()
-            .map(|(id, email)| {
-                let photo = n.photos.get(&id).cloned();
-                (id, email, photo)
+            .map(|(id, email)| super::menus::AccountChoice {
+                photo: n.photos.get(&id).cloned(),
+                on: id == selected,
+                id,
+                email,
             })
             .collect();
-        let selected = self.sig_account(cx).map(|(id, _)| id).unwrap_or_default();
         let dark = n.dark;
         let (left, bottom, width) = self.sig_anchor.get();
         let width = width.max(280.);
-        let height = accounts.len() as f32 * PICKER_ROW + 10.;
+        let height =
+            accounts.len() as f32 * super::menus::ACCOUNT_ROW + super::menus::ACCOUNT_LIST_CHROME;
         let margin = super::menus::MENU_MARGIN;
         let origin = window.bounds().origin;
         let bounds = gpui::Bounds::new(
@@ -2276,7 +2271,6 @@ impl SettingsWindow {
                     AccountPicker {
                         owner,
                         accounts,
-                        selected,
                         dark,
                     }
                 })
@@ -2892,14 +2886,11 @@ fn provider_logo(t: &Theme, kind: Provider, size: f32) -> AnyElement {
 }
 
 /// Each account's row in the signature account list.
-const PICKER_ROW: f32 = 40.;
-
 /// The list of accounts under Settings › Composing's account field: a window of its own,
 /// like the menus, so it can hang over the signature editor (a native view).
 pub(super) struct AccountPicker {
     owner: gpui::WeakEntity<SettingsWindow>,
-    accounts: Vec<(String, String, Option<Arc<gpui::Image>>)>,
-    selected: String,
+    accounts: Vec<super::menus::AccountChoice>,
     dark: bool,
 }
 
@@ -2919,74 +2910,19 @@ impl Render for AccountPicker {
         } else {
             Theme::light()
         };
-        let hover = t.hover;
-        let rows =
-            self.accounts
-                .iter()
-                .enumerate()
-                .map(|(i, (id, email, photo))| {
-                    let on = *id == self.selected;
-                    let initials = email
-                        .chars()
-                        .next()
-                        .map(|c| c.to_uppercase().to_string())
-                        .unwrap_or_default();
-                    let picked = id.clone();
-                    div()
-                        .id(("signature-account", i))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(10.))
-                        .h(px(PICKER_ROW))
-                        .px(px(8.))
-                        .rounded(px(7.))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .press(&t)
-                        .child(match photo {
-                            Some(photo) => me_avatar(Some(photo), &initials, 24.),
-                            None => avatar(crate::data::tone_for(email), &initials, 24.)
-                                .into_any_element(),
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(email.clone()),
-                        )
-                        .when(on, |d| d.child(icon("done", 14., t.violet)))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            let picked = picked.clone();
-                            this.owner
-                                .update(cx, |settings, cx| settings.pick_account(picked, cx))
-                                .ok();
-                            this.close(window, cx);
-                        }))
-                });
-        div()
-            .size_full()
-            .p(px(super::menus::MENU_MARGIN))
-            .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
-            .text_color(t.text)
-            .child(
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .p(px(4.))
-                    .rounded(px(10.))
-                    .bg(t.raised)
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![super::menus::popup_shadow(&t)])
-                    .children(rows),
-            )
+        let rows = self.accounts.iter().enumerate().map(|(i, account)| {
+            let picked = account.id.clone();
+            super::menus::account_row(&t, ("signature-account", i), account).on_click(cx.listener(
+                move |this, _, window, cx| {
+                    let picked = picked.clone();
+                    this.owner
+                        .update(cx, |settings, cx| settings.pick_account(picked, cx))
+                        .ok();
+                    this.close(window, cx);
+                },
+            ))
+        });
+        super::menus::account_list(&t, rows)
     }
 }
 

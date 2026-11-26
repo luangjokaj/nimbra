@@ -112,11 +112,111 @@ pub(super) fn popup_shadow(t: &Theme) -> gpui::BoxShadow {
 /// Offset down, blur, spread.
 pub(super) const POPUP_SHADOW: (f32, f32, f32) = (4., 8., -2.);
 
+/// One account in a list of accounts to pick from (the composer's From, Settings ›
+/// Composing's account field).
+pub(super) struct AccountChoice {
+    pub(super) id: String,
+    pub(super) email: String,
+    pub(super) photo: Option<Arc<gpui::Image>>,
+    /// The one picked now, which has a check.
+    pub(super) on: bool,
+}
+
+/// How far the photo sits in from the composer's From button's left edge (its padding).
+pub(super) const FROM_PHOTO_INSET: f32 = 4.;
+
+/// The height of a row in a list of accounts.
+pub(super) const ACCOUNT_ROW: f32 = 40.;
+
+/// What a list of accounts has around its rows, top and bottom: the card's border (1) and
+/// padding (4) on each side.
+pub(super) const ACCOUNT_LIST_CHROME: f32 = 2. * (1. + 4.);
+
+/// What an account row has beside its address: the card's border (1) and padding (4) and the
+/// row's padding (8) on each side, the photo (24) and the check (14) with their gaps (10).
+pub(super) const ACCOUNT_ROW_CHROME: f32 = 2. * (1. + 4. + 8.) + 24. + 10. + 14. + 10.;
+
+/// How far an account row's photo sits in from the list's left edge: the card's border (1)
+/// and padding (4) and the row's padding (8).
+pub(super) const ACCOUNT_ROW_INSET: f32 = 1. + 4. + 8.;
+
+/// An account's photo, or its initial on its tone when it has none.
+pub(super) fn account_face(email: &str, photo: Option<&Arc<gpui::Image>>, size: f32) -> AnyElement {
+    let initials = email
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
+    match photo {
+        Some(photo) => me_avatar(Some(photo), &initials, size),
+        None => avatar(crate::data::tone_for(email), &initials, size).into_any_element(),
+    }
+}
+
+/// A row in a list of accounts: its photo, its address, and a check on the one picked. The
+/// caller adds what a click does.
+pub(super) fn account_row(
+    t: &Theme,
+    id: impl Into<gpui::ElementId>,
+    account: &AccountChoice,
+) -> Stateful<Div> {
+    let hover = t.hover;
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(10.))
+        .h(px(ACCOUNT_ROW))
+        .px(px(8.))
+        .rounded(px(7.))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .press(t)
+        .child(account_face(&account.email, account.photo.as_ref(), 24.))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(account.email.clone()),
+        )
+        .when(account.on, |d| d.child(icon("done", 14., t.violet)))
+}
+
+/// The card a list of accounts sits on, inside its pop-up window's margin.
+pub(super) fn account_list(t: &Theme, rows: impl IntoIterator<Item = Stateful<Div>>) -> Div {
+    div()
+        .size_full()
+        .p(px(MENU_MARGIN))
+        .font_family(crate::theme::SANS)
+        .text_size(px(13.))
+        .line_height(px(18.))
+        .text_color(t.text)
+        .child(
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .p(px(4.))
+                .rounded(px(10.))
+                .bg(t.raised)
+                .border_1()
+                .border_color(t.border_strong)
+                .shadow(vec![popup_shadow(t)])
+                .children(rows),
+        )
+}
+
 /// A toolbar menu, shown in a small window of its own (see `Nimbra::toggle_menu`).
 pub(super) struct MenuPopup {
     pub(super) owner: gpui::WeakEntity<Nimbra>,
     pub(super) menu: Menu,
     pub(super) items: Vec<(&'static str, SharedString, Hsla)>,
+    /// The composer's From: the accounts, drawn with their photos in place of `items`.
+    pub(super) accounts: Vec<AccountChoice>,
     /// False for a menu that only carries a message (no labels yet).
     pub(super) enabled: bool,
     pub(super) dark: bool,
@@ -267,6 +367,20 @@ impl Render for MenuPopup {
         } else {
             Theme::light()
         };
+        if !self.accounts.is_empty() {
+            let rows = self.accounts.iter().enumerate().map(|(index, account)| {
+                account_row(&t, ("menu-account", index), account).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        let menu = this.menu;
+                        window.remove_window();
+                        this.owner
+                            .update(cx, |owner, cx| owner.menu_choice(menu, index, cx))
+                            .ok();
+                    },
+                ))
+            });
+            return account_list(&t, rows).into_any_element();
+        }
         let hover = t.hover;
         let enabled = self.enabled;
         div()
@@ -320,6 +434,7 @@ impl Render for MenuPopup {
                             }),
                     ),
             )
+            .into_any_element()
     }
 }
 
@@ -406,20 +521,8 @@ impl Nimbra {
                     items
                 }
             }
-            Menu::From => {
-                let from = self.compose_from();
-                // Every account (or the sample's one).
-                self.signature_accounts()
-                    .into_iter()
-                    .map(|(id, email)| {
-                        if Some(id.as_str()) == from.as_deref() {
-                            ("done", email.into(), t.text)
-                        } else {
-                            ("mail", email.into(), t.text2)
-                        }
-                    })
-                    .collect()
-            }
+            // Drawn from `accounts` below, with their photos.
+            Menu::From => Vec::new(),
             Menu::Signature => {
                 let from = self.compose_from().unwrap_or_default();
                 let current = self
@@ -548,6 +651,21 @@ impl Nimbra {
                 items
             }
         };
+        // The composer's From: every account (or the sample's one), as in Settings › Composing.
+        let accounts: Vec<AccountChoice> = if menu == Menu::From {
+            let from = self.compose_from();
+            self.signature_accounts()
+                .into_iter()
+                .map(|(id, email)| AccountChoice {
+                    photo: self.photos.get(&id).cloned(),
+                    on: Some(id.as_str()) == from.as_deref(),
+                    id,
+                    email,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let enabled = !(menu == Menu::Labels && self.is_demo())
             && !(menu == Menu::MoveTo && self.move_targets.is_empty());
 
@@ -557,7 +675,13 @@ impl Nimbra {
             + if self.list_open { self.list_width } else { 0. };
         // Addresses can be longer than the usual menu: From grows to fit its longest one,
         // so it keeps the same space on its right as on its left.
-        let width = if matches!(menu, Menu::From | Menu::Signature) {
+        let width = if menu == Menu::From {
+            let longest = accounts
+                .iter()
+                .map(|a| text_width(&a.email, 13., crate::theme::SANS, cx))
+                .fold(0., f32::max);
+            MENU_WIDTH.max((longest + ACCOUNT_ROW_CHROME).ceil())
+        } else if menu == Menu::Signature {
             let longest = items
                 .iter()
                 .map(|(_, label, _)| text_width(label, 13., crate::theme::SANS, cx))
@@ -566,35 +690,20 @@ impl Nimbra {
         } else {
             MENU_WIDTH
         };
-        let height = items.len() as f32 * 32. + 14.;
+        let height = if menu == Menu::From {
+            accounts.len() as f32 * ACCOUNT_ROW + ACCOUNT_LIST_CHROME
+        } else {
+            items.len() as f32 * 32. + 14.
+        };
         let (left, top) = match menu {
             Menu::Labels => (pane_left + 150., 50.),
             Menu::MoveTo => (pane_left + 186., 50.),
             Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
-            // Under the composer's From: beside the title of a draft, and in the fields'
-            // value column on a new message, which has no title.
-            Menu::From => match &self.compose {
-                Some(c) => {
-                    let vw = f32::from(viewport.width);
-                    let titled = c.draft_id.is_some();
-                    let floating = !c.full && !self.compose_detached;
-                    let (l, t) = if floating {
-                        let (w, _) = c.size;
-                        c.position.unwrap_or((((vw - w) / 2.).max(0.), 96.))
-                    } else if c.full {
-                        // The readable column, under the room left for the traffic lights.
-                        (((vw - 860.) / 2.).max(0.), 36.)
-                    } else {
-                        (0., 0.)
-                    };
-                    match (titled, floating) {
-                        (true, true) => (l + 20., t + 58.),
-                        (true, false) => (24., 72.),
-                        (false, _) => (l + 80., t + 47.),
-                    }
-                }
-                None => (24., 72.),
-            },
+            // Under the composer's From button, its photos over the button's.
+            Menu::From => {
+                let (left, bottom) = self.from_anchor.get();
+                (left - ACCOUNT_ROW_INSET + FROM_PHOTO_INSET, bottom + 4.)
+            }
             // Above the composer's Send later button.
             Menu::SendLater => {
                 let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
@@ -675,6 +784,7 @@ impl Nimbra {
                         owner,
                         menu,
                         items,
+                        accounts,
                         enabled,
                         dark,
                         was_active: false,
@@ -813,7 +923,8 @@ impl Nimbra {
                 None => {}
             },
             (Menu::From, index) => {
-                if let Some(id) = self.settings.accounts.get(index).map(|a| a.id.clone()) {
+                // The same list the menu showed (`toggle_menu`).
+                if let Some((id, _)) = self.signature_accounts().into_iter().nth(index) {
                     self.set_compose_account(id, cx);
                 }
             }

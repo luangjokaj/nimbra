@@ -674,6 +674,8 @@ pub struct Nimbra {
     /// The menu a click outside just closed, and when. Lets a click on the menu's own
     /// button close it instead of closing and instantly reopening it.
     menu_dismissed: Option<(Menu, std::time::Instant)>,
+    /// Where the composer's From button is, in its window: left and bottom, for its menu.
+    from_anchor: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
     /// "Show original": the message's own HTML in a web view instead of the native reader.
     original: bool,
     /// Remote images allowed in the web view for the open thread. On by default; the
@@ -1024,6 +1026,7 @@ impl Nimbra {
             frame: None,
             menu: None,
             menu_dismissed: None,
+            from_anchor: Default::default(),
             original: false,
             original_images: true,
             html_view: None,

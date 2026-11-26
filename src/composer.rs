@@ -2404,14 +2404,17 @@ impl Nimbra {
                             }),
                         )
                     })
+                    // A field of its own when From shows, divided from To as the fields are.
+                    .when(self.shows_from(), |d| d.border_b_1().border_color(t.border))
                     .child(
                         column(div())
                             .flex()
                             .items_center()
                             .gap(px(8.))
                             .px(px(20.))
-                            .pt(px(16.))
-                            .pb(px(8.))
+                            // The same above and below, so the buttons sit in the middle,
+                            // level with From.
+                            .py(px(8.))
                             // A new message: who it is from, and a menu to change it.
                             .when(self.shows_from(), |d| {
                                 // The account it is changing to shows at once, with what
@@ -2428,10 +2431,18 @@ impl Nimbra {
                                     })
                                     .map(|(_, email)| email)
                                     .unwrap_or_default();
+                                let photo = composer
+                                    .moving_to
+                                    .clone()
+                                    .or_else(|| self.compose_from())
+                                    .and_then(|id| self.photos.get(&id).cloned());
+                                let face = menus::account_face(&email, photo.as_ref(), 20.);
+                                let anchor = self.from_anchor.clone();
                                 let hover = t.hover;
                                 // The label is the fields' label column (56 wide, 12 to the
-                                // value) and only the address is the button: its padding
-                                // hangs into that gap, so the address starts where values do.
+                                // value) and only the photo and address are the button. This
+                                // row's gap is 8, and the button's padding takes the other 4,
+                                // so the photo starts where the fields' values do.
                                 d.child(
                                     div()
                                         .w(px(56.))
@@ -2444,16 +2455,18 @@ impl Nimbra {
                                         .id("compose-from")
                                         .flex()
                                         .items_center()
-                                        .gap(px(4.))
+                                        .relative()
+                                        .gap(px(8.))
                                         .min_w(px(0.))
-                                        .px(px(8.))
+                                        .pl(px(menus::FROM_PHOTO_INSET))
+                                        .pr(px(8.))
                                         .py(px(3.))
-                                        .ml(px(-4.))
                                         .rounded(px(7.))
                                         .cursor_pointer()
                                         .hover(move |s| s.bg(hover))
                                         .when(self.menu == Some(Menu::From), |d| d.bg(t.selected))
                                         .tooltip(tip(t.dark, "Send from another account", ""))
+                                        .child(face)
                                         .child(
                                             div()
                                                 .min_w(px(0.))
@@ -2463,6 +2476,22 @@ impl Nimbra {
                                                 .child(email),
                                         )
                                         .child(icon("down", 12., t.text3))
+                                        // Where it is, for its menu to open under it.
+                                        .child(
+                                            gpui::canvas(
+                                                move |bounds, _, _| {
+                                                    anchor.set((
+                                                        f32::from(bounds.origin.x),
+                                                        f32::from(
+                                                            bounds.origin.y + bounds.size.height,
+                                                        ),
+                                                    ));
+                                                },
+                                                |_, _, _, _| {},
+                                            )
+                                            .absolute()
+                                            .inset_0(),
+                                        )
                                         // On press, as the header's other buttons (it is also
                                         // where the card is dragged from).
                                         .on_mouse_down(
@@ -2492,7 +2521,9 @@ impl Nimbra {
                                 )
                             })
                             .child(div().flex_1())
-                            .children(inline_controls),
+                            // Their icons end where the fields' text does (Cc Bcc): an icon
+                            // button's box reaches 7 past its icon (30 around 16).
+                            .children(inline_controls.map(|c| c.mr(px(-7.)))),
                     ),
             )
             .child(field(
