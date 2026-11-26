@@ -31,6 +31,7 @@ mod scheduled;
 mod sending;
 mod servers;
 mod settings;
+mod signature;
 mod signin_page;
 mod sky;
 mod smtp;
@@ -98,6 +99,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "sparkles",
     "clip",
     "grip",
+    "play",
     "more",
     "tag",
     "bell",
@@ -127,6 +129,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "clear-format",
     "folder",
     "ban",
+    "alert",
     "archive",
     "pulse",
     "eye",

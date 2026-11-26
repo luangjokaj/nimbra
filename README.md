@@ -216,6 +216,8 @@ Snoozed threads leave the inbox and come back unread with a notification; a repl
 
 Messages are written in a formatted editor: bold (⌘B), italic (⌘I), underline (⌘U), links (⌘K), bulleted and numbered lists, quotes. They are sent with both an HTML and a plain-text version, and pasted text keeps simple formatting only. Replies and forwards include the original message, folded behind •••; a forward also takes the original's attachments. With several accounts, a new message or a forward can be sent from any of them.
 
+Each account has its own signatures, made in **Settings › Composing**: pick the account, then add as many as you like, name them and choose the default (or No signature). Edit one as formatted text, as HTML, or see it in Preview. Signatures can hold links, tables and images from the web; scripts, forms and unsafe links are taken out when they are saved. A new message, reply or forward starts with its account's default under what you write, kept apart from your text; click the small handle above it to pick another or none, and changing From switches to that account's default. The editor and Preview load nothing from the web, so images show as placeholders there and arrive only in the message that is sent.
+
 The composer has Cc and Bcc, suggests addresses from your mail as you type, and takes attachments from the paperclip or by dropping files on it (25 MB in total). Drafts save themselves a moment after you stop typing. Sending waits six seconds so you can undo it (⌘Z). From Send until the server has it, a message is kept encrypted on this Mac: quitting sends it first, and one that could not leave is sent when its account next connects. **Send later** sends the saved draft at the chosen time while Nimbra is running.
 
 Offline, archive, star, read and the like still work: changes are kept (encrypted, on this Mac) and sent once the server can be reached, and an Offline pill shows how many are waiting.
@@ -242,7 +244,7 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 
 ### Screenshot states
 
-`NIMBRA_SCREEN=welcome`, `palette`, `zero`, `loading`, `compose`, `compose-full`, `compose-suggest`, `window`, `more`, `offline`, `snooze`, `snooze-time`, `shortcuts`, `settings-accounts`, `settings-remove`, `settings-about` or `about` opens that screen directly on the sample data. `NIMBRA_SHORTCUTS_TAB=<n>` switches the shortcuts sheet to tab n a second after it opens. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
+`NIMBRA_SCREEN=welcome`, `palette`, `zero`, `loading`, `compose`, `compose-full`, `compose-suggest`, `window`, `more`, `offline`, `snooze`, `snooze-time`, `shortcuts`, `settings-accounts`, `settings-remove`, `settings-appearance`, `settings-reading`, `settings-composing` (also `settings-composing-html` and `settings-composing-preview`, on the sample's HTML signature), `settings-notifications`, `settings-privacy`, `settings-shortcuts`, `settings-about` or `about` opens that screen directly on the sample data. `NIMBRA_SHORTCUTS_TAB=<n>` switches the shortcuts sheet to tab n a second after it opens. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
 
 ### Releases
 
@@ -270,6 +272,7 @@ The sidebar is translucent and blurs whatever is behind the window. GPUI's own b
 - `src/usage.rs`: the anonymous usage count
 - `src/scheduled.rs`, `src/sending.rs`: send later, and a message from Send until the server has it
 - `src/checking.rs`, `src/arrival.rs`, `src/quitting.rs`, `src/leaving.rs`: checks for mail, Inbox Zero at launch, and what quitting has to finish
+- `src/signature.rs`: what a signature's HTML may hold (it is cleaned before it is kept, shown or sent), and its plain text
 - `src/rich.rs`, `src/webview.rs`: HTML or plain-text mail as styled blocks, and the locked-down web view behind Show original
 - `src/app.rs`: the app's state, key actions and the window's layout; the rest of the `Nimbra` type continues in `accounts.rs`, `mailbox.rs`, `threads.rs`, `labels.rs`, `finder.rs`, `composer.rs`, `outgoing.rs` and `menus.rs`
 - `src/sidebar.rs`, `src/list.rs`, `src/reading.rs`, `src/snooze_menu.rs`, `src/palette.rs`: the sidebar, the thread list (with Inbox Zero), the reading pane, the Snooze menu and the command palette

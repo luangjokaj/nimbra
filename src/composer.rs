@@ -39,6 +39,12 @@ pub(super) struct Composer {
     /// The editor's content, as HTML and as plain text.
     pub(super) html: String,
     pub(super) text: String,
+    /// The signature under what is written, kept apart from it: its id (empty for one a
+    /// draft was saved with that Settings no longer has) and its cleaned HTML. `None`: no
+    /// signature. Only a formatted message has one.
+    pub(super) signature: Option<(String, String)>,
+    /// The signature changed and the editor still shows the old one.
+    pub(super) show_signature: bool,
     /// Content still to be put into the editor.
     pub(super) load: Option<String>,
     /// Bold, italic, underline, bullets, numbers at the cursor.
@@ -210,11 +216,19 @@ impl Composer {
         }
     }
 
+    /// The signature's HTML, when the message has one.
+    fn signature_html(&self) -> Option<&str> {
+        self.signature
+            .as_ref()
+            .map(|(_, html)| html.as_str())
+            .filter(|_| self.rich)
+    }
+
     /// The message as it would be saved or sent.
     pub(super) fn outgoing(&self, cx: &App) -> mail::Outgoing {
-        let html = self
-            .rich
-            .then(|| crate::editor::message_html(&self.html, self.quoted.as_deref()));
+        let html = self.rich.then(|| {
+            crate::editor::message_html(&self.html, self.signature_html(), self.quoted.as_deref())
+        });
         mail::Outgoing {
             to: self.recipients(Field::To, cx),
             cc: self.recipients(Field::Cc, cx),
@@ -244,7 +258,8 @@ impl Composer {
         self.edits != self.saved_edits
     }
 
-    /// The whole message text: the edited lines, then the quoted earlier message.
+    /// The whole message text: the edited lines, the signature after the usual "-- "
+    /// line, then the quoted earlier message.
     pub(super) fn body(&self, cx: &App) -> String {
         let mut body = if self.rich {
             self.text.trim_end().to_string()
@@ -255,6 +270,13 @@ impl Composer {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        if let Some(signature) = self.signature_html() {
+            let text = crate::signature::to_text(signature);
+            if !text.is_empty() {
+                body.push_str("\n\n-- \n");
+                body.push_str(&text);
+            }
+        }
         if let Some(quoted) = &self.quoted {
             body.push_str("\n\n");
             body.push_str(quoted);
@@ -349,6 +371,8 @@ impl Nimbra {
             rich: !self.editor_failed && cfg!(any(target_os = "macos", target_os = "windows")),
             html: String::new(),
             text: String::new(),
+            signature: None,
+            show_signature: true,
             load: None,
             format: [false; 5],
             focus_body: false,
@@ -484,15 +508,13 @@ impl Nimbra {
                 focus = composer.lines[0].read(cx).focus_handle(cx);
             }
         }
-        // The editor starts with the signature, below room to write.
-        let signature = self.settings.signature.trim_end();
-        let mut start = String::from("<div><br></div>");
-        if !signature.is_empty() {
-            start.push_str("<div><br></div><div class=\"sig\">");
-            start.push_str(&crate::editor::text_to_html(signature));
-            start.push_str("</div>");
-        }
-        composer.load = Some(start);
+        // The editor starts empty; the account's default signature is shown under it.
+        composer.load = Some("<div><br></div>".to_string());
+        let from = composer
+            .account
+            .clone()
+            .unwrap_or_else(|| self.account_id.clone());
+        composer.signature = self.default_signature_for(&from);
         if composer.rich
             && composer
                 .lines
@@ -617,9 +639,18 @@ impl Nimbra {
                 composer.quoted.as_deref().unwrap_or(""),
                 focus,
             );
+            composer.show_signature = true;
             self.editor_shown = Some(serial);
         } else if focus {
             editor.focus();
+        }
+        if std::mem::take(&mut composer.show_signature) {
+            let shown = composer
+                .signature
+                .as_ref()
+                .map(|(_, html)| crate::signature::for_display(html))
+                .unwrap_or_default();
+            editor.signature(&shown);
         }
         editor.set_visible(true);
     }
@@ -669,7 +700,58 @@ impl Nimbra {
             EditorEvent::Save => self.save_draft(cx),
             EditorEvent::ToggleFull => self.toggle_full_compose(cx),
             EditorEvent::Dropped(paths) => self.attach_files(paths, cx),
+            EditorEvent::SignatureMenu { session, at } => {
+                if self.compose.as_ref().is_some_and(|c| c.serial == session) {
+                    self.open_signature_menu(at, cx);
+                }
+            }
+            // Only the signature editor in Settings edits source.
+            EditorEvent::Source { .. } => {}
         }
+        cx.notify();
+    }
+
+    /// The signature a message from `account` starts with: the account's default.
+    pub(super) fn default_signature_for(&self, account: &str) -> Option<(String, String)> {
+        self.settings
+            .default_signature(account)
+            .filter(|s| !s.html.trim().is_empty())
+            .map(|s| (s.id.clone(), s.html.clone()))
+    }
+
+    /// The menu of the From account's signatures, under the handle above the signature
+    /// (`at`, in the editor). It is a window of its own, opened once this update is over.
+    fn open_signature_menu(&mut self, at: (f32, f32), cx: &mut Context<Self>) {
+        let Some(handle) = self.editor_window else {
+            return;
+        };
+        let origin = self.editor_origin.get();
+        self.menu_at = (origin.0 + at.0, origin.1 + at.1 + 4.);
+        cx.spawn(async move |this, cx| {
+            cx.update_window(handle, |_, window, cx| {
+                this.update(cx, |this, cx| this.toggle_menu(Menu::Signature, window, cx))
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The composer's signature changes to `id` (or, with `None`, to none).
+    pub(super) fn set_compose_signature(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        let signature = id.and_then(|id| {
+            self.settings
+                .signature(&id)
+                .map(|s| (s.id.clone(), s.html.clone()))
+        });
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        if composer.signature == signature {
+            return;
+        }
+        composer.signature = signature;
+        composer.show_signature = true;
+        self.composer_changed(cx);
         cx.notify();
     }
 
@@ -922,6 +1004,7 @@ impl Nimbra {
             .subject
             .update(cx, |input, cx| input.set(draft.subject, usize::MAX, cx));
         // One field per line of the part the user wrote.
+        // (The plain fields have no signature apart: a draft's stays in its text there.)
         for (n, text) in draft.body.lines().take(400).enumerate() {
             let text = text.to_string();
             if n == 0 {
@@ -956,6 +1039,25 @@ impl Nimbra {
                 }
             })
             .unwrap_or_else(|| crate::editor::text_to_html(&draft.body));
+        // Saved with a signature of its own: it stays apart, as it was. A draft from
+        // before (its signature in the text) or without one starts with none, so nothing
+        // is added twice.
+        let (html, signature) = crate::editor::split_signature(&html);
+        let from = composer
+            .account
+            .clone()
+            .unwrap_or_else(|| self.account_id.clone());
+        composer.signature = signature.map(|html| {
+            let html = crate::signature::clean(&html);
+            let id = self
+                .settings
+                .signatures_of(&from)
+                .find(|s| s.html == html)
+                .map(|s| s.id.clone())
+                .unwrap_or_default();
+            (id, html)
+        });
+        composer.show_signature = true;
         composer.load = Some(html);
         composer.focus_body = composer.rich;
         composer.draft_id = Some(draft.id);
@@ -1855,7 +1957,18 @@ impl Nimbra {
         let Some(composer) = &mut self.compose else {
             return;
         };
-        composer.account = Some(id);
+        composer.account = Some(id.clone());
+        // A message from another account has that account's signature.
+        let signature = self.default_signature_for(&id);
+        let Some(composer) = &mut self.compose else {
+            return;
+        };
+        if composer.signature != signature {
+            composer.signature = signature;
+            composer.show_signature = true;
+            composer.edits += 1;
+            composer.saved = false;
+        }
         // What quitting would keep belongs to the old account: start afresh.
         composer.saved_as = SavedAs::default();
         let serial = composer.serial;
@@ -2389,6 +2502,7 @@ impl Nimbra {
             })
             .when(composer.rich, |d| {
                 let editor = self.editor.clone();
+                let origin = self.editor_origin.clone();
                 let tool = |id: usize,
                             name: &'static str,
                             label: &'static str,
@@ -2502,6 +2616,10 @@ impl Nimbra {
                                     // Floating, the editor (a native view) leaves the card's
                                     // side edges free for resizing.
                                     let inset = if full { 0. } else { 6. };
+                                    origin.set((
+                                        f32::from(bounds.origin.x) + inset,
+                                        f32::from(bounds.origin.y),
+                                    ));
                                     if let Some(editor) = &editor {
                                         editor.set_bounds(
                                             f32::from(bounds.origin.x) + inset,

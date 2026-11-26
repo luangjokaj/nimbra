@@ -30,6 +30,56 @@ pub(super) static APP_ICON_DARK: std::sync::LazyLock<std::sync::Arc<gpui::Image>
         ))
     });
 
+/// The screenshot states that open Settings (`NIMBRA_SCREEN`), and the section each opens
+/// on. One list, read both where the app opens the window and where it picks the section:
+/// a state named in one place and not the other opened the window on General.
+const SCREENS: &[(&str, Tab)] = &[
+    ("settings", Tab::General),
+    ("settings-account", Tab::Accounts),
+    ("settings-accounts", Tab::Accounts),
+    ("settings-remove", Tab::Accounts),
+    ("settings-appearance", Tab::Appearance),
+    ("settings-reading", Tab::Reading),
+    ("settings-composing", Tab::Composing),
+    ("settings-composing-html", Tab::Composing),
+    ("settings-composing-preview", Tab::Composing),
+    ("settings-notifications", Tab::Notifications),
+    ("settings-appearance", Tab::Appearance),
+    ("settings-privacy", Tab::Privacy),
+    ("settings-shortcuts", Tab::Shortcuts),
+    ("settings-about", Tab::About),
+];
+
+/// The section a screenshot state opens Settings on, when it opens Settings.
+pub(super) fn screen_tab(screen: &str) -> Option<Tab> {
+    SCREENS
+        .iter()
+        .find(|(name, _)| *name == screen)
+        .map(|(_, tab)| *tab)
+}
+
+/// How a signature is edited in Settings › Composing.
+#[derive(Clone, Copy, PartialEq)]
+enum SigMode {
+    /// Formatted text, in the composer's own editor.
+    Text,
+    /// The HTML source.
+    Html,
+    /// Drawn natively, read-only, as a reader would see it (images as placeholders).
+    Preview,
+}
+
+/// The chip picked among an account's signatures.
+#[derive(Clone, PartialEq)]
+enum SigPick {
+    Signature(String),
+    /// "No signature".
+    Nothing,
+}
+
+/// The signature editor's height: room for a long signature without the page scrolling.
+const SIG_EDITOR_HEIGHT: f32 = 190.;
+
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Tab {
     General,
@@ -88,9 +138,38 @@ impl Tab {
 pub(super) struct SettingsWindow {
     owner: Entity<Nimbra>,
     tab: Tab,
-    /// One field per line of the signature.
-    signature: Vec<Entity<TextInput>>,
     pending_focus: Option<FocusHandle>,
+    /// Signatures (Composing): the account shown, `None` for the default account (or the
+    /// first).
+    sig_account: Option<String>,
+    /// The chip picked; `None` until one is, which shows the account's default.
+    sig_pick: Option<SigPick>,
+    sig_mode: SigMode,
+    /// The picked signature's name, and which signature it holds.
+    sig_name: Entity<TextInput>,
+    sig_name_for: Option<String>,
+    /// The HTML source as typed, for the signature it belongs to: what is kept is that,
+    /// cleaned, and the source view is not loaded again with the cleaned copy while typing.
+    sig_source: Option<(String, String)>,
+    /// The signature asking to be deleted (id, name), in a dialog.
+    confirm_delete: Option<(String, String)>,
+    /// The formatted text and HTML editor: the composer's (a web view), a second one, made
+    /// the first time it is needed.
+    sig_editor: Option<std::rc::Rc<crate::editor::EditorView>>,
+    sig_editor_failed: bool,
+    sig_editor_ready: bool,
+    sig_editor_dark: Option<bool>,
+    /// What the editor shows (signature id, mode), and the session it was loaded as.
+    sig_loaded: Option<(String, SigMode)>,
+    sig_session: u64,
+    sig_shown: bool,
+    /// GPUI's keyboard focus while typing in the editor (its "Editor" key context), and
+    /// whether it had it at the last frame.
+    sig_editor_focus: FocusHandle,
+    sig_keys: bool,
+    /// The account field's place in the window (left, bottom, width), where its list opens.
+    sig_anchor: std::rc::Rc<std::cell::Cell<(f32, f32, f32)>>,
+    sig_picker: Option<gpui::WindowHandle<AccountPicker>>,
     /// A first click on a destructive button arms it; a second within 4 s does it.
     armed: Option<(&'static str, Instant)>,
     /// The account whose Remove asks for confirmation (id, address), in a dialog.
@@ -109,58 +188,56 @@ pub(super) struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    /// `text` and `dark` come from the app (which is busy opening this window, so it
-    /// cannot be read here).
-    pub(super) fn new(
-        owner: Entity<Nimbra>,
-        text: String,
-        dark: bool,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    /// `dark` comes from the app (which is busy opening this window, so it cannot be read
+    /// here). The window opens on General; `show` moves it to another section.
+    pub(super) fn new(owner: Entity<Nimbra>, dark: bool, cx: &mut Context<Self>) -> Self {
         let t = if dark { Theme::dark() } else { Theme::light() };
-        let lines: Vec<String> = text.lines().map(str::to_string).collect();
-        let mut signature = Vec::new();
-        let mut subscriptions = vec![cx.observe(&owner, |_, _, cx| cx.notify())];
-        for index in 0..6 {
-            let placeholder = if index == 0 { "Your name" } else { "" };
-            let input = cx.new(|cx| TextInput::new(cx, placeholder, t.faint, t.violet));
-            if let Some(line) = lines.get(index).cloned() {
-                input.update(cx, |input, cx| input.set(line, usize::MAX, cx));
-            }
-            subscriptions.push(
-                cx.subscribe(&input, move |this, _, event: &InputEvent, cx| match event {
-                    InputEvent::Changed => this.signature_changed(cx),
-                    InputEvent::Enter | InputEvent::Down | InputEvent::Tab => {
-                        if let Some(next) = this.signature.get(index + 1) {
-                            this.pending_focus = Some(next.read(cx).focus_handle(cx));
-                            cx.notify();
-                        }
-                    }
-                    InputEvent::Up | InputEvent::BackspaceAtStart if index > 0 => {
-                        let previous = this.signature[index - 1].clone();
-                        this.pending_focus = Some(previous.read(cx).focus_handle(cx));
-                        cx.notify();
-                    }
-                    _ => {}
-                }),
-            );
-            signature.push(input);
-        }
+        let subscriptions = vec![cx.observe(&owner, |_, _, cx| cx.notify())];
+        let screen = std::env::var("NIMBRA_SCREEN").unwrap_or_default();
         // NIMBRA_SCREEN=settings-remove opens Accounts asking to remove the first one.
-        let asking = (std::env::var("NIMBRA_SCREEN").as_deref() == Ok("settings-remove"))
+        let asking = (screen == "settings-remove")
             .then(|| owner.read(cx).settings.accounts.first().cloned())
             .flatten()
             .map(|a| (a.id, a.email));
+        // The HTML and Preview screenshots show the sample's signature in HTML (its second).
+        let sig_mode = match screen.as_str() {
+            "settings-composing-html" => SigMode::Html,
+            "settings-composing-preview" => SigMode::Preview,
+            _ => SigMode::Text,
+        };
+        let sig_pick = (sig_mode != SigMode::Text)
+            .then(|| owner.read(cx).settings.signatures.get(1).cloned())
+            .flatten()
+            .map(|s| SigPick::Signature(s.id));
+        let sig_name = cx.new(|cx| TextInput::new(cx, "Untitled", t.faint, t.violet));
+        let mut subscriptions = subscriptions;
+        subscriptions.push(cx.subscribe(&sig_name, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Changed) {
+                this.name_changed(cx);
+            }
+        }));
         SettingsWindow {
             owner,
-            // Screenshots of Add account open on Accounts.
-            tab: match std::env::var("NIMBRA_SCREEN").as_deref() {
-                Ok("settings-account" | "settings-accounts" | "settings-remove") => Tab::Accounts,
-                Ok("settings-about") => Tab::About,
-                _ => Tab::General,
-            },
-            signature,
+            tab: Tab::General,
             pending_focus: None,
+            sig_account: None,
+            sig_pick,
+            sig_mode,
+            sig_name,
+            sig_name_for: None,
+            sig_source: None,
+            confirm_delete: None,
+            sig_editor: None,
+            sig_editor_failed: false,
+            sig_editor_ready: false,
+            sig_editor_dark: None,
+            sig_loaded: None,
+            sig_session: 0,
+            sig_shown: false,
+            sig_editor_focus: cx.focus_handle(),
+            sig_keys: false,
+            sig_anchor: Default::default(),
+            sig_picker: None,
             armed: None,
             confirm_remove: asking,
             dialog_focus: cx.focus_handle(),
@@ -170,6 +247,19 @@ impl SettingsWindow {
             _activation: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Moves to a section; for Composing, to `account`'s signatures when one is given.
+    pub(super) fn show(&mut self, tab: Tab, account: Option<String>, cx: &mut Context<Self>) {
+        self.tab = tab;
+        self.armed = None;
+        if let Some(account) = account
+            && self.sig_account.as_ref() != Some(&account)
+        {
+            self.sig_account = Some(account);
+            self.sig_pick = None;
+        }
+        cx.notify();
     }
 
     /// Asks macOS which app opens email links, off the main thread.
@@ -223,23 +313,6 @@ impl SettingsWindow {
             .ok();
         })
         .detach();
-    }
-
-    fn signature_changed(&mut self, cx: &mut Context<Self>) {
-        let text = self
-            .signature
-            .iter()
-            .map(|line| line.read(cx).text().trim_end().to_string())
-            .collect::<Vec<_>>()
-            .join("\n")
-            .trim_end()
-            .to_string();
-        self.owner.update(cx, |n, cx| {
-            if n.settings.signature != text {
-                n.settings.signature = text;
-                n.save_settings(cx);
-            }
-        });
     }
 
     /// Changes a preference and saves it.
@@ -397,6 +470,7 @@ impl Render for SettingsWindow {
         if let Some(Some(focus)) = &form {
             window.focus(focus);
         }
+        self.sync_signature_editor(window, cx);
         let dark = self.owner.read(cx).dark;
         let t = if dark { Theme::dark() } else { Theme::light() };
         let tab = self.tab;
@@ -412,7 +486,9 @@ impl Render for SettingsWindow {
             Tab::About => self.about(&t, cx),
         };
         let hover = t.hover;
-        let dialog = self.remove_dialog(&t, cx);
+        let dialog = self
+            .remove_dialog(&t, cx)
+            .or_else(|| self.delete_dialog(&t, cx));
         div()
             .relative()
             .flex()
@@ -533,6 +609,19 @@ fn group(t: &Theme, title: Option<&str>, rows: Vec<AnyElement>) -> AnyElement {
 
 /// A row: label and explanation on the left, the control on the right.
 fn row(t: &Theme, label: &str, detail: &str, control: impl IntoElement) -> AnyElement {
+    row_with(
+        t,
+        div()
+            .font_weight(FontWeight::MEDIUM)
+            .child(label.to_string())
+            .into_any_element(),
+        detail,
+        control,
+    )
+}
+
+/// A row whose label is more than its words (a button beside them, say).
+fn row_with(t: &Theme, label: AnyElement, detail: &str, control: impl IntoElement) -> AnyElement {
     div()
         .flex()
         .items_center()
@@ -548,11 +637,7 @@ fn row(t: &Theme, label: &str, detail: &str, control: impl IntoElement) -> AnyEl
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(
-                    div()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(label.to_string()),
-                )
+                .child(label)
                 .when(!detail.is_empty(), |d| {
                     d.child(meta(detail.to_string(), t.text3))
                 }),
@@ -610,8 +695,8 @@ impl SettingsWindow {
         )
     }
 
-    /// A segmented choice; `pick` receives the index chosen. Like the inbox's All/Unread
-    /// switch, the highlight slides from the old option to the new one.
+    /// A segmented choice of a preference; `pick` receives the index chosen and the
+    /// preference is saved.
     fn choice(
         &self,
         t: &Theme,
@@ -620,6 +705,23 @@ impl SettingsWindow {
         selected: usize,
         cx: &mut Context<Self>,
         pick: impl Fn(&mut Nimbra, usize) + Clone + 'static,
+    ) -> Div {
+        self.choice_with(t, id, options, selected, cx, move |this, i, cx| {
+            let pick = pick.clone();
+            this.set(cx, move |n| pick(n, i))
+        })
+    }
+
+    /// A segmented choice; `pick` receives the index chosen. Like the inbox's All/Unread
+    /// switch, the highlight slides from the old option to the new one.
+    fn choice_with(
+        &self,
+        t: &Theme,
+        id: &'static str,
+        options: &[&str],
+        selected: usize,
+        cx: &mut Context<Self>,
+        pick: impl Fn(&mut Self, usize, &mut Context<Self>) + Clone + 'static,
     ) -> Div {
         const SIZE: f32 = 12.5;
         const H: f32 = 22.;
@@ -702,8 +804,7 @@ impl SettingsWindow {
                             let n = this.slides.get(id).map_or(0, |s| s.2) + 1;
                             this.slides.insert(id, (selected, Instant::now(), n));
                         }
-                        let pick = pick.clone();
-                        this.set(cx, move |n| pick(n, i))
+                        pick(this, i, cx)
                     }))
             }))
     }
@@ -1182,17 +1283,22 @@ impl SettingsWindow {
                                 ),
                         )
                 };
+                // An equal share of the row each, the preview keeping its shape as the
+                // window grows or shrinks.
+                let mut preview = div();
+                preview.style().aspect_ratio = Some(150. / 92.);
                 div()
                     .id(("theme-tile", id))
+                    .flex_1()
+                    .min_w(px(0.))
                     .flex()
                     .flex_col()
                     .gap(px(8.))
                     .cursor_pointer()
                     .child(
-                        div()
+                        preview
                             .flex()
-                            .w(px(150.))
-                            .h(px(92.))
+                            .w_full()
                             .rounded(px(10.))
                             .overflow_hidden()
                             .border_2()
@@ -1300,32 +1406,6 @@ impl SettingsWindow {
     fn composing(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let n = self.owner.read(cx);
         let (undo, quote) = (n.settings.undo_send, n.settings.quote_replies);
-        let used = self
-            .signature
-            .iter()
-            .rposition(|line| !line.read(cx).text().is_empty())
-            .map_or(0, |last| last + 1);
-        let signature = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .p(px(16.))
-            .child(div().font_weight(FontWeight::MEDIUM).child("Signature"))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .px(px(12.))
-                    .py(px(8.))
-                    .rounded(px(10.))
-                    .bg(t.hover)
-                    .border_1()
-                    .border_color(t.border)
-                    .text_size(px(14.))
-                    .line_height(px(22.))
-                    .children(self.signature.iter().take((used + 1).max(3)).cloned()),
-            )
-            .into_any_element();
         let undo_row = row(
             t,
             "Undo send",
@@ -1354,10 +1434,898 @@ impl SettingsWindow {
             cx,
             |n| n.settings.quote_replies = !n.settings.quote_replies,
         );
+        let signatures = self.signatures(t, cx);
         vec![
-            group(t, None, vec![signature]),
             group(t, None, vec![undo_row, quote_row]),
+            group(t, Some("Signatures"), signatures),
         ]
+    }
+
+    // ------------------------------------------------------------ signatures
+
+    /// The account whose signatures are shown: the one picked, or the default account.
+    fn sig_account(&self, cx: &App) -> Option<(String, String)> {
+        let n = self.owner.read(cx);
+        let accounts = n.signature_accounts();
+        let wanted = self
+            .sig_account
+            .clone()
+            .or_else(|| n.settings.default_account().map(str::to_string));
+        accounts
+            .iter()
+            .find(|(id, _)| Some(id) == wanted.as_ref())
+            .or(accounts.first())
+            .cloned()
+    }
+
+    /// The chip shown as picked: the one clicked, or the account's default.
+    fn sig_pick(&self, account: &str, cx: &App) -> SigPick {
+        let settings = &self.owner.read(cx).settings;
+        match &self.sig_pick {
+            Some(SigPick::Signature(id))
+                if settings.signature(id).is_some_and(|s| s.account == account) =>
+            {
+                SigPick::Signature(id.clone())
+            }
+            Some(SigPick::Nothing) => SigPick::Nothing,
+            _ => match settings.default_signature(account) {
+                Some(s) => SigPick::Signature(s.id.clone()),
+                None => match settings.signatures_of(account).next() {
+                    // "No signature" is the default, but there are signatures to edit.
+                    Some(_) if settings.default_signature.contains_key(account) => SigPick::Nothing,
+                    Some(s) => SigPick::Signature(s.id.clone()),
+                    None => SigPick::Nothing,
+                },
+            },
+        }
+    }
+
+    /// The signature being edited, if a signature (not "No signature") is picked.
+    fn sig_editing(&self, cx: &App) -> Option<crate::settings::Signature> {
+        let (account, _) = self.sig_account(cx)?;
+        match self.sig_pick(&account, cx) {
+            SigPick::Signature(id) => self.owner.read(cx).settings.signature(&id).cloned(),
+            SigPick::Nothing => None,
+        }
+    }
+
+    fn pick_signature(&mut self, pick: SigPick, cx: &mut Context<Self>) {
+        self.sig_pick = Some(pick);
+        self.sig_source = None;
+        cx.notify();
+    }
+
+    fn pick_account(&mut self, id: String, cx: &mut Context<Self>) {
+        self.sig_account = Some(id);
+        self.sig_pick = None;
+        self.sig_source = None;
+        cx.notify();
+    }
+
+    /// Changes one signature and saves it.
+    fn change_signature(
+        &mut self,
+        id: &str,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut crate::settings::Signature),
+    ) {
+        self.owner.update(cx, |n, cx| {
+            if let Some(signature) = n.settings.signatures.iter_mut().find(|s| s.id == id) {
+                let before = signature.clone();
+                change(signature);
+                if *signature != before {
+                    n.save_settings(cx);
+                }
+            }
+        });
+        cx.notify();
+    }
+
+    fn new_signature(&mut self, cx: &mut Context<Self>) {
+        let Some((account, _)) = self.sig_account(cx) else {
+            return;
+        };
+        let added = self.owner.update(cx, |n, cx| {
+            let id = n.settings.add_signature(&account);
+            if id.is_some() {
+                n.save_settings(cx);
+            }
+            id
+        });
+        match added {
+            Some(id) => {
+                self.sig_mode = SigMode::Text;
+                self.pick_signature(SigPick::Signature(id), cx);
+                // Named first: the name field takes the keyboard.
+                self.pending_focus = Some(self.sig_name.read(cx).focus_handle(cx));
+            }
+            None => self.owner.update(cx, |n, cx| {
+                n.notice = Some(
+                    format!(
+                        "An account can have {} signatures.",
+                        crate::settings::SIGNATURES_PER_ACCOUNT
+                    )
+                    .into(),
+                );
+                cx.notify();
+            }),
+        }
+    }
+
+    fn make_default_signature(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        let Some((account, _)) = self.sig_account(cx) else {
+            return;
+        };
+        self.set(cx, move |n| {
+            n.settings.set_default_signature(&account, id.as_deref())
+        });
+    }
+
+    fn confirm_delete_signature(&mut self, cx: &mut Context<Self>) {
+        if let Some((id, _)) = self.confirm_delete.take() {
+            self.set(cx, |n| n.settings.delete_signature(&id));
+            self.sig_pick = None;
+            self.sig_source = None;
+        }
+        cx.notify();
+    }
+
+    fn cancel_delete_signature(&mut self, cx: &mut Context<Self>) {
+        self.confirm_delete = None;
+        cx.notify();
+    }
+
+    fn name_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.sig_name_for.clone() else {
+            return;
+        };
+        let name = crate::signature::clean_name(&self.sig_name.read(cx).text());
+        self.change_signature(&id, cx, |s| s.name = name);
+    }
+
+    /// The name field holds the picked signature's name.
+    fn sync_name(&mut self, editing: Option<&crate::settings::Signature>, cx: &mut Context<Self>) {
+        let id = editing.map(|s| s.id.clone());
+        if self.sig_name_for == id {
+            return;
+        }
+        self.sig_name_for = id;
+        let name = editing.map(|s| s.name.clone()).unwrap_or_default();
+        self.sig_name
+            .update(cx, |input, cx| input.set(name, usize::MAX, cx));
+    }
+
+    /// Account, chips, the picked signature's name and actions, and its editor.
+    fn signatures(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some((account, email)) = self.sig_account(cx) else {
+            return vec![row(
+                t,
+                "No account yet",
+                "Add an account to give it signatures.",
+                div(),
+            )];
+        };
+        let pick = self.sig_pick(&account, cx);
+        let editing = self.sig_editing(cx);
+        self.sync_name(editing.as_ref(), cx);
+        let n = self.owner.read(cx);
+        let several = n.signature_accounts().len() >= 2;
+        let photo = n.photos.get(&account).cloned();
+        let list: Vec<(String, String)> = n
+            .settings
+            .signatures_of(&account)
+            .map(|s| (s.id.clone(), s.name.clone()))
+            .collect();
+        let default_id = n.settings.default_signature(&account).map(|s| s.id.clone());
+        let hover = t.hover;
+
+        // The account: its photo and address, and with several a list to pick another.
+        let initials = email
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
+        let face = match &photo {
+            Some(photo) => me_avatar(Some(photo), &initials, 24.),
+            None => avatar(crate::data::tone_for(&email), &initials, 24.).into_any_element(),
+        };
+        let anchor = self.sig_anchor.clone();
+        let field = div()
+            .id("signature-account")
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .w(px(320.))
+            .h(px(36.))
+            .pl(px(6.))
+            .pr(px(10.))
+            .rounded(px(9.))
+            .bg(t.hover)
+            .border_1()
+            .border_color(t.border)
+            .child(face)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(email.clone()),
+            )
+            .when(several, |d| {
+                d.cursor_pointer()
+                    .hover(|s| s.border_color(t.border_strong))
+                    .press(t)
+                    .child(icon("down", 14., t.text2))
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                anchor.set((
+                                    f32::from(bounds.origin.x),
+                                    f32::from(bounds.origin.y + bounds.size.height),
+                                    f32::from(bounds.size.width),
+                                ));
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_account_picker(window, cx)),
+                    )
+            });
+        let account_row = row(
+            t,
+            "Account",
+            if several {
+                "Each account has signatures of its own."
+            } else {
+                ""
+            },
+            field,
+        );
+
+        // The chips: "No signature", each signature (the default marked), and New.
+        let chip = |id: SharedString, label: String, on: bool, default: bool| {
+            div()
+                .id(id)
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(6.))
+                .h(px(28.))
+                .px(px(11.))
+                .rounded_full()
+                .border_1()
+                .cursor_pointer()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .when(on, |d| {
+                    d.bg(t.selected)
+                        .border_color(t.violet.opacity(0.55))
+                        .text_color(t.text)
+                })
+                .when(!on, |d| {
+                    d.bg(t.hover)
+                        .border_color(t.border)
+                        .text_color(t.text2)
+                        .hover(move |s| s.bg(hover).text_color(t.text))
+                })
+                .press(t)
+                .when(default, |d| {
+                    d.child(div().size(px(6.)).rounded_full().bg(t.violet))
+                })
+                .child(label)
+                .when(default, |d| d.child(meta("Default", t.text3)))
+        };
+        let none_is_default = default_id.is_none();
+        let mut chips: Vec<AnyElement> = vec![
+            chip(
+                "sig-none".into(),
+                "No signature".into(),
+                pick == SigPick::Nothing,
+                none_is_default,
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.pick_signature(SigPick::Nothing, cx)))
+            .into_any_element(),
+        ];
+        for (id, name) in &list {
+            let on = pick == SigPick::Signature(id.clone());
+            let default = default_id.as_ref() == Some(id);
+            let picked = id.clone();
+            chips.push(
+                chip(
+                    format!("sig-{id}").into(),
+                    signature_name(name).to_string(),
+                    on,
+                    default,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.pick_signature(SigPick::Signature(picked.clone()), cx)
+                }))
+                .into_any_element(),
+            );
+        }
+        chips.push(
+            div()
+                .id("sig-new")
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(px(28.))
+                .px(px(11.))
+                .rounded_full()
+                .cursor_pointer()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(t.violet)
+                .hover(move |s| s.bg(hover))
+                .press(t)
+                .child("New signature")
+                .on_click(cx.listener(|this, _, _, cx| this.new_signature(cx)))
+                .into_any_element(),
+        );
+        let chips_row = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(8.))
+            .px(px(16.))
+            .py(px(12.))
+            .children(chips)
+            .into_any_element();
+
+        let mut rows = vec![account_row, chips_row];
+        match &editing {
+            None => {
+                let detail = if list.is_empty() {
+                    "Messages from this account have no signature. Make one with New signature."
+                } else {
+                    "Messages from this account start without a signature. Pick one in the composer whenever you want one."
+                };
+                let control = if none_is_default {
+                    pill(t, "Default", t.violet).into_any_element()
+                } else {
+                    button(t, ButtonKind::Secondary, "Make default", None)
+                        .id("sig-none-default")
+                        .press_soft()
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.make_default_signature(None, cx)),
+                        )
+                        .into_any_element()
+                };
+                rows.push(row(t, "No signature", detail, control));
+            }
+            Some(signature) => {
+                rows.push(self.signature_header(t, signature, default_id.as_ref(), cx));
+                rows.push(self.signature_editor(t, signature, cx));
+            }
+        }
+        rows
+    }
+
+    /// The picked signature's name, Make default and Delete.
+    fn signature_header(
+        &mut self,
+        t: &Theme,
+        signature: &crate::settings::Signature,
+        default_id: Option<&String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let is_default = default_id == Some(&signature.id);
+        let id = signature.id.clone();
+        let delete = (signature.id.clone(), signature.name.clone());
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(16.))
+            .py(px(10.))
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Name"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .max_w(px(260.))
+                    .px(px(10.))
+                    .py(px(5.))
+                    .rounded(px(8.))
+                    .bg(t.hover)
+                    .border_1()
+                    .border_color(t.border)
+                    .child(self.sig_name.clone()),
+            )
+            .child(div().flex_1())
+            .child(if is_default {
+                pill(t, "Default", t.violet).into_any_element()
+            } else {
+                button(t, ButtonKind::Secondary, "Make default", None)
+                    .id("sig-default")
+                    .press_soft()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.make_default_signature(Some(id.clone()), cx)
+                    }))
+                    .into_any_element()
+            })
+            .child(
+                button(t, ButtonKind::Ghost, "Delete", None)
+                    .id("sig-delete")
+                    .text_color(t.rose)
+                    .press_soft()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.confirm_delete = Some(delete.clone());
+                        this.pending_focus = Some(this.dialog_focus.clone());
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// Text · HTML · Preview, and the signature in that form.
+    fn signature_editor(
+        &mut self,
+        t: &Theme,
+        signature: &crate::settings::Signature,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mode = self.sig_mode;
+        let switch = self.choice_with(
+            t,
+            "sig-mode",
+            &["Text", "HTML", "Preview"],
+            match mode {
+                SigMode::Text => 0,
+                SigMode::Html => 1,
+                SigMode::Preview => 2,
+            },
+            cx,
+            |this, i, cx| {
+                this.sig_mode = [SigMode::Text, SigMode::Html, SigMode::Preview][i];
+                this.sig_source = None;
+                cx.notify();
+            },
+        );
+        let hint = match mode {
+            SigMode::Text => "Formatted like a message: ⌘B, ⌘I, ⌘U and ⌘K for links.",
+            SigMode::Html => "Scripts, forms and unsafe links are taken out as it is saved.",
+            SigMode::Preview => "Images show once the message is sent.",
+        };
+        let fits = crate::signature::fits_text_editor(&signature.html);
+        let body = match mode {
+            // The editor is a native web view: this element only reserves its space and
+            // tells it where that space is each frame (see `sync_signature_editor`).
+            SigMode::Text | SigMode::Html if mode == SigMode::Html || fits => {
+                let editor = self.sig_editor.clone();
+                div()
+                    .id("sig-editor")
+                    .key_context("Editor")
+                    .track_focus(&self.sig_editor_focus)
+                    .h(px(SIG_EDITOR_HEIGHT))
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| {
+                                if let Some(editor) = &editor {
+                                    editor.set_bounds(
+                                        f32::from(bounds.origin.x) + 1.,
+                                        f32::from(bounds.origin.y) + 1.,
+                                        f32::from(bounds.size.width) - 2.,
+                                        f32::from(bounds.size.height) - 2.,
+                                    );
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .size_full(),
+                    )
+                    .into_any_element()
+            }
+            // Kept whole: what the text editor would drop is never loaded into it.
+            SigMode::Text => div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(12.))
+                .h(px(SIG_EDITOR_HEIGHT))
+                .px(px(24.))
+                .text_color(t.text2)
+                .child("This signature has HTML the text editor can't keep. Edit it in HTML.")
+                .child(
+                    button(t, ButtonKind::Secondary, "Edit in HTML", None)
+                        .id("sig-to-html")
+                        .press_soft()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.sig_mode = SigMode::Html;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            SigMode::Html | SigMode::Preview => self.signature_preview(t, &signature.html),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .px(px(16.))
+            .pt(px(4.))
+            .pb(px(16.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(switch)
+                    .child(meta(hint, t.text3).flex_1().min_w(px(0.))),
+            )
+            .child(
+                div()
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(t.raised)
+                    .overflow_hidden()
+                    .child(body),
+            )
+            .into_any_element()
+    }
+
+    /// The signature drawn natively, as the reader draws mail. Nothing is fetched: images
+    /// are placeholders with their description.
+    fn signature_preview(&self, t: &Theme, html: &str) -> AnyElement {
+        let blocks = crate::rich::from_html(html);
+        div()
+            .id("sig-preview")
+            .h(px(SIG_EDITOR_HEIGHT))
+            .overflow_y_scroll()
+            .px(px(20.))
+            .py(px(14.))
+            .text_size(px(14.))
+            .line_height(px(22.))
+            .when(blocks.is_empty(), |d| {
+                d.child(div().text_color(t.text3).child("This signature is empty."))
+            })
+            .children(blocks.iter().map(|block| preview_block(t, block)))
+            .into_any_element()
+    }
+
+    /// The editor is wanted for the picked signature in Text (when it fits) or HTML, while
+    /// Composing is shown and no dialog covers it: (signature id, mode).
+    fn sig_editor_wanted(&self, cx: &App) -> Option<(String, SigMode)> {
+        if self.tab != Tab::Composing
+            || self.confirm_delete.is_some()
+            || self.confirm_remove.is_some()
+            || self.sig_mode == SigMode::Preview
+        {
+            return None;
+        }
+        let signature = self.sig_editing(cx)?;
+        (self.sig_mode == SigMode::Html || crate::signature::fits_text_editor(&signature.html))
+            .then_some((signature.id, self.sig_mode))
+    }
+
+    /// Creates, fills, shows or hides the signature editor to match what is picked.
+    fn sync_signature_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(wanted) = self.sig_editor_wanted(cx) else {
+            if std::mem::take(&mut self.sig_shown)
+                && let Some(editor) = &self.sig_editor
+            {
+                editor.set_visible(false);
+                editor.blur();
+            }
+            return;
+        };
+        if self.sig_editor.is_none() && !self.sig_editor_failed {
+            let (events, mut incoming) = futures::channel::mpsc::unbounded();
+            match crate::editor::EditorView::new(window, events) {
+                Some(view) => {
+                    self.sig_editor = Some(std::rc::Rc::new(view));
+                    cx.spawn(async move |this, cx| {
+                        use futures::StreamExt as _;
+                        while let Some(event) = incoming.next().await {
+                            if this
+                                .update(cx, |this, cx| this.signature_editor_event(event, cx))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                }
+                None => self.sig_editor_failed = true,
+            }
+        }
+        let Some(editor) = self.sig_editor.clone() else {
+            return;
+        };
+        if !self.sig_editor_ready {
+            return;
+        }
+        // Focus moved from the editor to one of the window's own fields: the web view must
+        // give up the keyboard too, or typing would still go there.
+        let focused = self.sig_editor_focus.is_focused(window);
+        if self.sig_keys && !focused {
+            editor.blur();
+        }
+        self.sig_keys = focused;
+        let dark = self.owner.read(cx).dark;
+        if self.sig_editor_dark != Some(dark) {
+            let t = if dark { Theme::dark() } else { Theme::light() };
+            let css = |color: Hsla| {
+                let c = color.to_rgb();
+                format!(
+                    "rgba({},{},{},{:.3})",
+                    (c.r * 255.).round(),
+                    (c.g * 255.).round(),
+                    (c.b * 255.).round(),
+                    c.a
+                )
+            };
+            editor.theme(serde_json::json!({
+                "--bg": css(t.raised),
+                "--text": css(t.text),
+                "--dim": css(t.text3),
+                "--accent": css(t.violet),
+                "--line": css(t.border_strong),
+                "--max": "none",
+                "--pad": "12px",
+            }));
+            editor.placeholder("Write your signature…");
+            self.sig_editor_dark = Some(dark);
+        }
+        if self.sig_loaded.as_ref() != Some(&wanted) {
+            let html = self
+                .owner
+                .read(cx)
+                .settings
+                .signature(&wanted.0)
+                .map(|s| s.html.clone())
+                .unwrap_or_default();
+            self.sig_session += 1;
+            match wanted.1 {
+                SigMode::Html => {
+                    let text = match &self.sig_source {
+                        Some((id, text)) if *id == wanted.0 => text.clone(),
+                        _ => crate::signature::source_lines(&html),
+                    };
+                    editor.source(self.sig_session, &text);
+                }
+                _ => editor.load(self.sig_session, &html, "", false),
+            }
+            self.sig_loaded = Some(wanted);
+        }
+        if !self.sig_shown {
+            editor.set_visible(true);
+            self.sig_shown = true;
+        }
+    }
+
+    fn signature_editor_event(
+        &mut self,
+        event: crate::editor::EditorEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::editor::EditorEvent;
+        let loaded = self
+            .sig_loaded
+            .clone()
+            .filter(|_| self.sig_editor_wanted(cx).as_ref() == self.sig_loaded.as_ref());
+        match event {
+            EditorEvent::Ready => {
+                self.sig_editor_ready = true;
+                self.sig_loaded = None;
+                self.sig_editor_dark = None;
+                self.sig_shown = false;
+            }
+            // What was typed is kept, cleaned (only what the text editor keeps, from there).
+            EditorEvent::Content {
+                session,
+                html,
+                edited: true,
+                ..
+            } if session == self.sig_session => {
+                if let Some((id, SigMode::Text)) = loaded {
+                    let html = crate::signature::clean_simple(&html);
+                    self.change_signature(&id, cx, |s| s.html = html);
+                }
+            }
+            EditorEvent::Source { session, text } if session == self.sig_session => {
+                if let Some((id, SigMode::Html)) = loaded {
+                    let html = crate::signature::clean(&text);
+                    self.sig_source = Some((id.clone(), text));
+                    self.change_signature(&id, cx, |s| s.html = html);
+                }
+            }
+            EditorEvent::Focused => {
+                self.pending_focus = Some(self.sig_editor_focus.clone());
+            }
+            // The composer's keys (send, save, Escape…) mean nothing here.
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Opens (or closes) the list of accounts under the account field.
+    fn toggle_account_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(handle) = self.sig_picker.take() {
+            super::menus::remove_popup(handle, cx);
+            return;
+        }
+        let n = self.owner.read(cx);
+        let accounts: Vec<(String, String, Option<Arc<gpui::Image>>)> = n
+            .signature_accounts()
+            .into_iter()
+            .map(|(id, email)| {
+                let photo = n.photos.get(&id).cloned();
+                (id, email, photo)
+            })
+            .collect();
+        let selected = self.sig_account(cx).map(|(id, _)| id).unwrap_or_default();
+        let dark = n.dark;
+        let (left, bottom, width) = self.sig_anchor.get();
+        let width = width.max(280.);
+        let height = accounts.len() as f32 * PICKER_ROW + 10.;
+        let margin = super::menus::MENU_MARGIN;
+        let origin = window.bounds().origin;
+        let bounds = gpui::Bounds::new(
+            gpui::point(
+                origin.x + px(left - margin),
+                origin.y + px(bottom + 4. - margin),
+            ),
+            gpui::size(px(width + 2. * margin), px(height + 2. * margin)),
+        );
+        let owner = cx.weak_entity();
+        let opened = cx.open_window(
+            gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                titlebar: None,
+                kind: gpui::WindowKind::PopUp,
+                focus: true,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |window, cx| {
+                crate::blur::no_window_shadow(window);
+                cx.new(|cx| {
+                    // Closes on any click outside it, as the menus do (polled: clicks on
+                    // another app never reach this one).
+                    cx.spawn_in(window, async move |this, cx| {
+                        let mut armed = false;
+                        loop {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(30))
+                                .await;
+                            if !crate::blur::mouse_down() {
+                                armed = true;
+                            }
+                            let open =
+                                this.update_in(cx, |this: &mut AccountPicker, window, cx| {
+                                    if armed
+                                        && crate::blur::mouse_pressed_outside(window, margin as f64)
+                                    {
+                                        this.close(window, cx);
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                });
+                            if !matches!(open, Ok(true)) {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                    AccountPicker {
+                        owner,
+                        accounts,
+                        selected,
+                        dark,
+                    }
+                })
+            },
+        );
+        self.sig_picker = opened.ok();
+    }
+
+    /// The dialog over the window asking whether to delete a signature.
+    fn delete_dialog(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (_, name) = self.confirm_delete.as_ref()?;
+        let danger = div()
+            .id("confirm-delete-signature")
+            .flex()
+            .flex_none()
+            .items_center()
+            .px(px(14.))
+            .py(px(6.))
+            .rounded(px(9.))
+            .bg(t.rose)
+            .text_color(gpui::white())
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .hover(|s| s.opacity(0.9))
+            .child("Delete")
+            .on_click(cx.listener(|this, _, _, cx| this.confirm_delete_signature(cx)));
+        Some(
+            div()
+                .id("delete-signature-scrim")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(t.scrim)
+                .occlude()
+                .track_focus(&self.dialog_focus)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.cancel_delete_signature(cx),
+                        "enter" => this.confirm_delete_signature(cx),
+                        _ => {}
+                    }
+                }))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.cancel_delete_signature(cx)),
+                )
+                .child(
+                    div()
+                        .id("delete-signature")
+                        .w(px(400.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .p(px(24.))
+                        .rounded(px(16.))
+                        .bg(t.raised)
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .shadow(vec![shadow(
+                            c(0x000000, if t.dark { 0.6 } else { 0.2 }),
+                            24.,
+                            60.,
+                            -10.,
+                        )])
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .line_height(px(20.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!("Delete “{}”?", signature_name(name))),
+                        )
+                        .child(div().text_color(t.text2).child(
+                            "New messages can no longer use it. Messages already sent and \
+                             drafts keep it as they are.",
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(px(8.))
+                                .pt(px(10.))
+                                .child(
+                                    button(t, ButtonKind::Secondary, "Cancel", None)
+                                        .id("cancel-delete-signature")
+                                        .press_soft()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.cancel_delete_signature(cx)
+                                        })),
+                                )
+                                .child(danger),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn notifications(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1382,21 +2350,47 @@ impl SettingsWindow {
             cx,
             |n| n.settings.notifications = !n.settings.notifications,
         );
-        // A sound belongs to a notification: with none, the switch is there but inert.
+        // "Play a sound", and a button beside it that plays the sound now.
+        let hover = t.hover;
+        let label = div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(div().font_weight(FontWeight::MEDIUM).child("Play a sound"))
+            .child(
+                div()
+                    .id("preview-sound")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(24.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .tooltip(tip(t.dark, "Hear it", ""))
+                    .child(icon("play", 12., t.text2))
+                    .on_click(|_, _, _| crate::notify::preview_sound()),
+            );
         let sound_row = if on {
-            self.toggle(t, "sound", "Play a sound", "", sound, cx, |n| {
-                n.settings.notify_sound = !n.settings.notify_sound
-            })
+            row_with(
+                t,
+                label.into_any_element(),
+                "",
+                switch(t, sound)
+                    .id("sound")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set(cx, |n| n.settings.notify_sound = !n.settings.notify_sound)
+                    })),
+            )
         } else {
-            div()
-                .opacity(0.45)
-                .child(row(
-                    t,
-                    "Play a sound",
-                    "",
-                    switch(t, sound).cursor_default(),
-                ))
-                .into_any_element()
+            // A sound belongs to a notification: with none, the switch is there but inert
+            // (the preview still plays).
+            row_with(
+                t,
+                label.into_any_element(),
+                "",
+                switch(t, sound).opacity(0.45).cursor_default(),
+            )
         };
         let badge_row = self.toggle(
             t,
@@ -1665,7 +2659,7 @@ impl SettingsWindow {
                             .into_any_element(),
                         })
                         .child(
-                            button(t, ButtonKind::Secondary, "nimbra.me", None)
+                            button(t, ButtonKind::Secondary, "Visit website", None)
                                 .id("about-homepage")
                                 .press_soft()
                                 .on_click(|_, _, cx| cx.open_url(HOMEPAGE)),
@@ -1846,6 +2840,186 @@ fn provider_logo(t: &Theme, kind: Provider, size: f32) -> AnyElement {
                 .into_any_element()
         }
         Provider::Other => icon("mail", size, t.text2).into_any_element(),
+    }
+}
+
+/// Each account's row in the signature account list.
+const PICKER_ROW: f32 = 40.;
+
+/// The list of accounts under Settings › Composing's account field: a window of its own,
+/// like the menus, so it can hang over the signature editor (a native view).
+pub(super) struct AccountPicker {
+    owner: gpui::WeakEntity<SettingsWindow>,
+    accounts: Vec<(String, String, Option<Arc<gpui::Image>>)>,
+    selected: String,
+    dark: bool,
+}
+
+impl AccountPicker {
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.owner
+            .update(cx, |settings, _| settings.sig_picker = None)
+            .ok();
+        window.remove_window();
+    }
+}
+
+impl Render for AccountPicker {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = if self.dark {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        let hover = t.hover;
+        let rows =
+            self.accounts
+                .iter()
+                .enumerate()
+                .map(|(i, (id, email, photo))| {
+                    let on = *id == self.selected;
+                    let initials = email
+                        .chars()
+                        .next()
+                        .map(|c| c.to_uppercase().to_string())
+                        .unwrap_or_default();
+                    let picked = id.clone();
+                    div()
+                        .id(("signature-account", i))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(10.))
+                        .h(px(PICKER_ROW))
+                        .px(px(8.))
+                        .rounded(px(7.))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .press(&t)
+                        .child(match photo {
+                            Some(photo) => me_avatar(Some(photo), &initials, 24.),
+                            None => avatar(crate::data::tone_for(email), &initials, 24.)
+                                .into_any_element(),
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(email.clone()),
+                        )
+                        .when(on, |d| d.child(icon("done", 14., t.violet)))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let picked = picked.clone();
+                            this.owner
+                                .update(cx, |settings, cx| settings.pick_account(picked, cx))
+                                .ok();
+                            this.close(window, cx);
+                        }))
+                });
+        div()
+            .size_full()
+            .p(px(super::menus::MENU_MARGIN))
+            .font_family(crate::theme::SANS)
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(t.text)
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .p(px(4.))
+                    .rounded(px(10.))
+                    .bg(t.raised)
+                    .border_1()
+                    .border_color(t.border_strong)
+                    .shadow(vec![super::menus::popup_shadow(&t)])
+                    .children(rows),
+            )
+    }
+}
+
+/// One block of a signature's Preview: the reader's look, without its selection and links
+/// (nothing in Settings opens a link), and images as placeholders.
+fn preview_block(t: &Theme, block: &Block) -> AnyElement {
+    let highlights: Vec<_> = block
+        .spans
+        .iter()
+        .map(|span| {
+            let style = gpui::HighlightStyle {
+                font_weight: span.bold.then_some(FontWeight::SEMIBOLD),
+                font_style: span.italic.then_some(gpui::FontStyle::Italic),
+                color: span.link.is_some().then_some(t.violet),
+                background_color: span.code.then_some(t.hover),
+                underline: span.link.is_some().then(|| gpui::UnderlineStyle {
+                    thickness: px(1.),
+                    color: Some(t.violet.opacity(0.5)),
+                    wavy: false,
+                }),
+                ..Default::default()
+            };
+            (span.range.clone(), style)
+        })
+        .collect();
+    let text = || StyledText::new(block.text.clone()).with_highlights(highlights.clone());
+    let element = match &block.kind {
+        Kind::Paragraph => div().child(text()),
+        Kind::Heading(level) => {
+            let size = match level {
+                1 => 20.,
+                2 => 17.,
+                _ => 15.,
+            };
+            div()
+                .text_size(px(size))
+                .line_height(px(size * 1.35))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(text())
+        }
+        Kind::Item { marker, depth } => div()
+            .flex()
+            .gap(px(10.))
+            .pl(px(4. + 20. * *depth as f32))
+            .child(
+                div()
+                    .flex_none()
+                    .min_w(px(14.))
+                    .text_color(t.text3)
+                    .child(marker.clone()),
+            )
+            .child(div().flex_1().min_w(px(0.)).child(text())),
+        Kind::Code => div()
+            .font_family(crate::theme::MONO)
+            .text_size(px(12.5))
+            .child(text()),
+        Kind::Rule => div().h(px(1.)).my(px(6.)).bg(t.border),
+        Kind::Image { alt, .. } => div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .py(px(2.))
+            .text_size(px(12.))
+            .text_color(t.text3)
+            .child(icon("image", 14., t.text3))
+            .child(if alt.is_empty() {
+                "Image".to_string()
+            } else {
+                format!("Image: {alt}")
+            }),
+    };
+    if block.quote > 0 {
+        div()
+            .pl(px(12.))
+            .border_l_2()
+            .border_color(t.border_strong)
+            .text_color(t.text3)
+            .child(element)
+            .into_any_element()
+    } else {
+        element.into_any_element()
     }
 }
 

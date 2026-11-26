@@ -64,6 +64,17 @@ pub(super) enum Menu {
     Row(usize),
     /// The right-click menu of a mailbox in the sidebar: hide it, or reset its section.
     Mailbox(View),
+    /// The From account's signatures, from the handle above the composer's signature.
+    Signature,
+}
+
+/// What an item of the signature menu does.
+#[derive(Clone, PartialEq)]
+pub(super) enum SignatureChoice {
+    Use(String),
+    None,
+    /// Settings › Composing, on the account's signatures.
+    Edit,
 }
 
 pub(super) const MENU_WIDTH: f32 = 220.;
@@ -409,6 +420,45 @@ impl Nimbra {
                     })
                     .collect()
             }
+            Menu::Signature => {
+                let from = self.compose_from().unwrap_or_default();
+                let current = self
+                    .compose
+                    .as_ref()
+                    .and_then(|c| c.signature.as_ref().map(|(id, _)| id.clone()));
+                let mut choices: Vec<SignatureChoice> = self
+                    .settings
+                    .signatures_of(&from)
+                    .map(|s| SignatureChoice::Use(s.id.clone()))
+                    .collect();
+                choices.push(SignatureChoice::None);
+                choices.push(SignatureChoice::Edit);
+                let items = choices
+                    .iter()
+                    .map(|choice| match choice {
+                        SignatureChoice::Use(id) => {
+                            let name = self
+                                .settings
+                                .signature(id)
+                                .map(|s| s.name.clone())
+                                .unwrap_or_default();
+                            let name = short(signature_name(&name), 40);
+                            if current.as_deref() == Some(id.as_str()) {
+                                ("done", name, t.text)
+                            } else {
+                                ("draft", name, t.text2)
+                            }
+                        }
+                        SignatureChoice::None if current.is_none() => {
+                            ("done", "No signature".into(), t.text)
+                        }
+                        SignatureChoice::None => ("x", "No signature".into(), t.text2),
+                        SignatureChoice::Edit => ("list", "Edit signatures…".into(), t.text2),
+                    })
+                    .collect();
+                self.signature_choices = choices;
+                items
+            }
             Menu::Label(_) => vec![
                 ("tag", "Rename…".into(), t.text2),
                 ("trash", "Delete label…".into(), t.rose),
@@ -507,7 +557,7 @@ impl Nimbra {
             + if self.list_open { self.list_width } else { 0. };
         // Addresses can be longer than the usual menu: From grows to fit its longest one,
         // so it keeps the same space on its right as on its left.
-        let width = if menu == Menu::From {
+        let width = if matches!(menu, Menu::From | Menu::Signature) {
             let longest = items
                 .iter()
                 .map(|(_, label, _)| text_width(label, 13., crate::theme::SANS, cx))
@@ -558,7 +608,7 @@ impl Nimbra {
                 }
             }
             // At the pointer, nudged back inside the window if it would hang over an edge.
-            Menu::Row(_) | Menu::Label(_) | Menu::Mailbox(_) => (
+            Menu::Row(_) | Menu::Label(_) | Menu::Mailbox(_) | Menu::Signature => (
                 self.menu_at.0.min(f32::from(viewport.width) - width - 8.),
                 self.menu_at.1.min(f32::from(viewport.height) - height - 8.),
             ),
@@ -767,6 +817,15 @@ impl Nimbra {
                     self.set_compose_account(id, cx);
                 }
             }
+            (Menu::Signature, index) => match self.signature_choices.get(index).cloned() {
+                Some(SignatureChoice::Use(id)) => self.set_compose_signature(Some(id), cx),
+                Some(SignatureChoice::None) => self.set_compose_signature(None, cx),
+                Some(SignatureChoice::Edit) => {
+                    let from = self.compose_from().unwrap_or_default();
+                    self.open_settings_on(Some(settings_window::Tab::Composing), Some(from), cx);
+                }
+                None => {}
+            },
             (Menu::SendLater, index) => {
                 if let Some(at) = self.send_later_times.get(index).copied() {
                     self.schedule_send(at, cx);
@@ -1044,6 +1103,7 @@ impl Nimbra {
             | Menu::MoveTo
             | Menu::Label(_)
             | Menu::From
+            | Menu::Signature
             | Menu::Mailbox(_) => {
                 return None;
             }
@@ -1090,6 +1150,15 @@ impl Nimbra {
                     ))
             }
         })
+    }
+}
+
+/// A signature's name as shown: one without a name still has something to click.
+pub(super) fn signature_name(name: &str) -> &str {
+    if name.trim().is_empty() {
+        "Untitled"
+    } else {
+        name
     }
 }
 

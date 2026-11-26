@@ -296,12 +296,18 @@ impl Render for MessageWindow {
                     .flex_none()
                     .flex_col()
                     .gap(px(12.))
-                    .px(px(28.))
+                    // In line with the email under it (the web view's page padding), and
+                    // as much room under the sender as beside it, as in the main window.
+                    .px(px(super::reading::ORIGINAL_SIDE))
                     .pt(px(18.))
-                    .pb(px(12.))
+                    .pb(px(super::reading::ORIGINAL_SIDE))
                     .border_b_1()
                     .border_color(t.border)
-                    .child(header(n, cx, (width - 56.).max(0.)))
+                    .child(header(
+                        n,
+                        cx,
+                        (width - 2. * super::reading::ORIGINAL_SIDE).max(0.),
+                    ))
                     .child(n.message_header(&t, &m, 0, false, cx))
             });
             let tray = (!m.header.attachments.is_empty()).then(|| {

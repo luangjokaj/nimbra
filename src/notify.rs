@@ -345,6 +345,47 @@ pub fn request_permission() {
     }
 }
 
+thread_local! {
+    /// The sound being previewed: kept until it is done, or it would stop at once.
+    static PLAYING: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Plays the mail sound now (Settings' preview), as a notification would. Nothing when the
+/// app has no sound of its own (a bare debug binary).
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+pub fn preview_sound() {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    let Some(path) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join("Resources").join(MAIL_SOUND)))
+        .filter(|path| path.exists())
+    else {
+        return;
+    };
+    // SAFETY: main thread (a click); an NSSound made here and kept (retained) in PLAYING
+    // until the next preview replaces it, so it plays to the end.
+    unsafe {
+        if let Some(old) = PLAYING.with(|p| p.take()) {
+            let old = old as *mut Object;
+            let _: () = msg_send![old, stop];
+            let _: () = msg_send![old, release];
+        }
+        let sound: *mut Object = msg_send![class!(NSSound), alloc];
+        let sound: *mut Object = msg_send![sound, initWithContentsOfFile: ns_string(&path.to_string_lossy())
+                                                   byReference: true];
+        if sound.is_null() {
+            return;
+        }
+        let _: bool = msg_send![sound, play];
+        PLAYING.with(|p| p.set(Some(sound as usize)));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn preview_sound() {}
+
 /// The sound every mail notification plays: a file in the app's Resources (macOS takes
 /// AIFF, WAV or CAF of up to 30 seconds there).
 #[cfg(target_os = "macos")]

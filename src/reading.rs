@@ -556,6 +556,7 @@ impl Nimbra {
             .subject
             .update(cx, |input, cx| input.set(mail.subject, usize::MAX, cx));
         // A program reads it: exactly what the list asked for, and no signature.
+        composer.signature = None;
         if composer.rich {
             composer.load = Some(if mail.body.is_empty() {
                 "<div><br></div>".to_string()
@@ -1600,9 +1601,47 @@ impl Nimbra {
                                     )
                                     .when(!header.from.address.is_empty(), |d| {
                                         d.child(
-                                            meta(header.from.address.clone(), t.text3)
-                                                .min_w(px(0.))
-                                                .truncate(),
+                                            // Cut to fit with "…": GPUI's own truncation lays
+                                            // the text out before the row has its width, and
+                                            // crops it. The width is the one it had when last
+                                            // drawn (see `address_room`).
+                                            {
+                                                let rooms = self.address_room.clone();
+                                                let key = format!("{thread}/{index}");
+                                                let room = rooms.borrow().get(&key).copied();
+                                                let shown = match room {
+                                                    Some(room) => {
+                                                        fit_meta(&header.from.address, room, cx)
+                                                    }
+                                                    None => header.from.address.clone(),
+                                                };
+                                                div()
+                                                    .relative()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .overflow_hidden()
+                                                    .whitespace_nowrap()
+                                                    .child(meta(shown, t.text3))
+                                                    .child(
+                                                        gpui::canvas(
+                                                            move |bounds, window, _| {
+                                                                let width =
+                                                                    f32::from(bounds.size.width);
+                                                                let old = rooms
+                                                                    .borrow_mut()
+                                                                    .insert(key, width);
+                                                                if old.is_none_or(|old| {
+                                                                    (old - width).abs() > 0.5
+                                                                }) {
+                                                                    window.refresh();
+                                                                }
+                                                            },
+                                                            |_, _, _, _| {},
+                                                        )
+                                                        .absolute()
+                                                        .size_full(),
+                                                    )
+                                            },
                                         )
                                     }),
                             )
@@ -1626,25 +1665,33 @@ impl Nimbra {
                                     .child(icon(if open { "up" } else { "down" }, 12., t.text3)),
                             ),
                     )
+                    // As close together as the toolbar's icons.
                     .when(actions, |d| {
-                        d.child(reply_button(
-                            "reply",
-                            "Reply to this message",
-                            ComposeKind::Reply,
-                            index * 3,
-                        ))
-                        .child(reply_button(
-                            "reply-all",
-                            "Reply all to this message",
-                            ComposeKind::ReplyAll,
-                            index * 3 + 1,
-                        ))
-                        .child(reply_button(
-                            "forward",
-                            "Forward this message",
-                            ComposeKind::Forward,
-                            index * 3 + 2,
-                        ))
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(2.))
+                                .child(reply_button(
+                                    "reply",
+                                    "Reply to this message",
+                                    ComposeKind::Reply,
+                                    index * 3,
+                                ))
+                                .child(reply_button(
+                                    "reply-all",
+                                    "Reply all to this message",
+                                    ComposeKind::ReplyAll,
+                                    index * 3 + 1,
+                                ))
+                                .child(reply_button(
+                                    "forward",
+                                    "Forward this message",
+                                    ComposeKind::Forward,
+                                    index * 3 + 2,
+                                )),
+                        )
                     })
                     // The latest message of a snoozed thread says when it comes back.
                     .children(
@@ -2207,7 +2254,8 @@ impl Nimbra {
                     .gap(px(12.))
                     .px(px(ORIGINAL_SIDE))
                     .pt(px(16.))
-                    .pb(px(12.))
+                    // As much room under the sender as beside it.
+                    .pb(px(ORIGINAL_SIDE))
                     .border_b_1()
                     .border_color(t.border)
                     .child(self.subject_row(t, m, 26., pane_w - 2. * ORIGINAL_SIDE, cx))
@@ -2305,6 +2353,23 @@ pub(super) fn toolbar_rule(t: &Theme, before: f32, after: f32) -> Div {
         .ml(px(LIST_RIGHT - before - 2. - GLYPH_INSET))
         .mr(px(LIST_RIGHT - after - 2. - GLYPH_INSET))
         .bg(t.border_strong)
+}
+
+/// The text, cut with "…" so that it fits `room` (12 pt, `meta`'s size).
+fn fit_meta(text: &str, room: f32, cx: &App) -> String {
+    let width = |s: &str| text_width(s, 12., crate::theme::SANS, cx);
+    if width(text) <= room {
+        return text.to_string();
+    }
+    let mut cut: Vec<char> = text.chars().collect();
+    while !cut.is_empty() {
+        cut.pop();
+        let shown = format!("{}…", cut.iter().collect::<String>().trim_end());
+        if width(&shown) <= room {
+            return shown;
+        }
+    }
+    "…".to_string()
 }
 
 /// A toolbar action as an icon and a word (Done, Snooze, Reply, Forward); just the icon

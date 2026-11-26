@@ -398,11 +398,17 @@ impl Nimbra {
         }
         let account = account.filter(|a| self.client_for(Some(a)).is_some());
         let editor_focus = self.editor_focus.clone();
+        // From the account the link was for: with that account's signature.
+        let signature = account.as_ref().map(|a| self.default_signature_for(a));
         let Some(composer) = &mut self.compose else {
             return;
         };
         if account.is_some() {
             composer.account = account;
+        }
+        if let Some(signature) = signature {
+            composer.signature = signature;
+            composer.show_signature = true;
         }
         for (field, input, addresses) in [
             (Field::To, &composer.to, &mail.to),
@@ -427,7 +433,7 @@ impl Nimbra {
             .update(cx, |input, cx| input.set(subject, usize::MAX, cx));
         if !mail.body.is_empty() {
             if composer.rich {
-                // Above the signature that `open_compose_from` put there.
+                // Above the empty line that `open_compose_from` put there.
                 let rest = composer.load.take().unwrap_or_default();
                 composer.load = Some(format!("{}{rest}", crate::editor::text_to_html(&mail.body)));
             } else if let Some(line) = composer.lines.first() {

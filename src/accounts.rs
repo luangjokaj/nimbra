@@ -1050,6 +1050,7 @@ impl Nimbra {
             forget_previews(&gone);
         });
         self.settings.accounts.retain(|a| a.id != account);
+        self.settings.forget_signatures(&account);
         if self.settings.default_account.as_deref() == Some(account.as_str()) {
             self.settings.default_account = None;
         }

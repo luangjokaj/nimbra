@@ -3,16 +3,21 @@
 ## [Unreleased]
 
 ### New
+- **Signatures for each account.** Make as many as you like in Settings › Composing, as formatted text or HTML with links and images, and pick one (or none) from the handle above it while you write.
 - **Check for Updates.** In the Nimbra menu, and in Settings › About with the update's status and a Restart button once one is ready.
 - **A clearer reading toolbar.** Done, Snooze, Reply and Forward as words on the left; star, label, move, trash and more on the right. Reply all and Show original are in the more menu (and A and V). A message in its own window has the same look.
 - **A new thought every day.** Inbox Zero has 365 lines now, one for each day of the year: some quiet, some silly, and some famous quotes, with their authors set apart below them.
 - **A sound of its own.** New mail, snoozes coming back and reminders now play Nimbra's own chime instead of the system's.
 - **Arrange the sidebar.** Drag accounts, Split Inbox, Mailbox and labels into the order you like, each within its own section; right-click a mailbox to hide it, or to reset its section. A "hidden" row shows them again.
+- **Hear the notification sound.** A play button next to "Play a sound" in Settings › Notifications.
 
 ### Changed
 - **A calmer list and toolbar.** Compose is a plain toolbar action, the list's top bar has a line under it, the rows line up with the bar above them, and a thread's two lines have a little more room. The view switch in the more menu reads "Switch to reader view" or "Switch to original", and an email's original view lines up with the toolbar.
 - **The sample mail shows only what Nimbra really does.** Its made-up stats, meeting card and streak are gone.
-- **About is simpler.** Check for updates and nimbra.me; the shortcuts are in Settings › Shortcuts and on ?.
+- **Clearer sign-in errors.** When adding an account fails, the reason shows in a callout that opens smoothly instead of making the sheet jump.
+- **Tidier email headers.** Long sender addresses end in "…" instead of being cut off, the reply icons sit closer together, labels line up with the sender's name, and the original view has the same room below the sender as beside it.
+- **Theme previews fit any window.** Settings › Appearance shows System, Light and Dark as three equal previews that resize with the window.
+- **About is simpler.** Check for updates and Visit website; the shortcuts are in Settings › Shortcuts and on ?.
 
 ## [0.1.1] - 2026-11-26
 

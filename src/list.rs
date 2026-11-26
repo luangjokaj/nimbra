@@ -583,7 +583,11 @@ impl Nimbra {
                             )
                             .children(m.thread.clone().map(|n| mono(n, t.text3)))
                             .when(m.starred, |d| d.child(icon("star", 13., t.amber)))
-                            .children(tag.map(|(label, a)| pill(t, &label, t.accent(a))))
+                            // Half a point up: measured, its box and letters sat a third of a
+                            // point below the name's middle, and its lowercase looked lower.
+                            .children(tag.map(|(label, a)| {
+                                pill(t, &label, t.accent(a)).relative().top(px(-0.5))
+                            }))
                             .child(div().flex_1())
                             // Snoozed: when it comes back, in place of when it came. On the
                             // open row the quick actions take this place while it is hovered.

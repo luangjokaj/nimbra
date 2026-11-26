@@ -415,6 +415,11 @@ pub struct Nimbra {
     compose_host: Option<gpui::AnyWindowHandle>,
     /// The window the editor web view was made in (it is native, so it lives in one window).
     editor_window: Option<gpui::AnyWindowHandle>,
+    /// Where the editor was last placed in its window (its top left), for a menu opened
+    /// from inside it.
+    editor_origin: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    /// What each item of the open signature menu does, in order.
+    signature_choices: Vec<SignatureChoice>,
     /// Connections to the signed-in accounts that are not the one shown (by account id).
     others: HashMap<String, Arc<mail::Client>>,
     /// Unread inbox conversations per account (for All inboxes and the Accounts list).
@@ -612,6 +617,9 @@ pub struct Nimbra {
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
+    /// How wide each message header's sender address could be when last drawn, by
+    /// thread and message, so the address is cut with "…" to fit.
+    address_room: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     /// Sidebar sections showing their hidden mailboxes for now.
     revealing: Vec<&'static str>,
     /// What each item of the open ⋯ menu does, in order.
@@ -777,18 +785,19 @@ impl Nimbra {
         let screen = std::env::var("NIMBRA_SCREEN").unwrap_or_default();
         let sample = !screen.is_empty() || std::env::var_os("NIMBRA_DEMO").is_some();
         let config = if sample { None } else { gmail::Config::load() };
-        // The Add account screenshots show the Microsoft button when it is set up.
-        let account_screen = matches!(
-            screen.as_str(),
-            "account" | "account-servers" | "settings-account"
-        );
-        let microsoft = if sample && !account_screen {
-            None
-        } else {
-            crate::microsoft::Config::load()
-        };
-        let settings = crate::settings::load();
+        // Sample copies show both sign-in buttons, as a release build does: Microsoft's own
+        // setting when it is there, otherwise a placeholder (signing in with it fails).
+        let microsoft = crate::microsoft::Config::load().or_else(|| {
+            sample
+                .then(|| crate::microsoft::Config::new(crate::microsoft::Config::PLACEHOLDER))
+                .flatten()
+        });
+        let mut settings = crate::settings::load();
         crate::usage::opened(settings.usage_counts);
+        // Screenshots show the sample account with signatures of its own.
+        if !screen.is_empty() && settings.accounts.is_empty() && settings.signatures.is_empty() {
+            sample_signatures(&mut settings);
+        }
         // Without Google's sign-in set up, an account with its own servers still opens: the
         // sample mail is only for when there is nothing else to show.
         let demo =
@@ -963,6 +972,8 @@ impl Nimbra {
             compose_ask: false,
             compose_ask_at: None,
             editor_window: None,
+            editor_origin: Default::default(),
+            signature_choices: Vec::new(),
             copied: None,
             parked: Vec::new(),
             composer_serial: 0,
@@ -982,6 +993,7 @@ impl Nimbra {
             row_actions: Vec::new(),
             more_actions: Vec::new(),
             revealing: Vec::new(),
+            address_room: Default::default(),
             menu_for: None,
             palette_for: None,
             label_for: None,
@@ -1168,15 +1180,10 @@ impl Nimbra {
         if screen == "about" {
             cx.defer(|_| crate::about::show());
         }
-        // NIMBRA_SCREEN=settings opens the Settings sheet (screenshots).
-        // NIMBRA_SCREEN=settings-account opens it on Add account.
-        // NIMBRA_SCREEN=settings-remove opens it on Accounts, asking to remove one.
-        if screen == "settings"
-            || screen == "settings-account"
-            || screen == "settings-accounts"
-            || screen == "settings-remove"
-            || screen == "settings-about"
-        {
+        // NIMBRA_SCREEN=settings (or settings-<section>, see `settings_window::SCREENS`)
+        // opens the Settings window on that section (screenshots). settings-account opens
+        // it on Add account, settings-remove asks to remove an account.
+        if let Some(tab) = settings_window::screen_tab(&screen) {
             let form = screen == "settings-account";
             // After the main window is up.
             cx.spawn(async move |this, cx| {
@@ -1184,7 +1191,7 @@ impl Nimbra {
                     if form {
                         this.open_account_form_in_settings(cx);
                     }
-                    this.open_settings(cx)
+                    this.open_settings_on(Some(tab), None, cx)
                 })
                 .ok();
             })
@@ -1645,20 +1652,49 @@ impl Nimbra {
         }
     }
 
+    /// The accounts that can have signatures, as (id, address): every account, or with
+    /// none, the sample one.
+    fn signature_accounts(&self) -> Vec<(String, String)> {
+        if self.settings.accounts.is_empty() && self.is_demo() {
+            return vec![(self.account_id.clone(), "luan@example.com".into())];
+        }
+        self.settings
+            .accounts
+            .iter()
+            .map(|a| (a.id.clone(), a.email.clone()))
+            .collect()
+    }
+
     /// ⌘, or the account menu: the Settings window (brought forward if already open).
     fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.open_settings_on(None, None, cx);
+    }
+
+    /// The Settings window, on `tab` (and for Composing, on `account`'s signatures) when
+    /// one is given; brought forward as it is if already open and none is.
+    fn open_settings_on(
+        &mut self,
+        tab: Option<settings_window::Tab>,
+        account: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         self.palette = false;
         self.login_item = crate::system::opens_at_login();
         if let Some(handle) = &self.settings_window
             && handle
-                .update(cx, |_, window, _| window.activate_window())
+                .update(cx, |settings, window, cx| {
+                    if let Some(tab) = tab {
+                        settings.show(tab, account.clone(), cx);
+                    }
+                    window.activate_window()
+                })
                 .is_ok()
         {
             return;
         }
         let owner = cx.entity();
-        let (signature, dark) = (self.settings.signature.clone(), self.dark);
+        let dark = self.dark;
         // Opened once this update is over: the new window reads the app as it draws.
         cx.defer(move |cx| {
             let bounds = gpui::Bounds::centered(None, gpui::size(px(860.), px(620.)), cx);
@@ -1674,7 +1710,15 @@ impl Nimbra {
                     window_min_size: Some(gpui::size(px(720.), px(480.))),
                     ..Default::default()
                 },
-                |_, cx| cx.new(|cx| SettingsWindow::new(owner, signature, dark, cx)),
+                |_, cx| {
+                    cx.new(|cx| {
+                        let mut settings = SettingsWindow::new(owner, dark, cx);
+                        if let Some(tab) = tab {
+                            settings.show(tab, account, cx);
+                        }
+                        settings
+                    })
+                },
             );
             me.update(cx, |n, _| n.settings_window = opened.ok());
         });
@@ -2022,6 +2066,41 @@ fn serif(text: &str, size: f32, color: Hsla) -> Div {
 /// Used instead of GPUI's own ellipsis truncation, which in 0.2.2 can panic when the cut
 /// lands inside a multi-byte character such as an emoji. The element still clips whatever
 /// does not fit.
+/// Two signatures for the sample account (whose id is ""): a short formatted one, the
+/// default, and one in HTML with a logo, a table and colours.
+fn sample_signatures(settings: &mut crate::settings::Settings) {
+    let simple = settings.add_signature("");
+    let studio = settings.add_signature("");
+    for (id, name, html) in [
+        (
+            simple,
+            "Work",
+            "<div><b>Luan Gjokaj</b></div><div>UX Engineer &amp; Designer</div>\
+             <div><a href=\"https://nimbra.me\">nimbra.me</a></div>",
+        ),
+        (
+            studio,
+            "Studio",
+            "<table cellpadding=\"0\" cellspacing=\"0\"><tr>\
+             <td style=\"padding-right:14px\"><img src=\"https://nimbra.me/icon.png\" alt=\"Nimbra logo\" width=\"48\" height=\"48\"></td>\
+             <td style=\"border-left:2px solid #8b7cff;padding-left:14px\">\
+             <div style=\"font-weight:600;color:#16151c\">Luan Gjokaj</div>\
+             <div style=\"color:#6b6878\">Design, Nimbra Studio</div>\
+             <div><a href=\"https://nimbra.me\">nimbra.me</a> · <a href=\"mailto:luan@example.com\">luan@example.com</a></div>\
+             </td></tr></table>",
+        ),
+    ] {
+        let Some(signature) = id
+            .as_deref()
+            .and_then(|id| settings.signatures.iter_mut().find(|s| s.id == id))
+        else {
+            continue;
+        };
+        signature.name = name.into();
+        signature.html = crate::signature::clean(html);
+    }
+}
+
 fn short(text: &str, max: usize) -> SharedString {
     let mut chars = text.chars();
     let head: String = chars.by_ref().take(max).collect();

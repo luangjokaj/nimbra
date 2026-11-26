@@ -361,6 +361,11 @@ impl Nimbra {
         let Some(sheet) = &mut self.account_sheet else {
             return;
         };
+        if config.is_placeholder() {
+            sheet.error = Some("Signing in with Microsoft is off in this preview copy.".into());
+            cx.notify();
+            return;
+        }
         let typed = sheet.email.read(cx).text().trim().to_string();
         let hint = mail::is_address(&typed).then_some(typed);
         let (pending, url) = match crate::microsoft::SignIn::start(&config, hint.as_deref()) {
@@ -902,16 +907,18 @@ impl Nimbra {
                                     .into_any_element(),
                             ))
                     })
-                    .child(meta(
-                        match &sheet.error {
-                            Some(error) => error.clone(),
-                            None if sheet.microsoft => "Finish signing in with Microsoft in your browser…".into(),
-                            None if sheet.busy => "Finding the servers and checking the password…".into(),
-                            None => "The password is kept in your Mac’s keychain. With two-step sign-in on, use an app password from your provider."
-                                .into(),
-                        },
-                        if sheet.error.is_some() { t.rose } else { t.text3 },
-                    ))
+                    .child(match &sheet.error {
+                        Some(error) => error_callout(t, error).into_any_element(),
+                        None => meta(
+                            match () {
+                                _ if sheet.microsoft => "Finish signing in with Microsoft in your browser…",
+                                _ if sheet.busy => "Finding the servers and checking the password…",
+                                _ => "The password is kept in your Mac’s keychain. With two-step sign-in on, use an app password from your provider.",
+                            },
+                            t.text3,
+                        )
+                        .into_any_element(),
+                    })
                     .child(
                         div()
                             .flex()
@@ -1115,4 +1122,49 @@ mod live {
             _ => panic!("an unreachable server must not be kept"),
         }
     }
+}
+
+/// What went wrong, in a soft rose box with an alert icon. It opens over a moment (its height
+/// and opacity) so the sheet, which is centred, grows smoothly instead of jumping.
+fn error_callout(t: &Theme, error: &SharedString) -> AnyElement {
+    let callout = div()
+        .flex()
+        .items_start()
+        .gap(px(10.))
+        .px(px(12.))
+        .py(px(10.))
+        .rounded(px(10.))
+        .bg(t.rose.opacity(0.1))
+        .border_1()
+        .border_color(t.rose.opacity(0.3))
+        .child(div().pt(px(1.)).child(icon("alert", 15., t.rose)))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .text_size(px(12.5))
+                .line_height(px(18.))
+                .text_color(t.text)
+                .child(error.clone()),
+        );
+    if crate::system::reduces_motion() {
+        return callout.into_any_element();
+    }
+    // Each new message opens again (keyed by its text).
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        error.hash(&mut hasher);
+        hasher.finish() as usize
+    };
+    div()
+        .overflow_hidden()
+        .child(callout)
+        .with_animation(
+            ("account-error", key),
+            Animation::new(Duration::from_millis(280)).with_easing(ease_out_quint()),
+            // Taller than any message, so the box is never cut once open.
+            |d, delta| d.max_h(px(160. * delta)).opacity(delta),
+        )
+        .into_any_element()
 }

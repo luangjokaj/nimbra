@@ -319,7 +319,7 @@ impl Nimbra {
             .gap(px(12.))
             .px(px(super::reading::ORIGINAL_SIDE))
             .pt(px(16.))
-            .pb(px(12.))
+            .pb(px(super::reading::ORIGINAL_SIDE))
             .border_b_1()
             .border_color(t.border)
             .child(wave(100, 0.05, ink(relative(0.46), 14., 30., strong)))
