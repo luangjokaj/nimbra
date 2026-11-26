@@ -4,6 +4,10 @@
 
 ### New
 - **Finds more mail servers on its own.** When a domain publishes nothing, Nimbra now tries the usual names itself (mail., then imap. and smtp. of the domain), so most cPanel and shared hosting accounts need no typing. It only counts a server whose certificate is valid for that name, and sends no password while looking.
+- **Clear a search in one click.** While a search is on, the sidebar's search box shows ✕ to end it, and the search panel has ✕ to empty what you typed.
+
+### Fixed
+- **The shortcuts table's corners.** Its header no longer shows past the table's rounded border.
 
 ## [0.1.2] - 2026-11-26
 

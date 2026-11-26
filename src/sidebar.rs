@@ -917,7 +917,30 @@ impl Nimbra {
                                 short(&self.query, 24)
                             }),
                     )
-                    .child(kbd(t, "/")),
+                    // A search is on: ✕ ends it (back to where it started), in place of /.
+                    .child(if self.query.is_empty() {
+                        kbd(t, "/").into_any_element()
+                    } else {
+                        let hover = t.hover;
+                        div()
+                            .id("search-clear")
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(20.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .tooltip(tip(t.dark, "Clear search", "Esc"))
+                            .child(icon("x", 13., t.text3))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.clear_search(cx);
+                            }))
+                            .into_any_element()
+                    }),
             )
             .when(many, |d| {
                 d.child(

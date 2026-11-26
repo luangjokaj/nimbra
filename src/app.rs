@@ -1286,6 +1286,10 @@ impl Nimbra {
                 .update(cx, |input, cx| input.set(query, usize::MAX, cx));
             this.run_search(cx);
         }
+        // NIMBRA_SCREEN=finder: the search panel open (holding NIMBRA_SEARCH, if given).
+        if screen == "finder" {
+            this.focus_search(cx);
+        }
         this
     }
 

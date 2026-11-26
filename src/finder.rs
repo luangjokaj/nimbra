@@ -689,6 +689,32 @@ impl Nimbra {
                                         ))
                                         .child(meta("Searching Gmail", t.text3)),
                                 )
+                            })
+                            // Something typed: ✕ empties the field, keeping it ready to type.
+                            .when(!empty, |d| {
+                                d.child(
+                                    div()
+                                        .id("finder-clear")
+                                        .flex()
+                                        .flex_none()
+                                        .items_center()
+                                        .justify_center()
+                                        .size(px(24.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .hover(move |s| s.bg(hover))
+                                        .tooltip(tip(t.dark, "Clear", ""))
+                                        .child(icon("x", 15., t.text3))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.finder.update(cx, |input, cx| {
+                                                input.set(String::new(), 0, cx)
+                                            });
+                                            this.finder_changed(cx);
+                                            this.pending_focus =
+                                                Some(this.finder.read(cx).focus_handle(cx));
+                                            cx.notify();
+                                        })),
+                                )
                             }),
                     )
                     .child(div().h(px(1.)).bg(t.border))
