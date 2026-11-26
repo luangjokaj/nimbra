@@ -164,9 +164,8 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
     let (hover, strong, selected) = (t.hover, t.border_strong, t.selected);
     match kind {
         ButtonKind::Primary => base
-            .bg(gradient(90., c(0x8b7cff, 1.), c(0xff7ab6, 1.)))
             // Brighter on hover, eased in and out by `glow`.
-            .shadow(vec![glow_shadow(0.)])
+            .bg(primary_fill(0.))
             .text_color(gpui::white())
             .child(label.to_string())
             .children(key.map(|k| {
@@ -193,15 +192,20 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
     }
 }
 
-/// The primary button's glow, from at rest (0) to hovered (1).
-fn glow_shadow(level: f32) -> BoxShadow {
-    let mix = |a: f32, b: f32| a + (b - a) * level;
-    shadow(
-        c(0x8b7cff, mix(0.35, 0.6)),
-        mix(6., 8.),
-        mix(18., 24.),
-        mix(-4., -2.),
-    )
+/// The primary button's gradient, from at rest (0) to hovered (1): brighter on hover,
+/// inside the button. (A glow around it would spill onto whatever is behind.)
+fn primary_fill(level: f32) -> gpui::Background {
+    let mix = |rest: u32, hover: u32| {
+        let (a, b) = (gpui::rgb(rest), gpui::rgb(hover));
+        let lerp = |x: f32, y: f32| x + (y - x) * level;
+        gpui::Hsla::from(gpui::Rgba {
+            r: lerp(a.r, b.r),
+            g: lerp(a.g, b.g),
+            b: lerp(a.b, b.b),
+            a: 1.,
+        })
+    };
+    gradient(90., mix(0x8b7cff, 0xa397ff), mix(0xff7ab6, 0xff95c6))
 }
 
 /// Each primary button's glow, by key: (hovered, times it changed, level shown last).
@@ -278,7 +282,7 @@ pub fn glow(
         move |button, delta| {
             let level = from + (to - from) * delta;
             GLOWS.with_borrow_mut(|glows| glows.entry(key).or_default().level = level);
-            button.shadow(vec![glow_shadow(level)])
+            button.bg(primary_fill(level))
         },
     )
 }
