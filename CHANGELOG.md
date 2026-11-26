@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.4] - 2026-11-26
 
 ### New
 - **Watch an update come in.** When a new version is found, a card at the bottom of the window shows it downloading with a progress bar, then while it's checked. Once it's ready, the same card says so, with a Restart button.
