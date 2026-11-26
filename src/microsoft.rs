@@ -770,6 +770,9 @@ mod tests {
 
     #[test]
     fn the_listener_waits_through_stray_requests_for_the_redirect() {
+        let _alone = crate::mail::SIGN_IN_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (pending, url) = SignIn::start(&config(), None).unwrap();
         let port: u16 = pending
             .redirect_uri

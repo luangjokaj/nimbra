@@ -2405,6 +2405,7 @@ mod tests {
             client_id: "id.apps.googleusercontent.com".into(),
             client_secret: "secret".into(),
         };
+        let _alone = SIGN_IN_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let (sign_in, url) = SignIn::start(&config, false, None).unwrap();
         let url = url::Url::parse(&url).unwrap();
         let get = |k: &str| {
@@ -2432,11 +2433,26 @@ mod tests {
     }
 
     #[test]
+    fn a_newer_sign_in_stops_the_one_still_waiting() {
+        let config = Config {
+            client_id: "id".into(),
+            client_secret: "secret".into(),
+        };
+        let _alone = SIGN_IN_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (older, _) = SignIn::start(&config, false, None).unwrap();
+        let waiter = std::thread::spawn(move || older.wait_for_code());
+        let (_newer, _) = SignIn::start(&config, false, None).unwrap();
+        let error = waiter.join().unwrap().unwrap_err();
+        assert!(error.is::<Replaced>(), "{error:#}");
+    }
+
+    #[test]
     fn redirect_with_wrong_state_is_ignored() {
         let config = Config {
             client_id: "id".into(),
             client_secret: "secret".into(),
         };
+        let _alone = SIGN_IN_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let (sign_in, _) = SignIn::start(&config, false, None).unwrap();
         let port = sign_in.listener.local_addr().unwrap().port();
         let state = sign_in.state.clone();

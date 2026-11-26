@@ -138,6 +138,10 @@ pub fn still_newest(ticket: u64) -> bool {
     SIGN_INS.load(std::sync::atomic::Ordering::SeqCst) == ticket
 }
 
+/// Held by tests that start a sign-in: one started by a test alongside would replace it.
+#[cfg(test)]
+pub static SIGN_IN_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The connection failed once a request may already have reached Gmail, so it may have
 /// been carried out: a send like this is never made again by itself.
 #[derive(Debug)]
