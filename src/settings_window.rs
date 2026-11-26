@@ -153,6 +153,7 @@ impl SettingsWindow {
             // Screenshots of Add account open on Accounts.
             tab: match std::env::var("NIMBRA_SCREEN").as_deref() {
                 Ok("settings-account" | "settings-accounts" | "settings-remove") => Tab::Accounts,
+                Ok("settings-about") => Tab::About,
                 _ => Tab::General,
             },
             signature,
@@ -1467,17 +1468,62 @@ impl SettingsWindow {
                     t.text3,
                 ))
                 .child(
-                    button(t, ButtonKind::Secondary, "Keyboard shortcuts", None)
-                        .id("about-shortcuts")
-                        .press_soft()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.tab = Tab::Shortcuts;
-                            cx.notify();
-                        })),
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .pt(px(4.))
+                        .child(
+                            button(t, ButtonKind::Secondary, "nimbra.me", None)
+                                .id("about-homepage")
+                                .press_soft()
+                                .on_click(|_, _, cx| cx.open_url(HOMEPAGE)),
+                        )
+                        .child(
+                            button(t, ButtonKind::Secondary, "Keyboard shortcuts", None)
+                                .id("about-shortcuts")
+                                .press_soft()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.tab = Tab::Shortcuts;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                // The site's policies, as small links.
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .text_size(px(12.))
+                        .text_color(t.text3)
+                        .child(about_link(t, "about-privacy", "Privacy", PRIVACY))
+                        .child("·")
+                        .child(about_link(t, "about-terms", "Terms", TERMS)),
                 )
                 .into_any_element(),
         ]
     }
+}
+
+/// Nimbra's site and its policies, linked from About.
+const HOMEPAGE: &str = "https://nimbra.me";
+const PRIVACY: &str = "https://nimbra.me/privacy";
+const TERMS: &str = "https://nimbra.me/terms";
+
+/// A small text link that opens `url` in the browser.
+fn about_link(
+    t: &Theme,
+    id: &'static str,
+    label: &'static str,
+    url: &'static str,
+) -> impl IntoElement {
+    let bright = t.text;
+    div()
+        .id(id)
+        .cursor_pointer()
+        .hover(move |s| s.text_color(bright).underline())
+        .child(label)
+        .on_click(move |_, _, cx| cx.open_url(url))
 }
 
 /// How wide `text` is in the app's medium-weight sans at `size` points.

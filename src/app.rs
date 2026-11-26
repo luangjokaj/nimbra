@@ -1099,6 +1099,7 @@ impl Nimbra {
             || screen == "settings-account"
             || screen == "settings-accounts"
             || screen == "settings-remove"
+            || screen == "settings-about"
         {
             let form = screen == "settings-account";
             // After the main window is up.

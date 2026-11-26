@@ -239,7 +239,7 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 
 ### Screenshot states
 
-`NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose`, `compose-full`, `snooze`, `snooze-time`, `shortcuts`, `settings-accounts`, `settings-remove` or `about` opens that screen directly on the sample data. `NIMBRA_SHORTCUTS_TAB=<n>` switches the shortcuts sheet to tab n a second after it opens. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
+`NIMBRA_SCREEN=palette`, `zero`, `loading`, `compose`, `compose-full`, `snooze`, `snooze-time`, `shortcuts`, `settings-accounts`, `settings-remove`, `settings-about` or `about` opens that screen directly on the sample data. `NIMBRA_SHORTCUTS_TAB=<n>` switches the shortcuts sheet to tab n a second after it opens. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
 
 ### Releases
 
