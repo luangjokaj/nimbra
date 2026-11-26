@@ -2134,6 +2134,87 @@ impl Nimbra {
         } else {
             None
         };
+        // What it is, and the buttons for the card. Floating, they end its header row; in
+        // full page they sit in the window's top right corner, level with the traffic lights.
+        let controls = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            // What it is (a draft being edited, or a reply), as a pill before
+            // the buttons. A new message has none.
+            .children(title.map(|title| pill(t, title, accent).mr(px(4.))))
+            .when(!self.compose_detached, |d| {
+                d.child(
+                    icon_button(t, "detach")
+                        .id("compose-detach")
+                        .press(t)
+                        .tooltip(tip(t.dark, "Open in its own window", ""))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.detach_compose(cx)
+                            }),
+                        ),
+                )
+            })
+            .when(!self.compose_detached, |d| {
+                d.child(
+                    icon_button(t, if full { "shrink" } else { "expand" })
+                        .id("compose-size")
+                        .press(t)
+                        .tooltip(tip(t.dark, "Full page or floating", "⌘⇧F"))
+                        // On press, as the close button (see there).
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_full_compose(cx)
+                            }),
+                        ),
+                )
+            })
+            // Close (asks about the draft if there is one). A window of
+            // its own has its close button in the title bar instead.
+            .when(!self.compose_detached, |d| {
+                d.child(
+                    icon_button(t, "x")
+                        .id("compose-close")
+                        .press(t)
+                        .tooltip(tip(t.dark, "Close", "esc"))
+                        // On press, not release: a press that takes the
+                        // keyboard from the editor (a native view) can lose
+                        // its release, which made a click need doing twice.
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.request_close_compose(cx)
+                            }),
+                        ),
+                )
+            })
+            .when(self.compose_detached, |d| {
+                d.child(
+                    icon_button(t, "attach")
+                        .id("compose-attach")
+                        .press(t)
+                        .tooltip(tip(t.dark, "Back into the window", ""))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.attach_compose(cx)
+                            }),
+                        ),
+                )
+                .child(kbd(t, "esc"))
+            });
+        let (inline_controls, corner_controls) = if full {
+            (None, Some(controls))
+        } else {
+            (Some(controls), None)
+        };
         let card = div()
             .id("compose-card")
             .flex()
@@ -2143,7 +2224,7 @@ impl Nimbra {
                 this.attach_files(paths.paths().to_vec(), cx)
             }))
             .drag_over::<gpui::ExternalPaths>(move |style, _, _, _| style.border_color(accent))
-            .when(full, |d| d.size_full().bg(t.surface))
+            .when(full, |d| d.relative().size_full().bg(t.surface))
             .when(!full, |d| {
                 d.absolute()
                     .left(px(left))
@@ -2153,10 +2234,13 @@ impl Nimbra {
                     .rounded(px(18.))
                     .border_1()
                     .border_color(t.border_strong)
-                    .shadow(vec![
-                        shadow(c(0x8b7cff, 0.18), 0., 120., 10.),
-                        shadow(c(0x000000, if t.dark { 0.6 } else { 0.2 }), 30., 80., -10.),
-                    ])
+                    // A plain shadow: no coloured glow spilling over the mail behind.
+                    .shadow(vec![shadow(
+                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
+                        30.,
+                        80.,
+                        -10.,
+                    )])
             })
             .child(
                 div()
@@ -2183,12 +2267,6 @@ impl Nimbra {
                             .px(px(20.))
                             .pt(px(16.))
                             .pb(px(8.))
-                            // A new message has no title: its From is the first row.
-                            .children(
-                                title.map(|title| {
-                                    serif(title, if full { 38. } else { 26. }, t.text)
-                                }),
-                            )
                             // A new message: who it is from, and a menu to change it.
                             .when(self.can_change_from(), |d| {
                                 // The account it is changing to shows at once, with what
@@ -2207,15 +2285,13 @@ impl Nimbra {
                                 // The label is the fields' label column (56 wide, 12 to the
                                 // value) and only the address is the button: its padding
                                 // hangs into that gap, so the address starts where values do.
-                                d.child(if title.is_some() {
-                                    meta("From".to_string(), t.text3)
-                                } else {
+                                d.child(
                                     div()
                                         .w(px(56.))
                                         .flex_none()
                                         .text_color(t.text3)
-                                        .child("From")
-                                })
+                                        .child("From"),
+                                )
                                 .child(
                                     div()
                                         .id("compose-from")
@@ -2235,7 +2311,7 @@ impl Nimbra {
                                             div()
                                                 .min_w(px(0.))
                                                 .truncate()
-                                                .when(title.is_none(), |d| d.text_size(px(14.)))
+                                                .text_size(px(14.))
                                                 .text_color(t.text2)
                                                 .child(email),
                                         )
@@ -2269,73 +2345,7 @@ impl Nimbra {
                                 )
                             })
                             .child(div().flex_1())
-                            .when(!self.compose_detached, |d| {
-                                d.child(
-                                    icon_button(t, "detach")
-                                        .id("compose-detach")
-                                        .press(t)
-                                        .tooltip(tip(t.dark, "Open in its own window", ""))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.detach_compose(cx)
-                                            }),
-                                        ),
-                                )
-                            })
-                            .when(!self.compose_detached, |d| {
-                                d.child(
-                                    icon_button(t, if full { "shrink" } else { "expand" })
-                                        .id("compose-size")
-                                        .press(t)
-                                        .tooltip(tip(t.dark, "Full page or floating", "⌘⇧F"))
-                                        // On press, as the close button (see there).
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.toggle_full_compose(cx)
-                                            }),
-                                        ),
-                                )
-                            })
-                            // Close (asks about the draft if there is one). A window of
-                            // its own has its close button in the title bar instead.
-                            .when(!self.compose_detached, |d| {
-                                d.child(
-                                    icon_button(t, "x")
-                                        .id("compose-close")
-                                        .press(t)
-                                        .tooltip(tip(t.dark, "Close", "esc"))
-                                        // On press, not release: a press that takes the
-                                        // keyboard from the editor (a native view) can lose
-                                        // its release, which made a click need doing twice.
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.request_close_compose(cx)
-                                            }),
-                                        ),
-                                )
-                            })
-                            .when(self.compose_detached, |d| {
-                                d.child(
-                                    icon_button(t, "attach")
-                                        .id("compose-attach")
-                                        .press(t)
-                                        .tooltip(tip(t.dark, "Back into the window", ""))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.attach_compose(cx)
-                                            }),
-                                        ),
-                                )
-                                .child(kbd(t, "esc"))
-                            }),
+                            .children(inline_controls),
                     ),
             )
             .child(field(
@@ -2640,6 +2650,12 @@ impl Nimbra {
                                 true,
                             )),
                     ),
+            )
+            // Last, so they are above the header strip that moves the window. The traffic
+            // lights' middle is 25 pt down (18 to their top, 14 tall); the 30 pt buttons are
+            // centred on it.
+            .children(
+                corner_controls.map(|controls| controls.absolute().top(px(10.)).right(px(16.))),
             )
             // Every edge and corner resizes the floating card (no visible grip).
             .when(!full, |d| {
