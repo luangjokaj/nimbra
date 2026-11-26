@@ -669,16 +669,18 @@ impl Nimbra {
             .get(self.selected)
             .is_some_and(|m| m.html.is_some());
         let draft = self.mailbox == View::Drafts && !demo;
-        let mut items = vec![(MoreAction::ReplyAll, "reply-all", "Reply all".into())];
-        // Only where there is an original to show (not a draft, not plain text).
+        let mut items = Vec::new();
+        // First, where there is an original to show (not a draft, not plain text): the
+        // switch between the email's own design and the reader.
         if html && !draft {
             let label = if self.original {
-                "Reader view"
+                "Switch to reader view"
             } else {
-                "Show original"
+                "Switch to original"
             };
             items.push((MoreAction::ToggleOriginal, "eye", label.into()));
         }
+        items.push((MoreAction::ReplyAll, "reply-all", "Reply all".into()));
         items.push((MoreAction::MarkUnread, "inbox", "Mark as unread".into()));
         if !demo {
             if !self.own_servers() {
