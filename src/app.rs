@@ -599,6 +599,7 @@ pub struct Nimbra {
     /// floats above the email's web view; `undo_gen` restarts its timer.
     undo_window: Option<gpui::WindowHandle<UndoToast>>,
     undo_gen: usize,
+    toasts: Toasts,
     /// The main window's frame, kept from the last draw, to place pop-ups without a window.
     frame: Option<gpui::Bounds<gpui::Pixels>>,
     /// The toolbar menu's own window, while it is open.
@@ -944,6 +945,7 @@ impl Nimbra {
             },
             undo_window: None,
             undo_gen: 0,
+            toasts: Toasts::default(),
             frame: None,
             menu: None,
             menu_dismissed: None,
@@ -1113,6 +1115,7 @@ impl Nimbra {
         this.watch_for_mail(cx);
         this.watch_other_accounts(cx);
         this.watch_system(cx);
+        this.warm_toasts(cx);
         // Every way out: ⌘Q, the Dock, logging out.
         cx.on_app_quit(|this, cx| {
             this.finish_before_quit(cx);
@@ -2304,13 +2307,9 @@ impl Render for Nimbra {
         // A new message (or none): show it in its window, after this frame.
         if self.notice != self.notice_shown {
             self.notice_shown = self.notice.clone();
-            let room = f32::from(window.bounds().size.width);
-            let toast = self
-                .notice
-                .as_ref()
-                .map(|text| Toast::new(text, room, window.text_system()));
+            let text = self.notice.clone();
             cx.spawn(async move |this, cx| {
-                this.update(cx, |this, cx| this.sync_notice_window(toast, cx))
+                this.update(cx, |this, cx| this.sync_notice_window(text, cx))
                     .ok();
             })
             .detach();
@@ -2581,7 +2580,10 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &Back, _, cx| this.go_back(cx)))
             .on_action(cx.listener(|this, _: &Forward, _, cx| this.go_forward(cx)))
             .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
-            .on_action(|_: &HideWindow, window, _| crate::blur::set_visible(window, false))
+            .on_action(cx.listener(|this, _: &HideWindow, window, cx| {
+                this.put_toasts_away(window.window_handle(), cx);
+                crate::blur::set_visible(window, false);
+            }))
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
             .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {

@@ -2,6 +2,7 @@
 
 mod app;
 mod arrival;
+mod attach;
 mod autohide;
 mod blocking;
 mod blur;
@@ -524,7 +525,11 @@ fn main() {
                 |window, cx| {
                     blur::apply(window, 40);
                     // The red close button hides the window too, instead of quitting.
-                    window.on_window_should_close(cx, |window, _| {
+                    window.on_window_should_close(cx, |window, cx| {
+                        if let Some(Some(nimbra)) = window.root::<Nimbra>() {
+                            let handle = window.window_handle();
+                            nimbra.update(cx, |nimbra, cx| nimbra.put_toasts_away(handle, cx));
+                        }
                         blur::set_visible(window, false);
                         false
                     });

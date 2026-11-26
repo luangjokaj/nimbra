@@ -4,6 +4,7 @@
 use gpui::Task;
 
 use super::*;
+use crate::attach;
 use crate::theme::{radius, space};
 use crate::ui::motion;
 
@@ -229,15 +230,27 @@ impl Reveal {
         window: &mut Window,
         cx: &mut Context<V>,
     ) {
+        self.leave_then(length, window, cx, |_, window, _| window.remove_window());
+    }
+
+    /// Fades the card out, then does `done` with its window.
+    pub(super) fn leave_then<V: 'static>(
+        &mut self,
+        length: Duration,
+        window: &mut Window,
+        cx: &mut Context<V>,
+        done: impl FnOnce(&mut V, &mut Window, &mut Context<V>) + 'static,
+    ) {
         if self.leaving() {
             return;
         }
         let mut shown = motion::Tween::fade(self.shown.value(), length, motion::ease_out);
         shown.retarget(0.);
         self.shown = shown;
-        self.leaving = Some(cx.spawn_in(window, async move |_, cx| {
+        self.leaving = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(length).await;
-            cx.update(|window, _| window.remove_window()).ok();
+            this.update_in(cx, |view, window, cx| done(view, window, cx))
+                .ok();
         }));
         cx.notify();
     }
@@ -265,6 +278,262 @@ pub(super) fn let_go<V: Leave>(handle: gpui::WindowHandle<V>, cx: &mut App) {
 
 /// How far a toast rises into place from below.
 const TOAST_RISE: f32 = 8.;
+/// From a toast's card down to the bottom edge of the window it belongs to.
+const TOAST_GAP: f32 = 24.;
+/// How much higher a notice sits while the Undo pill is under it.
+const ABOVE_UNDO: f32 = 54.;
+
+/// The toasts' hidden windows, kept for the next toast (`attach::REUSED`), and the window the
+/// Undo pill shows in, which a notice there keeps clear of.
+#[derive(Default)]
+pub(super) struct Toasts {
+    notices: Vec<gpui::WindowHandle<NoticeToast>>,
+    undos: Vec<gpui::WindowHandle<UndoToast>>,
+    undo_over: Option<gpui::AnyWindowHandle>,
+}
+
+/// Where a shown toast sits, and what it watches of the window it belongs to.
+pub(super) struct Perch {
+    parent: gpui::AnyWindowHandle,
+    /// The toast window's size, its see-through margin included.
+    size: (f32, f32),
+    /// From the parent's bottom edge up to the toast window's.
+    bottom: f32,
+    parent_size: gpui::Size<gpui::Pixels>,
+    full_screen: bool,
+    _follow: gpui::Subscription,
+    _closed: gpui::Subscription,
+}
+
+/// A toast whose window belongs to another window, and is kept for the next toast where
+/// windows can be hidden.
+pub(super) trait Perched: Leave {
+    fn blank(owner: gpui::WeakEntity<Nimbra>) -> Self;
+    fn perch(&mut self) -> &mut Option<Perch>;
+    fn owner(&self) -> &gpui::WeakEntity<Nimbra>;
+    /// Goes as it does when its time is up.
+    fn expire(&mut self, window: &mut Window, cx: &mut Context<Self>);
+    /// Takes the hidden window back for the next toast.
+    fn spare(owner: &mut Nimbra, me: gpui::WindowHandle<Self>);
+
+    /// Faded out: hidden for the next toast, or closed where windows are not kept.
+    fn put_away(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !attach::REUSED {
+            window.remove_window();
+        } else if self.perch().take().is_some() {
+            self.stow(window, cx);
+        }
+    }
+
+    fn stow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        attach::hide(window);
+        if let Some(me) = window.window_handle().downcast::<Self>() {
+            self.owner()
+                .update(cx, |owner, _| Self::spare(owner, me))
+                .ok();
+        }
+    }
+}
+
+/// Takes a kept toast window that is still there.
+fn take_spare<V: 'static>(
+    spares: &mut Vec<gpui::WindowHandle<V>>,
+    cx: &App,
+) -> Option<gpui::WindowHandle<V>> {
+    let open = cx.windows();
+    spares.retain(|&spare| open.contains(&spare.into()));
+    spares.pop()
+}
+
+/// A toast window over the bottom centre of `parent`, hidden where it is shown later as
+/// `parent`'s child (`raise`).
+fn open_toast<V: Perched>(
+    owner: gpui::WeakEntity<Nimbra>,
+    parent: gpui::AnyWindowHandle,
+    size: (f32, f32),
+    bottom: f32,
+    cx: &mut App,
+) -> Option<gpui::WindowHandle<V>> {
+    let frame = parent.update(cx, |_, window, _| window.bounds()).ok()?;
+    let origin = gpui::point(
+        frame.origin.x + (frame.size.width - px(size.0)) / 2.,
+        frame.origin.y + frame.size.height - px(bottom + size.1),
+    );
+    cx.open_window(
+        gpui::WindowOptions {
+            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                origin,
+                gpui::size(px(size.0), px(size.1)),
+            ))),
+            titlebar: None,
+            kind: gpui::WindowKind::PopUp,
+            // Keyboard focus stays in the window it belongs to, so ⌘Z still reaches it.
+            focus: false,
+            show: !attach::REUSED,
+            is_movable: false,
+            is_resizable: false,
+            is_minimizable: false,
+            window_background: gpui::WindowBackgroundAppearance::Transparent,
+            ..Default::default()
+        },
+        |window, cx| {
+            crate::blur::no_window_shadow(window);
+            attach::prepare(window);
+            cx.new(|_| V::blank(owner))
+        },
+    )
+    .ok()
+}
+
+/// Shows `show`'s toast over `parent`, in a kept window when there is one.
+fn raise<V: Perched>(
+    spare: Option<gpui::WindowHandle<V>>,
+    owner: gpui::WeakEntity<Nimbra>,
+    parent: gpui::AnyWindowHandle,
+    size: (f32, f32),
+    bottom: f32,
+    show: impl FnOnce(&mut V, &mut Window, &mut Context<V>),
+    cx: &mut App,
+) -> Option<gpui::WindowHandle<V>> {
+    let handle = match spare {
+        Some(spare) => spare,
+        None => open_toast(owner, parent, size, bottom, cx)?,
+    };
+    handle.update(cx, show).ok()?;
+    if attach::REUSED {
+        // AppKit calls back into GPUI as a window's frame changes: once GPUI lets go.
+        cx.spawn(async move |cx| {
+            let perched = cx
+                .update(|cx| perch_on(handle, parent, size, bottom, cx))
+                .unwrap_or(false);
+            if perched {
+                place(handle, true, cx);
+            } else {
+                cx.update(|cx| handle.update(cx, |view, window, cx| view.stow(window, cx)))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+    Some(handle)
+}
+
+/// Ties a toast to `parent` while `parent` shows: it follows the parent's size, and goes when
+/// the parent closes or changes to or from full screen.
+fn perch_on<V: Perched>(
+    me: gpui::WindowHandle<V>,
+    parent: gpui::AnyWindowHandle,
+    size: (f32, f32),
+    bottom: f32,
+    cx: &mut App,
+) -> bool {
+    parent
+        .update(cx, |_, parent_window, cx| {
+            if !attach::showing(parent_window) {
+                return false;
+            }
+            let parent_size = parent_window.bounds().size;
+            let full_screen = parent_window.is_fullscreen();
+            me.update(cx, |view, _, cx| {
+                let _follow = cx
+                    .observe_window_bounds(parent_window, move |view: &mut V, parent, cx| {
+                        follow(view, me, parent, cx)
+                    });
+                let _closed = cx.on_window_closed(move |cx| {
+                    if !cx.windows().contains(&parent) {
+                        me.update(cx, |view, window, cx| view.put_away(window, cx))
+                            .ok();
+                    }
+                });
+                *view.perch() = Some(Perch {
+                    parent,
+                    size,
+                    bottom,
+                    parent_size,
+                    full_screen,
+                    _follow,
+                    _closed,
+                });
+            })
+            .is_ok()
+        })
+        .unwrap_or(false)
+}
+
+fn put_away_over<V: Perched>(
+    me: gpui::WindowHandle<V>,
+    parent: gpui::AnyWindowHandle,
+    cx: &mut App,
+) {
+    me.update(cx, |view, window, cx| {
+        if view
+            .perch()
+            .as_ref()
+            .is_some_and(|perch| perch.parent == parent)
+        {
+            view.put_away(window, cx);
+        }
+    })
+    .ok();
+}
+
+fn follow<V: Perched>(
+    view: &mut V,
+    me: gpui::WindowHandle<V>,
+    parent: &mut Window,
+    cx: &mut Context<V>,
+) {
+    let Some(perch) = view.perch().as_mut() else {
+        return;
+    };
+    if parent.is_fullscreen() != perch.full_screen {
+        // The window moves to a Space of its own.
+        perch.full_screen = !perch.full_screen;
+        cx.defer(move |cx| {
+            me.update(cx, |view, window, cx| view.expire(window, cx))
+                .ok();
+        });
+        return;
+    }
+    let size = parent.bounds().size;
+    if size != perch.parent_size {
+        perch.parent_size = size;
+        cx.spawn(async move |_, cx| place(me, false, cx)).detach();
+    }
+}
+
+/// Puts a toast where its perch says, outside any GPUI update; with `order`, over its parent.
+fn place<V: Perched>(me: gpui::WindowHandle<V>, order: bool, cx: &mut gpui::AsyncApp) {
+    let taken = cx.update(|cx| {
+        let (child, parent, size, bottom) = me
+            .update(cx, |view, window, _| {
+                let perch = view.perch().as_ref()?;
+                Some((
+                    attach::native(window)?,
+                    perch.parent,
+                    perch.size,
+                    perch.bottom,
+                ))
+            })
+            .ok()??;
+        let parent = parent
+            .update(cx, |_, window, _| attach::native(window))
+            .ok()??;
+        Some((child, parent, size, bottom))
+    });
+    if let Ok(Some((child, parent, (width, height), bottom))) = taken {
+        // SAFETY: both were taken from live windows just now, and GPUI has let go of them.
+        unsafe {
+            attach::put(
+                child,
+                parent,
+                (f64::from(width), f64::from(height)),
+                f64::from(bottom),
+                order,
+            );
+        }
+    }
+}
 
 /// Focus moving away right as a pop-up opens is part of the click that opened it.
 pub(super) const SETTLING: Duration = Duration::from_millis(300);
@@ -310,13 +579,101 @@ pub(super) struct NoticeToast {
     owner: gpui::WeakEntity<Nimbra>,
     toast: Toast,
     dark: bool,
+    shown: usize,
     reveal: Reveal,
     _timer: Task<()>,
+    perch: Option<Perch>,
+}
+
+impl NoticeToast {
+    fn show(
+        &mut self,
+        toast: Toast,
+        dark: bool,
+        shown: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Long enough to read it.
+        let seconds = (4. + toast.text.chars().count() as f32 / 25.).min(20.);
+        // Its own clock: it goes with the toast, so repeated notices never leave timers
+        // behind.
+        let owner = self.owner.clone();
+        self._timer = cx.spawn_in(window, async move |_, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs_f32(seconds))
+                .await;
+            owner
+                .update(cx, |owner, cx| {
+                    if owner.notice_gen == shown {
+                        owner.notice = None;
+                        cx.notify();
+                    }
+                })
+                .ok();
+        });
+        self.toast = toast;
+        self.dark = dark;
+        self.shown = shown;
+        self.reveal = Reveal::new(true, TOAST_RISE, motion::TOAST_IN);
+        cx.notify();
+    }
+}
+
+impl Perched for NoticeToast {
+    fn blank(owner: gpui::WeakEntity<Nimbra>) -> Self {
+        Self {
+            owner,
+            toast: Toast {
+                text: SharedString::default(),
+                text_width: 0.,
+                width: 0.,
+                height: 0.,
+            },
+            dark: false,
+            shown: 0,
+            reveal: Reveal::new(true, TOAST_RISE, motion::TOAST_IN),
+            _timer: Task::ready(()),
+            perch: None,
+        }
+    }
+
+    fn perch(&mut self) -> &mut Option<Perch> {
+        &mut self.perch
+    }
+
+    fn owner(&self) -> &gpui::WeakEntity<Nimbra> {
+        &self.owner
+    }
+
+    fn expire(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let shown = self.shown;
+        self.owner
+            .update(cx, |owner, cx| {
+                if owner.notice_gen == shown {
+                    owner.notice = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+    }
+
+    fn spare(owner: &mut Nimbra, me: gpui::WindowHandle<Self>) {
+        if owner
+            .notice_window
+            .is_some_and(|shown| shown.window_id() == me.window_id())
+        {
+            owner.notice_window = None;
+            owner.notice = None;
+        }
+        owner.toasts.notices.push(me);
+    }
 }
 
 impl Leave for NoticeToast {
     fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.reveal.leave(motion::TOAST_OUT, window, cx);
+        self.reveal
+            .leave_then(motion::TOAST_OUT, window, cx, Self::put_away);
     }
 }
 
@@ -380,35 +737,87 @@ pub(super) struct UndoToast {
     shown_gen: usize,
     reveal: Reveal,
     timer: Option<Task<()>>,
+    perch: Option<Perch>,
 }
 
 impl UndoToast {
     const SHOWN: Duration = Duration::from_secs(6);
     const AFTER_HOVER: Duration = Duration::from_secs(3);
 
+    fn show(
+        &mut self,
+        label: SharedString,
+        dark: bool,
+        shown_gen: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.label = label;
+        self.dark = dark;
+        self.shown_gen = shown_gen;
+        self.reveal = Reveal::new(true, TOAST_RISE, motion::TOAST_IN);
+        self.time_out(Self::SHOWN, window, cx);
+        cx.notify();
+    }
+
     fn time_out(&mut self, after: Duration, window: &mut Window, cx: &mut Context<Self>) {
         self.timer = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(after).await;
-            this.update_in(cx, |this, window, cx| {
-                let shown_gen = this.shown_gen;
-                this.owner
-                    .update(cx, |owner, _| {
-                        if owner.undo_gen == shown_gen {
-                            owner.undo_window = None;
-                        }
-                    })
-                    .ok();
-                this.leave(window, cx);
+            this.update_in(cx, |this, window, cx| this.expire(window, cx))
+                .ok();
+        }));
+    }
+}
+
+impl Perched for UndoToast {
+    fn blank(owner: gpui::WeakEntity<Nimbra>) -> Self {
+        Self {
+            owner,
+            label: SharedString::default(),
+            dark: false,
+            shown_gen: 0,
+            reveal: Reveal::new(true, TOAST_RISE, motion::TOAST_IN),
+            timer: None,
+            perch: None,
+        }
+    }
+
+    fn perch(&mut self) -> &mut Option<Perch> {
+        &mut self.perch
+    }
+
+    fn owner(&self) -> &gpui::WeakEntity<Nimbra> {
+        &self.owner
+    }
+
+    fn expire(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shown_gen = self.shown_gen;
+        self.owner
+            .update(cx, |owner, _| {
+                if owner.undo_gen == shown_gen {
+                    owner.undo_window = None;
+                }
             })
             .ok();
-        }));
+        self.leave(window, cx);
+    }
+
+    fn spare(owner: &mut Nimbra, me: gpui::WindowHandle<Self>) {
+        if owner
+            .undo_window
+            .is_some_and(|shown| shown.window_id() == me.window_id())
+        {
+            owner.undo_window = None;
+        }
+        owner.toasts.undos.push(me);
     }
 }
 
 impl Leave for UndoToast {
     fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.timer = None;
-        self.reveal.leave(motion::TOAST_OUT, window, cx);
+        self.reveal
+            .leave_then(motion::TOAST_OUT, window, cx, Self::put_away);
     }
 }
 
@@ -1164,123 +1573,168 @@ impl Nimbra {
         let width = (text_width(&label, 13., crate::theme::SANS, cx) + 150.)
             .clamp(300., 460.)
             .ceil();
-        let size = (width, 44.);
         self.close_undo(cx);
-        let Some(frame) = self.frame else {
-            return;
-        };
-        let origin = gpui::point(
-            frame.origin.x + (frame.size.width - px(size.0)) / 2. - px(MENU_MARGIN),
-            frame.origin.y + frame.size.height - px(size.1 + 24.) - px(MENU_MARGIN),
-        );
-        self.undo_gen += 1;
-        let (owner, dark, shown_gen) = (cx.weak_entity(), self.dark, self.undo_gen);
-        let opened = cx.open_window(
-            gpui::WindowOptions {
-                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
-                    origin,
-                    gpui::size(px(size.0 + 2. * MENU_MARGIN), px(size.1 + 2. * MENU_MARGIN)),
-                ))),
-                titlebar: None,
-                kind: gpui::WindowKind::PopUp,
-                // Keyboard focus stays in the main window, so ⌘Z still reaches it.
-                focus: false,
-                is_movable: false,
-                is_resizable: false,
-                is_minimizable: false,
-                window_background: gpui::WindowBackgroundAppearance::Transparent,
-                ..Default::default()
-            },
-            |window, cx| {
-                crate::blur::no_window_shadow(window);
-                cx.new(|cx| {
-                    let mut pill = UndoToast {
-                        owner,
-                        label,
-                        dark,
-                        shown_gen,
-                        reveal: Reveal::new(true, TOAST_RISE, motion::TOAST_IN),
-                        timer: None,
-                    };
-                    pill.time_out(UndoToast::SHOWN, window, cx);
-                    pill
-                })
-            },
-        );
-        self.undo_window = opened.ok();
+        let shown_gen = self.undo_gen;
+        // After this update: what was done shows first, and the window it belongs to may be
+        // the one this update holds.
+        cx.spawn(async move |this, cx| {
+            this.update(cx, |this, cx| this.show_undo(label, width, shown_gen, cx))
+                .ok();
+        })
+        .detach();
     }
 
-    /// Shows the current message in a small window at the bottom centre, above the email
-    /// (a native view that would cover anything drawn in the main window). It goes away by
+    fn show_undo(
+        &mut self,
+        label: SharedString,
+        width: f32,
+        shown_gen: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.undo_gen != shown_gen {
+            return;
+        }
+        let Some(parent) = self.toast_parent(cx) else {
+            return;
+        };
+        let size = (width + 2. * MENU_MARGIN, 44. + 2. * MENU_MARGIN);
+        let (owner, dark) = (cx.weak_entity(), self.dark);
+        let spare = take_spare(&mut self.toasts.undos, cx);
+        self.undo_window = raise(
+            spare,
+            owner,
+            parent,
+            size,
+            TOAST_GAP - MENU_MARGIN,
+            move |pill: &mut UndoToast, window, cx| pill.show(label, dark, shown_gen, window, cx),
+            cx,
+        );
+        self.toasts.undo_over = Some(parent);
+    }
+
+    /// Shows the current message at the bottom centre of the window it is about, above the
+    /// email (a native view that would cover anything drawn in the window). It goes away by
     /// itself after a few seconds, longer for longer messages.
-    pub(super) fn sync_notice_window(&mut self, toast: Option<Toast>, cx: &mut Context<Self>) {
+    pub(super) fn sync_notice_window(
+        &mut self,
+        text: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(handle) = self.notice_window.take() {
             let_go(handle, cx);
         }
-        let (Some(toast), Some(frame)) = (toast, self.frame) else {
+        let Some(text) = text else {
             return;
         };
-        let (width, height) = (toast.width, toast.height);
-        // Long enough to read it.
-        let seconds = (4. + toast.text.chars().count() as f32 / 25.).min(20.);
-        // Above the Undo pill when that is showing too.
-        let lift = if self.undo_window.is_some() { 54. } else { 0. };
-        let origin = gpui::point(
-            frame.origin.x + (frame.size.width - px(width)) / 2. - px(MENU_MARGIN),
-            frame.origin.y + frame.size.height - px(height + 24. + lift) - px(MENU_MARGIN),
+        let Some(parent) = self.toast_parent(cx) else {
+            return;
+        };
+        let Ok(toast) = parent.update(cx, |_, window, _| {
+            Toast::new(
+                &text,
+                f32::from(window.bounds().size.width),
+                window.text_system(),
+            )
+        }) else {
+            return;
+        };
+        let lift = if self.undo_window.is_some() && self.toasts.undo_over == Some(parent) {
+            ABOVE_UNDO
+        } else {
+            0.
+        };
+        let size = (
+            toast.width + 2. * MENU_MARGIN,
+            toast.height + 2. * MENU_MARGIN,
         );
         self.notice_gen += 1;
         let (owner, dark, shown) = (cx.weak_entity(), self.dark, self.notice_gen);
-        let opened = cx.open_window(
-            gpui::WindowOptions {
-                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
-                    origin,
-                    gpui::size(px(width + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
-                ))),
-                titlebar: None,
-                kind: gpui::WindowKind::PopUp,
-                focus: false,
-                is_movable: false,
-                is_resizable: false,
-                is_minimizable: false,
-                window_background: gpui::WindowBackgroundAppearance::Transparent,
-                ..Default::default()
-            },
-            |window, cx| {
-                crate::blur::no_window_shadow(window);
-                cx.new(|cx| {
-                    // Its own clock: it goes with the window, so repeated notices never
-                    // leave timers behind.
-                    let weak = owner.clone();
-                    let _timer = cx.spawn_in(window, async move |_, cx| {
-                        cx.background_executor()
-                            .timer(Duration::from_secs_f32(seconds))
-                            .await;
-                        weak.update(cx, |owner, cx| {
-                            if owner.notice_gen == shown {
-                                owner.notice = None;
-                                cx.notify();
-                            }
-                        })
-                        .ok();
-                    });
-                    NoticeToast {
-                        owner,
-                        toast,
-                        dark,
-                        reveal: Reveal::new(true, TOAST_RISE, motion::TOAST_IN),
-                        _timer,
-                    }
-                })
-            },
+        let spare = take_spare(&mut self.toasts.notices, cx);
+        self.notice_window = raise(
+            spare,
+            owner,
+            parent,
+            size,
+            TOAST_GAP + lift - MENU_MARGIN,
+            move |notice: &mut NoticeToast, window, cx| notice.show(toast, dark, shown, window, cx),
+            cx,
         );
-        self.notice_window = opened.ok();
+    }
+
+    /// The window a toast belongs to: Settings or a message window while it is in front,
+    /// else the main window while it shows. None while no window of Nimbra's shows.
+    fn toast_parent(&self, cx: &mut App) -> Option<gpui::AnyWindowHandle> {
+        let showing = |window: gpui::AnyWindowHandle, cx: &mut App| {
+            window
+                .update(cx, |_, window, _| attach::showing(window))
+                .unwrap_or(false)
+        };
+        let front = cx.active_window().filter(|&active| {
+            self.settings_window
+                .is_some_and(|settings| gpui::AnyWindowHandle::from(settings) == active)
+                || self
+                    .message_windows
+                    .iter()
+                    .any(|&message| gpui::AnyWindowHandle::from(message) == active)
+        });
+        if let Some(front) = front
+            && showing(front, cx)
+        {
+            return Some(front);
+        }
+        let main = gpui::AnyWindowHandle::from(crate::main_window(cx)?);
+        showing(main, cx).then_some(main)
+    }
+
+    /// Opens a hidden window for each kind of toast soon after launch, so the first toast
+    /// shows without the pause a new window takes.
+    pub(super) fn warm_toasts(&mut self, cx: &mut Context<Self>) {
+        if !attach::REUSED {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(2)).await;
+            this.update(cx, |this, cx| {
+                let Some(main) = crate::main_window(cx) else {
+                    return;
+                };
+                let size = (300. + 2. * MENU_MARGIN, 44. + 2. * MENU_MARGIN);
+                let bottom = TOAST_GAP - MENU_MARGIN;
+                if this.toasts.notices.is_empty()
+                    && let Some(notice) =
+                        open_toast(cx.weak_entity(), main.into(), size, bottom, cx)
+                {
+                    this.toasts.notices.push(notice);
+                }
+                if this.toasts.undos.is_empty()
+                    && let Some(undo) = open_toast(cx.weak_entity(), main.into(), size, bottom, cx)
+                {
+                    this.toasts.undos.push(undo);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn close_undo(&mut self, cx: &mut Context<Self>) {
+        self.undo_gen += 1;
         if let Some(handle) = self.undo_window.take() {
             let_go(handle, cx);
         }
+    }
+
+    /// Takes the toasts off `parent` at once, as it hides.
+    pub(crate) fn put_toasts_away(&self, parent: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
+        let (undo, notice) = (self.undo_window, self.notice_window);
+        cx.defer(move |cx| {
+            if let Some(undo) = undo {
+                put_away_over(undo, parent, cx);
+            }
+            if let Some(notice) = notice {
+                put_away_over(notice, parent, cx);
+            }
+        });
     }
 
     /// The Labels or More menu, dropped under its toolbar button.
