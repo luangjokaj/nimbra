@@ -78,6 +78,8 @@ pub struct Theme {
     /// sidebar around it, so that more of the blurred desktop shows through.
     pub glass: Hsla,
     pub glass_opacity: f32,
+    /// A block set apart inside a pane (the Brief): the faintest tint of the accent.
+    pub wash: Hsla,
     pub border: Hsla,
     pub border_strong: Hsla,
     pub text: Hsla,
@@ -136,6 +138,7 @@ impl Theme {
             edge: c(0xffffff, 0.1),
             glass: c(0x927eff, 0.2),
             glass_opacity: 0.75,
+            wash: c(0x927eff, 0.07),
             border: c(0xffffff, 0.07),
             border_strong: c(0xffffff, 0.13),
             text: c(0xf3f0f8, 1.),
@@ -183,6 +186,7 @@ impl Theme {
             edge: c(0x26164e, 0.1),
             glass: c(0x6246e8, 0.11),
             glass_opacity: 0.78,
+            wash: c(0x6246e8, 0.05),
             border: c(0x26164e, 0.07),
             border_strong: c(0x26164e, 0.13),
             text: c(0x17141f, 1.),
@@ -294,6 +298,9 @@ const TONES: [Tone; 6] = [
     Tone::Graphite,
 ];
 
+/// The corona's ring around someone waiting on your reply, the same in both themes.
+pub const RING: (u32, u32) = (0x7c5cff, 0xff8a6b);
+
 pub const SANS: &str = "Sora";
 pub const MONO: &str = "Geist Mono";
 
@@ -377,6 +384,16 @@ mod tests {
             // The open row's name and count are in `text` and `text2`.
             for text in [t.text, t.text2] {
                 assert!(contrast(text, open) >= TEXT, "{}", contrast(text, open));
+            }
+        }
+    }
+
+    #[test]
+    fn text_is_legible_on_the_brief() {
+        for t in [Theme::light(), Theme::dark()] {
+            let brief = over(t.wash, t.surface);
+            for text in [t.text, t.text2, t.text3, t.violet, t.amber_text] {
+                assert!(contrast(text, brief) >= TEXT, "{}", contrast(text, brief));
             }
         }
     }

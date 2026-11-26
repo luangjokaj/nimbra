@@ -1566,7 +1566,7 @@ pub(super) fn spinning(arrow: gpui::Svg, id: &'static str) -> AnyElement {
 
 /// A secondary button with its icon before its label: a hairline outline, no fill.
 pub(super) fn labelled(t: &Theme, name: &str, label: &str) -> Div {
-    let hover = t.hover;
+    let (hover, raised) = (t.hover, t.raised);
     div()
         .flex()
         .flex_none()
@@ -1576,10 +1576,11 @@ pub(super) fn labelled(t: &Theme, name: &str, label: &str) -> Div {
         .pl(px(space::M))
         .pr(px(space::L - 2.))
         .rounded(px(radius::CONTROL))
+        .bg(t.raised)
         .border_1()
-        .border_color(t.border_strong)
+        .border_color(t.edge)
         .cursor_pointer()
-        .hover(move |s| s.bg(hover))
+        .hover(move |s| s.bg(over(hover, raised)))
         .font_weight(FontWeight::MEDIUM)
         .text_color(t.text)
         .child(icon(name, 15., t.text2))

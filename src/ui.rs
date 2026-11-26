@@ -7,7 +7,7 @@ use gpui::{
 
 use std::time::{Duration, Instant};
 
-use crate::theme::{MONO, SANS, Theme, Tone, over, radius, space};
+use crate::theme::{MONO, RING, SANS, Theme, Tone, c, over, radius, space};
 
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg()
@@ -432,6 +432,57 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str) -> Div {
 /// A two-stop gradient across a control, leaning a little off horizontal.
 pub fn gradient(from: Hsla, to: Hsla) -> Background {
     linear_gradient(100., linear_color_stop(from, 0.), linear_color_stop(to, 1.))
+}
+
+/// A picture of a person, `size` across: a 1pt hairline inside its edge keeps a pale photo
+/// from melting into the page. Waiting on your reply, it wears the corona's ring, 2.5pt with
+/// a 2pt gap of `ground`, outside that size so nothing beside it moves.
+pub fn portrait(t: &Theme, face: impl IntoElement, size: f32, waiting: bool, ground: Hsla) -> Div {
+    const BAND: f32 = 2.5;
+    const GAP: f32 = 2.;
+    let hairline = if t.dark {
+        gpui::white().opacity(0.16)
+    } else {
+        gpui::black().opacity(0.08)
+    };
+    let reach = BAND + GAP;
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size))
+        .when(waiting, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .top(px(-reach))
+                    .left(px(-reach))
+                    .size(px(size + 2. * reach))
+                    .rounded_full()
+                    .bg(linear_gradient(
+                        135.,
+                        linear_color_stop(c(RING.0, 1.), 0.),
+                        linear_color_stop(c(RING.1, 1.), 1.),
+                    ))
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(BAND))
+                            .left(px(BAND))
+                            .size(px(size + 2. * GAP))
+                            .rounded_full()
+                            .bg(ground),
+                    ),
+            )
+        })
+        .child(div().absolute().inset_0().child(face))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded_full()
+                .border_1()
+                .border_color(hairline),
+        )
 }
 
 /// The primary action's fill at rest, hovered and held.

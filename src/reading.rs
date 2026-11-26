@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::theme::{radius, space};
-use crate::ui::{Elevation, elevation, status_chip, tag};
+use crate::ui::{Elevation, elevation, portrait, status_chip, tag};
 
 /// "Fri, Nov 21, 2026 at 09:41", in local time; empty when unknown.
 pub(super) fn long_date(timestamp_ms: i64) -> String {
@@ -943,41 +943,44 @@ impl Nimbra {
             div()
                 .flex()
                 .items_center()
-                .gap(px(space::M))
-                .h(px(24.))
+                .gap(px(10.))
+                .h(px(28.))
                 .child(
                     div()
                         .size(px(16.))
                         .flex_none()
-                        .rounded(px(radius::CHIP - 2.))
+                        .rounded(px(5.))
                         .border_1()
-                        .border_color(t.border_strong),
+                        .border_color(t.faint),
                 )
-                .child(div().flex_none().text_color(t.text).child(text.to_string()))
-                .child(caption(due.to_string(), t.text3))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(13.5))
+                        .text_color(t.text)
+                        .child(text.to_string()),
+                )
+                .child(caption(due.to_string(), t.amber_text))
         };
         div()
             .flex()
             .flex_col()
-            .gap(px(space::M))
+            .gap(px(space::S))
             // As long a line as the message's own. A definite width, so the text wraps
             // where it is measured.
             .w_full()
             .max_w(px(self.settings.reader_text.metrics().0 * 44. + BODY_INSET))
+            .pt(px(space::L))
+            .px(px(18.))
+            .pb(px(14.))
+            .rounded(px(radius::CARD))
+            .bg(t.wash)
+            .child(overline(t, "Brief").text_color(t.violet))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(space::S))
-                    .h(px(16.))
-                    .child(icon("sparkles", 14., t.violet))
-                    .child(overline(t, "Brief").text_color(t.violet)),
-            )
-            .child(
-                div()
-                    .text_size(px(16.))
-                    .line_height(px(26.))
-                    .text_color(t.text2)
+                    .text_size(px(15.))
+                    .line_height(px(23.))
+                    .text_color(t.text)
                     .child(m.brief.clone()),
             )
             .when(m.rich, |d| {
@@ -985,7 +988,6 @@ impl Nimbra {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(space::XS))
                         .child(todo("Confirm pricing tiers on slide 14", "Fri"))
                         .child(todo("Sign off on the press embargo date", "Fri")),
                 )
@@ -1237,17 +1239,17 @@ impl Nimbra {
                 .px(px(space::S))
                 .rounded(px(radius::ROW))
                 .hover(move |s| s.bg(hover))
-                .child(
-                    div()
-                        .w(px(AVATAR))
-                        .flex()
-                        .justify_center()
-                        .child(avatar(tone, initials, 24.)),
-                )
+                .child(div().w(px(AVATAR)).flex().justify_center().child(portrait(
+                    t,
+                    avatar(tone, initials, EARLIER_AVATAR),
+                    EARLIER_AVATAR,
+                    false,
+                    t.surface,
+                )))
                 .child(
                     div()
                         .flex_none()
-                        .font_weight(FontWeight::MEDIUM)
+                        .font_weight(FontWeight::SEMIBOLD)
                         .text_color(t.text)
                         .child(name.to_string()),
                 )
@@ -1274,19 +1276,20 @@ impl Nimbra {
                 .flex()
                 .items_center()
                 .gap(px(space::M))
+                .h(px(52.))
                 .pl(px(space::S))
                 .pr(px(space::L))
-                .py(px(space::S))
-                .rounded(px(radius::CARD))
+                .rounded(px(12.))
+                .bg(t.raised)
                 .border_1()
-                .border_color(t.border_strong)
+                .border_color(t.edge)
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(32.))
-                        .rounded(px(radius::CONTROL))
+                        .size(px(36.))
+                        .rounded(px(9.))
                         .bg(tone.fill())
                         .child(icon("file", 16., gpui::white())),
                 )
@@ -1753,7 +1756,14 @@ impl Nimbra {
                     .flex()
                     .items_center()
                     .gap(px(space::M))
-                    .child(avatar(tone, &initials, AVATAR))
+                    // The latest message of a thread waiting on your reply wears the ring.
+                    .child(portrait(
+                        t,
+                        avatar(tone, &initials, AVATAR),
+                        AVATAR,
+                        index == 0 && mail.waits_on_you(),
+                        t.surface,
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -1772,6 +1782,7 @@ impl Nimbra {
                                             .flex_shrink_0()
                                             .max_w(relative(0.7))
                                             .truncate()
+                                            .text_size(px(14.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(sender),
                                     )
@@ -2115,10 +2126,10 @@ impl Nimbra {
                     .pr(px(6.))
                     .py(px(6.))
                     .max_w(px(360.))
-                    .rounded(px(radius::CARD))
-                    .bg(t.hover)
+                    .rounded(px(12.))
+                    .bg(t.raised)
                     .border_1()
-                    .border_color(t.border)
+                    .border_color(t.edge)
                     .child(
                         div()
                             .flex()
@@ -2485,7 +2496,9 @@ impl Nimbra {
 /// A message's text before it arrives: lines of ink at the reader's line height, with a few
 /// slow passes of light, then still.
 /// A message's avatar, and where its body starts: under the sender's name.
-pub(super) const AVATAR: f32 = 32.;
+pub(super) const AVATAR: f32 = 36.;
+/// An earlier message's row.
+const EARLIER_AVATAR: f32 = 26.;
 pub(super) const BODY_INSET: f32 = AVATAR + space::M;
 
 /// From a message's header to its first line: more than a paragraph's gap, so the body
@@ -2500,7 +2513,7 @@ pub(super) const COLUMN_PAD: f32 = 48.;
 const FULL_COLUMN: f32 = 980.;
 
 /// The subject's size.
-pub(super) const TITLE_SIZE: f32 = 32.;
+pub(super) const TITLE_SIZE: f32 = 30.;
 
 /// The toolbar's padding left and right.
 pub(super) const TOOLBAR_PAD: f32 = space::L;
