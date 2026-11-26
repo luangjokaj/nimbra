@@ -4,8 +4,14 @@
 use crate::mail::View;
 use anyhow::Result;
 use gpui::{BackgroundExecutor, FutureExt as _};
+use std::collections::HashSet;
 use std::future::Future;
-use std::time::{Duration, SystemTime};
+use std::hash::Hash;
+use std::pin::Pin;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll, Waker};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Each request has a timeout of its own, but not while the address is being looked up,
 /// and one check makes dozens of them, some tried again.
@@ -60,6 +66,127 @@ pub async fn within<T: Send + 'static>(
         .with_timeout(LIMIT, executor)
         .await
         .unwrap_or_else(|_| Err(TooSlow.into()))
+}
+
+/// Runs blocking `work` on a thread of its own, for waits that can last long (IMAP IDLE):
+/// on the shared executor they would hold up the short jobs queued behind them. `None` when
+/// no thread could be started.
+pub async fn on_own_thread<T: Send + 'static>(
+    name: &str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (done, result) = futures::channel::oneshot::channel();
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let _ = done.send(work());
+        })
+        .ok()?;
+    result.await.ok()
+}
+
+/// Rung by the notification and quit handlers, which run outside GPUI.
+pub static OUTSIDE: Bell = Bell::new();
+
+/// Something rang from outside GPUI (a clicked notification, a quit put off), for a task
+/// that waits for it instead of looking every so often.
+pub struct Bell {
+    rings: AtomicU64,
+    waiting: Mutex<Option<Waker>>,
+}
+
+impl Bell {
+    pub const fn new() -> Self {
+        Self {
+            rings: AtomicU64::new(0),
+            waiting: Mutex::new(None),
+        }
+    }
+
+    pub fn ring(&self) {
+        self.rings.fetch_add(1, Ordering::SeqCst);
+        if let Some(waker) = self
+            .waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            waker.wake();
+        }
+    }
+
+    /// Done once it has rung more than `heard` times; gives the count to wait past next.
+    pub fn after(&self, heard: u64) -> impl Future<Output = u64> + '_ {
+        Rung { bell: self, heard }
+    }
+}
+
+impl Default for Bell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+struct Rung<'a> {
+    bell: &'a Bell,
+    heard: u64,
+}
+
+impl Future for Rung<'_> {
+    type Output = u64;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<u64> {
+        let rang = |bell: &Bell| bell.rings.load(Ordering::SeqCst);
+        if rang(self.bell) != self.heard {
+            return Poll::Ready(rang(self.bell));
+        }
+        *self.bell.waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
+        // A ring between the first look and the waker being left would go unheard.
+        match rang(self.bell) {
+            now if now != self.heard => Poll::Ready(now),
+            _ => Poll::Pending,
+        }
+    }
+}
+
+/// What is on its way, by key: a second request for the same thing waits for the first.
+pub struct OnItsWay<K>(HashSet<K>);
+
+impl<K: Eq + Hash> OnItsWay<K> {
+    /// Whether to ask: false while the same is already on its way.
+    pub fn begin(&mut self, key: K) -> bool {
+        self.0.insert(key)
+    }
+
+    pub fn end(&mut self, key: &K) {
+        self.0.remove(key);
+    }
+}
+
+impl<K> Default for OnItsWay<K> {
+    fn default() -> Self {
+        Self(HashSet::new())
+    }
+}
+
+/// Keys held down step through rows faster than a request each could be answered: a row
+/// passed over within `GAP` of the one before waits until the steps stop.
+#[derive(Default)]
+pub struct Pace {
+    last: Option<Instant>,
+}
+
+impl Pace {
+    pub const GAP: Duration = Duration::from_millis(150);
+
+    /// Whether a request made at `now` goes at once, rather than once the steps stop.
+    pub fn at_once(&mut self, now: Instant) -> bool {
+        let quick = self
+            .last
+            .is_some_and(|last| now.saturating_duration_since(last) < Self::GAP);
+        self.last = Some(now);
+        !quick
+    }
 }
 
 struct Check {
@@ -195,6 +322,50 @@ mod tests {
         let search = checks.start(View::Search, "alpha");
         assert!(!checks.running_for(View::Search, "beta"));
         assert!(!checks.finish(search, View::Search, "beta"));
+    }
+
+    #[test]
+    fn a_thread_already_on_its_way_is_not_asked_for_again() {
+        let mut loads = OnItsWay::default();
+        let key = ("t1".to_string(), "acct".to_string());
+        assert!(loads.begin(key.clone()));
+        assert!(!loads.begin(key.clone()));
+        // The same thread of another account is another request.
+        assert!(loads.begin(("t1".to_string(), "other".to_string())));
+        loads.end(&key);
+        assert!(loads.begin(key));
+    }
+
+    #[test]
+    fn held_keys_wait_and_a_single_step_goes_at_once() {
+        let mut pace = Pace::default();
+        let start = Instant::now();
+        assert!(pace.at_once(start));
+        let held = (1..20).map(|n| start + Duration::from_millis(33 * n));
+        assert!(held.clone().all(|at| !pace.at_once(at)));
+        let after = held.last().unwrap() + Pace::GAP;
+        assert!(pace.at_once(after));
+    }
+
+    #[test]
+    fn a_bell_rung_before_anyone_waits_is_still_heard() {
+        let bell = Bell::new();
+        bell.ring();
+        let heard = futures::executor::block_on(bell.after(0));
+        assert_eq!(heard, 1);
+        let waiter = std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| futures::executor::block_on(bell.after(heard)));
+            std::thread::sleep(Duration::from_millis(20));
+            bell.ring();
+            waiting.join().unwrap()
+        });
+        assert_eq!(waiter, 2);
+    }
+
+    #[test]
+    fn work_on_its_own_thread_comes_back() {
+        let answer = futures::executor::block_on(on_own_thread("test", || 6 * 7));
+        assert_eq!(answer, Some(42));
     }
 
     #[test]

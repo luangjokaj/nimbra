@@ -7,6 +7,9 @@
 //! - HTML only ever goes to `html` (shown in the locked-down web view) or through the
 //!   converters to text and blocks. Nothing is fetched.
 
+use std::borrow::Cow;
+use std::collections::HashMap;
+
 use base64::Engine as _;
 use mail_parser::{Addr, Address, HeaderValue, MessageParser, MessagePart, MimeHeaders, PartType};
 
@@ -19,8 +22,9 @@ type Parsed<'a> = mail_parser::Message<'a>;
 
 /// Larger HTML bodies stay in the native reader only, as with Gmail.
 const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
-/// How many images embedded in a message (`cid:` links) are inlined into its HTML.
-const INLINE_IMAGE_BUDGET: usize = 4 * 1024 * 1024;
+/// The most that images embedded in a message (`cid:` links) may add to its HTML, counted
+/// per link as written: a link repeated a thousand times costs a thousand copies.
+pub(crate) const INLINE_IMAGE_BUDGET: usize = 4 * 1024 * 1024;
 const SNIPPET_CHARS: usize = 200;
 /// A list row needs the first and the latest few, not a whole long chain.
 const MAX_REFERENCES: usize = 200;
@@ -49,9 +53,9 @@ pub fn message(raw: &[u8], message_key: &str) -> Option<Message> {
     // Images embedded in the message itself are inlined as data URLs, so the original
     // view can show them without any network access.
     if let Some(html) = html.as_mut()
-        && html.contains("cid:")
+        && let Some(inlined) = inline_images(html, &parsed)
     {
-        inline_images(html, &parsed);
+        *html = inlined;
     }
     Some(Message {
         sender: sender_of(&from),
@@ -462,42 +466,111 @@ fn attachments(parsed: &Parsed, message_key: &str) -> Vec<Attachment> {
         .collect()
 }
 
-/// Replaces `cid:` image links in `html` with the image data from the message's parts.
-fn inline_images(html: &mut String, parsed: &Parsed) {
-    let mut used = 0;
+/// `html` with its `cid:` image links replaced by the images among the message's parts.
+fn inline_images(html: &str, parsed: &Parsed) -> Option<String> {
+    let mut images: HashMap<String, (String, &[u8])> = HashMap::new();
     for part in &parsed.parts {
-        let Some(cid) = part
-            .content_id()
-            .map(|v| v.trim().trim_matches(['<', '>']).to_string())
-            .filter(|cid| !cid.is_empty())
+        let (Some(cid), PartType::Binary(bytes) | PartType::InlineBinary(bytes)) =
+            (part.content_id().and_then(content_id), &part.body)
         else {
             continue;
         };
         let mime = mime_of(part, "");
-        if !matches!(
-            mime.as_str(),
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-        ) {
-            continue;
+        if is_inline_image(&mime) {
+            images.entry(cid).or_insert((mime, bytes.as_ref()));
         }
-        let reference = format!("cid:{cid}");
-        if !html.contains(&reference) {
-            continue;
-        }
-        let bytes = match &part.body {
-            PartType::Binary(bytes) | PartType::InlineBinary(bytes) => bytes.as_ref(),
-            _ => continue,
-        };
-        used += bytes.len();
-        if used > INLINE_IMAGE_BUDGET {
-            break;
-        }
-        let data = format!(
-            "data:{mime};base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(bytes)
-        );
-        *html = html.replace(&reference, &data);
     }
+    inline_cid_images(html, &images, |_, (mime, bytes)| {
+        Some(Embedded {
+            mime: mime.clone(),
+            bytes: Cow::Borrowed(bytes),
+        })
+    })
+}
+
+/// A Content-ID header's value without its angle brackets, when there is one.
+pub(crate) fn content_id(header: &str) -> Option<String> {
+    Some(header.trim().trim_matches(['<', '>']).to_string()).filter(|cid| !cid.is_empty())
+}
+
+/// Image types a web view shows from a data URL.
+pub(crate) fn is_inline_image(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
+/// An image embedded in a message, for a `cid:` link.
+pub(crate) struct Embedded<'a> {
+    pub mime: String,
+    pub bytes: Cow<'a, [u8]>,
+}
+
+/// `html` with each `cid:` link whose whole id names one of `images` replaced by that image
+/// as a data URL, or `None` when nothing was replaced. `load` is asked at most once per
+/// image. The copies together add at most `INLINE_IMAGE_BUDGET` bytes; links past that are
+/// left as they are.
+pub(crate) fn inline_cid_images<'a, T>(
+    html: &str,
+    images: &'a HashMap<String, T>,
+    mut load: impl FnMut(&'a str, &'a T) -> Option<Embedded<'a>>,
+) -> Option<String> {
+    const SCHEME: &[u8] = b"cid:";
+    if images.is_empty() {
+        return None;
+    }
+    let bytes = html.as_bytes();
+    let mut urls: HashMap<&str, Option<String>> = HashMap::new();
+    let mut out = String::new();
+    let mut copied = 0;
+    let mut room = INLINE_IMAGE_BUDGET;
+    let mut at = 0;
+    while let Some(found) = bytes[at..]
+        .windows(SCHEME.len())
+        .position(|w| w.eq_ignore_ascii_case(SCHEME))
+    {
+        let link = at + found;
+        let start = link + SCHEME.len();
+        let end = html[start..]
+            .find(ends_cid)
+            .map_or(html.len(), |len| start + len);
+        at = start;
+        if link > 0 && bytes[link - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        let Some((cid, image)) = images.get_key_value(&html[start..end]) else {
+            continue;
+        };
+        let url = urls.entry(cid.as_str()).or_insert_with(|| {
+            load(cid, image).map(|image| {
+                format!(
+                    "data:{};base64,{}",
+                    image.mime,
+                    base64::engine::general_purpose::STANDARD.encode(&image.bytes)
+                )
+            })
+        });
+        let Some(url) = url.as_deref() else { continue };
+        let Some(left) = room.checked_sub(url.len()) else {
+            continue;
+        };
+        room = left;
+        out.push_str(&html[copied..link]);
+        out.push_str(url);
+        copied = end;
+        at = end;
+    }
+    if copied == 0 {
+        return None;
+    }
+    out.push_str(&html[copied..]);
+    Some(out)
+}
+
+/// Where a `cid:` link's id ends: at what ends an attribute value, a tag or a CSS `url()`.
+fn ends_cid(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | '\\' | '&')
 }
 
 #[cfg(test)]
@@ -611,6 +684,63 @@ mod tests {
          \n\
          JVBERi0xLjQKaGVsbG8=\n\
          --mix--\n";
+
+    fn png(len: usize) -> HashMap<String, Vec<u8>> {
+        HashMap::from([("a".to_string(), vec![7u8; len])])
+    }
+
+    fn inline(html: &str, images: &HashMap<String, Vec<u8>>) -> Option<String> {
+        inline_cid_images(html, images, |_, bytes| {
+            Some(Embedded {
+                mime: "image/png".into(),
+                bytes: Cow::Borrowed(bytes),
+            })
+        })
+    }
+
+    #[test]
+    fn one_image_named_400_000_times_stays_within_the_budget() {
+        let html = "<img src=cid:a>".repeat(400_000);
+        let inlined = inline(&html, &png(10 * 1024)).unwrap();
+        assert!(inlined.len() <= html.len() + INLINE_IMAGE_BUDGET);
+        let copies = inlined.matches("data:image/png;base64,").count();
+        // As many as fit, and the rest left as links.
+        assert!(copies > 200, "{copies}");
+        assert_eq!(copies + inlined.matches("cid:a").count(), 400_000);
+    }
+
+    #[test]
+    fn an_image_asked_for_many_times_is_loaded_once() {
+        let images = png(16);
+        let mut loads = 0;
+        let html = "<img src=\"cid:a\"><img src='cid:a'>".repeat(50);
+        let inlined = inline_cid_images(&html, &images, |_, bytes| {
+            loads += 1;
+            Some(Embedded {
+                mime: "image/png".into(),
+                bytes: Cow::Borrowed(bytes),
+            })
+        })
+        .unwrap();
+        assert_eq!(loads, 1);
+        assert!(!inlined.contains("cid:"));
+    }
+
+    #[test]
+    fn only_a_link_to_the_whole_id_is_replaced() {
+        let html = "<img src=\"cid:ab\"><img src=\"cid:a\"> acid:a url(cid:a) CID:a";
+        let inlined = inline(html, &png(3)).unwrap();
+        assert!(inlined.contains("src=\"cid:ab\""));
+        assert!(inlined.contains("acid:a"));
+        assert_eq!(inlined.matches("data:image/png;base64,BwcH").count(), 3);
+        assert_eq!(inline("<img src=\"cid:b\">", &png(3)), None);
+    }
+
+    #[test]
+    fn an_image_larger_than_the_budget_is_left_as_a_link() {
+        let html = "<img src=\"cid:a\">";
+        assert_eq!(inline(html, &png(INLINE_IMAGE_BUDGET)), None);
+    }
 
     #[test]
     fn mixed_message_lists_real_attachments_and_inlines_images() {

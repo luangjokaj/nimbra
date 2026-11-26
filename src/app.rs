@@ -274,7 +274,7 @@ impl Source {
             subject: mail.subject.to_string(),
             sender: mail.sender.to_string(),
             header: mail.header.clone(),
-            body: mail.body.clone(),
+            body: mail.body.to_vec(),
             reply_to: mail.reply.as_ref().map(|(_, reply)| reply.clone()),
             fallback_to: mail.reply.as_ref().map(|(address, _)| address.clone()),
             fallback_all: mail.reply_all.clone(),
@@ -506,6 +506,8 @@ pub struct Nimbra {
     /// The other signed-in accounts' snoozes (each with its account), for Snoozed,
     /// Reminders and the rows' chips. Read from their stores (`read_snoozed_elsewhere`).
     snoozed_elsewhere: Vec<Snooze>,
+    /// Mailbox work on its way (see `mailbox::Flow`).
+    flow: mailbox::Flow,
     /// Snoozed threads being brought back right now.
     waking: HashSet<String>,
     /// The choices in the open snooze palette.
@@ -850,6 +852,7 @@ impl Nimbra {
             history_groups: Vec::new(),
             snoozed: Vec::new(),
             snoozed_elsewhere: Vec::new(),
+            flow: mailbox::Flow::default(),
             waking: HashSet::new(),
             snooze_choices: Vec::new(),
             next_pages: HashMap::new(),

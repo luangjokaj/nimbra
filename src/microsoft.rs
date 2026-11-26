@@ -294,7 +294,14 @@ impl Tokens {
             if !error.is::<SignedOut>() {
                 return error;
             }
-            forget_refresh_token(&self.account);
+            match stored_refresh_token(&self.account) {
+                // Signed in again since this client was made: that sign-in has not ended.
+                Ok(Some(stored)) if stored != *refresh => {
+                    return anyhow!("The sign-in changed meanwhile. Try again.");
+                }
+                Ok(Some(_)) => forget_refresh_token(&self.account),
+                _ => {}
+            }
             SignedOut {
                 account: self.account.clone(),
             }

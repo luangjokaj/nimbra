@@ -3,17 +3,58 @@
 
 use super::*;
 
+use gpui::Task;
+
+use crate::checking::{OUTSIDE, OnItsWay, Pace, on_own_thread};
+
+/// How long a list stays still before it is saved: opening threads one after another
+/// saves once.
+const SAVE_AFTER: Duration = Duration::from_millis(400);
+
+/// The store is kept small: the newest 300 threads of a mailbox, and the full text of the
+/// newest 100 (older ones are downloaded again when opened).
+const KEEP_THREADS: usize = 300;
+const KEEP_BODIES: usize = 100;
+
+fn forget_body(mail: &mut Mail) {
+    if mail.loaded {
+        mail.loaded = false;
+        mail.body = Default::default();
+        mail.earlier = Default::default();
+        mail.html = None;
+    }
+}
+
+/// Mailbox work on its way. A task kept here is dropped, and so stopped, when newer work
+/// takes its place.
+#[derive(Default)]
+pub(super) struct Flow {
+    /// A mailbox opened for the first time, being read from the store.
+    stored: Option<Task<()>>,
+    /// Threads whose content is being fetched (by the reader or ahead of it).
+    bodies: OnItsWay<ThreadKey>,
+    /// The thread to fetch once the keys stop stepping through rows.
+    stepped: Option<Task<()>>,
+    pace: Pace,
+    /// Saves waiting for their list to settle, by account and record.
+    saves: HashMap<(String, String), Task<()>>,
+    /// The other accounts' snoozed lists, by account, as their stores have them.
+    pub(super) other_snoozed: HashMap<String, Vec<Snooze>>,
+}
+
 impl Nimbra {
     /// Saves the Inbox as soon as it empties or stops being empty. Waiting for the next
     /// check for mail would lose that when Nimbra quits first.
     pub(super) fn save_if_zero_changed(&mut self, cx: &mut Context<Self>) {
+        // Here, as everything that changes what quitting would lose notifies.
+        crate::quitting::set_would_lose(self.would_lose(cx));
         self.save_inboxes_from_all(cx);
         if self.mailbox == View::Inbox
             && self.status == Status::Ready
             // Not `visible`: with Unread on, read mail is still in the Inbox.
             && self.done.iter().all(|done| *done) != self.inbox_saved_empty
         {
-            self.persist(cx);
+            self.save_list(Duration::ZERO, cx);
         }
     }
 
@@ -125,29 +166,72 @@ impl Nimbra {
             {
                 self.cache.remove(&view);
             }
-            let known = match self.cache.get(&view) {
-                Some(mails) => Some(mails.clone()),
-                // Not visited this session: start from what is stored on disk.
-                None => self.stored_mails(view),
-            };
-            if let Some(mails) = &known {
-                self.cache.insert(view, mails.clone());
-            }
-            self.mails = known.clone().unwrap_or_default();
-            self.done = vec![false; self.mails.len()];
+            self.flow.stored = None;
             self.history.clear();
             self.history_groups.clear();
-            self.selected = 0;
-            if known.is_some() {
-                self.status = Status::Ready;
-                self.load_selected(cx);
-            }
-            if known.is_some() {
-                self.look_again(cx);
-            } else {
-                self.refresh(cx);
+            match (self.cache.get(&view).cloned(), self.store.clone()) {
+                (Some(mails), _) => self.show_known(view, mails, cx),
+                // Not visited this session: what is stored on disk, read off the main thread.
+                // The skeleton has the list's layout, and usually goes within a frame.
+                (None, Some(store)) => {
+                    self.show_unknown();
+                    self.status = Status::Loading;
+                    self.read_stored(view, store, cx);
+                    cx.notify();
+                }
+                (None, None) => {
+                    self.show_unknown();
+                    self.refresh(cx);
+                }
             }
         }
+    }
+
+    /// A mailbox whose list is known (empty or not): shown at once, then checked quietly.
+    fn show_known(&mut self, view: View, mails: Vec<Mail>, cx: &mut Context<Self>) {
+        self.cache.insert(view, mails.clone());
+        self.done = vec![false; mails.len()];
+        self.mails = mails;
+        self.selected = 0;
+        self.status = Status::Ready;
+        self.load_selected(cx);
+        self.look_again(cx);
+    }
+
+    fn show_unknown(&mut self) {
+        self.mails.clear();
+        self.done.clear();
+        self.selected = 0;
+    }
+
+    /// Reads a mailbox's stored list in the background, for when it is still the one shown.
+    fn read_stored(&mut self, view: View, store: Arc<crate::store::Store>, cx: &mut Context<Self>) {
+        let record = self.record_for(view);
+        let generation = self.account_gen;
+        self.flow.stored = Some(cx.spawn(async move |this, cx| {
+            let mails = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut mails: Option<Vec<Mail>> = store.load(&record);
+                    mails.iter_mut().flatten().for_each(Mail::refresh_time);
+                    mails
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.account_gen != generation || this.mailbox != view {
+                    return;
+                }
+                this.flow.stored = None;
+                match mails {
+                    // Unless a listing came first: it is newer.
+                    Some(mails) if this.mails.is_empty() => this.show_known(view, mails, cx),
+                    Some(_) => {}
+                    None => this.refresh(cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// The mailbox on screen is being checked for mail.
@@ -351,7 +435,6 @@ impl Nimbra {
     pub(super) fn prefetch(&mut self, cx: &mut Context<Self>) {
         // A thread in full is 120 units of the 6,000 a minute: not the whole screen.
         const AHEAD: usize = 3;
-        const WORKERS: usize = 4;
         if self.connection.is_none() {
             return;
         }
@@ -359,9 +442,7 @@ impl Nimbra {
             return;
         }
         // Each thread with its own account's connection (All inboxes mixes accounts).
-        let mut ids = Vec::new();
-        let mut accounts = Vec::new();
-        let mut clients = Vec::new();
+        let mut wanted = Vec::new();
         // The top few only, not the next few that are missing: each check would fetch more.
         for i in self.visible().into_iter().take(AHEAD) {
             if i == self.selected {
@@ -370,44 +451,31 @@ impl Nimbra {
             if let Some(mail) = self.mails.get(i).filter(|mail| !mail.loaded)
                 && let (Some(id), Some(client)) = (mail.id.clone(), self.client_at(i))
             {
-                ids.push(id);
-                accounts.push(self.account_of(mail).to_string());
-                clients.push(client);
+                let key: ThreadKey = (id, self.account_of(mail).to_string());
+                if self.flow.bodies.begin(key.clone()) {
+                    wanted.push((key, client));
+                }
             }
         }
-        if ids.is_empty() {
+        if wanted.is_empty() {
             return;
         }
         self.prefetching = true;
         let view = self.mailbox;
         let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
-            let fetched = within(cx.background_executor(), async move {
-                let mut results: Vec<Option<anyhow::Result<Vec<mail::Message>>>> =
-                    (0..ids.len()).map(|_| None).collect();
-                let chunk = ids.len().div_ceil(WORKERS).max(1);
-                std::thread::scope(|scope| {
-                    for ((ids, clients), out) in ids
-                        .chunks(chunk)
-                        .zip(clients.chunks(chunk))
-                        .zip(results.chunks_mut(chunk))
-                    {
-                        scope.spawn(move || {
-                            for ((id, client), slot) in ids.iter().zip(clients).zip(out) {
-                                *slot = Some(client.thread(id));
-                            }
-                        });
-                    }
-                });
-                Ok(ids
-                    .into_iter()
-                    .zip(accounts)
-                    .zip(results.into_iter().flatten())
-                    .collect::<Vec<_>>())
-            })
-            .await
-            .unwrap_or_default();
+            let executor = cx.background_executor().clone();
+            // Side by side, each a task of its own: nothing waits on a thread for the others.
+            let fetches = wanted.into_iter().map(|(key, client)| {
+                let id = key.0.clone();
+                let fetch = within(&executor, async move { client.thread(&id) });
+                async move { (key, fetch.await) }
+            });
+            let fetched = futures::future::join_all(fetches).await;
             this.update(cx, |this, cx| {
+                for (key, _) in &fetched {
+                    this.flow.bodies.end(key);
+                }
                 // A different account was opened meanwhile: this answer is not for it.
                 if this.account_gen != generation {
                     return;
@@ -437,8 +505,10 @@ impl Nimbra {
                     eprintln!("nimbra: prefetched {filled} threads");
                     this.cache.insert(view, this.listed());
                     this.persist(cx);
-                    cx.notify();
                 }
+                // Opened while it was on its way here, and that way failed: asked for itself.
+                this.load_shown(cx);
+                cx.notify();
             })
             .ok();
         })
@@ -591,19 +661,13 @@ impl Nimbra {
         .detach();
     }
 
-    /// What the store holds for a mailbox: `None` if it was never listed, and an empty
-    /// list for a mailbox that was listed and had nothing in it.
-    fn stored_mails(&self, view: View) -> Option<Vec<Mail>> {
-        let mut mails: Vec<Mail> = self.store.as_ref()?.load(&self.record_for(view))?;
-        for mail in &mut mails {
-            mail.refresh_time();
-        }
-        Some(mails)
-    }
-
     /// Saves the open mailbox and the sidebar state, in the background. Search results are
     /// never stored.
     pub(super) fn persist(&mut self, cx: &mut Context<Self>) {
+        self.save_list(SAVE_AFTER, cx);
+    }
+
+    fn save_list(&mut self, after: Duration, cx: &mut Context<Self>) {
         let Some(store) = self.store.clone() else {
             return;
         };
@@ -611,28 +675,15 @@ impl Nimbra {
         if matches!(self.mailbox, View::Search | View::AllInboxes) || self.status != Status::Ready {
             return;
         }
-        // Keep the store small: the newest 300 threads of a mailbox, and the full text of
-        // the newest 100 (older ones are downloaded again when opened).
-        const KEEP_THREADS: usize = 300;
-        const KEEP_BODIES: usize = 100;
-        let mails: Vec<Mail> = self
+        let mut mails: Vec<Mail> = self
             .mails
             .iter()
             .zip(&self.done)
             .filter(|(_, done)| !**done)
             .map(|(mail, _)| mail.clone())
             .take(KEEP_THREADS)
-            .enumerate()
-            .map(|(index, mut mail)| {
-                if index >= KEEP_BODIES && mail.loaded {
-                    mail.loaded = false;
-                    mail.body.clear();
-                    mail.earlier.clear();
-                    mail.html = None;
-                }
-                mail
-            })
             .collect();
+        mails.iter_mut().skip(KEEP_BODIES).for_each(forget_body);
         if self.mailbox == View::Inbox {
             self.inbox_saved_empty = mails.is_empty();
             self.inboxes_saved_empty
@@ -647,49 +698,56 @@ impl Nimbra {
             labels: self.labels.clone(),
             synced_to: self.synced_to.clone(),
         };
-        cx.background_executor()
-            .spawn(async move {
-                // The list first: a sync point ahead of its list would miss what changed.
-                if let Err(error) = store
-                    .save_newest(&name, &mails, taken)
-                    .and_then(|_| store.save_newest("meta", &saved, taken))
-                {
-                    eprintln!("nimbra: saving the mail store failed: {error}");
-                }
-            })
-            .detach();
+        // A newer copy of the same list takes the place of one still waiting.
+        let key = (self.account_id.clone(), name.clone());
+        let save = cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(after).await;
+            cx.background_executor()
+                .spawn(async move {
+                    // The list first: a sync point ahead of its list would miss what changed.
+                    if let Err(error) = store
+                        .save_newest(&name, &mails, taken)
+                        .and_then(|_| store.save_newest("meta", &saved, taken))
+                    {
+                        eprintln!("nimbra: saving the mail store failed: {error}");
+                    }
+                })
+                .await;
+        });
+        self.flow.saves.insert(key, save);
     }
 
-    /// Opens the thread behind a clicked notification. macOS brings the app forward itself.
+    /// Opens the thread behind a clicked notification (macOS brings the app forward itself),
+    /// and says why quitting was put off. Both are rung from outside GPUI, so this waits for
+    /// the bell rather than looking every so often.
     pub(super) fn watch_notification_clicks(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            let mut heard = 0;
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(250))
-                    .await;
-                this.update(cx, |this, cx| {
-                    crate::quitting::set_would_lose(this.would_lose(cx))
-                })
-                .ok();
+                heard = OUTSIDE.after(heard).await;
                 if crate::quitting::take_put_off() {
                     // It may be hidden, and whoever quit has to see why it did not.
                     cx.update(crate::show_main_window).ok();
-                    this.update(cx, |this, cx| {
+                    let shown = this.update(cx, |this, cx| {
                         this.tell(QUIT_WOULD_LOSE);
                         cx.notify();
-                    })
-                    .ok();
+                    });
+                    if shown.is_err() {
+                        break; // the window is gone
+                    }
                 }
                 let clicked = crate::notify::take_clicked();
                 let Some(id) = clicked.into_iter().rev().find(|id| id.as_str() != "test") else {
-                    if this.update(cx, |_, _| ()).is_err() {
-                        break; // the window is gone
-                    }
                     continue;
                 };
                 // The window may be hidden (closed with ⌘W): bring it back first.
                 cx.update(crate::show_main_window).ok();
-                this.update(cx, |this, cx| this.open_thread(id, cx)).ok();
+                if this
+                    .update(cx, |this, cx| this.open_thread(id, cx))
+                    .is_err()
+                {
+                    break;
+                }
             }
         })
         .detach();
@@ -807,9 +865,9 @@ impl Nimbra {
                     let sliced = std::time::Instant::now();
                     let woke = match client {
                         Some(client) => {
-                            cx.background_executor()
-                                .spawn(async move { client.wait_for_change(slice) })
+                            on_own_thread("nimbra-mail-wait", move || client.wait_for_change(slice))
                                 .await
+                                .unwrap_or(false)
                         }
                         None => false,
                     };
@@ -1032,16 +1090,23 @@ impl Nimbra {
                             let woken = store.as_ref().map_or_else(Vec::new, |store| {
                                 carry_out_due(&account, store, &connected, &writes)
                             });
-                            anyhow::Ok((at, summaries, extra, changed, unread, woken))
+                            let snoozed = store.as_ref().map(|store| {
+                                store.load::<Vec<Snooze>>("snoozed").unwrap_or_default()
+                            });
+                            anyhow::Ok((at, summaries, extra, changed, unread, woken, snoozed))
                         })
                         .await;
-                    let Ok((at, summaries, extra, changed, unread, woken)) = checked else {
+                    let Ok((at, summaries, extra, changed, unread, woken, snoozed)) = checked
+                    else {
                         continue; // offline or signed out: next time
                     };
                     feeds.insert(id.clone(), at);
                     this.update(cx, |this, cx| {
                         if !this.others.contains_key(&id) {
                             return;
+                        }
+                        if let Some(snoozed) = snoozed.filter(|_| id != this.account_id) {
+                            this.took_snoozed(id.clone(), snoozed);
                         }
                         this.account_unread.insert(id.clone(), unread);
                         if changed {
@@ -1303,10 +1368,11 @@ impl Nimbra {
                 }
                 // After the listing, which clears the notice.
                 if failed > 0 {
-                    this.notice = Some(
-                        format!("{failed} account(s) could not be checked; showing the rest.")
+                    this.notice = Some(match failed {
+                        1 => "One account could not be checked. Reload to try again.".into(),
+                        n => format!("{n} accounts could not be checked. Reload to try again.")
                             .into(),
-                    );
+                    });
                 }
                 // Count only; never addresses or subjects.
                 eprintln!("nimbra: All inboxes listed ({} threads)", this.mails.len());
@@ -1321,8 +1387,13 @@ impl Nimbra {
     fn show_inbox(&mut self, email: String, threads: Vec<mail::Summary>, cx: &mut Context<Self>) {
         // A different Google account than the one the store was saved for: start clean.
         if self.account.contains('@') && self.account.as_ref() != email.as_str() {
-            if let Some(store) = &self.store {
-                store.clear();
+            if let Some(store) = self.store.clone() {
+                // The other account's lists still waiting to be saved are not saved now.
+                let shown = self.account_id.clone();
+                self.flow.saves.retain(|(of, _), _| *of != shown);
+                cx.background_executor()
+                    .spawn(async move { store.clear() })
+                    .detach();
             }
             self.cache.clear();
             self.outbox = Outbox::default();
@@ -1381,8 +1452,21 @@ impl Nimbra {
         self.load_selected(cx);
     }
 
-    /// Fetches the content of the thread on show, without marking it read.
+    /// Fetches the content of the thread on show, without marking it read. While keys step
+    /// through the rows faster than threads load, only the row they stop on is fetched.
     pub(super) fn load_selected(&mut self, cx: &mut Context<Self>) {
+        self.flow.stepped = None;
+        if self.flow.pace.at_once(std::time::Instant::now()) {
+            self.load_shown(cx);
+            return;
+        }
+        self.flow.stepped = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Pace::GAP).await;
+            this.update(cx, |this, cx| this.load_shown(cx)).ok();
+        }));
+    }
+
+    fn load_shown(&mut self, cx: &mut Context<Self>) {
         let Some(mail) = self.mails.get(self.selected) else {
             return;
         };
@@ -1407,6 +1491,9 @@ impl Nimbra {
         let generation = self.account_gen;
         self.body_failed.remove(&key);
         cx.notify();
+        if !self.flow.bodies.begin(key.clone()) {
+            return;
+        }
         cx.spawn(async move |this, cx| {
             let thread_id = id.clone();
             let result = within(cx.background_executor(), async move {
@@ -1414,6 +1501,7 @@ impl Nimbra {
             })
             .await;
             this.update(cx, |this, cx| {
+                this.flow.bodies.end(&key);
                 // A different account was opened meanwhile: this answer is not for it.
                 if this.account_gen != generation {
                     return;

@@ -294,6 +294,8 @@ pub struct Client {
     store: Mutex<Option<Arc<Store>>>,
     raw: Mutex<VecDeque<(String, Arc<Vec<u8>>)>>,
     writes: AtomicU64,
+    /// Whether the server files what it sends in Sent itself, once a send has shown it.
+    files_sent: Mutex<Option<bool>>,
     /// Shared with the IDLE thread.
     watch: Arc<Watch>,
 }
@@ -379,6 +381,7 @@ impl Client {
             store: Mutex::new(None),
             raw: Mutex::new(VecDeque::new()),
             writes: AtomicU64::new(0),
+            files_sent: Mutex::new(None),
             watch: Arc::default(),
         }
     }
@@ -1301,9 +1304,23 @@ impl Client {
             }
         })?;
         self.writes.fetch_add(1, Ordering::Relaxed);
-        // Sent: some servers file it themselves a moment later.
-        std::thread::sleep(Duration::from_millis(1500));
-        if !self.in_sent(message_id).unwrap_or(true) {
+        let files_sent = *self.files_sent.lock().unwrap();
+        let file_it = match files_sent {
+            Some(files) => !files,
+            // Some servers file it themselves, a moment later. Seen once, that is known
+            // for the next send, which then need not wait.
+            None => {
+                std::thread::sleep(Duration::from_millis(1500));
+                match self.in_sent(message_id) {
+                    Ok(found) => {
+                        *self.files_sent.lock().unwrap() = Some(found);
+                        !found
+                    }
+                    Err(_) => false,
+                }
+            }
+        };
+        if file_it {
             let _ = self.append(Role::Sent, raw, message_id, &[::imap::types::Flag::Seen]);
         }
         Ok(())
@@ -1967,7 +1984,8 @@ fn sign_in<S: Read + Write>(
     signed_in_or_refused(signed_in, account)
 }
 
-/// The session, or why there is none: NO or BAD is a refused sign-in.
+/// The session, or why there is none. Only a refusal of the password or token itself is
+/// `SignedOut`, which signs out and wipes: a busy server says NO as well.
 fn signed_in_or_refused<S: Read + Write>(
     signed_in: std::result::Result<::imap::Session<S>, (::imap::Error, ::imap::Client<S>)>,
     account: &str,
@@ -1976,15 +1994,81 @@ fn signed_in_or_refused<S: Read + Write>(
         Ok(session) => Ok(session),
         // What the server said goes along (cleaned, short): "enable IMAP first" and the like
         // is what tells someone setting up an account what to do.
-        Err((::imap::Error::No(no), _)) => Err(anyhow!(SignedOut {
-            account: account.to_string(),
-        })
-        .context(ServerSaid(said(&no.information)))),
-        Err((::imap::Error::Bad(_), _)) => Err(SignedOut {
-            account: account.to_string(),
+        Err((::imap::Error::No(no), _)) => {
+            let said = ServerSaid(said(without_code(&no.information)));
+            Err(match refusal(&no.information) {
+                Refusal::Credentials => anyhow!(SignedOut {
+                    account: account.to_string(),
+                })
+                .context(said),
+                // Offline is what is shown and what is tried again later.
+                Refusal::Busy => anyhow!(said).context(Offline),
+                Refusal::Other => anyhow!(said),
+            })
         }
-        .into()),
+        Err((::imap::Error::Bad(bad), _)) => {
+            Err(anyhow!(ServerSaid(said(without_code(&bad.information))))
+                .context("The mail server did not understand the sign-in."))
+        }
         Err((error, _)) => Err(anyhow!(Offline).context(error.to_string())),
+    }
+}
+
+/// A server's answer without the response code in brackets at its start.
+fn without_code(information: &str) -> &str {
+    let text = information.trim_start();
+    text.strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .map_or(text, |(_, words)| words)
+}
+
+/// What a NO to a sign-in means.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The password or token was refused: only signing in again helps.
+    Credentials,
+    /// The server cannot take it now (busy, too many connections, down for a moment):
+    /// trying again later does.
+    Busy,
+    /// Something the account's owner has to sort out with the provider, that a new password
+    /// would not change.
+    Other,
+}
+
+/// Reads a NO answered to a sign-in. The response code (RFC 5530) decides when there is
+/// one; servers that send none are read by their words, and otherwise taken at their NO.
+pub fn refusal(information: &str) -> Refusal {
+    let text = information.trim_start();
+    let code = text
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .map(|(code, _)| code.split_whitespace().next().unwrap_or_default())
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    match code.as_str() {
+        "AUTHENTICATIONFAILED" | "AUTHORIZATIONFAILED" | "EXPIRED" => {
+            return Refusal::Credentials;
+        }
+        "UNAVAILABLE" | "INUSE" | "LIMIT" | "SERVERBUG" => return Refusal::Busy,
+        "CONTACTADMIN" | "PRIVACYREQUIRED" | "NOPERM" | "OVERQUOTA" => return Refusal::Other,
+        _ => {}
+    }
+    let words = text.to_lowercase();
+    let busy = [
+        "try again later",
+        "temporar",
+        "too many",
+        "unavailable",
+        "maintenance",
+        "busy",
+        "overload",
+        "connection limit",
+        "rate limit",
+    ];
+    if busy.iter().any(|sign| words.contains(sign)) {
+        Refusal::Busy
+    } else {
+        Refusal::Credentials
     }
 }
 
@@ -2648,6 +2732,78 @@ mod tests {
         let result = sign_in(&servers, secret, "acct", stream).map(|_| ());
         let sent = String::from_utf8(sent.lock().unwrap().clone()).unwrap();
         (result, sent)
+    }
+
+    #[test]
+    fn only_a_refused_password_is_a_sign_out() {
+        let table = [
+            (
+                "[AUTHENTICATIONFAILED] Invalid credentials (Failure)",
+                Refusal::Credentials,
+            ),
+            ("[AUTHORIZATIONFAILED] No access", Refusal::Credentials),
+            ("[EXPIRED] Password expired", Refusal::Credentials),
+            // A code decides over the words.
+            (
+                "[AUTHENTICATIONFAILED] Temporarily wrong, try again later",
+                Refusal::Credentials,
+            ),
+            ("AUTHENTICATE failed.", Refusal::Credentials),
+            ("Authentication failed.", Refusal::Credentials),
+            (
+                "[ALERT] Please log in via your web browser",
+                Refusal::Credentials,
+            ),
+            ("", Refusal::Credentials),
+            (
+                "[UNAVAILABLE] Temporary authentication failure",
+                Refusal::Busy,
+            ),
+            ("[unavailable] lower case code", Refusal::Busy),
+            ("[INUSE] Mailbox in use", Refusal::Busy),
+            ("[LIMIT] Too many sessions", Refusal::Busy),
+            ("[SERVERBUG] Internal error", Refusal::Busy),
+            (
+                "Too many simultaneous connections. (Failure)",
+                Refusal::Busy,
+            ),
+            ("Server busy, try again later", Refusal::Busy),
+            ("Temporary authentication failure", Refusal::Busy),
+            ("[ALERT] System down for maintenance", Refusal::Busy),
+            ("[CONTACTADMIN] Account disabled", Refusal::Other),
+            ("[PRIVACYREQUIRED] Use TLS", Refusal::Other),
+            ("[OVERQUOTA] Over quota", Refusal::Other),
+        ];
+        for (said, meant) in table {
+            assert_eq!(refusal(said), meant, "{said:?}");
+        }
+    }
+
+    #[test]
+    fn a_busy_server_at_sign_in_is_offline_not_signed_out() {
+        const CAPS: &str = "* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\na1 OK done\r\n";
+        let password = Secret::Password("pw".into());
+        let refused = |answer: &str| {
+            scripted_sign_in(&format!("{CAPS}+ \r\na2 {answer}\r\n"), &password)
+                .0
+                .unwrap_err()
+        };
+        let busy = refused("NO [UNAVAILABLE] Temporary authentication failure");
+        assert!(busy.is::<Offline>() && !busy.is::<SignedOut>());
+        assert!(
+            busy.downcast_ref::<ServerSaid>()
+                .is_some_and(|said| said.0 == "Temporary authentication failure")
+        );
+        let wrong = refused("NO [AUTHENTICATIONFAILED] Invalid credentials");
+        assert!(
+            wrong
+                .downcast_ref::<SignedOut>()
+                .is_some_and(|out| out.account == "acct")
+        );
+        let disabled = refused("NO [CONTACTADMIN] Account disabled");
+        assert!(!disabled.is::<SignedOut>() && !disabled.is::<Offline>());
+        let bad = refused("BAD Unexpected command");
+        assert!(!bad.is::<SignedOut>() && !bad.is::<Offline>());
     }
 
     #[test]
