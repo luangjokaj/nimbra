@@ -626,7 +626,6 @@ impl Nimbra {
         self.back.clear();
         self.forward.clear();
         self.selected = 0;
-        self.palette = false;
         self.removed_by.clear();
         self.moved.clear();
         self.notify_from = None;
@@ -1041,7 +1040,6 @@ impl Nimbra {
         self.parked.clear();
         self.compose = None;
         self.selected = 0;
-        self.palette = false;
         self.account = "".into();
         self.status = Status::SignedOut;
         self.notice = Some("Signed out. The mail kept on this Mac was removed.".into());

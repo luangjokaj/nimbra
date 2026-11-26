@@ -5,10 +5,10 @@ use gpui::{SharedString, TextRun, WindowTextSystem, px};
 
 pub const LINE: f32 = 18.;
 pub const FONT: f32 = 13.;
-pub const GAP: f32 = 16.;
+pub const GAP: f32 = 12.;
 pub const LEFT: f32 = 16.;
-pub const RIGHT: f32 = 8.;
-pub const DISMISS: (f32, f32) = (84., 32.);
+pub const RIGHT: f32 = 12.;
+pub const DISMISS: f32 = 24.;
 const PAD_Y: f32 = 12.;
 const BORDER: f32 = 1.;
 const WIDEST: f32 = 620.;
@@ -28,7 +28,7 @@ pub struct Toast {
 impl Toast {
     /// `room` is how wide the window under it is.
     pub fn new(text: &str, room: f32, text_system: &WindowTextSystem) -> Self {
-        let chrome = LEFT + GAP + DISMISS.0 + RIGHT + 2. * BORDER;
+        let chrome = LEFT + GAP + DISMISS + RIGHT + 2. * BORDER;
         let wrap = ((room - 48.).min(WIDEST) - chrome).max(LEAST_TEXT);
         let measure = |text: &str| -> (usize, f32) {
             let run = TextRun {
@@ -64,7 +64,7 @@ impl Toast {
             text: text.into(),
             text_width,
             width: text_width + chrome,
-            height: (lines as f32 * LINE).max(DISMISS.1) + 2. * (PAD_Y + BORDER),
+            height: (lines as f32 * LINE).max(DISMISS) + 2. * (PAD_Y + BORDER),
         }
     }
 }

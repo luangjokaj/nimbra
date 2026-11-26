@@ -11,7 +11,7 @@ use gpui::{
 
 use crate::arrival::{Arrival, drop_for};
 use crate::checking::{Asked, Checks, within};
-use crate::data::{COMMANDS, Mail, inbox};
+use crate::data::{Mail, inbox};
 use crate::gmail;
 use crate::input::{InputEvent, TextInput};
 use crate::keyboard::{self, Pane, Row as SidebarRow};
@@ -90,9 +90,6 @@ use list::*;
 #[path = "reading.rs"]
 mod reading;
 use reading::*;
-
-#[path = "palette.rs"]
-mod palette;
 
 #[path = "snooze_menu.rs"]
 mod snooze_menu;
@@ -464,6 +461,10 @@ pub struct Nimbra {
     finder_sel: usize,
     finder_gen: u64,
     finder_loading: bool,
+    /// What the mail on this Mac is searched by while the panel is open, and the wait
+    /// before Gmail is asked (replaced on each keystroke).
+    finder_index: Vec<finder::Indexed>,
+    finder_task: Option<gpui::Task<()>>,
     /// Counts All/Unread switches, to slide the highlight (0: never switched, no slide).
     filter_gen: usize,
     filter_switched: Option<std::time::Instant>,
@@ -509,8 +510,6 @@ pub struct Nimbra {
     flow: mailbox::Flow,
     /// Snoozed threads being brought back right now.
     waking: HashSet<String>,
-    /// The choices in the open snooze palette.
-    snooze_choices: Vec<SnoozeChoice>,
     /// Where each mailbox's next page starts, when Gmail has more.
     next_pages: HashMap<View, String>,
     /// Mailboxes whose next page could not be loaded: not asked again until a refresh.
@@ -556,10 +555,10 @@ pub struct Nimbra {
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
-    /// What the open menu, the snooze panel and the label sheet were opened for. A refresh
+    /// What the open menu, the Snooze menu and the label sheet were opened for. A refresh
     /// can move or remove rows under each, so they check before acting (see `still_meant`).
     menu_for: Option<MeantFor>,
-    palette_for: Option<MeantFor>,
+    snooze_for: Option<MeantFor>,
     label_for: Option<MeantFor>,
     /// The Add account sheet (an address that is not Gmail), when it is open.
     account_sheet: Option<AccountSheet>,
@@ -637,8 +636,6 @@ pub struct Nimbra {
     done: Vec<bool>,
     history: Vec<usize>,
     selected: usize,
-    palette: bool,
-    palette_sel: usize,
     dark: bool,
     sidebar_open: bool,
     /// Which pane Up, Down, Enter and Escape act in.
@@ -702,7 +699,7 @@ pub struct Nimbra {
 
 impl Nimbra {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        // NIMBRA_SCREEN=palette|zero and NIMBRA_THEME=light open the sample data in a given
+        // NIMBRA_SCREEN=zero (and the others below) and NIMBRA_THEME=light open the sample data in a given
         // state, which is handy for screenshots. NIMBRA_DEMO=1 forces the sample data.
         let screen = std::env::var("NIMBRA_SCREEN").unwrap_or_default();
         let sample = !screen.is_empty() || std::env::var_os("NIMBRA_DEMO").is_some();
@@ -778,6 +775,8 @@ impl Nimbra {
             finder_sel: 0,
             finder_gen: 0,
             finder_loading: false,
+            finder_index: Vec::new(),
+            finder_task: None,
             search,
             query: String::new(),
             _search_events: search_events,
@@ -849,7 +848,6 @@ impl Nimbra {
             snoozed_elsewhere: Vec::new(),
             flow: mailbox::Flow::default(),
             waking: HashSet::new(),
-            snooze_choices: Vec::new(),
             next_pages: HashMap::new(),
             more_failed: HashSet::new(),
             body_failed: HashSet::new(),
@@ -895,7 +893,7 @@ impl Nimbra {
             menu_at: (0., 0.),
             row_actions: Vec::new(),
             menu_for: None,
-            palette_for: None,
+            snooze_for: None,
             label_for: None,
             menu_labels: Vec::new(),
             labels_asked: None,
@@ -953,8 +951,6 @@ impl Nimbra {
                 .filter(|i| *i < mails.len())
                 .unwrap_or(0),
             mails,
-            palette: screen == "palette",
-            palette_sel: 0,
             dark: std::env::var("NIMBRA_THEME").as_deref() != Ok("light"),
             list_open: std::env::var("NIMBRA_LIST").as_deref() != Ok("closed"),
             // NIMBRA_LIST_WIDTH=<px> starts with the list at that width (screenshots).
@@ -1582,7 +1578,6 @@ impl Nimbra {
     /// ⌘, or the account menu: the Settings window (brought forward if already open).
     fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
-        self.palette = false;
         self.login_item = crate::system::opens_at_login();
         if let Some(handle) = &self.settings_window
             && handle
@@ -1714,7 +1709,6 @@ impl Nimbra {
         self.back.clear();
         self.forward.clear();
         self.selected = 0;
-        self.palette = false;
         self.status = Status::SignedOut;
         self.notice = (!password && !self.is_microsoft(&shown))
             .then(|| "Your Google sign-in expired.".into());
@@ -1766,10 +1760,7 @@ impl Nimbra {
     }
 
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.palette {
-            let max = self.palette_len() as isize - 1;
-            self.palette_sel = (self.palette_sel as isize + delta).clamp(0, max) as usize;
-        } else if self.pane == Pane::Sidebar {
+        if self.pane == Pane::Sidebar {
             let len = self.sidebar_now().rows().len();
             self.sidebar_cursor = keyboard::step(self.sidebar_cursor, delta, len);
             self.reveal_cursor.set(true);
@@ -1792,7 +1783,7 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Home and End: the first or last thread, palette row or sidebar row.
+    /// Home and End: the first or last thread or sidebar row.
     fn step_to_end(&mut self, last: bool, cx: &mut Context<Self>) {
         let far = if last { isize::MAX / 2 } else { isize::MIN / 2 };
         self.step(far, cx);
@@ -2377,7 +2368,7 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &Last, _, cx| this.step_to_end(true, cx)))
             .on_action(cx.listener(|this, _: &FocusSidebar, _, cx| this.focus_sidebar(cx)))
             .on_action(cx.listener(|this, _: &OpenSidebarRow, _, cx| {
-                if this.pane == Pane::Sidebar && !this.palette {
+                if this.pane == Pane::Sidebar {
                     this.open_sidebar_row(cx)
                 }
             }))
@@ -2385,7 +2376,7 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &PickDown, _, cx| this.pick_more(1, cx)))
             .on_action(cx.listener(|this, _: &PickUp, _, cx| this.pick_more(-1, cx)))
             .on_action(cx.listener(|this, _: &OpenInWindow, _, cx| {
-                if !this.palette && this.visible().contains(&this.selected) {
+                if this.visible().contains(&this.selected) {
                     this.open_message_window(this.selected, cx)
                 }
             }))
@@ -2419,11 +2410,7 @@ impl Render for Nimbra {
                     }
                 }),
             )
-            .on_action(cx.listener(|this, _: &MarkDone, _, cx| {
-                if !this.palette {
-                    this.mark_done(cx)
-                }
-            }))
+            .on_action(cx.listener(|this, _: &MarkDone, _, cx| this.mark_done(cx)))
             .on_action(cx.listener(|this, _: &Undo, _, cx| this.undo(cx)))
             .on_action(
                 cx.listener(|this, _: &Compose, _, cx| this.open_compose(ComposeKind::New, cx)),
@@ -2440,16 +2427,9 @@ impl Render for Nimbra {
             )
             .on_action(cx.listener(|this, _: &ToggleStar, _, cx| this.toggle_star(cx)))
             .on_action(cx.listener(|this, _: &MarkUnread, _, cx| this.toggle_unread(cx)))
-            .on_action(cx.listener(|this, _: &Trash, _, cx| {
-                if !this.palette {
-                    this.trash(cx)
-                }
-            }))
+            .on_action(cx.listener(|this, _: &Trash, _, cx| this.trash(cx)))
             .on_action(cx.listener(|this, _: &TogglePalette, window, cx| {
-                if this.palette {
-                    this.palette = false;
-                    cx.notify();
-                } else if !this.visible().is_empty() {
+                if !this.visible().is_empty() {
                     this.leave_sidebar(cx);
                     this.open_snooze(None, window, cx);
                 }
@@ -2504,12 +2484,12 @@ impl Render for Nimbra {
                 } else if this.shortcuts {
                     this.shortcuts = false;
                     cx.notify();
-                } else if this.pane == Pane::Sidebar && !this.palette {
+                } else if this.pane == Pane::Sidebar {
                     this.leave_sidebar(cx);
-                } else if !this.picked.is_empty() && !this.palette {
+                } else if !this.picked.is_empty() {
                     this.picked.clear();
                     cx.notify();
-                } else if this.focus_restore.is_some() && !this.palette && this.compose.is_none() {
+                } else if this.focus_restore.is_some() && this.compose.is_none() {
                     this.toggle_full_view(cx);
                 } else if let Some(composer) = this.compose.as_mut()
                     && composer.suggest.take().is_some()
@@ -2519,15 +2499,10 @@ impl Render for Nimbra {
                     this.request_close_compose(cx);
                 } else if this.mailbox == View::Search || !this.search.read(cx).text().is_empty() {
                     this.clear_search(cx);
-                } else {
-                    this.palette = false;
-                    cx.notify();
                 }
             }))
             .on_action(cx.listener(|this, _: &Confirm, _, cx| {
-                if this.palette {
-                    this.run_command(cx);
-                } else if this.pane == Pane::Sidebar {
+                if this.pane == Pane::Sidebar {
                     this.open_sidebar_row(cx);
                 } else {
                     // Return: the open message in full view (and back).
@@ -2713,7 +2688,6 @@ impl Render for Nimbra {
                 ))
                 .child(self.window_controls(&t, place.x, list_shown, cx))
             })
-            .when(self.palette && !empty, |d| d.child(self.palette(&t, cx)))
             .when(self.compose.is_some() && !composing_elsewhere, |d| {
                 d.child(self.compose_view(&t, viewport, cx))
             })

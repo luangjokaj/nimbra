@@ -5,6 +5,21 @@
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, TimeZone, Timelike, Weekday};
 
 use super::*;
+use crate::theme::radius;
+use crate::ui::motion;
+
+/// Between `from` (0) and `to` (1), as colour is mixed.
+fn mix(from: Hsla, to: Hsla, amount: f32) -> Hsla {
+    let (a, b) = (gpui::Rgba::from(from), gpui::Rgba::from(to));
+    let lerp = |x: f32, y: f32| x + (y - x) * amount;
+    gpui::Rgba {
+        r: lerp(a.r, b.r),
+        g: lerp(a.g, b.g),
+        b: lerp(a.b, b.b),
+        a: lerp(a.a, b.a),
+    }
+    .into()
+}
 
 const WIDTH: f32 = 288.;
 const ROW: f32 = 32.;
@@ -15,7 +30,7 @@ const CHROME: f32 = 2. * 6. + 2.;
 const CELL: f32 = (WIDTH - 2. * 6. - 2.) / 7.;
 const CAL_HEAD: f32 = 36.;
 const CAL_DAYS: f32 = 22.;
-/// The footer with Quick times and the Snooze button.
+/// The footer with Quick Times and the Snooze button.
 const CAL_FOOT: f32 = 44.;
 /// The field to type any time in, above the hours.
 const FIELD: f32 = 30.;
@@ -80,7 +95,6 @@ fn choice(icon: &'static str, label: &str, when: chrono::DateTime<Local>) -> Sno
         icon,
         label: label.to_string(),
         hint: when_text(when),
-        header: None,
         until_ms: when.timestamp_millis(),
         no_reply: false,
     }
@@ -93,25 +107,25 @@ pub(super) fn quick_times() -> Vec<SnoozeChoice> {
     let tomorrow = today + Days::days(1);
     let mut choices = Vec::new();
     if now.hour() < 17 {
-        choices.extend(at(today, 18).map(|w| choice("clock", "Later today", w)));
+        choices.extend(at(today, 18).map(|w| choice("clock", "Later Today", w)));
     } else {
-        choices.push(choice("clock", "In three hours", now + Days::hours(3)));
+        choices.push(choice("clock", "In Three Hours", now + Days::hours(3)));
     }
     choices.extend(at(tomorrow, 9).map(|w| choice("calendar", "Tomorrow", w)));
-    choices.extend(at(tomorrow, 18).map(|w| choice("calendar", "Tomorrow evening", w)));
+    choices.extend(at(tomorrow, 18).map(|w| choice("calendar", "Tomorrow Evening", w)));
     // The coming Saturday, unless it is already the weekend.
     if !matches!(now.weekday(), Weekday::Sat | Weekday::Sun) {
         let mut saturday = today + Days::days(1);
         while saturday.weekday() != Weekday::Sat {
             saturday += Days::days(1);
         }
-        choices.extend(at(saturday, 9).map(|w| choice("calendar", "This weekend", w)));
+        choices.extend(at(saturday, 9).map(|w| choice("calendar", "This Weekend", w)));
     }
     let mut monday = today + Days::days(1);
     while monday.weekday() != Weekday::Mon {
         monday += Days::days(1);
     }
-    choices.extend(at(monday, 9).map(|w| choice("calendar", "Next week", w)));
+    choices.extend(at(monday, 9).map(|w| choice("calendar", "Next Week", w)));
     // On a Friday the weekend is tomorrow, on a Sunday next week is: each time once.
     choices.sort_by_key(|c| c.until_ms);
     choices.dedup_by_key(|c| c.until_ms);
@@ -204,13 +218,18 @@ pub(super) struct SnoozeMenu {
     /// What is typed there is not a time.
     typed_bad: bool,
     _typing: gpui::Subscription,
-    /// The row lit for the keyboard: the times, then Pick a date, then the switch.
+    /// The row lit for the keyboard: the times, then Pick a Date, then the switch.
     sel: usize,
+    /// The switch's knob, from off (0) to on (1), and its track's light.
+    knob: motion::Tween,
+    lit: motion::Tween,
     dark: bool,
     focus: gpui::FocusHandle,
+    reveal: Reveal,
     was_active: bool,
     opened: std::time::Instant,
     _activation: gpui::Subscription,
+    _settling: Option<gpui::Task<()>>,
 }
 
 impl SnoozeMenu {
@@ -218,12 +237,27 @@ impl SnoozeMenu {
         self.choices.len() + 2
     }
 
-    fn pick(&mut self, choice: SnoozeChoice, window: &mut Window, cx: &mut Context<Self>) {
+    /// Snoozes until `choice`. Chosen with the keyboard the menu goes at once; clicked, it
+    /// fades.
+    fn pick(
+        &mut self,
+        choice: SnoozeChoice,
+        at_once: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.reveal.leaving() {
+            return;
+        }
         let alert = self.alert;
-        window.remove_window();
         self.owner
             .update(cx, |owner, cx| owner.snooze_picked(choice, alert, cx))
             .ok();
+        if at_once {
+            window.remove_window();
+        } else {
+            self.reveal.leave(motion::MENU_OUT, window, cx);
+        }
     }
 
     fn calendar(
@@ -237,7 +271,7 @@ impl SnoozeMenu {
         window.remove_window();
         self.owner
             .update(cx, |owner, cx| {
-                owner.open_snooze_window(origin, Mode::Calendar(month, hours), cx)
+                owner.open_snooze_window(origin, Mode::Calendar(month, hours), false, cx)
             })
             .ok();
     }
@@ -248,7 +282,7 @@ impl SnoozeMenu {
     }
 
     /// Snoozes until the day and time picked in the calendar.
-    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm(&mut self, at_once: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(when) = self.chosen() else {
             return;
         };
@@ -256,11 +290,10 @@ impl SnoozeMenu {
             icon: "calendar",
             label: self.day.format("%A, %B %-d").to_string(),
             hint: when_text(when),
-            header: None,
             until_ms: when.timestamp_millis(),
             no_reply: false,
         };
-        self.pick(picked, window, cx);
+        self.pick(picked, at_once, window, cx);
     }
 
     /// A day clicked in the calendar: picked, not yet snoozed.
@@ -308,7 +341,7 @@ impl SnoozeMenu {
         window.remove_window();
         self.owner
             .update(cx, |owner, cx| {
-                owner.open_snooze_window(origin, Mode::List, cx)
+                owner.open_snooze_window(origin, Mode::List, false, cx)
             })
             .ok();
     }
@@ -316,15 +349,24 @@ impl SnoozeMenu {
     fn toggle_alert(&mut self, cx: &mut Context<Self>) {
         self.alert = !self.alert;
         let alert = self.alert;
+        let to = if alert { 1. } else { 0. };
+        self.knob.retarget(to);
+        self.lit.retarget(to);
         self.owner
             .update(cx, |owner, _| owner.snooze_alert = alert)
             .ok();
         cx.notify();
     }
 
-    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn activate(
+        &mut self,
+        index: usize,
+        by_key: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(choice) = self.choices.get(index).cloned() {
-            self.pick(choice, window, cx);
+            self.pick(choice, by_key, window, cx);
         } else if index == self.choices.len() {
             let today = Local::now().date_naive();
             self.calendar(today.with_day(1).unwrap_or(today), false, window, cx);
@@ -333,16 +375,43 @@ impl SnoozeMenu {
         }
     }
 
-    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.remove_window();
+    /// Closes without snoozing: at once for Escape, fading for a click elsewhere.
+    fn dismiss(&mut self, at_once: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.owner
             .update(cx, |owner, _| owner.snooze_window = None)
             .ok();
+        if at_once {
+            window.remove_window();
+        } else {
+            self.reveal.leave(motion::MENU_OUT, window, cx);
+        }
+    }
+
+    /// Its window stopped being the key one (a click on the email, the main window or
+    /// another app). Ignored while the click that opened it settles, then checked again.
+    fn deactivated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let left = SETTLING.saturating_sub(self.opened.elapsed());
+        if left.is_zero() {
+            self.dismiss(false, window, cx);
+            return;
+        }
+        self._settling = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(left).await;
+            this.update_in(cx, |this, window, cx| {
+                if !window.is_window_active() && !this.reveal.leaving() {
+                    this.dismiss(false, window, cx);
+                }
+            })
+            .ok();
+        }));
     }
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reveal.leaving() {
+            return;
+        }
         match (self.mode, event.keystroke.key.as_str()) {
-            (_, "escape") => self.dismiss(window, cx),
+            (_, "escape") => self.dismiss(true, window, cx),
             (Mode::List, "down") => {
                 self.sel = (self.sel + 1) % self.rows();
                 cx.notify();
@@ -351,19 +420,18 @@ impl SnoozeMenu {
                 self.sel = (self.sel + self.rows() - 1) % self.rows();
                 cx.notify();
             }
-            (Mode::List, "enter" | "space") => self.activate(self.sel, window, cx),
+            (Mode::List, "enter" | "space") => self.activate(self.sel, true, window, cx),
             (Mode::Calendar(..), "backspace")
                 if !self.typed.focus_handle(cx).is_focused(window) =>
             {
                 self.back(window, cx)
             }
-            (Mode::Calendar(..), "enter") => self.confirm(window, cx),
+            (Mode::Calendar(..), "enter") => self.confirm(true, window, cx),
             _ => {}
         }
     }
 
-    fn list(&self, t: &Theme, cx: &mut Context<Self>) -> Div {
-        let hover = t.hover;
+    fn list(&self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let row = |index: usize| {
             let lit = index == self.sel;
             div()
@@ -374,9 +442,10 @@ impl SnoozeMenu {
                 .gap(px(10.))
                 .h(px(ROW))
                 .px(px(10.))
-                .rounded(px(8.))
+                .rounded(px(radius::CONTROL))
                 .cursor_pointer()
-                .when(lit, |d| d.bg(hover))
+                .when(lit, |d| d.bg(t.selected))
+                .press_selected(t)
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                     if *hovered && this.sel != index {
                         this.sel = index;
@@ -399,27 +468,27 @@ impl SnoozeMenu {
                 .child(icon(c.icon, 16., t.violet))
                 .child(div().flex_1().child(c.label.clone()))
                 .child(meta(c.hint.clone(), t.text3))
-                .on_click(
-                    cx.listener(move |this, _, window, cx| this.pick(picked.clone(), window, cx)),
-                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.pick(picked.clone(), false, window, cx)
+                }))
         });
         let pick_date = self.choices.len();
         let alert_row = pick_date + 1;
-        let on = self.alert;
-        // The switch: a pill with a knob, lit when on.
+        // The switch: a pill with a knob that slides across as the track lights up.
+        let (knob, lit) = (self.knob.frame(window), self.lit.frame(window));
         let switch = div()
             .flex_none()
             .w(px(30.))
             .h(px(18.))
             .p(px(2.))
-            .rounded(px(9.))
-            .bg(if on { t.violet } else { t.border_strong })
+            .rounded_full()
+            .bg(mix(t.border_strong, t.violet, lit))
             .child(
                 div()
                     .size(px(14.))
-                    .rounded(px(7.))
+                    .rounded_full()
                     .bg(gpui::white())
-                    .ml(px(if on { 12. } else { 0. })),
+                    .ml(px(12. * knob)),
             );
         div()
             .flex()
@@ -438,19 +507,17 @@ impl SnoozeMenu {
             .child(
                 row(pick_date)
                     .child(icon("calendar", 16., t.text2))
-                    .child(div().flex_1().child("Pick a date"))
+                    .child(div().flex_1().child("Pick a Date"))
                     .child(icon("next", 14., t.text3))
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| {
-                            this.activate(pick_date, window, cx)
-                        }),
-                    ),
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.activate(pick_date, false, window, cx)
+                    })),
             )
             .child(divider())
             .child(
                 row(alert_row)
                     .child(icon("bell", 16., t.amber))
-                    .child(div().flex_1().child("Only if nobody replies"))
+                    .child(div().flex_1().child("Only If Nobody Replies"))
                     .child(switch)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_alert(cx))),
             )
@@ -476,7 +543,7 @@ impl SnoozeMenu {
                 .items_center()
                 .justify_center()
                 .size(px(26.))
-                .rounded(px(7.))
+                .rounded(px(radius::CONTROL))
                 .child(icon(name, 14., if enabled { t.text2 } else { t.faint }))
                 .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
         };
@@ -491,6 +558,7 @@ impl SnoozeMenu {
             let picked_day = date == self.day;
             let mut cell = div()
                 .id(("snooze-day", i as usize))
+                .group("snooze-day")
                 .flex()
                 .flex_none()
                 .items_center()
@@ -502,11 +570,18 @@ impl SnoozeMenu {
                         .items_center()
                         .justify_center()
                         .size(px(30.))
-                        .rounded(px(15.))
-                        .when(is_today && !picked_day, |d| {
-                            d.border_1().border_color(t.violet)
+                        .rounded_full()
+                        // Always bordered, so picking a day never moves its number.
+                        .border_1()
+                        .border_color(if is_today && !picked_day {
+                            t.violet
+                        } else {
+                            gpui::transparent_black()
                         })
                         .when(picked_day, |d| d.bg(t.violet))
+                        .when(open && !picked_day, |d| {
+                            d.group_hover("snooze-day", move |s| s.bg(hover))
+                        })
                         .text_color(if picked_day {
                             gpui::white()
                         } else if !open {
@@ -521,9 +596,6 @@ impl SnoozeMenu {
             if open {
                 cell = cell
                     .cursor_pointer()
-                    .when(!picked_day, |d| {
-                        d.hover(move |s| s.bg(hover).rounded(px(8.)))
-                    })
                     .on_click(cx.listener(move |this, _, _, cx| this.set_day(date, cx)));
             }
             cell
@@ -587,7 +659,7 @@ impl SnoozeMenu {
                     // Its edges line up with the hours' grid below it.
                     .mx(px(CHIP_INSET))
                     .px(px(10.))
-                    .rounded(px(8.))
+                    .rounded(px(radius::CONTROL))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .when(hours, |d| d.bg(hover))
@@ -610,7 +682,7 @@ impl SnoozeMenu {
                         .mt(px(CHIP_GAP))
                         .mx(px(CHIP_INSET))
                         .px(px(10.))
-                        .rounded(px(7.))
+                        .rounded(px(radius::CONTROL))
                         .border_1()
                         .border_color(if self.typed_bad {
                             t.rose
@@ -637,13 +709,17 @@ impl SnoozeMenu {
                                 .justify_center()
                                 .w(px((7. * CELL - 2. * CHIP_INSET - 3. * CHIP_GAP) / 4.))
                                 .h(px(CHIP))
-                                .rounded(px(7.))
+                                .rounded(px(radius::CONTROL))
                                 .text_size(px(12.))
                                 .cursor_pointer()
-                                .when(chosen, |d| d.bg(t.violet).text_color(gpui::white()))
+                                .border_1()
+                                .when(chosen, |d| {
+                                    d.bg(t.violet)
+                                        .border_color(t.violet)
+                                        .text_color(gpui::white())
+                                })
                                 .when(!chosen, |d| {
-                                    d.border_1()
-                                        .border_color(t.border)
+                                    d.border_color(t.border)
                                         .text_color(t.text2)
                                         .hover(move |s| s.bg(hover))
                                 })
@@ -674,25 +750,23 @@ impl SnoozeMenu {
                             .gap(px(2.))
                             .px(px(6.))
                             .py(px(3.))
-                            .rounded(px(6.))
+                            .rounded(px(radius::CHIP))
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
                             .child(icon("back", 12., t.text2))
-                            .child(meta("Quick times", t.text2))
+                            .child(meta("Quick Times", t.text2))
                             .on_click(cx.listener(|this, _, window, cx| this.back(window, cx))),
                     )
                     .child({
                         let ready = self.chosen().is_some();
-                        let label = if ready { "Snooze" } else { "Pick a later time" };
-                        let button = button(t, ButtonKind::Primary, label)
+                        let button = button(t, ButtonKind::Primary, "Snooze")
                             .text_size(px(12.))
                             .id("snooze-confirm")
-                            .press(t)
                             .when(!ready, |d| d.opacity(0.5).cursor_default())
                             .when(ready, |d| {
-                                d.on_click(
-                                    cx.listener(|this, _, window, cx| this.confirm(window, cx)),
-                                )
+                                d.on_click(cx.listener(|this, _, window, cx| {
+                                    this.confirm(false, window, cx)
+                                }))
                             });
                         crate::ui::glow(button, "snooze-confirm")
                     }),
@@ -701,14 +775,14 @@ impl SnoozeMenu {
 }
 
 impl Render for SnoozeMenu {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = if self.dark {
             Theme::dark()
         } else {
             Theme::light()
         };
         let body = match self.mode {
-            Mode::List => self.list(&t, cx),
+            Mode::List => self.list(&t, window, cx),
             Mode::Calendar(first, hours) => self.month(first, hours, &t, cx),
         };
         div()
@@ -724,24 +798,28 @@ impl Render for SnoozeMenu {
             .line_height(px(18.))
             .text_color(t.text)
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .size_full()
-                    .p(px(6.))
-                    .rounded(px(12.))
-                    .bg(t.raised)
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![popup_shadow(&t)])
-                    .child(body),
+                self.reveal.apply(
+                    popup_card(&t)
+                        .flex()
+                        .flex_col()
+                        .size_full()
+                        .p(px(6.))
+                        .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                            if !this.reveal.leaving() {
+                                this.dismiss(false, window, cx)
+                            }
+                        }))
+                        .child(body),
+                    window,
+                ),
             )
     }
 }
 
 impl Nimbra {
     /// Opens the Snooze menu for the open (or picked) threads: under the reader's Snooze
-    /// button, or at `at` (window coordinates) when opened from somewhere else.
+    /// button, or at `at` (window coordinates) when opened from somewhere else. Opened by a
+    /// click (`at` is where) it drops in from there; opened by a key it is there at once.
     pub(super) fn open_snooze(
         &mut self,
         at: Option<gpui::Point<gpui::Pixels>>,
@@ -766,7 +844,7 @@ impl Nimbra {
             self.close_snooze_window(cx);
             return;
         }
-        self.palette_for = Some(self.meant_for(&self.targets()));
+        self.snooze_for = Some(self.meant_for(&self.targets()));
         // A fresh menu starts from the first open day again.
         self.snooze_day = None;
         let viewport = window.viewport_size();
@@ -788,7 +866,7 @@ impl Nimbra {
             origin.x + px(left - MENU_MARGIN),
             origin.y + px(top - MENU_MARGIN),
         );
-        self.open_snooze_window(origin, mode, cx);
+        self.open_snooze_window(origin, mode, at.is_some(), cx);
     }
 
     /// The menu's window, its top-left corner (margin included) at `origin` on screen.
@@ -796,6 +874,7 @@ impl Nimbra {
         &mut self,
         origin: gpui::Point<gpui::Pixels>,
         mode: Mode,
+        animate: bool,
         cx: &mut Context<Self>,
     ) {
         self.close_snooze_window(cx);
@@ -805,6 +884,7 @@ impl Nimbra {
             origin,
             gpui::size(px(WIDTH + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
         );
+        let on = if self.snooze_alert { 1. } else { 0. };
         let (owner, dark, alert, time) = (
             cx.weak_entity(),
             self.dark,
@@ -844,42 +924,13 @@ impl Nimbra {
             |window, cx| {
                 crate::blur::no_window_shadow(window);
                 cx.new(|cx| {
-                    // Closes on a click anywhere else, as the other menus do.
-                    cx.spawn_in(window, async move |this, cx| {
-                        let mut armed = false;
-                        loop {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(30))
-                                .await;
-                            if !crate::blur::mouse_down() {
-                                armed = true;
-                            }
-                            let open = this.update_in(cx, |this: &mut SnoozeMenu, window, cx| {
-                                if armed
-                                    && crate::blur::mouse_pressed_outside(
-                                        window,
-                                        MENU_MARGIN as f64,
-                                    )
-                                {
-                                    this.dismiss(window, cx);
-                                    false
-                                } else {
-                                    true
-                                }
-                            });
-                            if !matches!(open, Ok(true)) {
-                                break;
-                            }
-                        }
-                    })
-                    .detach();
                     let focus = cx.focus_handle();
                     let t = if dark { Theme::dark() } else { Theme::light() };
                     let typed = cx.new(|cx| {
                         crate::input::TextInput::new(
                             cx,
                             "Any time, like 4:45 PM",
-                            t.faint,
+                            t.text3,
                             t.violet,
                         )
                     });
@@ -889,7 +940,7 @@ impl Nimbra {
                         |this: &mut SnoozeMenu, _, event: &crate::input::InputEvent, window, cx| {
                             match event {
                                 crate::input::InputEvent::Changed => this.typed_time(cx),
-                                crate::input::InputEvent::Enter => this.confirm(window, cx),
+                                crate::input::InputEvent::Enter => this.confirm(true, window, cx),
                                 _ => {}
                             }
                         },
@@ -911,22 +962,26 @@ impl Nimbra {
                         typed_bad: false,
                         _typing,
                         sel: 0,
+                        knob: motion::Tween::travel(on, motion::SWITCH, motion::ease_out),
+                        lit: motion::Tween::fade(on, motion::SWITCH, motion::ease_out),
                         dark,
                         focus,
+                        reveal: Reveal::new(animate, -4., motion::MENU_IN),
                         was_active: false,
                         opened: std::time::Instant::now(),
+                        // A click elsewhere (the email, the main window, another app) takes
+                        // the key status away from the menu's window: that closes it.
                         _activation: cx.observe_window_activation(
                             window,
                             |this: &mut SnoozeMenu, window, cx| {
                                 if window.is_window_active() {
                                     this.was_active = true;
-                                } else if this.was_active
-                                    && this.opened.elapsed() > Duration::from_millis(500)
-                                {
-                                    this.dismiss(window, cx);
+                                } else if this.was_active && !this.reveal.leaving() {
+                                    this.deactivated(window, cx);
                                 }
                             },
                         ),
+                        _settling: None,
                     }
                 })
             },
@@ -943,7 +998,7 @@ impl Nimbra {
     /// A time was picked: snooze what the menu was opened for, if it is still there.
     fn snooze_picked(&mut self, choice: SnoozeChoice, alert: bool, cx: &mut Context<Self>) {
         self.snooze_window = None;
-        let meant = self.palette_for.clone();
+        let meant = self.snooze_for.clone();
         if meant.is_some() && !self.still_meant(&meant, cx) {
             return;
         }

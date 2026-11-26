@@ -1,7 +1,11 @@
 //! Menus and the other small pop-ups (the Undo pill, notices). Each is a window of its own,
 //! so it can lie over the email, which is a native view above everything GPUI draws.
 
+use gpui::Task;
+
 use super::*;
+use crate::theme::{radius, space};
+use crate::ui::motion;
 
 /// What a row's right-click menu can do.
 #[derive(Clone, Copy, PartialEq)]
@@ -22,16 +26,27 @@ impl RowAction {
     /// Icon and label for the menu.
     pub(super) fn label(self) -> (&'static str, &'static str) {
         match self {
-            RowAction::MarkRead => ("mail", "Mark as read"),
-            RowAction::MarkUnread => ("mail", "Mark as unread"),
+            RowAction::MarkRead => ("mail", "Mark as Read"),
+            RowAction::MarkUnread => ("mail", "Mark as Unread"),
             RowAction::Star => ("star", "Star"),
-            RowAction::Unstar => ("star", "Remove star"),
-            RowAction::Done => ("done", "Mark done"),
-            RowAction::MoveToInbox => ("inbox", "Move to inbox"),
-            RowAction::Trash => ("trash", "Move to trash"),
-            RowAction::DeleteForever => ("trash", "Delete permanently"),
-            RowAction::ReportSpam => ("bell", "Report spam"),
+            RowAction::Unstar => ("star", "Unstar"),
+            RowAction::Done => ("done", "Mark Done"),
+            RowAction::MoveToInbox => ("inbox", "Move to Inbox"),
+            RowAction::Trash => ("trash", "Move to Trash"),
+            RowAction::DeleteForever => ("trash", "Delete Forever"),
+            RowAction::ReportSpam => ("ban", "Report Spam"),
             RowAction::OpenInGmail => ("link", "Open in Gmail"),
+        }
+    }
+
+    /// The key that does the same to the open thread, if there is one.
+    pub(super) fn key(self) -> &'static str {
+        match self {
+            RowAction::MarkRead | RowAction::MarkUnread => "U",
+            RowAction::Star | RowAction::Unstar => "S",
+            RowAction::Done | RowAction::MoveToInbox => "E",
+            RowAction::Trash | RowAction::DeleteForever => "⌫",
+            RowAction::ReportSpam | RowAction::OpenInGmail => "",
         }
     }
 }
@@ -78,109 +93,208 @@ pub(super) const MENU_ROW_CHROME: f32 = 2. * (1. + 6. + 10.) + 16. + 10.;
 /// Transparent space around the menu inside its window, so its shadow is not cut off.
 pub(super) const MENU_MARGIN: f32 = 28.;
 
-/// The shadow of a pop-up window's card (menus, the Undo and notice pills). It has to fade
-/// out inside the window's margin: GPUI draws a shadow out to 3 times its blur, and what
-/// reaches the window's edge is cut off there, which shows as a box around the card.
-pub(super) fn popup_shadow(t: &Theme) -> gpui::BoxShadow {
-    shadow(t.shadow, POPUP_SHADOW.0, POPUP_SHADOW.1, POPUP_SHADOW.2)
+/// A pop-up window's card (menus, the Undo and notice pills): its lift, and a faint accent
+/// light around it. Both have to fade out inside the window's margin: GPUI draws a shadow out
+/// to 3 times its blur, and what reaches the window's edge is cut off there, which shows as a
+/// box around the card.
+pub(super) fn popup_shadow(t: &Theme) -> Vec<gpui::BoxShadow> {
+    let (down, blur, spread) = POPUP_SHADOW;
+    let (glow_blur, glow_spread) = POPUP_GLOW;
+    vec![
+        shadow(t.shadow, down, blur, spread),
+        shadow(t.glow.opacity(0.3), 0., glow_blur, glow_spread),
+    ]
 }
 
 /// Offset down, blur, spread.
 pub(super) const POPUP_SHADOW: (f32, f32, f32) = (4., 8., -2.);
+/// Blur and spread of the accent light, which has no offset.
+const POPUP_GLOW: (f32, f32) = (8., 0.);
+
+/// The card every pop-up window draws: raised, with a luminous hairline edge.
+pub(super) fn popup_card(t: &Theme) -> Div {
+    div()
+        .rounded(px(radius::CARD))
+        .bg(t.raised)
+        .border_1()
+        .border_color(t.edge)
+        .shadow(popup_shadow(t))
+}
+
+/// How a pop-up's card comes and goes: fading in while it travels `from` points (up when
+/// negative) back to its place, and fading out where it is. Opened from the keyboard, it is
+/// simply there.
+pub(super) struct Reveal {
+    shown: motion::Tween,
+    from: f32,
+    leaving: Option<Task<()>>,
+}
+
+impl Reveal {
+    pub(super) fn new(animate: bool, from: f32, length: Duration) -> Self {
+        let mut shown =
+            motion::Tween::fade(if animate { 0. } else { 1. }, length, motion::ease_out);
+        shown.retarget(1.);
+        Self {
+            shown,
+            from,
+            leaving: None,
+        }
+    }
+
+    /// The card as it is at this frame.
+    pub(super) fn apply(&self, card: Div, window: &mut Window) -> Div {
+        let shown = self.shown.frame(window);
+        let travel = if motion::reduced() {
+            0.
+        } else {
+            self.from * (1. - shown)
+        };
+        card.relative().top(px(travel)).opacity(shown)
+    }
+
+    pub(super) fn leaving(&self) -> bool {
+        self.leaving.is_some()
+    }
+
+    /// Fades the card out, then takes its window away.
+    pub(super) fn leave<V: 'static>(
+        &mut self,
+        length: Duration,
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) {
+        if self.leaving() {
+            return;
+        }
+        let mut shown = motion::Tween::fade(self.shown.value(), length, motion::ease_out);
+        shown.retarget(0.);
+        self.shown = shown;
+        self.leaving = Some(cx.spawn_in(window, async move |_, cx| {
+            cx.background_executor().timer(length).await;
+            cx.update(|window, _| window.remove_window()).ok();
+        }));
+        cx.notify();
+    }
+}
+
+/// A pop-up that fades out before its window goes.
+pub(super) trait Leave: Render + Sized {
+    fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>);
+}
+
+/// Lets a pop-up window go the way it goes by itself. While that window is busy (its own
+/// button was clicked) it cannot be reached from here, so that happens right after.
+pub(super) fn let_go<V: Leave>(handle: gpui::WindowHandle<V>, cx: &mut App) {
+    if handle
+        .update(cx, |popup, window, cx| popup.leave(window, cx))
+        .is_err()
+    {
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |popup, window, cx| popup.leave(window, cx))
+                .ok();
+        });
+    }
+}
+
+/// How far a toast rises into place from below.
+const TOAST_RISE: f32 = 8.;
+
+/// Focus moving away right as a pop-up opens is part of the click that opened it.
+pub(super) const SETTLING: Duration = Duration::from_millis(300);
+
+/// One row of a menu: its icon and tint, its label, and its key while that key would do the
+/// same thing.
+pub(super) struct MenuItem {
+    pub(super) icon: &'static str,
+    pub(super) label: SharedString,
+    pub(super) tint: Hsla,
+    pub(super) key: &'static str,
+}
+
+fn item(icon: &'static str, label: impl Into<SharedString>, tint: Hsla) -> MenuItem {
+    MenuItem {
+        icon,
+        label: label.into(),
+        tint,
+        key: "",
+    }
+}
 
 /// A toolbar menu, shown in a small window of its own (see `Nimbra::toggle_menu`).
 pub(super) struct MenuPopup {
-    pub(super) owner: gpui::WeakEntity<Nimbra>,
-    pub(super) menu: Menu,
-    pub(super) items: Vec<(&'static str, SharedString, Hsla)>,
+    owner: gpui::WeakEntity<Nimbra>,
+    menu: Menu,
+    items: Vec<MenuItem>,
     /// False for a menu that only carries a message (no labels yet).
-    pub(super) enabled: bool,
-    pub(super) dark: bool,
-    pub(super) was_active: bool,
-    pub(super) opened: std::time::Instant,
-    pub(super) _activation: gpui::Subscription,
+    enabled: bool,
+    dark: bool,
+    /// The row Return would choose: under the pointer, or moved to with the arrows.
+    lit: Option<usize>,
+    focus: gpui::FocusHandle,
+    reveal: Reveal,
+    was_active: bool,
+    opened: std::time::Instant,
+    _activation: gpui::Subscription,
+    _settling: Option<Task<()>>,
 }
 
 /// A short message at the bottom of the window (see `Nimbra::sync_notice_window`).
 pub(super) struct NoticeToast {
-    pub(super) owner: gpui::WeakEntity<Nimbra>,
-    pub(super) toast: Toast,
-    pub(super) dark: bool,
+    owner: gpui::WeakEntity<Nimbra>,
+    toast: Toast,
+    dark: bool,
+    reveal: Reveal,
+    _timer: Task<()>,
 }
 
-impl Render for NoticeToast {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = if self.dark {
-            Theme::dark()
-        } else {
-            Theme::light()
-        };
-        let owner = self.owner.clone();
-        div()
-            .size_full()
-            .p(px(MENU_MARGIN))
-            .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
-            .text_color(t.text)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(toast::GAP))
-                    .size_full()
-                    .pl(px(toast::LEFT))
-                    .pr(px(toast::RIGHT))
-                    .rounded(px(12.))
-                    .bg(t.raised)
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![popup_shadow(&t)])
-                    // As wide as it was measured, so that it wraps as it was measured.
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(self.toast.text_width))
-                            .text_size(px(toast::FONT))
-                            .line_height(px(toast::LINE))
-                            .child(self.toast.text.clone()),
-                    )
-                    .child(
-                        button(&t, ButtonKind::Secondary, "Dismiss")
-                            .id("dismiss-notice")
-                            .justify_center()
-                            .w(px(toast::DISMISS.0))
-                            .h(px(toast::DISMISS.1))
-                            .press(&t)
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                owner
-                                    .update(cx, |owner, cx| {
-                                        owner.notice = None;
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            })),
-                    ),
-            )
+impl Leave for NoticeToast {
+    fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reveal.leave(motion::TOAST_OUT, window, cx);
     }
 }
 
-/// The "Undo" pill shown after a thread is removed (see `Nimbra::offer_undo`).
-pub(super) struct UndoToast {
-    pub(super) owner: gpui::WeakEntity<Nimbra>,
-    pub(super) label: SharedString,
-    pub(super) dark: bool,
-}
-
-impl Render for UndoToast {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Render for NoticeToast {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = if self.dark {
             Theme::dark()
         } else {
             Theme::light()
         };
         let owner = self.owner.clone();
+        let card = popup_card(&t)
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(toast::GAP))
+            .size_full()
+            .pl(px(toast::LEFT))
+            .pr(px(toast::RIGHT))
+            // As wide as it was measured, so that it wraps as it was measured.
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(self.toast.text_width))
+                    .text_size(px(toast::FONT))
+                    .line_height(px(toast::LINE))
+                    .child(self.toast.text.clone()),
+            )
+            .child(
+                icon_button(&t, "x")
+                    .size(px(toast::DISMISS))
+                    .id("dismiss-notice")
+                    .press(&t)
+                    .tooltip(tip(t.dark, "Dismiss", ""))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        owner
+                            .update(cx, |owner, cx| {
+                                owner.notice = None;
+                                cx.notify();
+                            })
+                            .ok();
+                    })),
+            );
         div()
             .size_full()
             .p(px(MENU_MARGIN))
@@ -188,43 +302,109 @@ impl Render for UndoToast {
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
+            .child(self.reveal.apply(card, window))
+    }
+}
+
+/// The "Undo" pill shown after a thread is removed (see `Nimbra::offer_undo`). It stays while
+/// the pointer is on it, and gives a moment more once the pointer leaves.
+pub(super) struct UndoToast {
+    owner: gpui::WeakEntity<Nimbra>,
+    label: SharedString,
+    dark: bool,
+    shown_gen: usize,
+    reveal: Reveal,
+    timer: Option<Task<()>>,
+}
+
+impl UndoToast {
+    const SHOWN: Duration = Duration::from_secs(6);
+    const AFTER_HOVER: Duration = Duration::from_secs(3);
+
+    fn time_out(&mut self, after: Duration, window: &mut Window, cx: &mut Context<Self>) {
+        self.timer = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            this.update_in(cx, |this, window, cx| {
+                let shown_gen = this.shown_gen;
+                this.owner
+                    .update(cx, |owner, _| {
+                        if owner.undo_gen == shown_gen {
+                            owner.undo_window = None;
+                        }
+                    })
+                    .ok();
+                this.leave(window, cx);
+            })
+            .ok();
+        }));
+    }
+}
+
+impl Leave for UndoToast {
+    fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.timer = None;
+        self.reveal.leave(motion::TOAST_OUT, window, cx);
+    }
+}
+
+impl Render for UndoToast {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = if self.dark {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        let owner = self.owner.clone();
+        let card = popup_card(&t)
+            .flex()
+            .items_center()
+            .gap(px(space::M))
+            .size_full()
+            .pl(px(space::L))
+            .pr(px(6.))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .size_full()
-                    .pl(px(16.))
-                    .pr(px(6.))
-                    .rounded(px(12.))
-                    .bg(t.raised)
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![popup_shadow(&t)])
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .child(self.label.clone()),
-                    )
-                    .child(
-                        button(&t, ButtonKind::Ghost, "Undo")
-                            .id("undo")
-                            .press(&t)
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                owner.update(cx, |owner, cx| owner.undo(cx)).ok();
-                            })),
-                    ),
+                    .flex_1()
+                    .min_w(px(0.))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .child(self.label.clone()),
             )
+            .child(
+                button(&t, ButtonKind::Ghost, "Undo")
+                    .id("undo")
+                    .press(&t)
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        owner.update(cx, |owner, cx| owner.undo(cx)).ok();
+                    })),
+            );
+        div()
+            .id("undo-pill")
+            .size_full()
+            .p(px(MENU_MARGIN))
+            .font_family(crate::theme::SANS)
+            .text_size(px(13.))
+            .line_height(px(18.))
+            .text_color(t.text)
+            .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                if this.reveal.leaving() {
+                    return;
+                }
+                if *hovered {
+                    this.timer = None;
+                } else {
+                    this.time_out(Self::AFTER_HOVER, window, cx);
+                }
+            }))
+            .child(self.reveal.apply(card, window))
     }
 }
 
 impl MenuPopup {
     /// Closes the menu without choosing anything, and tells the owner so a click on the
-    /// menu's own button closes it and does not reopen it straight away.
-    pub(super) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// menu's own button closes it and does not reopen it straight away. Escape closes it at
+    /// once; a click elsewhere lets it fade.
+    fn dismiss(&mut self, at_once: bool, window: &mut Window, cx: &mut Context<Self>) {
         let menu = self.menu;
         self.owner
             .update(cx, |owner, _| {
@@ -232,70 +412,147 @@ impl MenuPopup {
                 owner.menu_dismissed = Some((menu, std::time::Instant::now()));
             })
             .ok();
-        window.remove_window();
+        if at_once {
+            window.remove_window();
+        } else {
+            self.leave(window, cx);
+        }
+    }
+
+    fn choose(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.enabled || self.reveal.leaving() || index >= self.items.len() {
+            return;
+        }
+        let menu = self.menu;
+        self.owner
+            .update(cx, |owner, cx| owner.menu_choice(menu, index, cx))
+            .ok();
+        self.leave(window, cx);
+    }
+
+    fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reveal.leaving() {
+            return;
+        }
+        let rows = self.items.len();
+        match event.keystroke.key.as_str() {
+            "escape" => self.dismiss(true, window, cx),
+            "down" if self.enabled && rows > 0 => {
+                self.lit = Some(self.lit.map_or(0, |lit| (lit + 1) % rows));
+                cx.notify();
+            }
+            "up" if self.enabled && rows > 0 => {
+                self.lit = Some(self.lit.map_or(rows - 1, |lit| (lit + rows - 1) % rows));
+                cx.notify();
+            }
+            "enter" | "space" => {
+                if let Some(lit) = self.lit {
+                    self.choose(lit, window, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The window stopped being the key one: a click on the email, on the main window or on
+    /// another app. Ignored while the click that opened it settles, then checked again.
+    fn deactivated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let left = SETTLING.saturating_sub(self.opened.elapsed());
+        if left.is_zero() {
+            self.dismiss(false, window, cx);
+            return;
+        }
+        self._settling = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(left).await;
+            this.update_in(cx, |this, window, cx| {
+                if !window.is_window_active() {
+                    this.dismiss(false, window, cx);
+                }
+            })
+            .ok();
+        }));
+    }
+}
+
+impl Leave for MenuPopup {
+    fn leave(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reveal.leave(motion::MENU_OUT, window, cx);
     }
 }
 
 impl Render for MenuPopup {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = if self.dark {
             Theme::dark()
         } else {
             Theme::light()
         };
-        let hover = t.hover;
         let enabled = self.enabled;
+        let rows = self.items.iter().enumerate().map(|(index, item)| {
+            let lit = enabled && self.lit == Some(index);
+            div()
+                .id(("menu-item", index))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(10.))
+                .py(px(7.))
+                .rounded(px(radius::CONTROL))
+                .child(icon(
+                    item.icon,
+                    16.,
+                    if enabled { item.tint } else { t.faint },
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .child(item.label.clone()),
+                )
+                .when(!item.key.is_empty(), |d| {
+                    d.child(caption(item.key, t.text3))
+                })
+                .when(!enabled, |d| d.text_color(t.text3))
+                .when(lit, |d| d.bg(t.selected))
+                .when(enabled, |d| {
+                    d.cursor_pointer()
+                        .press_selected(&t)
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            if *hovered && this.lit != Some(index) {
+                                this.lit = Some(index);
+                                cx.notify();
+                            }
+                        }))
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.choose(index, window, cx)),
+                        )
+                })
+        });
+        let card = popup_card(&t)
+            .flex()
+            .flex_col()
+            .size_full()
+            .p(px(6.))
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                if !this.reveal.leaving() {
+                    this.dismiss(false, window, cx)
+                }
+            }))
+            .children(rows);
         div()
+            .id("menu")
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                this.key(event, window, cx)
+            }))
             .size_full()
             .p(px(MENU_MARGIN))
             .font_family(crate::theme::SANS)
             .text_size(px(13.))
             .line_height(px(18.))
             .text_color(t.text)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .size_full()
-                    .p(px(6.))
-                    .rounded(px(12.))
-                    .bg(t.raised)
-                    .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![popup_shadow(&t)])
-                    .children(
-                        self.items
-                            .iter()
-                            .enumerate()
-                            .map(|(index, (name, label, tint))| {
-                                div()
-                                    .id(("menu-item", index))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(10.))
-                                    .px(px(10.))
-                                    .py(px(7.))
-                                    .rounded(px(8.))
-                                    .child(icon(name, 16., *tint))
-                                    .child(div().flex_1().child(label.clone()))
-                                    .when(!enabled, |d| d.text_color(t.text3))
-                                    .when(enabled, |d| {
-                                        d.cursor_pointer()
-                                            .hover(move |s| s.bg(hover))
-                                            .press(&t)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                let menu = this.menu;
-                                                window.remove_window();
-                                                this.owner
-                                                    .update(cx, |owner, cx| {
-                                                        owner.menu_choice(menu, index, cx)
-                                                    })
-                                                    .ok();
-                                            }))
-                                    })
-                            }),
-                    ),
-            )
+            .child(self.reveal.apply(card, window))
     }
 }
 
@@ -323,17 +580,17 @@ impl Nimbra {
         };
         let t = self.theme();
         let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
-        let items: Vec<(&'static str, SharedString, Hsla)> = match menu {
-            Menu::Labels if self.is_demo() => {
-                vec![("tag", "Labels need a connected account.".into(), t.text3)]
-            }
+        let items: Vec<MenuItem> = match menu {
+            Menu::Labels if self.is_demo() => vec![item("tag", "No Account Connected", t.text3)],
             Menu::Labels => self
                 .labels
                 .iter()
                 .enumerate()
                 .take(12)
-                .map(|(index, label)| ("tag", short(&label.name, 28), tints[index % tints.len()]))
-                .chain(std::iter::once(("tag", "New label…".into(), t.text2)))
+                .map(|(index, label)| {
+                    item("tag", short(&label.name, 28), tints[index % tints.len()])
+                })
+                .chain(std::iter::once(item("plus", "New Label…", t.text2)))
                 .collect(),
             Menu::MoveTo => {
                 let mut targets = Vec::new();
@@ -362,8 +619,8 @@ impl Nimbra {
                 let items = targets
                     .iter()
                     .map(|target| match target {
-                        MoveTarget::Inbox => ("inbox", "Inbox".into(), t.text2),
-                        MoveTarget::Spam => ("ban", "Spam".into(), t.text2),
+                        MoveTarget::Inbox => item("inbox", "Inbox", t.text2),
+                        MoveTarget::Spam => item("ban", "Spam", t.text2),
                         MoveTarget::Label(id) => {
                             let index = self.labels.iter().position(|l| &l.id == id).unwrap_or(0);
                             let name = self
@@ -371,13 +628,18 @@ impl Nimbra {
                                 .get(index)
                                 .map(|l| l.name.clone())
                                 .unwrap_or_default();
-                            ("folder", short(&name, 28), tints[index % tints.len()])
+                            item("folder", short(&name, 28), tints[index % tints.len()])
                         }
                     })
                     .collect::<Vec<_>>();
                 self.move_targets = targets;
                 if items.is_empty() {
-                    vec![("folder", "Nowhere to move this to yet.".into(), t.text3)]
+                    let none = if self.own_servers() {
+                        "No Folders"
+                    } else {
+                        "No Labels"
+                    };
+                    vec![item("folder", none, t.text3)]
                 } else {
                     items
                 }
@@ -389,38 +651,50 @@ impl Nimbra {
                     .iter()
                     .map(|a| {
                         if Some(a.id.as_str()) == from.as_deref() {
-                            ("done", a.email.clone().into(), t.text)
+                            item("done", a.email.clone(), t.text)
                         } else {
-                            ("mail", a.email.clone().into(), t.text2)
+                            item("mail", a.email.clone(), t.text2)
                         }
                     })
                     .collect()
             }
             Menu::Label(_) => vec![
-                ("tag", "Rename…".into(), t.text2),
-                ("trash", "Delete label…".into(), t.rose),
+                item("draft", "Rename…", t.text2),
+                item("trash", "Delete Label…", t.rose),
             ],
             Menu::SendLater => {
                 let choices = Self::send_later_choices();
                 self.send_later_times = choices.iter().map(|(_, at)| *at).collect();
                 choices
                     .into_iter()
-                    .map(|(label, _)| ("clock", label.into(), t.text2))
+                    .map(|(label, _)| item("clock", label, t.text2))
                     .collect()
             }
-            Menu::More if self.is_demo() => vec![("inbox", "Mark as unread".into(), t.text2)],
             Menu::More => {
-                let mut items = vec![("inbox", "Mark as unread".into(), t.text2)];
-                if !self.own_servers() {
-                    items.push(("link", "Open in Gmail".into(), t.text2));
-                }
-                items.push(("bell", "Report spam".into(), t.text2));
-                let block = if self.sender_blocked(self.selected) {
-                    "Unblock sender"
+                // U marks the open thread unread too, while it is read.
+                let unread_key = if self.picked.len() < 2
+                    && self.mails.get(self.selected).is_some_and(|m| !m.unread)
+                {
+                    "U"
                 } else {
-                    "Block sender"
+                    ""
                 };
-                items.push(("ban", block.into(), t.text2));
+                let mut items = vec![MenuItem {
+                    key: unread_key,
+                    ..item("mail", "Mark as Unread", t.text2)
+                }];
+                if !self.is_demo() {
+                    if !self.own_servers() {
+                        items.push(item("link", "Open in Gmail", t.text2));
+                    }
+                    items.push(item("ban", "Report Spam", t.text2));
+                    let block = if self.sender_blocked(self.selected) {
+                        "Unblock Sender"
+                    } else {
+                        "Block Sender"
+                    };
+                    items.push(item("ban", block, t.text2));
+                }
                 items
             }
             Menu::Row(index) => {
@@ -457,11 +731,16 @@ impl Nimbra {
                 if !self.is_demo() && !self.own_servers() {
                     actions.push(RowAction::OpenInGmail);
                 }
+                // A key acts on the open thread: shown only when that is this row.
+                let keyed = index == self.selected && self.picked.len() < 2;
                 let items = actions
                     .iter()
                     .map(|action| {
                         let (name, label) = action.label();
-                        (name, label.into(), t.text2)
+                        MenuItem {
+                            key: if keyed { action.key() } else { "" },
+                            ..item(name, label, t.text2)
+                        }
                     })
                     .collect();
                 self.row_actions = actions;
@@ -480,7 +759,7 @@ impl Nimbra {
         let width = if menu == Menu::From {
             let longest = items
                 .iter()
-                .map(|(_, label, _)| text_width(label, 13., crate::theme::SANS, cx))
+                .map(|item| text_width(&item.label, 13., crate::theme::SANS, cx))
                 .fold(0., f32::max);
             MENU_WIDTH.max((longest + MENU_ROW_CHROME).ceil())
         } else {
@@ -543,6 +822,8 @@ impl Nimbra {
         );
         let owner = cx.weak_entity();
         let dark = self.dark;
+        // It drops in from its button, or rises from Send Later, which it opens above.
+        let from = if menu == Menu::SendLater { 4. } else { -4. };
         let opened = cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
@@ -558,62 +839,32 @@ impl Nimbra {
             |window, cx| {
                 crate::blur::no_window_shadow(window);
                 cx.new(|cx| {
-                    // Close on any click outside the menu. Polled, because clicks on the
-                    // email's web view or on another app never reach this app's handlers.
-                    cx.spawn_in(window, async move |this, cx| {
-                        // The click that opened the menu may still be held down (a
-                        // right-click opens it on the way down). Only a press that starts
-                        // after every button has been let go counts as an outside click.
-                        let mut armed = false;
-                        loop {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(30))
-                                .await;
-                            if !crate::blur::mouse_down() {
-                                armed = true;
-                            }
-                            let open = this.update_in(cx, |this: &mut MenuPopup, window, cx| {
-                                if armed
-                                    && crate::blur::mouse_pressed_outside(
-                                        window,
-                                        MENU_MARGIN as f64,
-                                    )
-                                {
-                                    this.dismiss(window, cx);
-                                    false
-                                } else {
-                                    true
-                                }
-                            });
-                            if !matches!(open, Ok(true)) {
-                                break;
-                            }
-                        }
-                    })
-                    .detach();
+                    let focus = cx.focus_handle();
+                    window.focus(&focus);
                     MenuPopup {
                         owner,
                         menu,
                         items,
                         enabled,
                         dark,
+                        lit: None,
+                        focus,
+                        reveal: Reveal::new(true, from, motion::MENU_IN),
                         was_active: false,
                         opened: std::time::Instant::now(),
-                        // Losing focus (switching apps with the keyboard, say) closes it too.
+                        // A click elsewhere (the email, the main window, another app) takes
+                        // the key status away from the menu's window: that closes it.
                         _activation: cx.observe_window_activation(
                             window,
                             |this: &mut MenuPopup, window, cx| {
                                 if window.is_window_active() {
                                     this.was_active = true;
-                                } else if this.was_active
-                                    && this.opened.elapsed() > Duration::from_millis(500)
-                                {
-                                    // Focus moving away right as the menu opens is part of
-                                    // the click that opened it, not a reason to close.
-                                    this.dismiss(window, cx);
+                                } else if this.was_active && !this.reveal.leaving() {
+                                    this.deactivated(window, cx);
                                 }
                             },
                         ),
+                        _settling: None,
                     }
                 })
             },
@@ -627,7 +878,7 @@ impl Nimbra {
 
     pub(super) fn close_menu_window(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.menu_window.take() {
-            remove_popup(handle, cx);
+            let_go(handle, cx);
         }
     }
 
@@ -781,7 +1032,6 @@ impl Nimbra {
 
     /// Shows the "Undo" pill at the bottom centre of the window for a few seconds.
     pub(super) fn offer_undo(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
-        const SHOWN: Duration = Duration::from_secs(6);
         let label: SharedString = label.into();
         // Wide enough for the label, the Undo button and the padding; 300 at least.
         let width = (text_width(&label, 13., crate::theme::SANS, cx) + 150.)
@@ -796,8 +1046,8 @@ impl Nimbra {
             frame.origin.x + (frame.size.width - px(size.0)) / 2. - px(MENU_MARGIN),
             frame.origin.y + frame.size.height - px(size.1 + 24.) - px(MENU_MARGIN),
         );
-        let owner = cx.weak_entity();
-        let dark = self.dark;
+        self.undo_gen += 1;
+        let (owner, dark, shown_gen) = (cx.weak_entity(), self.dark, self.undo_gen);
         let opened = cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
@@ -817,32 +1067,20 @@ impl Nimbra {
             |window, cx| {
                 crate::blur::no_window_shadow(window);
                 cx.new(|cx| {
-                    // It goes away by itself too, so it can never be left behind.
-                    cx.spawn_in(window, async move |_, cx| {
-                        cx.background_executor().timer(SHOWN).await;
-                        cx.update(|window, _| window.remove_window()).ok();
-                    })
-                    .detach();
-                    UndoToast { owner, label, dark }
+                    let mut pill = UndoToast {
+                        owner,
+                        label,
+                        dark,
+                        shown_gen,
+                        reveal: Reveal::new(true, TOAST_RISE, motion::TOAST_IN),
+                        timer: None,
+                    };
+                    pill.time_out(UndoToast::SHOWN, window, cx);
+                    pill
                 })
             },
         );
-        let Ok(handle) = opened else {
-            return;
-        };
-        self.undo_window = Some(handle);
-        self.undo_gen += 1;
-        let shown_gen = self.undo_gen;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SHOWN).await;
-            this.update(cx, |this, cx| {
-                if this.undo_gen == shown_gen {
-                    this.close_undo(cx);
-                }
-            })
-            .ok();
-        })
-        .detach();
+        self.undo_window = opened.ok();
     }
 
     /// Shows the current message in a small window at the bottom centre, above the email
@@ -850,7 +1088,7 @@ impl Nimbra {
     /// itself after a few seconds, longer for longer messages.
     pub(super) fn sync_notice_window(&mut self, toast: Option<Toast>, cx: &mut Context<Self>) {
         if let Some(handle) = self.notice_window.take() {
-            remove_popup(handle, cx);
+            let_go(handle, cx);
         }
         let (Some(toast), Some(frame)) = (toast, self.frame) else {
             return;
@@ -864,8 +1102,8 @@ impl Nimbra {
             frame.origin.x + (frame.size.width - px(width)) / 2. - px(MENU_MARGIN),
             frame.origin.y + frame.size.height - px(height + 24. + lift) - px(MENU_MARGIN),
         );
-        let owner = cx.weak_entity();
-        let dark = self.dark;
+        self.notice_gen += 1;
+        let (owner, dark, shown) = (cx.weak_entity(), self.dark, self.notice_gen);
         let opened = cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
@@ -883,33 +1121,38 @@ impl Nimbra {
             },
             |window, cx| {
                 crate::blur::no_window_shadow(window);
-                cx.new(|_| NoticeToast { owner, toast, dark })
+                cx.new(|cx| {
+                    // Its own clock: it goes with the window, so repeated notices never
+                    // leave timers behind.
+                    let weak = owner.clone();
+                    let _timer = cx.spawn_in(window, async move |_, cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_secs_f32(seconds))
+                            .await;
+                        weak.update(cx, |owner, cx| {
+                            if owner.notice_gen == shown {
+                                owner.notice = None;
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    });
+                    NoticeToast {
+                        owner,
+                        toast,
+                        dark,
+                        reveal: Reveal::new(true, TOAST_RISE, motion::TOAST_IN),
+                        _timer,
+                    }
+                })
             },
         );
-        let Ok(handle) = opened else {
-            return;
-        };
-        self.notice_window = Some(handle);
-        self.notice_gen += 1;
-        let shown = self.notice_gen;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_secs_f32(seconds))
-                .await;
-            this.update(cx, |this, cx| {
-                if this.notice_gen == shown {
-                    this.notice = None;
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
+        self.notice_window = opened.ok();
     }
 
     pub(super) fn close_undo(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.undo_window.take() {
-            remove_popup(handle, cx);
+            let_go(handle, cx);
         }
     }
 
@@ -926,7 +1169,7 @@ impl Nimbra {
                 .gap(px(10.))
                 .px(px(10.))
                 .py(px(7.))
-                .rounded(px(8.))
+                .rounded(px(radius::CONTROL))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .child(icon(icon_name, 16., tint))
@@ -938,13 +1181,13 @@ impl Nimbra {
             .top(px(50.))
             .flex()
             .flex_col()
-            .min_w(px(220.))
+            .min_w(px(MENU_WIDTH))
             .p(px(6.))
-            .rounded(px(12.))
+            .rounded(px(radius::CARD))
             .bg(t.raised)
             .border_1()
-            .border_color(t.border_strong)
-            .shadow(vec![shadow(t.shadow, 14., 36., -6.)])
+            .border_color(t.edge)
+            .shadow(popup_shadow(t))
             .occlude()
             // Any click outside the menu closes it.
             .on_mouse_down_out(cx.listener(move |this, _, _, cx| {
@@ -964,9 +1207,9 @@ impl Nimbra {
                     .when(self.labels.is_empty(), |d| {
                         d.child(div().px(px(10.)).py(px(7.)).text_color(t.text3).child(
                             if self.is_demo() {
-                                "Labels need a connected account."
+                                "No Account Connected"
                             } else {
-                                "You have no labels yet."
+                                "No Labels"
                             },
                         ))
                     })
@@ -991,7 +1234,7 @@ impl Nimbra {
             Menu::More => {
                 panel
                     .right(px(20.))
-                    .child(item(0, "inbox", "Mark as unread".into(), t.text2).on_click(
+                    .child(item(0, "mail", "Mark as Unread".into(), t.text2).on_click(
                         cx.listener(|this, _, _, cx| this.menu_choice(Menu::More, 0, cx)),
                     ))
                     .when(!self.is_demo() && !self.own_servers(), |d| {
@@ -1001,5 +1244,44 @@ impl Nimbra {
                     })
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_row_menu_shows_only_keys_that_exist() {
+        let keys: Vec<&str> = crate::keyboard::SHORTCUTS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .flat_map(|(keys, _)| keys.iter().copied())
+            .collect();
+        for action in [
+            RowAction::MarkRead,
+            RowAction::MarkUnread,
+            RowAction::Star,
+            RowAction::Unstar,
+            RowAction::Done,
+            RowAction::MoveToInbox,
+            RowAction::Trash,
+            RowAction::DeleteForever,
+            RowAction::ReportSpam,
+            RowAction::OpenInGmail,
+        ] {
+            let key = match action.key() {
+                "" => continue,
+                "⌫" => "Delete",
+                key => key,
+            };
+            assert!(keys.contains(&key), "{key}");
+        }
+    }
+
+    #[test]
+    fn the_pop_up_glow_fades_inside_its_window() {
+        let (blur, spread) = POPUP_GLOW;
+        assert!(spread + 3. * blur <= MENU_MARGIN);
     }
 }

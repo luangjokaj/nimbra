@@ -251,8 +251,7 @@ impl Nimbra {
 
     /// Something is drawn over the whole window, so the hidden sidebar stays away.
     pub(super) fn window_covered(&self) -> bool {
-        self.palette
-            || self.finder_open
+        self.finder_open
             || self.new_label.is_some()
             || self.account_sheet_over_main()
             || self.confirm.is_some()

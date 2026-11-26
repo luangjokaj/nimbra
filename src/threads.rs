@@ -18,13 +18,12 @@ pub(super) struct Snooze {
     pub(super) mail: Mail,
 }
 
-/// One choice in the snooze palette.
+/// A time to snooze until.
 #[derive(Clone)]
 pub(super) struct SnoozeChoice {
     pub(super) icon: &'static str,
     pub(super) label: String,
     pub(super) hint: String,
-    pub(super) header: Option<&'static str>,
     pub(super) until_ms: i64,
     pub(super) no_reply: bool,
 }
@@ -666,7 +665,7 @@ impl Nimbra {
 
     /// X: the open thread in or out of the picked ones.
     pub(super) fn pick_thread(&mut self, cx: &mut Context<Self>) {
-        if self.palette || !self.visible().contains(&self.selected) {
+        if !self.visible().contains(&self.selected) {
             return;
         }
         if !self.picked.remove(&self.selected) {
@@ -678,7 +677,7 @@ impl Nimbra {
 
     /// Shift with Up or Down: picks from the open thread to one further along.
     pub(super) fn pick_more(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.palette || self.pane == Pane::Sidebar {
+        if self.pane == Pane::Sidebar {
             return;
         }
         let visible = self.visible();

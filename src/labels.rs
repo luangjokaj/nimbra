@@ -2,6 +2,8 @@
 //! sheet that creates, renames and deletes them.
 
 use super::*;
+use crate::theme::{radius, space};
+use crate::ui::{Elevation, elevation};
 
 /// What the label sheet does with the name typed in it.
 #[derive(Clone, PartialEq)]
@@ -107,10 +109,25 @@ impl Nimbra {
         .detach();
     }
 
+    /// Renames a label here at once, and puts the old name back if the server refuses.
     fn rename_label(&mut self, id: String, name: String, cx: &mut Context<Self>) {
         let Some(client) = self.connection.clone() else {
             return;
         };
+        let Some(old) = self
+            .labels
+            .iter()
+            .find(|l| l.id == id)
+            .map(|l| l.name.clone())
+        else {
+            return;
+        };
+        if old == name {
+            return;
+        }
+        self.change_labels(|labels| rename(labels, &id, &name), cx);
+        cx.notify();
+        let generation = self.account_gen;
         let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
             let (label, new_name) = (id.clone(), name.clone());
@@ -121,29 +138,55 @@ impl Nimbra {
                     client.rename_label(&label, &new_name)
                 })
                 .await;
-            this.update(cx, |this, cx| match result {
-                Ok(()) => {
-                    this.change_labels(
-                        |labels| {
-                            if let Some(label) = labels.iter_mut().find(|l| l.id == id) {
-                                label.name = name;
-                            }
-                        },
-                        cx,
-                    );
-                    cx.notify();
+            this.update(cx, |this, cx| {
+                if this.account_gen != generation {
+                    return;
                 }
-                Err(error) => this.fail(error, cx),
+                match result {
+                    Ok(()) => this.persist(cx),
+                    Err(error) => {
+                        // Unless it was renamed again meanwhile.
+                        if this.labels.iter().any(|l| l.id == id && l.name == name) {
+                            this.change_labels(|labels| rename(labels, &id, &old), cx);
+                        }
+                        this.fail(error, cx);
+                    }
+                }
+                cx.notify();
             })
             .ok();
         })
         .detach();
     }
 
+    /// Deletes a label here at once (from the list and from the threads it was on), and puts
+    /// it back if the server refuses.
     pub(super) fn delete_label(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(client) = self.connection.clone() else {
             return;
         };
+        let Some(removed) = self.labels.iter().find(|l| l.id == id).cloned() else {
+            return;
+        };
+        let was_open = matches!(self.mailbox, View::Label(i) if self.labels.get(i).is_some_and(|l| l.id == id));
+        // Kept by thread, not by row: rows move while the server answers.
+        let labelled: Vec<ThreadKey> = self
+            .mails
+            .iter()
+            .filter(|mail| mail.labels.contains(&id))
+            .map(|mail| self.thread_key(mail))
+            .collect();
+        self.change_labels(|labels| labels.retain(|l| l.id != id), cx);
+        for mail in &mut self.mails {
+            mail.labels.retain(|l| *l != id);
+        }
+        if was_open {
+            self.mailbox = View::Search; // forces the switch below to reload
+            self.select_mailbox(View::Inbox, cx);
+        }
+        self.notice = Some("Label deleted".into());
+        cx.notify();
+        let generation = self.account_gen;
         let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
             let label = id.clone();
@@ -154,28 +197,33 @@ impl Nimbra {
                     client.delete_label(&label)
                 })
                 .await;
-            // Already gone from Gmail (deleted elsewhere, or here before this list was
-            // brought up to date): that is what was asked for, so it goes from the list too.
+            // Already gone from the server (deleted elsewhere, or here before this list was
+            // brought up to date): that is what was asked for.
             let result = match result {
                 Err(error) if mail::is_gone(&error) => Ok(()),
                 other => other,
             };
-            this.update(cx, |this, cx| match result {
-                Ok(()) => {
-                    let was_open = matches!(this.mailbox, View::Label(i) if this.labels.get(i).is_some_and(|l| l.id == id));
-                    this.change_labels(|labels| labels.retain(|l| l.id != id), cx);
-                    for mail in &mut this.mails {
-                        mail.labels.retain(|l| *l != id);
-                    }
-                    if was_open {
-                        this.mailbox = View::Search; // forces the switch below to reload
-                        this.select_mailbox(View::Inbox, cx);
-                    }
-                    this.notice = Some("Label deleted. The mail it was on is still there.".into());
-                    this.persist(cx);
-                    cx.notify();
+            this.update(cx, |this, cx| {
+                if this.account_gen != generation {
+                    return;
                 }
-                Err(error) => this.fail(error, cx),
+                match result {
+                    Ok(()) => this.persist(cx),
+                    Err(error) => {
+                        if !this.labels.iter().any(|l| l.id == id) {
+                            this.change_labels(|labels| labels.push(removed), cx);
+                        }
+                        for (key, account) in &labelled {
+                            if let Some(row) = this.row_of(key, account)
+                                && !this.mails[row].labels.contains(&id)
+                            {
+                                this.mails[row].labels.push(id.clone());
+                            }
+                        }
+                        this.fail(error, cx);
+                    }
+                }
+                cx.notify();
             })
             .ok();
         })
@@ -203,7 +251,7 @@ impl Nimbra {
         self.labels
             .iter()
             .enumerate()
-            .filter(|(_, label)| mail.labels.iter().any(|id| *id == label.id))
+            .filter(|(_, label)| mail.labels.contains(&label.id))
             .map(|(index, label)| {
                 (
                     index,
@@ -229,17 +277,33 @@ impl Nimbra {
             cx.notify();
             return;
         };
+        let (key, account) = self.thread_key(&self.mails[index]);
+        let generation = self.account_gen;
         let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
+            let label = label_id.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let _working = working;
-                    client.remove_label(&id, &label_id)
+                    client.remove_label(&id, &label)
                 })
                 .await;
             if let Err(error) = result {
-                this.update(cx, |this, cx| this.fail(error, cx)).ok();
+                this.update(cx, |this, cx| {
+                    if this.account_gen != generation {
+                        return;
+                    }
+                    // Back on the thread it was taken off, wherever that row is now.
+                    if let Some(row) = this.row_of(&key, &account)
+                        && !this.mails[row].labels.contains(&label_id)
+                    {
+                        this.mails[row].labels.push(label_id);
+                    }
+                    this.fail(error, cx);
+                    cx.notify();
+                })
+                .ok();
             }
         })
         .detach();
@@ -266,12 +330,12 @@ impl Nimbra {
     pub(super) fn open_label_sheet(&mut self, sheet: LabelSheet, cx: &mut Context<Self>) {
         self.label_sheet = sheet;
         if self.connection.is_none() {
-            self.notice = Some("Labels need a connected account.".into());
+            self.notice = Some("Connect an account to use labels.".into());
             cx.notify();
             return;
         }
         let t = self.theme();
-        let input = cx.new(|cx| TextInput::new(cx, "Label name", t.faint, t.violet));
+        let input = cx.new(|cx| TextInput::new(cx, "Label Name", t.text3, t.violet));
         let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Enter) {
                 this.create_label(cx);
@@ -345,7 +409,7 @@ impl Nimbra {
                             this.apply_label(index, cx);
                         }
                     } else {
-                        this.notice = Some(format!("Created “{}”.", short(&name, 30)).into());
+                        this.notice = Some(format!("Created “{}”", short(&name, 30)).into());
                     }
                     cx.notify();
                 }
@@ -356,9 +420,10 @@ impl Nimbra {
         .detach();
     }
 
-    /// The New label sheet.
+    /// The New Label (or Rename Label) sheet.
     pub(super) fn new_label_view(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let input = self.new_label.clone();
+        let renaming = matches!(self.label_sheet, LabelSheet::Rename(_));
         div()
             .id("new-label-scrim")
             .absolute()
@@ -378,68 +443,62 @@ impl Nimbra {
                     .w(px(400.))
                     .flex()
                     .flex_col()
-                    .gap(px(14.))
-                    .p(px(22.))
-                    .rounded(px(18.))
+                    .gap(px(space::M))
+                    .p(px(space::XL))
+                    .rounded(px(radius::SHEET))
                     .bg(t.raised)
                     .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![shadow(
-                        c(0x000000, if t.dark { 0.6 } else { 0.2 }),
-                        30.,
-                        80.,
-                        -10.,
-                    )])
+                    .border_color(t.edge)
+                    .shadow(elevation(t, Elevation::Sheet))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(title_s(
-                        if matches!(self.label_sheet, LabelSheet::Rename(_)) {
-                            "Rename label"
+                        if renaming {
+                            "Rename Label"
                         } else {
-                            "New label"
+                            "New Label"
                         },
                         t.text,
                     ))
                     .child(
                         div()
-                            .px(px(12.))
-                            .py(px(8.))
-                            .rounded(px(10.))
+                            .mt(px(space::XS))
+                            .px(px(space::M))
+                            .py(px(space::S))
+                            .rounded(px(radius::ROW))
                             .bg(t.hover)
                             .border_1()
-                            .border_color(t.border)
+                            .border_color(t.border_strong)
                             .text_size(px(14.))
                             .children(input),
                     )
-                    .child(meta(
-                        match self.label_sheet {
-                            _ if self.own_servers() => "Labels are folders on your mail server: it is made (or renamed) there too.",
-                            LabelSheet::Rename(_) => "Renamed in Gmail too. Use “Parent/Child” to put it inside another label.",
-                            LabelSheet::New { apply: true } => "It is added to this conversation and to Gmail’s label list. Use “Parent/Child” to nest it.",
-                            LabelSheet::New { apply: false } => "It is added to Gmail’s label list. Use “Parent/Child” to put it inside another label.",
-                        },
-                        t.text3,
-                    ))
+                    // Gmail nests labels by name; folders on other servers are not.
+                    .when(!self.own_servers(), |d| {
+                        d.child(meta("Use “Parent/Child” to nest.", t.text3))
+                    })
                     .child(
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(8.))
+                            .gap(px(space::S))
+                            .mt(px(space::XS))
                             .child(
                                 button(t, ButtonKind::Ghost, "Cancel")
-                                    .id("label-cancel").press(t)
+                                    .id("label-cancel")
+                                    .press(t)
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.close_new_label(cx)),
                                     ),
                             )
                             .child(crate::ui::glow(
-
                                 button(
                                     t,
                                     ButtonKind::Primary,
-                                    if matches!(self.label_sheet, LabelSheet::Rename(_)) { "Rename" } else { "Create" },
+                                    if renaming { "Rename" } else { "Create" },
                                 )
-                                    .id("label-create").press(t)
-                                    .on_click(cx.listener(|this, _, _, cx| this.create_label(cx))), "label-create")),
+                                .id("label-create")
+                                .on_click(cx.listener(|this, _, _, cx| this.create_label(cx))),
+                                "label-create",
+                            )),
                     ),
             )
     }
@@ -461,10 +520,8 @@ impl Nimbra {
                 let rows = self.targets();
                 // Labels are each account's own: without this it would be archived unlabelled.
                 if rows.iter().any(|&row| self.is_foreign(row)) {
-                    self.notice = Some(
-                        "Labels belong to each account: open this conversation's account to move it to one."
-                            .into(),
-                    );
+                    self.notice =
+                        Some("Open this conversation’s account to move it to a label.".into());
                     cx.notify();
                     return;
                 }
@@ -513,7 +570,7 @@ impl Nimbra {
         if self.is_foreign(index) {
             return refuse(
                 self,
-                "Blocked senders belong to each account: open this conversation's account to block its sender.",
+                "Open this conversation’s account to block its sender.",
                 cx,
             );
         }
@@ -693,37 +750,53 @@ impl Nimbra {
             if let Some(mail) = self.mails.get_mut(self.selected) {
                 mail.labels.retain(|id| *id != label.id);
             }
-            self.notice = Some(
-                "Labels belong to each account: open this conversation's account to label it."
-                    .into(),
-            );
+            self.notice = Some("Open this conversation’s account to label it.".into());
             cx.notify();
             return;
         }
         let (Some(client), Some(id)) = (self.connection.clone(), mail.id.clone()) else {
             return;
         };
+        let (key, account) = self.thread_key(mail);
         let name = label.name.clone();
+        let generation = self.account_gen;
         let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
+            let label_id = label.id.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let _working = working;
-                    client.add_label(&id, &label.id)
+                    client.add_label(&id, &label_id)
                 })
                 .await;
-            this.update(cx, |this, cx| match result {
-                Ok(()) => {
-                    this.notice = Some(format!("Labelled “{}”.", short(&name, 30)).into());
-                    cx.notify();
+            this.update(cx, |this, cx| {
+                if this.account_gen != generation {
+                    return;
                 }
-                Err(error) => this.fail(error, cx),
+                match result {
+                    Ok(()) => this.notice = Some(format!("Labelled “{}”", short(&name, 30)).into()),
+                    Err(error) => {
+                        // Off the thread it was put on, wherever that row is now.
+                        if let Some(row) = this.row_of(&key, &account) {
+                            this.mails[row].labels.retain(|l| *l != label.id);
+                        }
+                        this.fail(error, cx);
+                    }
+                }
+                cx.notify();
             })
             .ok();
         })
         .detach();
         cx.notify();
+    }
+}
+
+/// Gives the label with that id a new name.
+fn rename(labels: &mut [mail::Label], id: &str, name: &str) {
+    if let Some(label) = labels.iter_mut().find(|l| l.id == id) {
+        label.name = name.to_string();
     }
 }
 

@@ -73,63 +73,6 @@ pub fn no_window_shadow(window: &gpui::Window) {
 #[cfg(not(target_os = "macos"))]
 pub fn no_window_shadow(_window: &gpui::Window) {}
 
-/// True while a mouse button is held down somewhere outside this window's content, leaving
-/// out a `margin` of transparent edge. The menu pop-up polls this to close on any outside
-/// click, including clicks that land on the email's native web view or on another app,
-/// which never reach the app's own event handling.
-#[cfg(target_os = "macos")]
-#[allow(unexpected_cfgs)] // emitted by the objc crate's macros
-pub fn mouse_pressed_outside(window: &gpui::Window, margin: f64) -> bool {
-    use objc::runtime::Object;
-    use objc::{class, msg_send, sel, sel_impl};
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct Point {
-        x: f64,
-        y: f64,
-    }
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct Rect {
-        origin: Point,
-        size: Point,
-    }
-
-    let Ok(handle) = HasWindowHandle::window_handle(window) else {
-        return false;
-    };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-        return false;
-    };
-    // SAFETY: main thread; `ns_view` is this window's live content view; both calls on
-    // NSEvent are class methods that only read the current mouse state.
-    unsafe {
-        let buttons: usize = msg_send![class!(NSEvent), pressedMouseButtons];
-        if buttons == 0 {
-            return false;
-        }
-        let view = handle.ns_view.as_ptr() as *mut Object;
-        let ns_window: *mut Object = msg_send![view, window];
-        if ns_window.is_null() {
-            return false;
-        }
-        let frame: Rect = msg_send![ns_window, frame];
-        let mouse: Point = msg_send![class!(NSEvent), mouseLocation];
-        let inside = mouse.x >= frame.origin.x + margin
-            && mouse.x <= frame.origin.x + frame.size.x - margin
-            && mouse.y >= frame.origin.y + margin
-            && mouse.y <= frame.origin.y + frame.size.y - margin;
-        !inside
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn mouse_pressed_outside(_window: &gpui::Window, _margin: f64) -> bool {
-    false
-}
-
 /// True while any mouse button is held down.
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)] // emitted by the objc crate's macros

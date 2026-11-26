@@ -305,7 +305,7 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace("\n", " "), window, cx);
+            self.replace_text_in_range(None, &one_line(&text), window, cx);
         }
     }
 
@@ -431,6 +431,10 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
+        // A password is not handed to input methods, dictation or services.
+        if self.secret {
+            return None;
+        }
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
         Some(self.content[range].to_string())
@@ -506,10 +510,13 @@ impl EntityInputHandler for TextInput {
         } else {
             self.marked_range = None;
         }
+        // The selection is given within the new text, in UTF-16.
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.end)
+            .map(|selected| {
+                range.start + utf8_offset(new_text, selected.start)
+                    ..range.start + utf8_offset(new_text, selected.end)
+            })
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
 
         cx.notify();
@@ -547,8 +554,10 @@ impl EntityInputHandler for TextInput {
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
-
-        assert_eq!(last_layout.text, self.shown());
+        // Laid out before the latest edit: no answer until the next frame.
+        if last_layout.text != self.shown() {
+            return None;
+        }
         let utf8_index = self.text_offset(last_layout.index_for_x(line_point.x + self.scroll_x)?);
         Some(self.offset_to_utf16(utf8_index))
     }
@@ -729,7 +738,9 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        let line = prepaint.line.take().unwrap();
+        let Some(line) = prepaint.line.take() else {
+            return;
+        };
         let scroll_x = prepaint.scroll_x;
         let focused = focus_handle.is_focused(window);
         // Everything stays inside the field's own box.
@@ -737,13 +748,14 @@ impl Element for TextElement {
             if let Some(selection) = prepaint.selection.take() {
                 window.paint_quad(selection)
             }
+            // A line that cannot be drawn this frame is left out rather than ending the app.
             line.paint(
                 point(bounds.left() - scroll_x, bounds.top()),
                 window.line_height(),
                 window,
                 cx,
             )
-            .unwrap();
+            .ok();
             if focused && let Some(cursor) = prepaint.cursor.take() {
                 window.paint_quad(cursor);
             }
@@ -797,8 +809,52 @@ impl Render for TextInput {
     }
 }
 
+/// Text pasted into a one-line field: line breaks, tabs and other control characters become
+/// spaces, so nothing invisible (or a second line) ends up in a name or a query.
+fn one_line(text: &str) -> String {
+    let text = text.replace("\r\n", " ");
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+/// The byte offset in `text` of a UTF-16 offset, clamped to its end.
+fn utf8_offset(text: &str, utf16: usize) -> usize {
+    let mut units = 0;
+    for (at, c) in text.char_indices() {
+        if units >= utf16 {
+            return at;
+        }
+        units += c.len_utf16();
+    }
+    text.len()
+}
+
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pasted_lines_and_control_characters_become_spaces() {
+        assert_eq!(one_line("a\r\nb\nc\rd\te"), "a b c d e");
+        assert_eq!(one_line("x\u{0}y\u{1b}z"), "x y z");
+        assert_eq!(one_line("Réunion 東京"), "Réunion 東京");
+    }
+
+    #[test]
+    fn a_utf16_offset_lands_on_the_same_character() {
+        // "é" is one UTF-16 unit and two bytes; the emoji is two units and four bytes.
+        let text = "é😀x";
+        assert_eq!(utf8_offset(text, 0), 0);
+        assert_eq!(utf8_offset(text, 1), 2);
+        assert_eq!(utf8_offset(text, 3), 6);
+        assert_eq!(utf8_offset(text, 4), 7);
+        assert_eq!(utf8_offset(text, 99), 7);
     }
 }

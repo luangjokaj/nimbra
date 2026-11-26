@@ -326,7 +326,7 @@ impl Nimbra {
         cx: &mut Context<Self>,
     ) {
         self.menu = None;
-        if self.compose.is_some() || self.palette {
+        if self.compose.is_some() {
             return;
         }
         let (to, s1) = self.new_field(Field::To, "name@example.com", cx);
