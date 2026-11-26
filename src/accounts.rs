@@ -1038,6 +1038,9 @@ impl Nimbra {
         self.away_waiting.remove(&account);
         self.account_unread.remove(&account);
         self.inboxes_saved_empty.remove(&account);
+        // Whoever is shown or signs in next must not keep or send this account's queue.
+        self.outbox = Outbox::default();
+        self.outbox_pending = None;
         // Another account is signed in: show that one.
         if let Some(next) = self.settings.accounts.first().map(|a| a.id.clone()) {
             self.switch_account(next, cx);
@@ -1054,9 +1057,6 @@ impl Nimbra {
         self.checks.forget();
         self.offline = false;
         self.stop_retrying();
-        // Whoever signs in next must not send this account's queue.
-        self.outbox = Outbox::default();
-        self.outbox_pending = None;
         self.next_pages.clear();
         self.forget_checked();
         self.cache.clear();
