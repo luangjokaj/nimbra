@@ -174,7 +174,11 @@ fi
 say "Committing and tagging $TAG"
 RESTORE=0
 git add Cargo.toml Cargo.lock CHANGELOG.md
-git commit --quiet -m "chore(release): $VERSION"
+# Nothing to commit when the version and its changelog were already in main (a first
+# release that keeps Cargo.toml's version): the tag then goes on main as it is.
+if ! git diff --cached --quiet; then
+  git commit --quiet -m "chore(release): $VERSION"
+fi
 git tag -a "$TAG" -m "Nimbra $VERSION"
 git push --quiet origin main
 git push --quiet origin "$TAG"
