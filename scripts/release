@@ -182,6 +182,9 @@ SHA="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
 python3 - "$VERSION" "$TAG" "$SHA" > dist/latest.json <<'PY'
 import json, sys
 version, tag, sha = sys.argv[1:4]
+# The repo's old address: GitHub redirects it to nimbra-mail/desktop, and 0.1.4 and older
+# only download from it. Switch to https://github.com/nimbra-mail/desktop/releases once
+# nobody runs those versions.
 base = "https://github.com/luangjokaj/nimbra/releases"
 print(json.dumps({
     "version": version,
