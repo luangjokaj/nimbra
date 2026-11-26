@@ -973,8 +973,10 @@ impl Nimbra {
     /// Settings › Privacy: forgets the mail kept on this Mac (Gmail is untouched) and loads
     /// the open mailbox again.
     pub(super) fn clear_local_mail(&mut self, cx: &mut Context<Self>) {
+        // On the store's own thread, keeping what exists nowhere else (unsent and
+        // scheduled mail, snoozes).
         if let Some(store) = &self.store {
-            store.clear();
+            drop(store.clear_mail_later());
         }
         self.cache.clear();
         self.synced_to.clear();
