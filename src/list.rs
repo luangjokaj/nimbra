@@ -609,12 +609,6 @@ impl Nimbra {
                                                     cx.stop_propagation();
                                                     this.selected = i;
                                                     this.picked.clear();
-                                                    if this.is_demo() {
-                                                        this.open_palette();
-                                                        this.palette_sel = 0;
-                                                        cx.notify();
-                                                        return;
-                                                    }
                                                     if let Some(choice) = Self::snooze_choices()
                                                         .into_iter()
                                                         .find(|c| c.no_reply)

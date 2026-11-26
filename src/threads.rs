@@ -18,13 +18,12 @@ pub(super) struct Snooze {
     pub(super) mail: Mail,
 }
 
-/// One choice in the snooze palette.
+/// A time to snooze until.
 #[derive(Clone)]
 pub(super) struct SnoozeChoice {
     pub(super) icon: &'static str,
     pub(super) label: String,
     pub(super) hint: String,
-    pub(super) header: Option<&'static str>,
     pub(super) until_ms: i64,
     pub(super) no_reply: bool,
 }
@@ -198,57 +197,47 @@ impl Nimbra {
         };
         let label = |when: chrono::DateTime<Local>| when.format("%a %-d %b, %H:%M").to_string();
         let mut choices = Vec::new();
-        let mut push =
-            |icon, name: &str, when: Option<chrono::DateTime<Local>>, header, no_reply| {
-                if let Some(when) = when {
-                    choices.push(SnoozeChoice {
-                        icon,
-                        label: name.to_string(),
-                        hint: label(when),
-                        header,
-                        until_ms: when.timestamp_millis(),
-                        no_reply,
-                    });
-                }
-            };
+        let mut push = |icon, name: &str, when: Option<chrono::DateTime<Local>>, no_reply| {
+            if let Some(when) = when {
+                choices.push(SnoozeChoice {
+                    icon,
+                    label: name.to_string(),
+                    hint: label(when),
+                    until_ms: when.timestamp_millis(),
+                    no_reply,
+                });
+            }
+        };
         let today = now.date_naive();
         if now.hour() < 17 {
-            push("clock", "Later today", at(today, 18), Some("SNOOZE"), false);
+            push("clock", "Later today", at(today, 18), false);
         } else {
-            push(
-                "clock",
-                "In three hours",
-                Some(now + Days::hours(3)),
-                Some("SNOOZE"),
-                false,
-            );
+            push("clock", "In three hours", Some(now + Days::hours(3)), false);
         }
         let tomorrow = today + Days::days(1);
-        push("clock", "Tomorrow morning", at(tomorrow, 8), None, false);
+        push("clock", "Tomorrow morning", at(tomorrow, 8), false);
         if !matches!(now.weekday(), Weekday::Fri | Weekday::Sat | Weekday::Sun) {
             let mut saturday = today;
             while saturday.weekday() != Weekday::Sat {
                 saturday += Days::days(1);
             }
-            push("calendar", "This weekend", at(saturday, 9), None, false);
+            push("calendar", "This weekend", at(saturday, 9), false);
         }
         let mut monday = today + Days::days(1);
         while monday.weekday() != Weekday::Mon {
             monday += Days::days(1);
         }
-        push("calendar", "Next week", at(monday, 8), None, false);
+        push("calendar", "Next week", at(monday, 8), false);
         push(
             "bell",
             "Remind me if no reply in 3 days",
             at(today + Days::days(3), 9),
-            Some("REMINDER"),
             true,
         );
         push(
             "bell",
             "Remind me if no reply in a week",
             at(today + Days::days(7), 9),
-            None,
             true,
         );
         choices
@@ -653,7 +642,7 @@ impl Nimbra {
 
     /// X: the open thread in or out of the picked ones.
     pub(super) fn pick_thread(&mut self, cx: &mut Context<Self>) {
-        if self.palette || !self.visible().contains(&self.selected) {
+        if !self.visible().contains(&self.selected) {
             return;
         }
         if !self.picked.remove(&self.selected) {
@@ -665,7 +654,7 @@ impl Nimbra {
 
     /// Shift with Up or Down: picks from the open thread to one further along.
     pub(super) fn pick_more(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.palette || self.pane == Pane::Sidebar {
+        if self.pane == Pane::Sidebar {
             return;
         }
         let visible = self.visible();

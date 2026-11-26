@@ -109,7 +109,6 @@ impl Nimbra {
         self.mailbox = view;
         self.back.clear();
         self.forward.clear();
-        self.palette = false;
         if self.is_demo() {
             // The sample data only has an inbox; Done shows what was cleared from it.
             self.selected = self.visible().first().copied().unwrap_or(0);
@@ -1770,7 +1769,6 @@ impl Nimbra {
         self.back.clear();
         self.forward.clear();
         self.selected = 0;
-        self.palette = false;
         cx.notify();
     }
 }

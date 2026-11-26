@@ -5,7 +5,7 @@
 //! the window, and takes it away when GPUI lets go of it. GPUI does not always let go: when
 //! the element under the pointer disappears (the sidebar sliding away) its tooltip state is
 //! never freed, as it refers to itself. So the window also goes once that view is no longer
-//! drawn: it asks its owner for a frame on each look, and checks that it was in it.
+//! drawn: now and then it asks its owner for one frame, and checks that it was in it.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -24,7 +24,11 @@ use crate::ui::{Elevation, caption, elevation, motion};
 const MARGIN: f32 = 28.;
 /// Between the pointer and the bubble.
 const GAP: f32 = 7.;
-/// Looks without having been drawn before the window goes (one can be a late frame).
+/// How often the window looks at the pointer, which GPUI cannot see over the email.
+const LOOK: Duration = Duration::from_millis(80);
+/// Every how many looks it asks its owner for a frame, to see that it is still drawn.
+const PROBE: u32 = 12;
+/// Probes without having been drawn before the window goes (one can be a late frame).
 const MISSES: u8 = 2;
 /// How far the pointer may go before the tooltip gives up. GPUI hears nothing once the
 /// pointer is over the email, so would otherwise leave it showing.
@@ -167,16 +171,27 @@ impl Tip {
                 cx.new(|cx| {
                     let from = crate::blur::screen_pointer();
                     cx.spawn_in(window, async move |this, cx| {
-                        let mut missed = 0;
+                        let (mut looks, mut missed, mut probing) = (0u32, 0u8, false);
                         loop {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(80))
-                                .await;
-                            missed = if drawn.replace(false) { 0 } else { missed + 1 };
+                            cx.background_executor().timer(LOOK).await;
+                            looks += 1;
+                            // Redrawing the owner is a whole frame of the main window: it
+                            // is asked for only once in a while, never on every look.
+                            if probing {
+                                probing = false;
+                                missed = if drawn.get() { 0 } else { missed + 1 };
+                            }
+                            let probe = looks % PROBE == 0;
+                            if probe {
+                                drawn.set(false);
+                                probing = true;
+                            }
                             let keep = this.update_in(cx, |_: &mut Popup, window, cx| {
                                 let active = parent
                                     .update(cx, |_, owner, _| {
-                                        owner.refresh();
+                                        if probe {
+                                            owner.refresh();
+                                        }
                                         owner.is_window_active()
                                     })
                                     .unwrap_or(false);

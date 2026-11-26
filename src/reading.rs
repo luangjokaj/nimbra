@@ -127,8 +127,7 @@ impl Nimbra {
     fn original_target(&self) -> Option<(String, SharedString)> {
         let ready = matches!(self.status, Status::Demo | Status::Ready);
         // (A toolbar menu does not hide it: menus open in a window of their own, above it.)
-        let covered = self.palette
-            || self.finder_open
+        let covered = self.finder_open
             || self.picked.len() >= 2
             || self.compose.is_some()
             || self.new_label.is_some()
@@ -392,7 +391,7 @@ impl Nimbra {
             return;
         };
         // Never into a message that is being written: it would gain the list as a recipient.
-        if self.compose.is_some() || self.palette {
+        if self.compose.is_some() {
             self.notice =
                 Some("Finish or close what you are writing, then click Unsubscribe again.".into());
             cx.notify();
@@ -463,7 +462,7 @@ impl Nimbra {
 
     /// Space and Shift-Space: the conversation a page further or back.
     pub(super) fn page_message(&mut self, down: bool, cx: &mut Context<Self>) {
-        if self.palette || self.pane == Pane::Sidebar || self.visible().is_empty() {
+        if self.pane == Pane::Sidebar || self.visible().is_empty() {
             return;
         }
         if self.original_target().is_some()

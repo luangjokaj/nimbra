@@ -554,34 +554,6 @@ pub fn inbox() -> Vec<Mail> {
     ]
 }
 
-/// (icon, label, hint, key, section header shown above this row)
-pub const COMMANDS: &[(&str, &str, &str, &str, Option<&str>)] = &[
-    (
-        "sparkles",
-        "Snooze until I’m free",
-        "After Design crit · Thu 3:30 PM",
-        "↵",
-        Some("SMART SNOOZE"),
-    ),
-    (
-        "bell",
-        "Until Mira replies",
-        "Returns to Important automatically",
-        "R",
-        None,
-    ),
-    ("clock", "Later today", "Thu 6:00 PM", "H", Some("SNOOZE")),
-    ("clock", "Tomorrow morning", "Fri 9:00 AM", "T", None),
-    ("calendar", "Next week", "Mon 9:00 AM", "W", None),
-    (
-        "zap",
-        "Pick a date & time…",
-        "Try “next tue 3pm”",
-        "/",
-        None,
-    ),
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;

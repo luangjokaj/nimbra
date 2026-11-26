@@ -1,7 +1,9 @@
 //! Search: the field in the sidebar, what it suggests while you type (from the mail already
-//! listed), and running the search in Gmail.
+//! listed), and running the search on the account's server.
 
 use super::*;
+use crate::theme::{GRADIENT_PRIMARY, radius, space};
+use crate::ui::{Elevation, elevation};
 
 /// One result in the search panel.
 #[derive(Clone)]
@@ -14,7 +16,6 @@ pub(super) struct Hit {
     pub(super) snippet: SharedString,
     pub(super) time: SharedString,
     pub(super) unread: bool,
-    pub(super) timestamp_ms: i64,
     /// The conversation itself, so clicking it can open it straight away.
     pub(super) mail: Box<Mail>,
 }
@@ -30,13 +31,77 @@ impl Hit {
             snippet: mail.snippet.clone(),
             time: mail.time.clone(),
             unread: mail.unread,
-            timestamp_ms: mail.timestamp_ms,
             mail: Box::new(mail.clone()),
         }
     }
 }
 
-/// Search tips shown while the search box is empty: what to type, and what it finds.
+/// One thread of the mail on this Mac, as the search panel looks for words in it: made once
+/// when the panel opens, not on every keystroke.
+pub(super) struct Indexed {
+    id: Option<String>,
+    account: Option<String>,
+    subject: SharedString,
+    timestamp_ms: i64,
+    /// Sender, address, subject, preview and participants, lowercased.
+    words: String,
+}
+
+impl Indexed {
+    fn of(mail: &Mail) -> Self {
+        Self {
+            id: mail.id.clone(),
+            account: mail.account.clone(),
+            subject: mail.subject.clone(),
+            timestamp_ms: mail.timestamp_ms,
+            words: format!(
+                "{} {} {} {} {}",
+                mail.sender,
+                mail.header.from.address,
+                mail.subject,
+                mail.snippet,
+                mail.participants
+            )
+            .to_lowercase(),
+        }
+    }
+
+    fn matches(&self, words: &[String]) -> bool {
+        words.iter().all(|w| self.words.contains(w.as_str()))
+    }
+
+    /// Whether this is that thread. Sample mail has no ids: matched by subject.
+    fn is(&self, mail: &Mail) -> bool {
+        match &self.id {
+            Some(id) => mail.id.as_ref() == Some(id) && mail.account == self.account,
+            None => mail.id.is_none() && mail.subject == self.subject,
+        }
+    }
+}
+
+/// The words of a query that are looked for in the mail on this Mac. Operators like `from:`
+/// are left to the server.
+/// A tip as it goes into the field: an operator waiting for its value, or a whole term and
+/// a space.
+fn tip_text(tip: &str) -> String {
+    if tip.ends_with(':') {
+        tip.to_string()
+    } else {
+        format!("{tip} ")
+    }
+}
+
+fn query_words(query: &str) -> Vec<String> {
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .filter(|w| !w.contains(':'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Search tips shown while the search box is empty and nothing was searched yet: what to
+/// type, and what it finds.
 pub(super) const SEARCH_TIPS: &[(&str, &str)] = &[
     ("from:", "From someone"),
     ("has:attachment", "With attachments"),
@@ -51,11 +116,16 @@ impl Nimbra {
             return;
         }
         self.menu = None;
-        self.palette = false;
         self.finder_open = true;
+        self.finder_index = self.index_mail();
         let query = self.query.clone();
-        self.finder
-            .update(cx, |input, cx| input.set(query, usize::MAX, cx));
+        // The field is made once; the theme may have changed since.
+        let t = self.theme();
+        self.finder.update(cx, |input, cx| {
+            input.muted = t.text3;
+            input.accent = t.violet;
+            input.set(query, usize::MAX, cx);
+        });
         self.finder_changed(cx);
         self.pending_focus = Some(self.finder.read(cx).focus_handle(cx));
         cx.notify();
@@ -65,12 +135,14 @@ impl Nimbra {
         self.finder_open = false;
         self.finder_gen += 1;
         self.finder_loading = false;
+        self.finder_task = None;
+        self.finder_index = Vec::new();
         self.pending_focus = Some(self.focus.clone());
         cx.notify();
     }
 
     /// What was typed changed: results from the mail on this Mac at once, then (after a
-    /// short pause) Gmail's own search, merged in below.
+    /// short pause) the server's own search, merged in below.
     pub(super) fn finder_changed(&mut self, cx: &mut Context<Self>) {
         let query = self.finder.read(cx).text().trim().to_string();
         self.finder_hits = self.local_hits(&query);
@@ -79,6 +151,8 @@ impl Nimbra {
         self.finder_gen += 1;
         let generation = self.finder_gen;
         self.finder_loading = false;
+        // A newer keystroke drops the wait (and the answer) of the one before.
+        self.finder_task = None;
         cx.notify();
         let Some(client) = self
             .connection
@@ -88,7 +162,7 @@ impl Nimbra {
             return;
         };
         self.finder_loading = true;
-        cx.spawn(async move |this, cx| {
+        self.finder_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(350))
                 .await;
@@ -127,52 +201,66 @@ impl Nimbra {
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        }));
     }
 
-    /// Mail on this Mac matching every word typed (Gmail operators like `from:` are left to
-    /// Gmail), newest first.
+    /// The mail on this Mac (the open list and every mailbox kept in memory), each thread
+    /// once.
+    fn index_mail(&self) -> Vec<Indexed> {
+        let mut seen = HashSet::new();
+        self.mails
+            .iter()
+            .chain(self.cache.values().flatten())
+            .filter(|mail| {
+                seen.insert((
+                    mail.id.clone().unwrap_or_else(|| mail.subject.to_string()),
+                    mail.account.clone(),
+                ))
+            })
+            .map(Indexed::of)
+            .collect()
+    }
+
+    /// Mail on this Mac matching every word typed, newest first.
     fn local_hits(&self, query: &str) -> Vec<Hit> {
-        let words: Vec<String> = query
-            .to_lowercase()
-            .split_whitespace()
-            .filter(|w| !w.contains(':'))
-            .map(str::to_string)
-            .collect();
+        let words = query_words(query);
         if words.is_empty() {
             return Vec::new();
         }
-        let mut seen = HashSet::new();
-        let mut hits: Vec<Hit> = Vec::new();
-        for mail in self.mails.iter().chain(self.cache.values().flatten()) {
-            let key = mail.id.clone().unwrap_or_else(|| mail.subject.to_string());
-            if !seen.insert(key) {
-                continue;
-            }
-            let text = format!(
-                "{} {} {} {} {}",
-                mail.sender,
-                mail.header.from.address,
-                mail.subject,
-                mail.snippet,
-                mail.participants
-            )
-            .to_lowercase();
-            if words.iter().all(|w| text.contains(w.as_str())) {
-                hits.push(Hit::from_mail(mail));
-            }
+        let mut found: Vec<&Indexed> = self
+            .finder_index
+            .iter()
+            .filter(|thread| thread.matches(&words))
+            .collect();
+        found.sort_by_key(|thread| std::cmp::Reverse(thread.timestamp_ms));
+        // Looked up as they are now: a thread may have changed or gone since the panel opened.
+        found
+            .into_iter()
+            .filter_map(|thread| {
+                self.mails
+                    .iter()
+                    .chain(self.cache.values().flatten())
+                    .find(|mail| thread.is(mail))
+            })
+            .take(8)
+            .map(Hit::from_mail)
+            .collect()
+    }
+
+    /// While nothing is typed: the recent searches, or the tips until there are some.
+    fn finder_resting_rows(&self) -> usize {
+        match self.settings.recent_searches.len() {
+            0 => SEARCH_TIPS.len(),
+            recent => recent,
         }
-        hits.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
-        hits.truncate(8);
-        hits
     }
 
     /// Removes one search from the recent ones.
     fn forget_search(&mut self, query: &str, cx: &mut Context<Self>) {
         self.settings.recent_searches.retain(|q| q != query);
-        let rows = self.settings.recent_searches.len() + SEARCH_TIPS.len();
-        self.finder_sel = self.finder_sel.min(rows.saturating_sub(1));
+        self.finder_sel = self
+            .finder_sel
+            .min(self.finder_resting_rows().saturating_sub(1));
         self.save_settings(cx);
         cx.notify();
     }
@@ -180,7 +268,7 @@ impl Nimbra {
     pub(super) fn finder_step(&mut self, delta: isize, cx: &mut Context<Self>) {
         let empty = self.finder.read(cx).text().trim().is_empty();
         let rows = if empty {
-            self.settings.recent_searches.len() + SEARCH_TIPS.len()
+            self.finder_resting_rows()
         } else {
             self.finder_hits.len() + 1
         };
@@ -189,25 +277,11 @@ impl Nimbra {
         }
         self.finder_sel = (self.finder_sel as isize + delta).rem_euclid(rows as isize) as usize;
         // Keep the highlighted row in view. Its place among the panel's children counts the
-        // section titles above it.
-        let child = if empty {
-            let recent = self.settings.recent_searches.len();
-            let recent_title = usize::from(recent > 0);
-            if self.finder_sel < recent {
-                recent_title + self.finder_sel
-            } else {
-                recent_title + recent + 1 + (self.finder_sel - recent)
-            }
-        } else if self.finder_sel == 0 {
-            0
-        } else {
-            1 + self.finder_sel // "All results", then the Conversations title
-        };
-        // The first row brings the section title above it into view too.
-        let child = if self.finder_sel == 0 || (!empty && self.finder_sel == 1) {
-            0
-        } else {
-            child
+        // section title above the rows: one while nothing is typed ("Recent" or "Search
+        // Tips"), and after "All results" otherwise. The first row brings the top into view.
+        let child = match (empty, self.finder_sel) {
+            (_, 0) | (false, 1) => 0,
+            (_, sel) => sel + 1,
         };
         self.finder_scroll.scroll_to_item(child);
         cx.notify();
@@ -217,20 +291,15 @@ impl Nimbra {
     pub(super) fn finder_open_selected(&mut self, cx: &mut Context<Self>) {
         let query = self.finder.read(cx).text().trim().to_string();
         if query.is_empty() {
-            // A recent search or a tip.
-            let recent = self.settings.recent_searches.clone();
-            if let Some(text) = recent.get(self.finder_sel) {
-                let text = text.clone();
-                self.finder
-                    .update(cx, |input, cx| input.set(text, usize::MAX, cx));
-                self.finder_changed(cx);
-            } else if let Some((tip, _)) = SEARCH_TIPS.get(self.finder_sel - recent.len()) {
-                let text = tip.to_string();
-                let text = if text.ends_with(':') {
-                    text
-                } else {
-                    format!("{text} ")
-                };
+            let recent = &self.settings.recent_searches;
+            let text = if recent.is_empty() {
+                SEARCH_TIPS
+                    .get(self.finder_sel)
+                    .map(|(tip, _)| tip_text(tip))
+            } else {
+                recent.get(self.finder_sel).cloned()
+            };
+            if let Some(text) = text {
                 self.finder
                     .update(cx, |input, cx| input.set(text, usize::MAX, cx));
                 self.finder_changed(cx);
@@ -300,18 +369,17 @@ impl Nimbra {
                 .id(("finder-row", id))
                 .flex()
                 .items_center()
-                .gap(px(12.))
-                .px(px(12.))
-                .py(px(8.))
-                .rounded(px(10.))
+                .gap(px(space::M))
+                .px(px(space::M))
+                .py(px(space::S))
+                .rounded(px(radius::ROW))
                 .cursor_pointer()
-                .when(active, |d| d.bg(t.selected))
-                .when(!active, |d| d.hover(move |s| s.bg(hover)))
-                .press(t)
+                .when(active, |d| d.bg(t.selected).press_selected(t))
+                .when(!active, |d| d.hover(move |s| s.bg(hover)).press(t))
         };
         let section = |label: &str| {
             div()
-                .pl(px(12.))
+                .pl(px(space::M))
                 .pt(px(10.))
                 .pb(px(6.))
                 .child(overline(t, label.to_string()))
@@ -319,7 +387,36 @@ impl Nimbra {
         let mut rows: Vec<AnyElement> = Vec::new();
         if empty {
             let recent = &self.settings.recent_searches;
-            if !recent.is_empty() {
+            if recent.is_empty() {
+                rows.push(section("SEARCH TIPS").into_any_element());
+                for (i, (tip, what)) in SEARCH_TIPS.iter().enumerate() {
+                    rows.push(
+                        row_base(i, self.finder_sel == i)
+                            .child(icon("zap", 15., t.text3))
+                            .child(
+                                div()
+                                    .font_family(crate::theme::MONO)
+                                    .text_size(px(12.5))
+                                    .child(*tip),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_color(t.text3)
+                                    .child(*what),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let text = tip_text(tip);
+                                this.finder
+                                    .update(cx, |input, cx| input.set(text, usize::MAX, cx));
+                                this.finder_changed(cx);
+                                this.pending_focus = Some(this.finder.read(cx).focus_handle(cx));
+                            }))
+                            .into_any_element(),
+                    );
+                }
+            } else {
                 rows.push(
                     div()
                         .flex()
@@ -332,14 +429,14 @@ impl Nimbra {
                                 .mb(px(3.))
                                 .px(px(6.))
                                 .py(px(2.))
-                                .rounded(px(6.))
+                                .rounded(px(radius::CHIP))
                                 .cursor_pointer()
                                 .text_size(px(11.5))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(t.text3)
                                 .hover(move |s| s.bg(hover).text_color(t.text))
                                 .press(t)
-                                .child("Clear all")
+                                .child("Clear")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.settings.recent_searches.clear();
                                     this.finder_sel = 0;
@@ -356,7 +453,7 @@ impl Nimbra {
                     row_base(i, self.finder_sel == i)
                         .group("finder-recent")
                         .child(icon("clock", 15., t.text3))
-                        .child(div().flex_1().min_w(px(0.)).child(short(text, 70)))
+                        .child(div().flex_1().min_w(px(0.)).truncate().child(text.clone()))
                         .child({
                             // Removes just this search.
                             let gone = text.clone();
@@ -366,14 +463,14 @@ impl Nimbra {
                                 .items_center()
                                 .justify_center()
                                 .size(px(22.))
-                                .rounded(px(6.))
+                                .rounded(px(radius::CHIP))
                                 .when(self.finder_sel != i, |d| {
                                     d.invisible().group_hover("finder-recent", |s| s.visible())
                                 })
                                 .hover(move |s| s.bg(hover))
                                 .press(t)
                                 .child(icon("x", 13., t.text3))
-                                .tooltip(tip(t.dark, "Remove from recent", ""))
+                                .tooltip(tip(t.dark, "Remove", ""))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.forget_search(&gone, cx);
@@ -383,39 +480,6 @@ impl Nimbra {
                             let v = value.clone();
                             this.finder
                                 .update(cx, |input, cx| input.set(v, usize::MAX, cx));
-                            this.finder_changed(cx);
-                            this.pending_focus = Some(this.finder.read(cx).focus_handle(cx));
-                        }))
-                        .into_any_element(),
-                );
-            }
-            rows.push(section("SEARCH TIPS").into_any_element());
-            for (k, (tip, what)) in SEARCH_TIPS.iter().enumerate() {
-                let i = recent.len() + k;
-                rows.push(
-                    row_base(i, self.finder_sel == i)
-                        .child(icon("zap", 15., t.text3))
-                        .child(
-                            div()
-                                .font_family(crate::theme::MONO)
-                                .text_size(px(12.5))
-                                .child(*tip),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.))
-                                .text_color(t.text3)
-                                .child(*what),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let text = if tip.ends_with(':') {
-                                tip.to_string()
-                            } else {
-                                format!("{tip} ")
-                            };
-                            this.finder
-                                .update(cx, |input, cx| input.set(text, usize::MAX, cx));
                             this.finder_changed(cx);
                             this.pending_focus = Some(this.finder.read(cx).focus_handle(cx));
                         }))
@@ -433,17 +497,18 @@ impl Nimbra {
                             .items_center()
                             .justify_center()
                             .size(px(28.))
-                            .rounded(px(8.))
-                            .bg(gradient(135., c(0x8b7cff, 1.), c(0xff7ab6, 1.)))
+                            .rounded(px(radius::CONTROL))
+                            .bg(GRADIENT_PRIMARY.along(135.))
+                            .shadow(elevation(t, Elevation::Glow))
                             .child(icon("search", 15., gpui::white())),
                     )
                     .child(
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .child(format!("All results for “{}”", short(&query, 50))),
+                            .truncate()
+                            .child(format!("All results for “{query}”")),
                     )
-                    .when(self.finder_sel == 0, |d| d.child(kbd(t, "↵")))
                     .on_click(cx.listener(move |this, _, _, cx| this.search_for(&q, None, cx)))
                     .into_any_element(),
             );
@@ -464,18 +529,26 @@ impl Nimbra {
                                     div()
                                         .flex()
                                         .items_center()
-                                        .gap(px(8.))
+                                        .gap(px(space::S))
                                         .child(
                                             div()
+                                                .min_w(px(0.))
+                                                .truncate()
                                                 .font_weight(if hit.unread {
                                                     FontWeight::SEMIBOLD
                                                 } else {
                                                     FontWeight::MEDIUM
                                                 })
-                                                .child(short(&hit.sender, 30)),
+                                                .child(hit.sender.clone()),
                                         )
                                         .when(hit.unread, |d| {
-                                            d.child(div().size(px(6.)).rounded_full().bg(t.mint))
+                                            d.child(
+                                                div()
+                                                    .flex_none()
+                                                    .size(px(6.))
+                                                    .rounded_full()
+                                                    .bg(t.violet),
+                                            )
                                         })
                                         .child(div().flex_1())
                                         .child(caption(hit.time.clone(), t.text3)),
@@ -507,24 +580,36 @@ impl Nimbra {
                 );
             }
             if self.finder_hits.is_empty() && !self.finder_loading {
+                // The server was asked too unless that was not possible.
+                let asked = self.connection.is_some() && query.chars().count() >= 2;
                 rows.push(
                     div()
-                        .px(px(12.))
+                        .px(px(space::M))
                         .py(px(14.))
                         .text_color(t.text3)
-                        .child("Nothing here yet. Press Return to search all of Gmail.")
+                        .child(if asked {
+                            "No Matches"
+                        } else {
+                            "No Matches on This Mac"
+                        })
                         .into_any_element(),
                 );
             }
         }
-        let hint = |keys: &[&str], label: &str| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .children(keys.iter().map(|k| kbd(t, k)))
-                .child(meta(label.to_string(), t.text3))
-        };
+        // Asking the server: a turning mark beside the field, still under Reduce Motion.
+        let busy = self.finder_loading.then(|| {
+            let mark = icon("reload", 13., t.violet);
+            if crate::ui::motion::reduced() {
+                mark.opacity(0.7).into_any_element()
+            } else {
+                mark.with_animation(
+                    "finder-busy",
+                    Animation::new(Duration::from_millis(900)).repeat(),
+                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+                )
+                .into_any_element()
+            }
+        });
         div()
             .id("finder-scrim")
             .absolute()
@@ -546,23 +631,20 @@ impl Nimbra {
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .rounded(px(18.))
+                    .rounded(px(radius::SHEET))
                     .bg(t.raised)
                     .border_1()
-                    .border_color(t.border_strong)
-                    .shadow(vec![
-                        shadow(c(0x8b7cff, 0.22), 0., 120., 10.),
-                        shadow(c(0x000000, if t.dark { 0.6 } else { 0.2 }), 30., 80., -10.),
-                    ])
+                    .border_color(t.edge)
+                    .shadow(elevation(t, Elevation::Sheet))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(12.))
+                            .gap(px(space::M))
+                            .h(px(56.))
                             .pl(px(20.))
-                            .pr(px(16.))
-                            .py(px(16.))
+                            .pr(px(20.))
                             .child(icon("search", 18., t.text3))
                             .child(
                                 div()
@@ -571,24 +653,7 @@ impl Nimbra {
                                     .text_size(px(17.))
                                     .child(self.finder.clone()),
                             )
-                            .when(self.finder_loading, |d| {
-                                d.child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(6.))
-                                        .child(icon("reload", 13., t.violet).with_animation(
-                                            "finder-busy",
-                                            Animation::new(Duration::from_millis(900)).repeat(),
-                                            |svg, delta| {
-                                                svg.with_transformation(Transformation::rotate(
-                                                    percentage(delta),
-                                                ))
-                                            },
-                                        ))
-                                        .child(meta("Searching Gmail", t.text3)),
-                                )
-                            }),
+                            .children(busy),
                     )
                     .child(div().h(px(1.)).bg(t.border))
                     .child(
@@ -599,30 +664,14 @@ impl Nimbra {
                             .max_h(px(420.))
                             .overflow_y_scroll()
                             .track_scroll(&self.finder_scroll)
-                            .p(px(8.))
+                            .p(px(space::S))
                             .children(rows),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(16.))
-                            .px(px(20.))
-                            .py(px(12.))
-                            .border_t_1()
-                            .border_color(t.border)
-                            .bg(t.hover)
-                            .child(hint(&["↑", "↓"], "Navigate"))
-                            .child(hint(&["↵"], "Open"))
-                            .child(hint(&["esc"], "Close"))
-                            .child(div().flex_1())
-                            .child(display("Nimbra", 18., t.text2)),
                     ),
             )
     }
 
-    /// Runs the typed query: against Gmail (its full search syntax works), or locally
-    /// on the sample data.
+    /// Runs the typed query: against the server (Gmail's full search syntax works there), or
+    /// locally on the sample data.
     pub(super) fn run_search(&mut self, cx: &mut Context<Self>) {
         let query = self.search.read(cx).text().trim().to_string();
         if query.is_empty() {
@@ -642,7 +691,6 @@ impl Nimbra {
         self.mailbox = View::Search;
         self.back.clear();
         self.forward.clear();
-        self.palette = false;
         self.unread_only = false;
         self.pending_focus = Some(self.focus.clone());
         if self.is_demo() {
@@ -674,5 +722,44 @@ impl Nimbra {
             self.select_mailbox(View::Inbox, cx);
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mail(id: &str, account: Option<&str>, subject: &str) -> Mail {
+        let mut mail = crate::data::inbox().remove(0);
+        mail.id = Some(id.into());
+        mail.account = account.map(Into::into);
+        mail.subject = subject.to_string().into();
+        mail
+    }
+
+    #[test]
+    fn operators_are_left_to_the_server() {
+        assert_eq!(query_words("From:Mira  Launch"), vec!["launch"]);
+        assert!(query_words("has:attachment").is_empty());
+    }
+
+    #[test]
+    fn every_word_must_appear_whatever_its_case() {
+        let thread = Indexed::of(&mail("a", None, "Q4 Launch Plan"));
+        assert!(thread.matches(&query_words("launch q4")));
+        assert!(!thread.matches(&query_words("launch budget")));
+    }
+
+    #[test]
+    fn the_same_thread_id_in_another_account_is_another_thread() {
+        let thread = Indexed::of(&mail("a", Some("work"), "Plan"));
+        assert!(thread.is(&mail("a", Some("work"), "Plan, renamed")));
+        assert!(!thread.is(&mail("a", Some("home"), "Plan")));
+    }
+
+    #[test]
+    fn a_tip_waits_for_its_value_or_ends_its_term() {
+        assert_eq!(tip_text("from:"), "from:");
+        assert_eq!(tip_text("is:unread"), "is:unread ");
     }
 }
