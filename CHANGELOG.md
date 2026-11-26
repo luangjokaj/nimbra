@@ -5,9 +5,12 @@
 ### New
 - **Check for Updates.** In the Nimbra menu, and in Settings › About with the update's status and a Restart button once one is ready.
 - **A clearer reading toolbar.** Done, Snooze, Reply and Forward as words on the left; star, label, move, trash and more on the right. Reply all and Show original are in the more menu (and A and V). A message in its own window has the same look.
-- **A new thought every day.** Inbox Zero has 365 lines now, one for each day of the year: some quiet, some silly, and some famous quotes, with their authors set apart under a small "For today" label.
+- **A new thought every day.** Inbox Zero has 365 lines now, one for each day of the year: some quiet, some silly, and some famous quotes, with their authors set apart below them.
+- **Arrange the sidebar.** Drag accounts, Split Inbox, Mailbox and labels into the order you like, each within its own section; right-click a mailbox to hide it, or to reset its section. A "hidden" row shows them again.
 
 ### Changed
+- **A calmer list and toolbar.** Compose is a plain toolbar action, the list's top bar has a line under it, the rows line up with the bar above them, and a thread's two lines have a little more room. The view switch in the more menu reads "Switch to reader view" or "Switch to original", and an email's original view lines up with the toolbar.
+- **The sample mail shows only what Nimbra really does.** Its made-up stats, meeting card and streak are gone.
 - **About is simpler.** Check for updates and nimbra.me; the shortcuts are in Settings › Shortcuts and on ?.
 
 ## [0.1.1] - 2026-11-26
