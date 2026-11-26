@@ -41,6 +41,7 @@ pub fn document(body: &str, images: bool) -> String {
         "<!doctype html><meta charset=\"utf-8\">\
          <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
          img-src {img}; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'\">\
+         <meta http-equiv=\"x-dns-prefetch-control\" content=\"off\">\
          <style>{DEFAULTS}</style>{}",
         without_links(body)
     )
@@ -799,6 +800,13 @@ mod tests {
                 .all(|rule| rule.starts_with(":where(") || space.contains(&rule))
         );
         assert!(!DEFAULTS.contains("max-width") && !DEFAULTS.contains("overflow-wrap"));
+    }
+
+    #[test]
+    fn dns_prefetch_is_off_before_the_message_starts() {
+        let page = document("<a href=\"https://x.example\">x</a>", true);
+        let off = page.find("<meta http-equiv=\"x-dns-prefetch-control\" content=\"off\">");
+        assert!(off.is_some_and(|at| at < page.find("<a href").unwrap()));
     }
 
     #[test]

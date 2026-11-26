@@ -16,10 +16,19 @@ pub(super) fn long_date(timestamp_ms: i64) -> String {
         .unwrap_or_default()
 }
 
-/// A free path in Downloads for `name` ("Plan.pdf", then "Plan 2.pdf", ...).
-pub(super) fn unique_download_path(name: &str) -> anyhow::Result<std::path::PathBuf> {
+fn downloads_dir() -> anyhow::Result<std::path::PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("no home folder"))?;
-    let dir = std::path::PathBuf::from(home).join("Downloads");
+    Ok(std::path::PathBuf::from(home).join("Downloads"))
+}
+
+/// Writes `bytes` to a new file in `dir` named `name` or, when that is taken, "Plan 2.pdf"
+/// and on. Only a file it creates is opened: never one already there, nor through a link.
+pub(super) fn save_new(
+    dir: &std::path::Path,
+    name: &str,
+    bytes: &[u8],
+) -> anyhow::Result<std::path::PathBuf> {
+    use std::io::Write as _;
     let (stem, ext) = match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), format!(".{ext}")),
         _ => (name.to_string(), String::new()),
@@ -31,35 +40,104 @@ pub(super) fn unique_download_path(name: &str) -> anyhow::Result<std::path::Path
             format!("{stem} {n}{ext}")
         };
         let path = dir.join(file);
-        if !path.exists() {
-            return Ok(path);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = match options.open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        };
+        quarantine(&file);
+        if let Err(e) = file.write_all(bytes) {
+            let _ = std::fs::remove_file(&path);
+            return Err(e.into());
         }
+        return Ok(path);
     }
     anyhow::bail!("too many files with that name in Downloads")
 }
 
-/// A private temporary folder for Quick Look previews.
-pub(super) fn preview_path(name: &str) -> anyhow::Result<std::path::PathBuf> {
-    let mut id = [0u8; 8];
-    getrandom::getrandom(&mut id).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let dir = std::env::temp_dir()
-        .join("nimbra-previews")
-        .join(id.iter().map(|b| format!("{b:02x}")).collect::<String>());
-    std::fs::create_dir_all(&dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+/// Marks a file as downloaded, as browsers and Mail do, so Gatekeeper checks it when it is
+/// opened (and Archive Utility passes that on to what it unpacks). Without it, an app
+/// mailed in a zip would run unchecked. The value is flags (0x81: downloaded), the time
+/// in hex, and the agent; the event id that may follow is optional.
+#[cfg(target_os = "macos")]
+fn quarantine(file: &std::fs::File) {
+    use std::ffi::{c_char, c_int, c_void};
+    use std::os::fd::AsRawFd as _;
+    unsafe extern "C" {
+        fn fsetxattr(
+            fd: c_int,
+            name: *const c_char,
+            value: *const c_void,
+            size: usize,
+            position: u32,
+            options: c_int,
+        ) -> c_int;
     }
-    Ok(dir.join(name))
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let value = format!("0081;{now:08x};Nimbra;");
+    // SAFETY: `file` keeps the descriptor open for the call, the name is NUL-terminated and
+    // `value` lives through the call with exactly `value.len()` bytes.
+    let failed = unsafe {
+        fsetxattr(
+            file.as_raw_fd(),
+            c"com.apple.quarantine".as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        )
+    } != 0;
+    if failed {
+        eprintln!("nimbra: a saved file could not be marked as downloaded");
+    }
 }
 
-pub(super) fn restrict_file(path: &std::path::Path) {
+#[cfg(not(target_os = "macos"))]
+fn quarantine(_: &std::fs::File) {}
+
+fn previews_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("nimbra-previews")
+}
+
+/// A private temporary folder for one Quick Look preview.
+pub(super) fn preview_dir() -> anyhow::Result<std::path::PathBuf> {
+    private_folder_in(&previews_root())
+}
+
+fn private_folder_in(root: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let mut id = [0u8; 8];
+    getrandom::getrandom(&mut id).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let dir = root.join(id.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        builder.mode(0o700);
+        builder.create(root)?;
+        if std::fs::symlink_metadata(root)?.file_type().is_symlink() {
+            anyhow::bail!("the previews folder is a link");
+        }
+        // Made before this version kept it private.
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
     }
+    builder.create(&dir)?;
+    Ok(dir)
+}
+
+/// Removes every Quick Look copy: they are mail, decrypted. At launch and on signing out.
+pub(crate) fn forget_previews() {
+    forget_previews_in(&previews_root());
+}
+
+fn forget_previews_in(root: &std::path::Path) {
+    let _ = std::fs::remove_dir_all(root);
 }
 
 /// A button on an attachment: its icon, a turning arrow while it downloads, or a green
@@ -321,14 +399,12 @@ impl Nimbra {
             let result = within(cx.background_executor(), async move {
                 let bytes = client.download(&att.message_id, &att.attachment_id)?;
                 let name = mail::safe_file_name(&att.name);
-                let path = if save {
-                    unique_download_path(&name)?
+                let dir = if save {
+                    downloads_dir()?
                 } else {
-                    preview_path(&name)?
+                    preview_dir()?
                 };
-                std::fs::write(&path, &bytes)?;
-                restrict_file(&path);
-                anyhow::Ok(path)
+                save_new(&dir, &name, &bytes)
             })
             .await;
             this.update(cx, |this, cx| {
@@ -2162,4 +2238,109 @@ pub(super) fn done_button(t: &Theme) -> Div {
         .pr(px(6.))
         .gap(px(6.))
         .child(kbd(t, "E"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    /// An empty folder of the test's own, removed when it ends.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let mut id = [0u8; 8];
+            getrandom::getrandom(&mut id).unwrap();
+            let dir = std::env::temp_dir().join(format!("nimbra-test-{}", u64::from_le_bytes(id)));
+            std::fs::create_dir(&dir).unwrap();
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[test]
+    fn save_new_writes_the_bytes_under_the_name() {
+        let scratch = Scratch::new();
+        let path = save_new(&scratch.0, "Plan.pdf", b"pdf").unwrap();
+        assert_eq!(
+            (path.file_name().unwrap(), std::fs::read(&path).unwrap()),
+            ("Plan.pdf".as_ref(), b"pdf".to_vec())
+        );
+    }
+
+    #[test]
+    fn save_new_numbers_the_name_when_it_is_taken() {
+        let scratch = Scratch::new();
+        std::fs::write(scratch.0.join("Plan.pdf"), b"old").unwrap();
+        let path = save_new(&scratch.0, "Plan.pdf", b"new").unwrap();
+        assert_eq!(path, scratch.0.join("Plan 2.pdf"));
+    }
+
+    #[test]
+    fn save_new_never_writes_through_a_dangling_link() {
+        let scratch = Scratch::new();
+        let target = scratch.0.join("elsewhere.plist");
+        std::os::unix::fs::symlink(&target, scratch.0.join("report.pdf")).unwrap();
+        save_new(&scratch.0, "report.pdf", b"payload").unwrap();
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn save_new_skips_a_dangling_link_for_the_next_name() {
+        let scratch = Scratch::new();
+        std::os::unix::fs::symlink(scratch.0.join("gone"), scratch.0.join("report.pdf")).unwrap();
+        let path = save_new(&scratch.0, "report.pdf", b"payload").unwrap();
+        assert_eq!(path, scratch.0.join("report 2.pdf"));
+    }
+
+    #[test]
+    fn save_new_makes_the_file_private() {
+        let scratch = Scratch::new();
+        let path = save_new(&scratch.0, "a.txt", b"x").unwrap();
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[test]
+    fn preview_folders_are_private() {
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        let dir = private_folder_in(&root).unwrap();
+        assert_eq!((mode(&root), mode(&dir)), (0o700, 0o700));
+    }
+
+    #[test]
+    fn an_existing_preview_root_is_made_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        private_folder_in(&root).unwrap();
+        assert_eq!(mode(&root), 0o700);
+    }
+
+    #[test]
+    fn forgetting_previews_removes_them_all() {
+        let scratch = Scratch::new();
+        let root = scratch.0.join("previews");
+        let dir = private_folder_in(&root).unwrap();
+        std::fs::write(dir.join("mail.pdf"), b"secret").unwrap();
+        forget_previews_in(&root);
+        assert!(!root.exists());
+    }
 }

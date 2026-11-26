@@ -1070,6 +1070,7 @@ impl Nimbra {
             this.status = Status::Loading;
             this.checks.start(View::Inbox, "");
         }
+        cx.background_spawn(async { forget_previews() }).detach();
         this.watch_for_mail(cx);
         this.watch_other_accounts(cx);
         this.watch_notification_clicks(cx);
@@ -1686,7 +1687,10 @@ impl Nimbra {
             self.next_pages.clear();
             self.forget_checked();
             let account = self.account_id.clone();
-            std::thread::spawn(move || crate::store::wipe(&account));
+            std::thread::spawn(move || {
+                crate::store::wipe(&account);
+                forget_previews();
+            });
             self.cache.clear();
             self.mails.clear();
             self.done.clear();

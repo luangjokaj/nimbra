@@ -1008,6 +1008,7 @@ impl Nimbra {
             crate::servers::forget_password(&gone);
             crate::microsoft::forget_refresh_token(&gone);
             crate::store::wipe(&gone);
+            forget_previews();
         });
         self.settings.accounts.retain(|a| a.id != account);
         self.others.remove(&account);
