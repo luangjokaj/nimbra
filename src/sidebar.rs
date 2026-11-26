@@ -577,13 +577,11 @@ impl Nimbra {
                     .cloned()
             })
             .flatten();
-        let left = self.visible().len();
         let unread = self
             .visible()
             .iter()
             .filter(|i| self.mails[**i].unread)
             .count();
-        let bars = [9., 14., 8., 17., 12., 20., 15.];
         // The other mailboxes are not connected yet, so their counts only show in the demo.
         let demo = self.is_demo();
         let fake = |n: &str| demo.then(|| n.to_string());
@@ -1095,48 +1093,7 @@ impl Nimbra {
                     self.fold_row("labels", self.mailbox == view, view_key(view), row)
                 }))
             })
-            .child(div().flex_1())
-            // The streak card is sample content, so it only shows with the demo data.
-            .when(demo, |d| {
-                d.child(
-                    card(t)
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.))
-                        .p(px(12.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(icon("zap", 16., t.amber))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child("Inbox zero streak"),
-                                )
-                                .child(mono("7d", t.text3)),
-                        )
-                        .child(div().flex().items_end().gap(px(5.)).h(px(22.)).children(
-                            bars.map(|h: f32| {
-                                div().flex_1().h(px(h)).rounded(px(2.)).bg(gradient(
-                                    180.,
-                                    c(0xff7ab6, 1.),
-                                    c(0x8b7cff, 1.),
-                                ))
-                            }),
-                        ))
-                        .child(meta(
-                            if left == 0 {
-                                "Done at 10:52 · 28 min faster".to_string()
-                            } else {
-                                format!("{left} left · usually done by 11:20")
-                            },
-                            t.text3,
-                        )),
-                )
-            });
+            .child(div().flex_1());
 
         // A new version, downloaded and checked: one click restarts into it.
         let update = self.update_ready.clone().map(|version| {

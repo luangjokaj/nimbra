@@ -1171,37 +1171,6 @@ impl Nimbra {
     pub(super) fn zero(&self, t: &Theme) -> impl IntoElement {
         let ink = c(0xf5f3ef, 1.);
         let soft = c(0xffffff, 0.7);
-        let glass = |d: Div| {
-            d.bg(c(0xffffff, 0.07))
-                .border_1()
-                .border_color(c(0xffffff, 0.14))
-                .rounded(px(14.))
-        };
-        let stat = |name: &str, color: Hsla, label: &str, value: &str| {
-            glass(div())
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .pl(px(20.))
-                .pr(px(28.))
-                .py(px(16.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .child(icon(name, 16., color))
-                        .child(meta(label.to_string(), soft)),
-                )
-                .child(
-                    div()
-                        .font_family(SERIF)
-                        .text_size(px(40.))
-                        .line_height(px(44.))
-                        .text_color(ink)
-                        .child(value.to_string()),
-                )
-        };
         let arrival = self.arrival.unwrap_or(Arrival::SETTLED);
         let settle = |d: Div, shown: f32| d.relative().top(px(drop_for(shown))).opacity(shown);
         // Deterministic star field.
@@ -1270,8 +1239,7 @@ impl Nimbra {
                 .child(kbd(&Theme::dark(), "Z"))
                 .child(meta("to undo", c(0xffffff, 0.5)))
         } else {
-            // The day's line, under a small label like the date's above. A quote has its
-            // author set apart below it.
+            // The day's line, centred; a quote has its author set apart below it.
             let (line, author) = crate::inspiration::split(crate::inspiration::line_for(
                 chrono::Local::now().date_naive(),
             ));
@@ -1282,7 +1250,6 @@ impl Nimbra {
                 .flex_col()
                 .items_center()
                 .gap(px(12.))
-                .child(overline("FOR TODAY".to_string(), c(0xffffff, 0.45)))
                 .child(
                     div()
                         .max_w(px(620.))
@@ -1327,33 +1294,9 @@ impl Nimbra {
                         .child(div().h(px(18.)).flex_none())
                         .child(settle(serif("Inbox zero.", 120., ink), arrival.headline()))
                         .child(div().h(px(14.)).flex_none())
-                        .child(
-                            settle(div(), arrival.line())
-                                .text_size(px(17.))
-                                .line_height(px(26.))
-                                .text_color(soft)
-                                // The headline says it; the line below brings the day's thought.
-                                .when(self.is_demo(), |d| {
-                                    d.child("Every important thread is handled.")
-                                }),
-                        )
-                        // Sample content: real mail shows the headline only.
-                        .when(self.is_demo(), |d| {
-                            d.child(
-                                div()
-                                    .flex()
-                                    .mt(px(40.))
-                                    .gap(px(12.))
-                                    .child(stat(
-                                        "done",
-                                        t.mint,
-                                        "threads handled",
-                                        &(32 + self.history.len()).to_string(),
-                                    ))
-                                    .child(stat("clock", t.sky, "time in inbox", "38m"))
-                                    .child(stat("zap", t.amber, "zero streak", "8 days")),
-                            )
-                        }),
+                        // As a real account shows it: the date and the headline; the day's
+                        // thought is below the horizon.
+                        .child(settle(div(), arrival.line())),
                 )
                 // Drawn out from the middle, and fading towards both ends.
                 .child(
@@ -1382,48 +1325,6 @@ impl Nimbra {
                         .justify_center()
                         .w_full()
                         .gap(px(18.))
-                        .when(self.is_demo(), |d| {
-                            d.child(
-                                glass(div())
-                                    .bg(c(0x14131c, 0.72))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(14.))
-                                    .pl(px(14.))
-                                    .pr(px(10.))
-                                    .py(px(10.))
-                                    .text_color(ink)
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .size(px(34.))
-                                            .rounded(px(9.))
-                                            .bg(Tone::Sky.gradient())
-                                            .child(icon("calendar", 16., gpui::white())),
-                                    )
-                                    .child(
-                                        div()
-                                            .mr(px(40.))
-                                            .child(
-                                                div()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child("Up next · Design crit"),
-                                            )
-                                            .child(meta(
-                                                "2:00 PM · Studio B · in 42 min",
-                                                c(0xffffff, 0.55),
-                                            )),
-                                    )
-                                    .child(button(
-                                        &Theme::dark(),
-                                        ButtonKind::Secondary,
-                                        "Join",
-                                        Some("J"),
-                                    )),
-                            )
-                        })
                         .child(settle(below, arrival.below())),
                 ),
         )
