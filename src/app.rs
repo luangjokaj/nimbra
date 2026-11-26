@@ -411,6 +411,14 @@ pub struct Nimbra {
     account_unread: HashMap<String, u32>,
     /// Conversations open in windows of their own.
     message_windows: Vec<gpui::WindowHandle<MessageWindow>>,
+    /// Archive or Mark as Read from a notification for an account not connected yet (the
+    /// banner launched Nimbra): carried out once it is.
+    pending_notes: Vec<(
+        std::time::Instant,
+        String,
+        String,
+        crate::integration::NoteAction,
+    )>,
     /// The Settings window, while it is open.
     settings_window: Option<gpui::WindowHandle<SettingsWindow>>,
     /// Composers that are closed but still saving, waiting to send, or discarded.
@@ -905,6 +913,7 @@ impl Nimbra {
             settings,
             settings_window: None,
             message_windows: Vec::new(),
+            pending_notes: Vec::new(),
             others: HashMap::new(),
             account_unread: HashMap::new(),
             compose_host: None,

@@ -23,6 +23,9 @@ actions!(
 /// How long the Mac waking or the network coming back settles before mail is checked.
 const SETTLE: Duration = Duration::from_secs(2);
 
+/// How long a notification's Archive or Mark as Read waits for its account to connect.
+const NOTE_WAIT: Duration = Duration::from_secs(120);
+
 /// What a flip of the shown appearance (⌘⇧L, the sidebar's button) stores: following the
 /// Mac whenever that gives the same, so the same key always leads back to it.
 pub(super) fn flipped(shown_dark: bool, mac_dark: bool) -> ThemeChoice {
@@ -144,6 +147,9 @@ impl Nimbra {
         cx.observe_self(|this, cx| {
             crate::quitting::set_would_lose(this.would_lose(cx));
             this.update_badge();
+            if !this.pending_notes.is_empty() {
+                this.retry_notifications(cx);
+            }
         })
         .detach();
         crate::notify::refresh_settings();
@@ -365,9 +371,41 @@ impl Nimbra {
         }
         // Not in the open list: changed in Gmail all the same, through its account.
         let Some(client) = self.client_for(Some(&account)) else {
+            // Not connected yet, as when the banner opened Nimbra: done once it is.
+            self.pending_notes
+                .push((std::time::Instant::now(), account, thread, action));
+            // A last look once the wait is over, in case nothing else changes meanwhile.
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(NOTE_WAIT + Duration::from_secs(1))
+                    .await;
+                this.update(cx, |_, cx| cx.notify()).ok();
+            })
+            .detach();
             return;
         };
         self.sync_thread(client, account, thread, change, false, cx);
+    }
+
+    /// Carries out the notification answers whose account has connected since. One that
+    /// waited too long is dropped, and the user told.
+    fn retry_notifications(&mut self, cx: &mut Context<Self>) {
+        for (since, account, thread, action) in std::mem::take(&mut self.pending_notes) {
+            if self.client_for(Some(&account)).is_some() {
+                self.answer_notification(Some(account), thread, action, cx);
+            } else if since.elapsed() < NOTE_WAIT {
+                self.pending_notes.push((since, account, thread, action));
+            } else {
+                self.notice = Some(
+                    match action {
+                        NoteAction::MarkRead => "Could not mark the message as read.",
+                        _ => "Could not archive the message.",
+                    }
+                    .into(),
+                );
+                cx.notify();
+            }
+        }
     }
 
     /// The Mac woke or the network came back: once that has settled, mail is checked and

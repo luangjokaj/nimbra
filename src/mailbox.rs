@@ -940,11 +940,14 @@ impl Nimbra {
                     }
                 }
                 let Ok(client) = this.update(cx, |this, _| {
-                    this.connection.clone().map(|c| (c, this.account_gen))
+                    this.connection
+                        .clone()
+                        .map(|c| (c, this.account_gen, this.account_id.clone()))
                 }) else {
                     break; // the window is gone
                 };
-                let Some((client, generation)) = client else {
+                // The account checked, kept for its notifications: another may be shown by then.
+                let Some((client, generation, account)) = client else {
                     continue; // not signed in
                 };
                 // The label list too, now and then: Gmail's change feed does not carry it.
@@ -1039,7 +1042,7 @@ impl Nimbra {
                     }
                     for mail in &summaries {
                         crate::notify::show(
-                            &format!("acct:{}:{}", this.account_id, mail.id),
+                            &format!("acct:{account}:{}", mail.id),
                             &mail.sender,
                             &mail.subject,
                             this.settings.notify_sound,
@@ -1047,7 +1050,7 @@ impl Nimbra {
                     }
                     if extra > 0 {
                         crate::notify::show(
-                            &format!("acct:{}:more", this.account_id),
+                            &format!("acct:{account}:more"),
                             "Nimbra",
                             &format!("{extra} more new messages"),
                             this.settings.notify_sound,

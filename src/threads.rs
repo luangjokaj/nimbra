@@ -553,8 +553,10 @@ impl Nimbra {
                                     "Back from snooze"
                                 };
                                 if this.settings.notifications {
+                                    // Its own account's, as Archive and Open act on it there.
+                                    let whose = item.mail.account.as_deref().unwrap_or(&owner);
                                     crate::notify::show(
-                                        &item.thread_id,
+                                        &format!("acct:{whose}:{}", item.thread_id),
                                         title,
                                         &item.mail.subject,
                                         this.settings.notify_sound,

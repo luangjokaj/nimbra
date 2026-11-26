@@ -179,7 +179,9 @@ pub struct MailApp {
     pub name: String,
 }
 
-pub use platform::{default_mail_app, mac_is_dark, set_app_appearance, set_menu_check};
+pub use platform::{
+    default_mail_app, mac_is_dark, make_default_mail_app, set_app_appearance, set_menu_check,
+};
 
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)] // emitted by the objc crate's macros
@@ -489,14 +491,26 @@ mod platform {
                         name: String::new(),
                     });
                 }
-                let bundle: *mut Object = msg_send![class!(NSBundle), bundleWithURL: app];
+                // This copy of Nimbra, not just any with its bundle id (an older one in
+                // Applications, a build elsewhere).
                 let main: *mut Object = msg_send![class!(NSBundle), mainBundle];
-                let theirs = if bundle.is_null() {
-                    None
+                let ours: *mut Object = if main.is_null() {
+                    std::ptr::null_mut()
                 } else {
-                    rust_string(msg_send![bundle, bundleIdentifier])
+                    msg_send![main, bundleURL]
                 };
-                let ours = rust_string(msg_send![main, bundleIdentifier]);
+                let real_path = |url: *mut Object| -> Option<String> {
+                    if url.is_null() {
+                        return None;
+                    }
+                    let url: *mut Object = msg_send![url, URLByResolvingSymlinksInPath];
+                    if url.is_null() {
+                        return None;
+                    }
+                    let path: *mut Object = msg_send![url, path];
+                    rust_string(path).map(|path| path.trim_end_matches('/').to_string())
+                };
+                let is_ours = real_path(ours).is_some_and(|ours| real_path(app) == Some(ours));
                 let path: *mut Object = msg_send![app, path];
                 let files: *mut Object = msg_send![class!(NSFileManager), defaultManager];
                 let name = if path.is_null() || files.is_null() {
@@ -506,11 +520,67 @@ mod platform {
                 };
                 let name = name.unwrap_or_default();
                 Some(MailApp {
-                    ours: ours.is_some() && theirs == ours,
+                    ours: is_ours,
                     name: name.strip_suffix(".app").unwrap_or(&name).to_string(),
                 })
             }
         })
+    }
+
+    /// Makes this copy of Nimbra the app that opens `mailto:` links. macOS may ask the user
+    /// first; the answer arrives when they have chosen. Main thread.
+    pub fn make_default_mail_app() -> futures::channel::oneshot::Receiver<Result<(), String>> {
+        let (done, answer) = futures::channel::oneshot::channel();
+        let done = std::cell::Cell::new(Some(done));
+        let finish = move |result: Result<(), String>| {
+            if let Some(done) = done.take() {
+                done.send(result).ok();
+            }
+        };
+        // SAFETY: main thread; every object is checked for null, and the block is copied to
+        // the heap, where the workspace retains it until it has called it.
+        unsafe {
+            let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let main: *mut Object = msg_send![class!(NSBundle), mainBundle];
+            let app: *mut Object = if main.is_null() {
+                std::ptr::null_mut()
+            } else {
+                msg_send![main, bundleURL]
+            };
+            let selector = sel!(setDefaultApplicationAtURL:toOpenURLsWithScheme:completionHandler:);
+            let can: BOOL = if workspace.is_null() {
+                NO
+            } else {
+                msg_send![workspace, respondsToSelector: selector]
+            };
+            if app.is_null() || can == NO {
+                finish(Err("not available".into()));
+                return answer;
+            }
+            // Called on a queue of the workspace's choosing. An empty error is the user
+            // keeping their current app when macOS asked (NSUserCancelledError).
+            const CANCELLED: isize = 3072;
+            let handler = block::ConcreteBlock::new(move |error: *mut Object| {
+                objc::rc::autoreleasepool(|| {
+                    finish(if error.is_null() {
+                        Ok(())
+                    } else {
+                        let code: isize = msg_send![error, code];
+                        let message: *mut Object = msg_send![error, localizedDescription];
+                        Err(if code == CANCELLED {
+                            String::new()
+                        } else {
+                            rust_string(message).unwrap_or_else(|| "failed".into())
+                        })
+                    });
+                })
+            })
+            .copy();
+            let _: () = msg_send![workspace, setDefaultApplicationAtURL: app
+                                                  toOpenURLsWithScheme: ns_string("mailto")
+                                                     completionHandler: &*handler];
+        }
+        answer
     }
 }
 
@@ -534,6 +604,12 @@ mod platform {
 
     pub fn default_mail_app() -> Option<MailApp> {
         None
+    }
+
+    pub fn make_default_mail_app() -> futures::channel::oneshot::Receiver<Result<(), String>> {
+        let (done, answer) = futures::channel::oneshot::channel();
+        done.send(Err("not available".into())).ok();
+        answer
     }
 }
 

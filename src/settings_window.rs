@@ -186,12 +186,15 @@ impl SettingsWindow {
         }
         self.making_default = true;
         cx.notify();
-        let done = cx.register_url_scheme("mailto");
+        // This copy, by its own path: GPUI's register_url_scheme takes whichever copy macOS
+        // finds for the bundle id, which may be an older one.
+        let done = crate::integration::make_default_mail_app();
         cx.spawn(async move |this, cx| {
-            let result = done.await;
+            let result = done.await.unwrap_or_else(|_| Err("failed".into()));
             this.update(cx, |this, cx| {
                 this.making_default = false;
-                if result.is_err() {
+                // Empty: the user chose to keep their current app when macOS asked.
+                if matches!(&result, Err(message) if !message.is_empty()) {
                     this.owner.update(cx, |n, cx| {
                         n.notice = Some(
                             "macOS did not make Nimbra the default mail app. Try again in a moment."
