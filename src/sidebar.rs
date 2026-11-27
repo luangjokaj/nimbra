@@ -262,7 +262,6 @@ impl Nimbra {
     pub(super) fn focus_sidebar(&mut self, cx: &mut Context<Self>) {
         if self.pane == Pane::Sidebar
             || self.window_covered()
-            || self.shortcuts
             || matches!(self.status, Status::SignedOut | Status::SigningIn)
         {
             return;
