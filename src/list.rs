@@ -934,15 +934,14 @@ impl Nimbra {
                             )
                     }),
             )
-            // While mail is checked, a thin bar glides along the top of the list. Its 2px
-            // strip is always there, so nothing below it moves.
+            // While mail is checked, a thin bar glides along the top of the list, from one
+            // edge to the other, on the header's line. Its 2px strip is always there, so
+            // nothing below it moves.
             .child(
                 div()
                     .relative()
                     .flex_none()
                     .h(dp(2.))
-                    .mx(dp(18.))
-                    .rounded_full()
                     .overflow_hidden()
                     .when(self.bar_shown || self.bar_fade.is_some(), |d| {
                         d.child(
