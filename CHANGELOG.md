@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.7] - 2026-11-27
 
 ### New
 - **The whole conversation in its original formatting.** The original view showed only the latest email of a thread. It now shows the conversation as the reader does: earlier messages fold to a line and open in place, several at once, with a smooth animation that leaves the sender where it was. Each email shows in its own HTML at the pane's full width and as tall as it is, so the conversation scrolls as one, and a message with no HTML shows its text. Threads kept from before are downloaded again when opened, so their earlier emails have their HTML too.
