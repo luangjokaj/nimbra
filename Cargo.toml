@@ -7,7 +7,7 @@ edition = "2024"
 # The mail engine, shared with the iOS app (github.com/nimbra-mail/core), pinned to a
 # release tag. To build against a local checkout in ../core instead, run
 # `scripts/local-core.sh on` (a gitignored Cargo patch; see the README).
-nimbra-core = { git = "https://github.com/nimbra-mail/core", tag = "v0.1.1" }
+nimbra-core = { git = "https://github.com/nimbra-mail/core", tag = "v0.1.2" }
 anyhow = "1.0.105"
 base64 = "0.22"
 chrono = "0.4.45"
@@ -25,7 +25,7 @@ url = "2.5.9"
 
 [dev-dependencies]
 # The same engine with its test helpers (temporary stores), for the app's own tests.
-nimbra-core = { git = "https://github.com/nimbra-mail/core", tag = "v0.1.1", features = ["test-support"] }
+nimbra-core = { git = "https://github.com/nimbra-mail/core", tag = "v0.1.2", features = ["test-support"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
