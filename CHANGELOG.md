@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- **The list keeps its width.** Dragged wider or narrower, it opens at that width next time, and double-clicking its edge puts it back to its first width (as the sidebar's edge does), rather than closing the list.
 - **Changes show everywhere at once.** A thread you star is in Starred straight away, and one you archive, move to Trash or Spam, or label is in that mailbox (and gone from the one it left) without waiting for the next check. Its star and read state follow it into the other mailboxes, and Sent is listed again right after a message goes.
 - **Search by Cc and Bcc.** The search tips show `cc:` and `bcc:`, and IMAP accounts now understand them too, with `has:attachment` and `newer_than:` (or `older_than:`) days, weeks, months or years.
 - **Pop-ups come and go smoothly.** The Undo and sending pill, notices and the update's card rise into place as they fade in, and sink back as they fade out; menus fade. They stay with Nimbra's window: they move with it, and go behind other apps' windows when Nimbra is not in front.

@@ -867,6 +867,12 @@ impl Nimbra {
             Ok("open") => true,
             _ => !settings.sidebar_auto_hide,
         };
+        // As it was last dragged to; NIMBRA_LIST_WIDTH=<px> overrides it (screenshots).
+        let list_width = std::env::var("NIMBRA_LIST_WIDTH")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(settings.list_width)
+            .clamp(LIST_MIN, LIST_MAX);
         let mut this = Self {
             inbox_saved_empty: false,
             all_inboxes_whole: false,
@@ -1110,11 +1116,7 @@ impl Nimbra {
             palette_sel: 0,
             dark: std::env::var("NIMBRA_THEME").as_deref() != Ok("light"),
             list_open: std::env::var("NIMBRA_LIST").as_deref() != Ok("closed"),
-            // NIMBRA_LIST_WIDTH=<px> starts with the list at that width (screenshots).
-            list_width: std::env::var("NIMBRA_LIST_WIDTH")
-                .ok()
-                .and_then(|v| v.parse::<f32>().ok())
-                .map_or(452., |w| w.clamp(300., 720.)),
+            list_width,
             list_grab: None,
             sidebar_grab: None,
             list_toggled: None,
@@ -1750,6 +1752,14 @@ impl Nimbra {
         self.settings.welcomed = true;
         crate::notify::welcome_sound();
         self.save_settings(cx);
+    }
+
+    /// Keeps the list's width as it was dragged to, for the next launch.
+    pub(super) fn keep_list_width(&mut self, cx: &mut Context<Self>) {
+        if self.settings.list_width != self.list_width {
+            self.settings.list_width = self.list_width;
+            self.save_settings(cx);
+        }
     }
 
     fn save_settings(&self, _cx: &mut Context<Self>) {
@@ -2861,14 +2871,20 @@ impl Render for Nimbra {
                 };
                 if event.pressed_button != Some(MouseButton::Left) {
                     this.list_grab = None;
+                    this.keep_list_width(cx);
                     return;
                 }
-                this.list_width = (width + from_screen(event.position.x) - start).clamp(300., 720.);
+                this.list_width =
+                    (width + from_screen(event.position.x) - start).clamp(LIST_MIN, LIST_MAX);
                 cx.notify();
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.list_grab = None),
+                cx.listener(|this, _, _, cx| {
+                    if this.list_grab.take().is_some() {
+                        this.keep_list_width(cx);
+                    }
+                }),
             )
             .on_action(cx.listener(|this, _: &ToggleList, _, cx| this.toggle_list(cx)))
             .relative()
