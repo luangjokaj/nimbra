@@ -1,24 +1,25 @@
-//! The shortcuts sheet (?): every key, in tabs, on a card over the dimmed app. A window of its
-//! own covering the main one, like the menus, so it sits above the email's web view.
+//! The shortcuts window (?, Help › Keyboard Shortcuts): every key, in tabs. A window of its
+//! own, as Settings is: it stays open beside the mail until it is closed.
 
 use crate::keyboard::{Cap, SHORTCUT_TABS};
 
 use super::*;
 
-/// The card's width, and the height of one row of the table.
+/// The window's width, and the height of one row of the table.
 const CARD_W: f32 = 760.;
 const ROW_H: f32 = 42.;
 const TABLE_HEAD: f32 = 34.;
-/// The main window's corner radius, so the dimmed backdrop fits it exactly.
-const WINDOW_RADIUS: f32 = 16.;
 /// The tab bar's segments: their height, the space around and between them, and the
 /// padding beside each label.
 const TAB_H: f32 = 28.;
 const TAB_INSET: f32 = 3.;
 const TAB_GAP: f32 = 2.;
 const TAB_PAD: f32 = 14.;
-/// The card without its table: padding, title and hint, tab bar, and the gaps between.
-const CARD_CHROME: f32 = 2. * 28. + 39. + 6. + 22. + 20. + (TAB_H + 2. * TAB_INSET + 2.) + 20.;
+/// The padding at the top, below the traffic lights, and at the sides and bottom.
+const PAD_TOP: f32 = 52.;
+const PAD: f32 = 28.;
+/// The window without its table: padding, title and hint, tab bar, and the gaps between.
+const CARD_CHROME: f32 = PAD_TOP + PAD + 39. + 6. + 22. + 20. + (TAB_H + 2. * TAB_INSET + 2.) + 20.;
 /// How long a switch of tab moves the highlight and the table's height.
 const SWITCH: Duration = Duration::from_millis(260);
 
@@ -37,20 +38,13 @@ pub(super) struct ShortcutsSheet {
     switches: usize,
     dark: bool,
     focus: gpui::FocusHandle,
-    was_active: bool,
-    opened: std::time::Instant,
-    _activation: gpui::Subscription,
 }
 
 impl ShortcutsSheet {
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.remove_window();
         self.owner
-            .update(cx, |owner, cx| {
-                owner.shortcuts = false;
-                owner.shortcuts_window = None;
-                cx.notify();
-            })
+            .update(cx, |owner, _| owner.shortcuts_window = None)
             .ok();
     }
 
@@ -226,62 +220,6 @@ impl Render for ShortcutsSheet {
         } else {
             Theme::light()
         };
-        let tallest = (0..SHORTCUT_TABS.len())
-            .map(table_height)
-            .fold(0., f32::max);
-        let height = from_screen(window.viewport_size().height);
-        let top = ((height - CARD_CHROME - tallest) / 2.).max(16.);
-        let card = div()
-            .id("shortcuts-card")
-            .w(dp(CARD_W))
-            .flex()
-            .flex_col()
-            .gap(dp(20.))
-            .p(dp(28.))
-            .rounded(dp(18.))
-            .bg(t.raised)
-            .border_1()
-            .border_color(t.border_strong)
-            .shadow(vec![shadow(
-                c(0x000000, if t.dark { 0.6 } else { 0.2 }),
-                30.,
-                80.,
-                -10.,
-            )])
-            // A click on the card stays on it.
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(dp(6.))
-                            .child(serif("One key for everything.", 34., t.text))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(dp(6.))
-                                    .text_size(dp(13.))
-                                    .text_color(t.text3)
-                                    .child("Press")
-                                    .child(kbd(&t, "?"))
-                                    .child("anytime to open this sheet."),
-                            ),
-                    )
-                    .child(
-                        icon_button(&t, "x")
-                            .id("shortcuts-close")
-                            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
-                    ),
-            )
-            // In a row of its own, so the tab bar is only as wide as its tabs.
-            .child(div().flex().child(self.tabs(&t, cx)))
-            .child(self.table(&t));
         div()
             .id("shortcuts-sheet")
             .track_focus(&self.focus)
@@ -289,114 +227,104 @@ impl Render for ShortcutsSheet {
                 this.key(event, window, cx)
             }))
             .size_full()
-            .rounded(dp(WINDOW_RADIUS))
-            .bg(t.scrim)
-            // The card's top stays put while its table changes height: where the tallest
-            // tab would sit centred.
             .flex()
             .flex_col()
-            .items_center()
-            .pt(dp(top))
+            .gap(dp(20.))
+            .pt(dp(PAD_TOP))
+            .px(dp(PAD))
+            .pb(dp(PAD))
+            .bg(t.raised)
             .font_family(crate::theme::SANS)
             .text_size(dp(13.))
             .line_height(dp(18.))
             .text_color(t.text)
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.close(window, cx)),
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(dp(6.))
+                    .child(serif("One key for everything.", 34., t.text))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(dp(6.))
+                            .text_size(dp(13.))
+                            .text_color(t.text3)
+                            .child("Press")
+                            .child(kbd(&t, "?"))
+                            .child("anytime to open this window."),
+                    ),
             )
-            .child(card)
+            // In a row of its own, so the tab bar is only as wide as its tabs.
+            .child(div().flex().child(self.tabs(&t, cx)))
+            .child(self.table(&t))
     }
 }
 
 impl Nimbra {
-    /// Closes the sheet if it is open.
-    pub(super) fn close_shortcuts(&mut self, cx: &mut Context<Self>) {
-        if let Some(handle) = self.shortcuts_window.take() {
-            remove_popup(handle, cx);
-        }
-        if self.shortcuts {
-            self.shortcuts = false;
-            cx.notify();
-        }
-    }
-
-    /// ?: opens the sheet over the whole main window, or closes it.
-    pub(super) fn toggle_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(handle) = self.shortcuts_window.take() {
-            remove_popup(handle, cx);
-            self.shortcuts = false;
-            cx.notify();
+    /// ? and Help › Keyboard Shortcuts: the shortcuts window, brought forward if it is open.
+    pub(super) fn open_shortcuts(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = &self.shortcuts_window
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
             return;
         }
-        if self.window_covered() {
-            return;
-        }
-        let bounds = window.bounds();
-        let (owner, dark) = (cx.weak_entity(), self.dark);
-        let display_id = crate::popup::display_of(window, cx);
-        let opened = cx.open_window(
-            gpui::WindowOptions {
-                window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
-                titlebar: None,
-                kind: gpui::WindowKind::PopUp,
-                display_id,
-                focus: true,
-                is_movable: false,
-                is_resizable: false,
-                is_minimizable: false,
-                window_background: gpui::WindowBackgroundAppearance::Transparent,
-                ..Default::default()
-            },
-            |window, cx| {
-                crate::blur::no_window_shadow(window);
-                cx.new(|cx| {
-                    let focus = cx.focus_handle();
-                    window.focus(&focus);
-                    // NIMBRA_SHORTCUTS_TAB=<n> switches to tab n a second after opening
-                    // (screenshots of the switch).
-                    if let Some(tab) = std::env::var("NIMBRA_SHORTCUTS_TAB")
-                        .ok()
-                        .and_then(|v| v.parse::<usize>().ok())
-                    {
-                        cx.spawn(async move |this, cx| {
-                            cx.background_executor().timer(Duration::from_secs(1)).await;
-                            this.update(cx, |this: &mut ShortcutsSheet, cx| this.show_tab(tab, cx))
+        let owner = cx.weak_entity();
+        let dark = self.dark;
+        let tallest = (0..SHORTCUT_TABS.len())
+            .map(table_height)
+            .fold(0., f32::max);
+        // Opened once this update is over, as Settings is.
+        cx.defer(move |cx| {
+            let size = gpui::size(to_screen(CARD_W), to_screen(CARD_CHROME + tallest));
+            let bounds = gpui::Bounds::centered(None, size, cx);
+            let me = owner.clone();
+            let opened = cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some("Keyboard Shortcuts".into()),
+                        appears_transparent: true,
+                        traffic_light_position: Some(gpui::point(px(16.), px(16.))),
+                    }),
+                    is_resizable: false,
+                    ..Default::default()
+                },
+                |window, cx| {
+                    cx.new(|cx| {
+                        let focus = cx.focus_handle();
+                        window.focus(&focus);
+                        // NIMBRA_SHORTCUTS_TAB=<n> switches to tab n a second after opening
+                        // (screenshots of the switch).
+                        if let Some(tab) = std::env::var("NIMBRA_SHORTCUTS_TAB")
+                            .ok()
+                            .and_then(|v| v.parse::<usize>().ok())
+                        {
+                            cx.spawn(async move |this, cx| {
+                                cx.background_executor().timer(Duration::from_secs(1)).await;
+                                this.update(cx, |this: &mut ShortcutsSheet, cx| {
+                                    this.show_tab(tab, cx)
+                                })
                                 .ok();
-                        })
-                        .detach();
-                    }
-                    ShortcutsSheet {
-                        owner,
-                        tab: 0,
-                        from_tab: 0,
-                        switched: None,
-                        switches: 0,
-                        dark,
-                        focus,
-                        was_active: false,
-                        opened: std::time::Instant::now(),
-                        // Nimbra going to the background closes it, as the menus do.
-                        _activation: cx.observe_window_activation(
-                            window,
-                            |this: &mut ShortcutsSheet, window, cx| {
-                                if window.is_window_active() {
-                                    this.was_active = true;
-                                } else if this.was_active
-                                    && this.opened.elapsed() > Duration::from_millis(500)
-                                {
-                                    this.close(window, cx);
-                                }
-                            },
-                        ),
-                    }
-                })
-            },
-        );
-        if let Ok(handle) = opened {
-            self.shortcuts_window = Some(handle);
-            self.shortcuts = true;
-        }
-        cx.notify();
+                            })
+                            .detach();
+                        }
+                        ShortcutsSheet {
+                            owner,
+                            tab: 0,
+                            from_tab: 0,
+                            switched: None,
+                            switches: 0,
+                            dark,
+                            focus,
+                        }
+                    })
+                },
+            );
+            me.update(cx, |n, _| n.shortcuts_window = opened.ok()).ok();
+        });
     }
 }

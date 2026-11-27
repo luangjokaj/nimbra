@@ -762,9 +762,7 @@ pub struct Nimbra {
     /// sidebar to its cursor: set when the keyboard moves them.
     reveal_row: std::rc::Rc<std::cell::Cell<bool>>,
     reveal_cursor: std::rc::Rc<std::cell::Cell<bool>>,
-    /// The shortcuts sheet (?).
-    shortcuts: bool,
-    /// The shortcuts sheet's window, while it is open.
+    /// The shortcuts window (?), while it is open.
     shortcuts_window: Option<gpui::WindowHandle<ShortcutsSheet>>,
     /// What the conversation is scrolled to, for Space.
     reader_scroll: gpui::ScrollHandle,
@@ -1151,7 +1149,6 @@ impl Nimbra {
             pick_end: None,
             reveal_row: Default::default(),
             reveal_cursor: Default::default(),
-            shortcuts: false,
             shortcuts_window: None,
             reader_scroll: gpui::ScrollHandle::new(),
             reload_gen: 0,
@@ -2044,7 +2041,6 @@ impl Nimbra {
         if self.window_covered() {
             return;
         }
-        self.close_shortcuts(cx);
         self.leave_sidebar(cx);
         // Under All inboxes, to every account's: G then T goes to every account's Trash.
         let view = if self.every_mode() {
@@ -2066,7 +2062,6 @@ impl Nimbra {
         else {
             return;
         };
-        self.close_shortcuts(cx);
         self.leave_sidebar(cx);
         self.go_to_row(row, cx);
     }
@@ -2481,7 +2476,7 @@ impl Render for Nimbra {
             });
         }
         if std::mem::take(&mut self.shortcuts_on_start) {
-            cx.defer_in(window, |this, window, cx| this.toggle_shortcuts(window, cx));
+            cx.defer_in(window, |this, _, cx| this.open_shortcuts(cx));
         }
         if let Some(hours) = self.snooze_on_start.take() {
             cx.defer_in(window, move |this, window, cx| {
@@ -2711,9 +2706,7 @@ impl Render for Nimbra {
             }))
             .on_action(cx.listener(|this, _: &PageDown, _, cx| this.page_message(true, cx)))
             .on_action(cx.listener(|this, _: &PageUp, _, cx| this.page_message(false, cx)))
-            .on_action(cx.listener(|this, _: &ToggleShortcuts, window, cx| {
-                this.toggle_shortcuts(window, cx)
-            }))
+            .on_action(cx.listener(|this, _: &ToggleShortcuts, _, cx| this.open_shortcuts(cx)))
             .on_action(cx.listener(|this, _: &GoInbox, _, cx| this.go_to(View::Inbox, cx)))
             .on_action(cx.listener(|this, _: &GoStarred, _, cx| this.go_to(View::Starred, cx)))
             .on_action(cx.listener(|this, _: &GoSnoozed, _, cx| this.go_to(View::Snoozed, cx)))
@@ -2729,7 +2722,6 @@ impl Render for Nimbra {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                    this.close_shortcuts(cx);
                     if from_screen(event.position.x) > this.side_w() + FLOAT_INSET {
                         this.leave_sidebar(cx);
                     }
@@ -2814,12 +2806,7 @@ impl Render for Nimbra {
             }))
             .on_action(cx.listener(|this, _: &MenuToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &MenuSearch, _, cx| this.focus_search(cx)))
-            // Help › Keyboard Shortcuts opens the sheet, and leaves it open if it is.
-            .on_action(cx.listener(|this, _: &MenuShortcuts, window, cx| {
-                if this.shortcuts_window.is_none() {
-                    this.toggle_shortcuts(window, cx)
-                }
-            }))
+            .on_action(cx.listener(|this, _: &MenuShortcuts, _, cx| this.open_shortcuts(cx)))
             .on_action(cx.listener(|this, _: &SelectAllThreads, _, cx| {
                 let visible = this.visible();
                 if visible.len() >= 2 {
@@ -2838,8 +2825,6 @@ impl Render for Nimbra {
                     this.close_new_label(cx);
                 } else if this.account_sheet_over_main() {
                     this.close_account_sheet(cx);
-                } else if this.shortcuts {
-                    this.close_shortcuts(cx);
                 } else if this.pane == Pane::Sidebar && !this.palette {
                     this.leave_sidebar(cx);
                 } else if !this.picked.is_empty() && !this.palette {
