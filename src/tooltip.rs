@@ -124,6 +124,8 @@ impl Tip {
         let (parent, dark) = (owner.window_handle(), self.dark);
         let (label, key) = (self.label.clone(), self.key);
         let drawn = self.drawn.clone();
+        // On its window's display, so it is drawn at that display's scale where it is moved.
+        let display_id = crate::popup::display_of(owner, cx);
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(
@@ -135,6 +137,7 @@ impl Tip {
                 ))),
                 titlebar: None,
                 kind: WindowKind::PopUp,
+                display_id,
                 focus: false,
                 is_movable: false,
                 is_resizable: false,

@@ -334,11 +334,13 @@ impl Nimbra {
         }
         let bounds = window.bounds();
         let (owner, dark) = (cx.weak_entity(), self.dark);
+        let display_id = crate::popup::display_of(window, cx);
         let opened = cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
+                display_id,
                 focus: true,
                 is_movable: false,
                 is_resizable: false,
