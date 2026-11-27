@@ -1,5 +1,7 @@
 # Nimbra changelog
 
+## [Unreleased]
+
 ## [0.1.8] - 2026-11-27
 
 ### Changed
