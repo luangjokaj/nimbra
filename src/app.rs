@@ -2516,11 +2516,13 @@ impl Render for Nimbra {
             self.bar_fade = None;
         }
         self.frame = Some(window.bounds());
-        // The update's progress stays on screen while Nimbra is the app in use.
+        // The update's progress stays on screen while Nimbra is the app in use. Asked of the
+        // app, not of its key window: opening or clicking the card itself moves the key
+        // window for a moment, and the card would close under the pointer, then reopen.
         let shown = self
             .update_progress
             .clone()
-            .filter(|_| cx.active_window().is_some());
+            .filter(|_| crate::integration::app_is_active());
         // As big as the notice it turns into once the update is ready, so that notice takes
         // its place exactly.
         let placed = shown.as_ref().map(|p| {

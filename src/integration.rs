@@ -180,7 +180,8 @@ pub struct MailApp {
 }
 
 pub use platform::{
-    default_mail_app, mac_is_dark, make_default_mail_app, set_app_appearance, set_menu_check,
+    app_is_active, default_mail_app, mac_is_dark, make_default_mail_app, set_app_appearance,
+    set_menu_check,
 };
 
 #[cfg(target_os = "macos")]
@@ -419,6 +420,20 @@ mod platform {
         }
     }
 
+    /// Nimbra is the app in use: also while one of its pop-ups, not a main window, has the
+    /// keyboard for a moment. Main thread.
+    pub fn app_is_active() -> bool {
+        // SAFETY: main thread; NSApp exists once the app runs.
+        unsafe {
+            let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+            if app.is_null() {
+                return false;
+            }
+            let active: BOOL = msg_send![app, isActive];
+            active != NO
+        }
+    }
+
     /// The Mac's own appearance, also while the app forces one of its own. Main thread.
     pub fn mac_is_dark() -> bool {
         // SAFETY: main thread. The global defaults hold `AppleInterfaceStyle` = "Dark" while
@@ -595,6 +610,10 @@ mod platform {
     }
 
     pub fn set_app_appearance(_dark: Option<bool>) {}
+
+    pub fn app_is_active() -> bool {
+        true
+    }
 
     pub fn mac_is_dark() -> bool {
         false
