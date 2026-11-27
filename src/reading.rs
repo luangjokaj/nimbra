@@ -347,6 +347,8 @@ impl Nimbra {
             view.show(&html, self.original_images, account);
             self.html_shown = Some(wanted);
         }
+        // The mail text size reaches emails in their own formatting too.
+        view.set_zoom(crate::webview::zoom_for(self.settings.reader_text));
         view.set_visible(true);
         // The web view is above all the app draws, so the floating sidebar gets a hole in
         // it, a frame ahead while it moves (see `pane_lead`).
@@ -944,12 +946,16 @@ impl Nimbra {
         let loading = self.original && !is_draft && !m.loaded;
         let divider = || div().h(px(1.)).bg(t.border);
 
+        // Folded messages are mail text: sized as the list's rows are.
+        let row_text = super::list::RowText::of(self.settings.reader_text);
         let earlier = |tone: Tone, initials: &str, name: &str, snippet: &str, when: &str| {
             div()
                 .flex()
                 .items_center()
                 .gap(px(12.))
                 .py(px(12.))
+                .text_size(px(row_text.size))
+                .line_height(px(row_text.line))
                 .border_t_1()
                 .border_color(t.border)
                 .child(avatar(tone, initials, 24.))
@@ -970,9 +976,10 @@ impl Nimbra {
                         // Cut by characters to what the column leaves beside the name and
                         // the time, so it ends with an ellipsis rather than mid-letter.
                         .child(short(snippet, {
-                            let taken = 8. * name.chars().count() as f32
+                            let scale = row_text.size / 13.;
+                            let taken = 8. * scale * name.chars().count() as f32
                                 + 7.5 * when.chars().count() as f32;
-                            ((column - 160. - taken) / 7.).clamp(8., 110.) as usize
+                            ((column - 160. - taken) / (7. * scale)).clamp(8., 110.) as usize
                         })),
                 )
                 .child(mono(when.to_string(), t.faint))

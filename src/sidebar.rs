@@ -1235,103 +1235,109 @@ impl Nimbra {
             .border_t_1()
             .border_color(t.border_strong)
             .children(update)
-            .child(
-                self.cursor_on(div(), t, &cursor, SidebarRow::Settings, false, 10.)
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .p(px(6.))
-                    .rounded(px(10.))
-                    .child(
-                        div()
-                            .id("account")
-                            .flex()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .items_center()
-                            .gap(px(10.))
-                            .cursor_pointer()
-                            .tooltip(tip(t.dark, "Settings", "⌘,"))
-                            .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
-                            .child({
-                                // With several accounts, the default one's profile.
-                                let default = (!demo && self.settings.accounts.len() >= 2)
-                                    .then(|| self.settings.default_account())
-                                    .flatten()
-                                    .filter(|id| *id != self.account_id);
-                                match default {
-                                    Some(id) => {
-                                        let initial = self
+            // The whole row opens Settings: the profile, its name and the gear. Light and
+            // dark live in Settings › Appearance (and ⌘⇧L), not here.
+            .child({
+                let hover = t.hover;
+                self.cursor_on(
+                    div().id("account"),
+                    t,
+                    &cursor,
+                    SidebarRow::Settings,
+                    false,
+                    10.,
+                )
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .p(px(6.))
+                .rounded(px(10.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .press(t)
+                .tooltip(tip(t.dark, "Settings", "⌘,"))
+                .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .items_center()
+                        .gap(px(10.))
+                        .child({
+                            // With several accounts, the default one's profile.
+                            let default = (!demo && self.settings.accounts.len() >= 2)
+                                .then(|| self.settings.default_account())
+                                .flatten()
+                                .filter(|id| *id != self.account_id);
+                            match default {
+                                Some(id) => {
+                                    let initial = self
+                                        .settings
+                                        .default_email()
+                                        .and_then(|e| e.chars().next())
+                                        .map(|c| c.to_uppercase().to_string())
+                                        .unwrap_or_default();
+                                    match self.photos.get(id) {
+                                        Some(photo) => me_avatar(Some(photo), &initial, 28.),
+                                        None => avatar(
+                                            crate::data::tone_for(
+                                                self.settings.default_email().unwrap_or(""),
+                                            ),
+                                            &initial,
+                                            28.,
+                                        )
+                                        .into_any_element(),
+                                    }
+                                }
+                                None => me_avatar(
+                                    self.photos.get(&self.account_id),
+                                    &self.me_initials,
+                                    28.,
+                                ),
+                            }
+                        })
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .whitespace_nowrap()
+                                        .overflow_hidden()
+                                        .child("Settings"),
+                                )
+                                .child(meta(
+                                    match (demo, self.settings.accounts.len()) {
+                                        (true, _) => "Work · 3 accounts".to_string(),
+                                        // The one account's address: nothing else here shows it.
+                                        (false, 0 | 1) if !self.account.is_empty() => {
+                                            short(&self.account, 22).to_string()
+                                        }
+                                        (false, 0 | 1) => "Gmail".to_string(),
+                                        // Several: the default account's address.
+                                        (false, n) => self
                                             .settings
                                             .default_email()
-                                            .and_then(|e| e.chars().next())
-                                            .map(|c| c.to_uppercase().to_string())
-                                            .unwrap_or_default();
-                                        match self.photos.get(id) {
-                                            Some(photo) => me_avatar(Some(photo), &initial, 28.),
-                                            None => avatar(
-                                                crate::data::tone_for(
-                                                    self.settings.default_email().unwrap_or(""),
-                                                ),
-                                                &initial,
-                                                28.,
-                                            )
-                                            .into_any_element(),
-                                        }
-                                    }
-                                    None => me_avatar(
-                                        self.photos.get(&self.account_id),
-                                        &self.me_initials,
-                                        28.,
-                                    ),
-                                }
-                            })
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .whitespace_nowrap()
-                                            .overflow_hidden()
-                                            .child("Settings"),
-                                    )
-                                    .child(meta(
-                                        match (demo, self.settings.accounts.len()) {
-                                            (true, _) => "Work · 3 accounts".to_string(),
-                                            // The one account's address: nothing else here shows it.
-                                            (false, 0 | 1) if !self.account.is_empty() => {
-                                                short(&self.account, 22).to_string()
-                                            }
-                                            (false, 0 | 1) => "Gmail".to_string(),
-                                            // Several: the default account's address.
-                                            (false, n) => self
-                                                .settings
-                                                .default_email()
-                                                .map(|e| short(e, 22).to_string())
-                                                .unwrap_or_else(|| format!("{n} accounts")),
-                                        },
-                                        t.text3,
-                                    )),
-                            ),
-                    )
-                    .child(
-                        icon_button(t, if self.dark { "sun" } else { "moon" })
-                            .id("theme")
-                            .press(t)
-                            .tooltip(tip(
-                                t.dark,
-                                match self.settings.theme {
-                                    crate::settings::ThemeChoice::System => "Appearance: System",
-                                    crate::settings::ThemeChoice::Light => "Appearance: Light",
-                                    crate::settings::ThemeChoice::Dark => "Appearance: Dark",
-                                },
-                                "⌘⇧L",
-                            ))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx))),
-                    ),
-            );
+                                            .map(|e| short(e, 22).to_string())
+                                            .unwrap_or_else(|| format!("{n} accounts")),
+                                    },
+                                    t.text3,
+                                )),
+                        ),
+                )
+                .child(
+                    // Where the theme button was, the same size, so nothing moves.
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(30.))
+                        .child(icon("settings", 16., t.text3)),
+                )
+            });
 
         div()
             .flex()

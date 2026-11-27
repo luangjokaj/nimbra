@@ -35,6 +35,12 @@ const DEFAULTS: &str = ":where(html){font:14px/1.5 -apple-system,BlinkMacSystemF
 html{padding:20px!important}body{margin:0!important}\
 :where(pre,code,tt){font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.92em}";
 
+/// How much an email in its own formatting is zoomed at the mail text size: as much larger
+/// or smaller than Default as the reader's text is (1 at Default).
+pub fn zoom_for(size: crate::settings::TextSize) -> f32 {
+    size.metrics().0 / crate::settings::TextSize::Default.metrics().0
+}
+
 pub fn document(body: &str, images: bool) -> String {
     let img = if images { "data: https:" } else { "data:" };
     format!(
@@ -133,6 +139,8 @@ mod platform {
         applied: std::cell::Cell<Option<((f32, f32, f32, f32), Option<(f32, f32, f32, f32)>)>>,
         /// Whether the view is on screen (`set_visible`), so ⌘C goes to it only then.
         shown: std::cell::Cell<bool>,
+        /// The zoom last applied (`set_zoom`).
+        zoom: std::cell::Cell<f32>,
         /// The account of the mail shown, for the `mailto:` links in it.
         #[cfg(target_os = "macos")]
         account: std::rc::Rc<std::cell::RefCell<Option<String>>>,
@@ -201,6 +209,7 @@ mod platform {
                 loads,
                 frame: std::cell::Cell::new((0., 0., 0., 0.)),
                 shown: std::cell::Cell::new(false),
+                zoom: std::cell::Cell::new(1.),
                 hole: std::cell::Cell::new(None),
                 applied: std::cell::Cell::new(None),
                 #[cfg(target_os = "macos")]
@@ -265,6 +274,14 @@ mod platform {
                 position: LogicalPosition::new(x as f64, y as f64).into(),
                 size: LogicalSize::new(width.max(1.) as f64, height.max(1.) as f64).into(),
             });
+        }
+
+        /// Sizes the email up or down with the mail text size (1 is as the sender made it).
+        pub fn set_zoom(&self, zoom: f32) {
+            if self.zoom.replace(zoom) != zoom {
+                // Unsupported before macOS 11; the email then shows at its own size.
+                let _ = self.view.zoom(f64::from(zoom));
+            }
         }
 
         pub fn set_visible(&self, visible: bool) {
@@ -820,6 +837,7 @@ mod platform {
         pub fn show(&self, _body: &str, _images: bool, _account: Option<&str>) {}
         pub fn set_bounds(&self, _x: f32, _y: f32, _width: f32, _height: f32) {}
         pub fn set_visible(&self, _visible: bool) {}
+        pub fn set_zoom(&self, _zoom: f32) {}
         pub fn set_hole(&self, _hole: Option<(f32, f32, f32, f32)>) {}
         pub fn set_dark(&self, _dark: bool, _darken: bool) {}
         pub fn print(&self) {}

@@ -1333,21 +1333,26 @@ impl SettingsWindow {
             .into_any_element();
         let size_row = row(
             t,
-            "Reader text size",
-            "",
+            "Mail text size",
+            "Emails and the message list",
             self.choice(
                 t,
                 "text-size",
-                &["Small", "Default", "Large"],
+                &["Small", "Default", "Large", "Extra large"],
                 match size {
                     TextSize::Small => 0,
                     TextSize::Default => 1,
                     TextSize::Large => 2,
+                    TextSize::ExtraLarge => 3,
                 },
                 cx,
                 |n, i| {
-                    n.settings.reader_text =
-                        [TextSize::Small, TextSize::Default, TextSize::Large][i]
+                    n.settings.reader_text = [
+                        TextSize::Small,
+                        TextSize::Default,
+                        TextSize::Large,
+                        TextSize::ExtraLarge,
+                    ][i]
                 },
             ),
         );

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+- **Mail text size reaches all your mail.** Settings › Appearance › Mail text size now sizes the message list and folded messages too, and emails shown in their original formatting, not only the reader's text. There's a new Extra large step.
+- **Settings at the bottom of the sidebar.** The whole row (your profile, its name and a gear) opens Settings. The light and dark switch that was there moved to Settings › Appearance, and ⌘⇧L still switches.
+
 ### Fixed
 - **Even spacing between folded messages.** In a thread, the last of the folded earlier messages had extra room under it; every one now sits evenly between its lines.
 - **Make default after an update.** After Nimbra updated itself, Settings › General could not make it the default mail app, and macOS ran it from a hidden temporary copy. Updates now install as a normal app in Applications.
