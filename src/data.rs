@@ -275,6 +275,7 @@ pub fn inbox() -> Vec<Mail> {
                     person("Jonah Reyes", "jonah@northwind.studio"),
                 ],
                 cc: vec![person("", "launch@northwind.studio")],
+                bcc: Vec::new(),
                 reply_to: None,
                 date_ms: 0,
                 attachments: Vec::new(),

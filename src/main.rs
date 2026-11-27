@@ -16,6 +16,8 @@ mod keyboard;
 mod listing;
 mod mail_views;
 mod notify;
+mod pending;
+mod popup;
 mod quitting;
 mod signature_images;
 mod sky;

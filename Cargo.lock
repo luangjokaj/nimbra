@@ -3138,7 +3138,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -4028,8 +4028,8 @@ dependencies = [
 
 [[package]]
 name = "nimbra-core"
-version = "0.1.4"
-source = "git+https://github.com/nimbra-mail/core?tag=v0.1.4#743c0328eea2a6ef6cc14614feea2d65a4b1a6ae"
+version = "0.1.6"
+source = "git+https://github.com/nimbra-mail/core?tag=v0.1.6#b57e3d77643c75394dce70948965c24106fa7cff"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6440,7 +6440,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand 2.5.0",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.6",
  "windows-sys 0.61.2",
