@@ -282,7 +282,7 @@ impl Nimbra {
         if !self.original
             || !ready
             || covered
-            || self.mailbox == View::Drafts
+            || self.mailbox.base() == View::Drafts
             || !self.visible().contains(&self.selected)
         {
             return None;
@@ -937,7 +937,7 @@ impl Nimbra {
             + 1;
         // Only switch panes when this thread really has HTML to show.
         // Drafts always use the reader, so a click on the text can open the editor.
-        let is_draft = self.mailbox == View::Drafts && !self.is_demo();
+        let is_draft = self.mailbox.base() == View::Drafts && !self.is_demo();
         let original = self.original && m.html.is_some() && !is_draft;
         // Until the message has been fetched we cannot know whether it has an original
         // (HTML) version, so show a loader, not the reader view that would flash by first.
@@ -2054,8 +2054,8 @@ impl Nimbra {
         // The open mailbox says where a thread is only if the thread is in its list: a
         // message window can show one from another mailbox or account.
         let listed = self.row_of(&key, &account).is_some();
-        let spam = (listed && self.mailbox == View::Spam) || (has("SPAM") && !inbox);
-        let trash = (listed && self.mailbox == View::Trash) || (has("TRASH") && !inbox);
+        let spam = (listed && self.mailbox.base() == View::Spam) || (has("SPAM") && !inbox);
+        let trash = (listed && self.mailbox.base() == View::Trash) || (has("TRASH") && !inbox);
         let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
         // Label ids are each account's own: another account's would get the wrong names.
         let labels = if account == self.account_id {

@@ -322,7 +322,7 @@ impl Nimbra {
                     Some(_) => "Message sent.".into(),
                     None => format!("Sent “{subject}”, which was waiting.").into(),
                 });
-                if matches!(self.mailbox, View::Sent | View::Drafts) {
+                if matches!(self.mailbox.base(), View::Sent | View::Drafts) {
                     self.refresh(cx);
                 }
                 cx.notify();
@@ -905,7 +905,8 @@ impl Nimbra {
                         // Offline and the like: tried again on the next check.
                         None => {}
                     }
-                    if outcome.is_some() && matches!(this.mailbox, View::Sent | View::Drafts) {
+                    if outcome.is_some() && matches!(this.mailbox.base(), View::Sent | View::Drafts)
+                    {
                         this.refresh(cx);
                     }
                     cx.notify();

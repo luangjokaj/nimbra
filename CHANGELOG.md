@@ -3,10 +3,15 @@
 ## [Unreleased]
 
 ### New
+- **Every mailbox across your accounts.** Under All inboxes, Sent, Drafts, Trash, Starred and the rest of Mailbox show every account's mail together, newest first, and Labels lists every account's labels by name. All inboxes stays selected while you move between them; open an account to see its own, Split Inbox included.
 - **Address suggestions from all your mail.** To, Cc and Bcc now suggest anyone you've written to or heard from, on every account, by name, address or domain, with the people you write to first. Nimbra learns them from the mail you read and send, and once from the headers of your newest sent and received mail, read slowly in the background. They stay encrypted on your Mac.
 - **Check for mail every 10 seconds.** A new choice in Settings › General, for when you want Gmail mail sooner. Every 30 seconds is still the default.
 
+### Changed
+- **Sign out of an account.** Settings › Accounts has a sign-out button on each account where the trash can was. It does the same: Nimbra signs out and deletes that account's mail from this Mac.
+
 ### Fixed
+- **Acting on another account's mail.** Deleting forever, opening a draft and Open in Gmail now use the account the email belongs to, and its rows no longer show the labels of the account you had open.
 - **Buttons in dark emails.** A light button in an email that's already dark (like Vercel's) stays as the sender made it, instead of turning dark with unreadable text.
 - **Emails built with modern colours.** Dark mode now reads the newer colour formats many emails use, so their text and boxes are darkened properly instead of showing as white bars.
 

@@ -605,7 +605,7 @@ impl Nimbra {
             Menu::MoveTo => {
                 let mut targets = Vec::new();
                 if matches!(
-                    self.mailbox,
+                    self.mailbox.base(),
                     View::Done
                         | View::Spam
                         | View::Trash
@@ -623,7 +623,7 @@ impl Nimbra {
                         .take(12)
                         .map(|l| MoveTarget::Label(l.id.clone())),
                 );
-                if self.mailbox != View::Spam && !self.is_demo() {
+                if self.mailbox.base() != View::Spam && !self.is_demo() {
                     targets.push(MoveTarget::Spam);
                 }
                 let items = targets
@@ -754,15 +754,15 @@ impl Nimbra {
                 if archivable {
                     actions.push(RowAction::Done);
                 }
-                if matches!(self.mailbox, View::Done | View::Trash | View::Spam) {
+                if matches!(self.mailbox.base(), View::Done | View::Trash | View::Spam) {
                     actions.push(RowAction::MoveToInbox);
                 }
-                if self.mailbox == View::Trash {
+                if self.mailbox.base() == View::Trash {
                     actions.push(RowAction::DeleteForever);
                 } else {
                     actions.push(RowAction::Trash);
                 }
-                if !self.is_demo() && !matches!(self.mailbox, View::Spam | View::Trash) {
+                if !self.is_demo() && !matches!(self.mailbox.base(), View::Spam | View::Trash) {
                     actions.push(RowAction::ReportSpam);
                 }
                 if !self.is_demo() && !self.own_servers() {
@@ -956,7 +956,7 @@ impl Nimbra {
             .mails
             .get(self.selected)
             .is_some_and(|m| m.html.is_some());
-        let draft = self.mailbox == View::Drafts && !demo;
+        let draft = self.mailbox.base() == View::Drafts && !demo;
         let mut items = Vec::new();
         // First, where there is an original to show (not a draft, not plain text): the
         // switch between the email's own design and the reader.

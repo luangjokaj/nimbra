@@ -599,7 +599,7 @@ impl Nimbra {
         let listed = |account: &str| self.settings.accounts.iter().any(|a| a.id == account);
         let all_inboxes = self
             .cache
-            .get(&View::AllInboxes)
+            .get(&View::ALL_INBOXES)
             .filter(|_| listed(&id))
             .map(|mails| {
                 let kept: Vec<Mail> = mails
@@ -614,6 +614,11 @@ impl Nimbra {
         if listed(&self.account_id) && self.counts.contains_key("INBOX") {
             let unread = self.inbox_unread();
             self.account_unread.insert(self.account_id.clone(), unread);
+        }
+        // Its other counts too, for the sidebar's counts of every account's mailboxes.
+        if listed(&self.account_id) && !self.counts.is_empty() {
+            self.account_counts
+                .insert(self.account_id.clone(), self.counts.clone());
         }
         self.account_gen += 1;
         // The account shown so far stays connected (All inboxes, new-mail checks).
@@ -707,7 +712,7 @@ impl Nimbra {
         self.account = "".into();
         self.me_initials = "".into();
         if let Some((mails, whole)) = all_inboxes {
-            self.cache.insert(View::AllInboxes, mails);
+            self.cache.insert(View::ALL_INBOXES, mails);
             self.all_inboxes_whole = whole;
         }
         // Left before its store had opened.
@@ -840,7 +845,7 @@ impl Nimbra {
     }
 
     /// The address an account has, to point signing in again at and to check it by.
-    fn email_of(&self, account: &str) -> Option<String> {
+    pub(super) fn email_of(&self, account: &str) -> Option<String> {
         self.settings
             .accounts
             .iter()
@@ -896,8 +901,8 @@ impl Nimbra {
         self.read_snoozed_elsewhere();
         // Snoozed lists Gmail's own snoozed threads and the ones snoozed here; Reminders,
         // only the ones here.
-        if matches!(self.mailbox, View::Snoozed | View::Reminders) {
-            for mail in self.snoozed_rows(self.mailbox == View::Reminders) {
+        if matches!(self.mailbox.base(), View::Snoozed | View::Reminders) {
+            for mail in self.snoozed_rows(self.mailbox.base() == View::Reminders) {
                 if !fresh.iter().any(|m| m.id.is_some() && m.id == mail.id) {
                     fresh.push(mail);
                 }
@@ -976,7 +981,7 @@ impl Nimbra {
 
     /// Signs in again in the browser, this time also allowing permanent deletion, then
     /// deletes the threads that were waiting.
-    pub(super) fn grant_full_access(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+    pub(super) fn grant_full_access(&mut self, ids: Vec<(String, String)>, cx: &mut Context<Self>) {
         let Some(config) = self.config.clone() else {
             return;
         };
@@ -1096,13 +1101,15 @@ impl Nimbra {
         self.snoozed_away.remove(&account);
         self.away_waiting.remove(&account);
         self.account_unread.remove(&account);
+        self.account_counts.remove(&account);
         self.inboxes_saved_empty.remove(&account);
         self.snoozed_elsewhere
             .retain(|s| s.mail.account.as_deref() != Some(account.as_str()));
         self.save_settings(cx);
-        // All inboxes without it: listed again, or, with one account left, its inbox.
-        if self.mailbox == View::AllInboxes {
-            self.cache.remove(&View::AllInboxes);
+        // Every account's mailboxes kept so far still have its mail.
+        self.cache.retain(|view, _| !view.is_every());
+        // The one open: listed again, or, with one account left, its inbox.
+        if self.mailbox.is_every() {
             if self.settings.accounts.len() < 2 {
                 self.select_mailbox(View::Inbox, cx);
             } else {

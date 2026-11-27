@@ -106,8 +106,40 @@ impl Nimbra {
             }))
     }
 
+    /// The sidebar's count of every account's `view`: each account's count of it summed,
+    /// the one shown's from `counts` and the others' from the last listing of every
+    /// account's mailboxes (their inboxes from `account_unread`, kept up all the time).
+    pub(super) fn every_count(&self, view: View) -> Option<String> {
+        let (id, total) = nimbra_core::listing::count_of(view, None)?;
+        let of = |counts: Option<&HashMap<String, (u32, u32)>>| {
+            counts
+                .and_then(|counts| counts.get(&id))
+                .map_or(0, |(unread, all)| if total { *all } else { *unread })
+        };
+        let sum: u32 = self
+            .settings
+            .accounts
+            .iter()
+            .filter(|a| nimbra_core::listing::takes_part(view, a.servers.is_some()))
+            .map(|a| match (a.id == self.account_id, id == "INBOX") {
+                (true, true) => self.inbox_unread(),
+                (true, false) => of(Some(&self.counts)),
+                (false, true) => self.account_unread.get(&a.id).copied().unwrap_or(0),
+                (false, false) => of(self.account_counts.get(&a.id)),
+            })
+            .sum();
+        (sum > 0).then(|| sum.to_string())
+    }
+
+    /// Under All inboxes, or another of every account's mailboxes: the sidebar lists every
+    /// account's mailboxes.
+    pub(super) fn every_mode(&self) -> bool {
+        !self.is_demo() && self.settings.accounts.len() >= 2 && self.mailbox.is_every()
+    }
+
     /// What the sidebar shows now, for the keyboard.
     pub(super) fn sidebar_now(&self) -> keyboard::Sidebar<'_> {
+        let every = self.every_mode();
         keyboard::Sidebar {
             accounts: self
                 .settings
@@ -117,10 +149,26 @@ impl Nimbra {
                 .collect(),
             shown: &self.account_id,
             mailbox: self.mailbox,
-            folders: self.own_servers(),
+            every,
+            folders: if every {
+                self.settings.accounts.iter().all(|a| a.servers.is_some())
+            } else {
+                self.own_servers()
+            },
             demo: self.is_demo(),
-            labels: self.labels.len(),
-            label_ids: self.labels.iter().map(|l| l.id.clone()).collect(),
+            labels: if every {
+                self.every_labels.len()
+            } else {
+                self.labels.len()
+            },
+            label_ids: if every {
+                self.every_labels
+                    .iter()
+                    .map(|l| l.name.to_lowercase())
+                    .collect()
+            } else {
+                self.labels.iter().map(|l| l.id.clone()).collect()
+            },
             collapsed: &self.settings.collapsed,
             order: &self.settings.sidebar_order,
             hidden: &self.settings.sidebar_hidden,
@@ -149,9 +197,12 @@ impl Nimbra {
             ..bar
         }
         .section(section);
-        let name = |view: View| match view {
-            View::Label(index) => self.labels.get(index).map(|l| l.id.clone()),
-            view => keyboard::view_name(view).map(str::to_string),
+        let name = |view: View| match (view.is_every(), view.base()) {
+            (true, View::Label(index)) => {
+                self.every_labels.get(index).map(|l| l.name.to_lowercase())
+            }
+            (false, View::Label(index)) => self.labels.get(index).map(|l| l.id.clone()),
+            (_, view) => keyboard::view_name(view).map(str::to_string),
         };
         let (Some(from), Some(to)) = (
             views.iter().position(|v| *v == dragged),
@@ -169,6 +220,8 @@ impl Nimbra {
 
     /// Hides a mailbox from the sidebar, or shows it again.
     pub(super) fn set_hidden(&mut self, view: View, hidden: bool, cx: &mut Context<Self>) {
+        // Every account's is hidden with each account's own.
+        let view = view.base();
         let Some(name) = keyboard::view_name(view).filter(|_| view != View::Inbox) else {
             return;
         };
@@ -255,7 +308,7 @@ impl Nimbra {
     pub(super) fn go_to_row(&mut self, row: SidebarRow, cx: &mut Context<Self>) {
         match row {
             SidebarRow::Search => self.focus_search(cx),
-            SidebarRow::AllInboxes => self.select_mailbox(View::AllInboxes, cx),
+            SidebarRow::AllInboxes => self.select_mailbox(View::ALL_INBOXES, cx),
             SidebarRow::Mailbox(view) => self.select_mailbox(view, cx),
             SidebarRow::Account(id) if id == self.account_id => {
                 self.select_mailbox(View::Inbox, cx)
@@ -603,8 +656,9 @@ impl Nimbra {
             .filter(|n| *n > 0)
             .map(|n| n.to_string());
         let split_toggle = self.section_toggle(t, "split", "SPLIT INBOX", cx);
-        // An IMAP account: its inbox heads MAILBOX, and its labels are folders.
-        let folders = !demo && self.own_servers();
+        // An IMAP account: its inbox heads MAILBOX, and its labels are folders. Under All
+        // inboxes, only when every account is.
+        let folders = !demo && self.sidebar_now().folders;
         // Several accounts: All inboxes, and each account on its own.
         let many = !demo && self.settings.accounts.len() >= 2;
         let unread_of = |id: &str| -> u32 {
@@ -627,7 +681,8 @@ impl Nimbra {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, account)| {
-                    let shown = account.id == self.account_id && self.mailbox != View::AllInboxes;
+                    // Not under every account's mailboxes: All inboxes is the one highlighted then.
+                    let shown = account.id == self.account_id && !self.mailbox.is_every();
                     let id = account.id.clone();
                     let initial = account
                         .email
@@ -734,7 +789,7 @@ impl Nimbra {
         let bar = self.sidebar_now();
         let mailbox = |view: View, icon_name: &'static str, count: Option<String>| {
             // A folded section still shows the mailbox that is open.
-            let section: &'static str = match view {
+            let section: &'static str = match view.base() {
                 View::Inbox if !demo && self.own_servers() => "mailbox",
                 View::Inbox | View::Primary | View::Updates | View::Promotions | View::Social => {
                     "split"
@@ -784,7 +839,7 @@ impl Nimbra {
             self.fold_row(section, self.mailbox == view, view_key(view), row)
         };
         // What each mailbox shows beside its name.
-        let look = |view: View| -> (&'static str, Option<String>) {
+        let look_own = |view: View| -> (&'static str, Option<String>) {
             match view {
                 View::Inbox if demo => (
                     "inbox",
@@ -810,6 +865,14 @@ impl Nimbra {
                 View::Trash => ("trash", None),
                 _ => ("inbox", None),
             }
+        };
+        let look = |view: View| -> (&'static str, Option<String>) {
+            // Every account's: summed over the accounts (Done is this Mac's, as it is).
+            if view.is_every() && view.base() != View::Done {
+                let (icon_name, _) = look_own(view.base());
+                return (icon_name, self.every_count(view));
+            }
+            look_own(view.base())
         };
         let section_rows = |key: &'static str| -> Vec<AnyElement> {
             bar.section(key)
@@ -857,8 +920,6 @@ impl Nimbra {
         let mailbox_rows = section_rows("mailbox");
         let split_hidden = hidden_row("split", cx);
         let mailbox_hidden = hidden_row("mailbox", cx);
-        // Under All inboxes the account's own sections are left out, headers and all.
-        let sections = bar.account_sections();
 
         let scrolled = div()
             .id("sidebar")
@@ -951,14 +1012,14 @@ impl Nimbra {
                         "mail",
                         "All inboxes",
                         Some(all_unread).filter(|n| *n > 0).map(|n| n.to_string()),
-                        self.mailbox == View::AllInboxes,
+                        self.mailbox.is_every(),
                         None,
                     )
                     .mt(px(SEARCH_GAP))
                     .id("all-inboxes")
                     .press(t)
                     .on_click(
-                        cx.listener(|this, _, _, cx| this.select_mailbox(View::AllInboxes, cx)),
+                        cx.listener(|this, _, _, cx| this.select_mailbox(View::ALL_INBOXES, cx)),
                     )
                     .map(|row| {
                         self.cursor_on(
@@ -966,7 +1027,7 @@ impl Nimbra {
                             t,
                             &cursor,
                             SidebarRow::AllInboxes,
-                            self.mailbox == View::AllInboxes,
+                            self.mailbox.is_every(),
                             NAV_RADIUS,
                         )
                     }),
@@ -974,7 +1035,8 @@ impl Nimbra {
                 .children(accounts_toggle)
                 .children(account_rows)
             })
-            .when(sections && !folders, |d| d.child(split_toggle))
+            // Not under All inboxes: that is every account's inbox already.
+            .when(!folders && !self.every_mode(), |d| d.child(split_toggle))
             .children(split_rows)
             .when(demo, |d| {
                 d.children(self.fold_row(
@@ -1003,39 +1065,37 @@ impl Nimbra {
                 ))
             })
             .children(split_hidden)
-            .when(sections, |d| d.child(mailbox_toggle))
+            .child(mailbox_toggle)
             .children(mailbox_rows)
             .children(mailbox_hidden)
-            .when(sections, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .child(labels_toggle.flex_1())
-                        .when(!demo && self.connection.is_some(), |d| {
-                            let hover = t.hover;
-                            d.child(
-                                div()
-                                    .id("new-label-sidebar")
-                                    .mt(px(10.))
-                                    .mr(px(4.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .size(px(22.))
-                                    .rounded(px(6.))
-                                    .cursor_pointer()
-                                    .text_color(t.text3)
-                                    .hover(move |s| s.bg(hover))
-                                    .tooltip(tip(t.dark, "New label", ""))
-                                    .child("+")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_label_sheet(LabelSheet::New { apply: false }, cx)
-                                    })),
-                            )
-                        }),
-                )
-            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .child(labels_toggle.flex_1())
+                    .when(!demo && self.connection.is_some(), |d| {
+                        let hover = t.hover;
+                        d.child(
+                            div()
+                                .id("new-label-sidebar")
+                                .mt(px(10.))
+                                .mr(px(4.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(22.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .text_color(t.text3)
+                                .hover(move |s| s.bg(hover))
+                                .tooltip(tip(t.dark, "New label", ""))
+                                .child("+")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.open_label_sheet(LabelSheet::New { apply: false }, cx)
+                                })),
+                        )
+                    }),
+            )
             .when(demo, |d| {
                 d.children(self.fold_row(
                     "labels",
@@ -1064,44 +1124,54 @@ impl Nimbra {
             })
             .when(!demo, |d| {
                 let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
-                // In the order dragged (each account its own).
-                let labels: Vec<(usize, &crate::mail::Label)> = bar
+                // In the order dragged (each account its own). Under All inboxes, every
+                // account's labels by name, with no count and nothing to rename.
+                let labels: Vec<(View, usize, String, Option<String>)> = bar
                     .section("labels")
                     .into_iter()
-                    .filter_map(|view| match view {
-                        View::Label(index) => self.labels.get(index).map(|l| (index, l)),
+                    .filter_map(|view| match view.base() {
+                        View::Label(index) if view.is_every() => self
+                            .every_labels
+                            .get(index)
+                            .map(|l| (view, index, l.name.clone(), None)),
+                        View::Label(index) => self
+                            .labels
+                            .get(index)
+                            .map(|l| (view, index, l.name.clone(), Some(l.id.clone()))),
                         _ => None,
                     })
                     .collect();
-                d.children(labels.into_iter().filter_map(|(index, label)| {
-                    let view = View::Label(index);
+                d.children(labels.into_iter().filter_map(|(view, index, name, id)| {
+                    let own = id.is_some();
                     let row = nav(
                         t,
                         "tag",
-                        &short(&label.name, 22),
-                        unread_in(&label.id),
+                        &short(&name, 22),
+                        id.as_deref().and_then(unread_in),
                         self.mailbox == view,
                         Some(tints[index % tints.len()]),
                     )
                     .id(("mailbox", view_key(view)))
                     .on_click(cx.listener(move |this, _, _, cx| this.select_mailbox(view, cx)))
                     // Right-click: rename or delete the label.
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                            this.menu_at =
-                                (f32::from(event.position.x), f32::from(event.position.y));
-                            this.menu_dismissed = None;
-                            this.toggle_menu(Menu::Label(index), window, cx);
-                        }),
-                    )
+                    .when(own, |row| {
+                        row.on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                this.menu_at =
+                                    (f32::from(event.position.x), f32::from(event.position.y));
+                                this.menu_dismissed = None;
+                                this.toggle_menu(Menu::Label(index), window, cx);
+                            }),
+                        )
+                    })
                     .press(t);
                     let row = draggable(
                         row,
                         DraggedView {
                             section: "labels",
                             view,
-                            title: label.name.clone(),
+                            title: name.clone(),
                             dark: t.dark,
                         },
                         t.hover,

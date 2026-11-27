@@ -29,11 +29,15 @@ pub struct Sidebar<'a> {
     pub shown: &'a str,
     pub mailbox: View,
     pub demo: bool,
+    /// Under All inboxes (several accounts): the mailboxes are every account's
+    /// (`View::every`), and the labels are every account's by name.
+    pub every: bool,
     /// The account has its own servers (IMAP): folders, and none of Gmail's categories or
-    /// Important.
+    /// Important. Under All inboxes: every account has.
     pub folders: bool,
     pub labels: usize,
     /// The labels' ids, by index (`View::Label(i)` is `label_ids[i]`), for their order.
+    /// Under All inboxes, their names in lower case.
     pub label_ids: Vec<String>,
     /// The folded sections ("accounts", "split", "mailbox", "labels").
     pub collapsed: &'a [String],
@@ -65,7 +69,7 @@ pub fn view_name(view: View) -> Option<&'static str> {
         View::AllMail => "all-mail",
         View::Spam => "spam",
         View::Trash => "trash",
-        View::AllInboxes | View::Search | View::Label(_) => return None,
+        View::Every(_) | View::Search | View::Label(_) => return None,
     })
 }
 
@@ -102,17 +106,24 @@ impl Sidebar<'_> {
         !self.demo && self.accounts.len() >= 2
     }
 
-    /// Whether the account's own sections (Split Inbox, Mailbox, Labels) show: not under
-    /// All inboxes, whose list is every account's while they would be one account's.
-    pub fn account_sections(&self) -> bool {
-        !(self.several() && self.mailbox == View::AllInboxes)
-    }
-
-    /// The section's mailboxes in their default order.
+    /// The section's mailboxes in their default order. Under All inboxes, every account's,
+    /// without the inbox and the Split Inbox: All inboxes is every account's inbox.
     fn defaults(&self, section: &str) -> Vec<View> {
-        if !self.account_sections() {
+        let views = self.own_defaults(section);
+        if !self.every {
+            return views;
+        }
+        if section == "split" {
             return Vec::new();
         }
+        views
+            .into_iter()
+            .filter(|view| *view != View::Inbox)
+            .map(View::every)
+            .collect()
+    }
+
+    fn own_defaults(&self, section: &str) -> Vec<View> {
         match section {
             "split" if self.demo => vec![View::Inbox],
             "split" => nimbra_core::listing::split_mailboxes(self.folders),
@@ -125,7 +136,8 @@ impl Sidebar<'_> {
                 View::Done,
             ],
             "mailbox" => nimbra_core::listing::mailboxes(self.folders),
-            "labels" if self.demo || self.folders => Vec::new(),
+            // Every account's labels by name (folders too) are listed under All inboxes.
+            "labels" if self.demo || (self.folders && !self.every) => Vec::new(),
             "labels" => (0..self.labels.min(LABELS_SHOWN))
                 .map(View::Label)
                 .collect(),
@@ -135,7 +147,9 @@ impl Sidebar<'_> {
 
     /// The key the section's order is kept under: labels are each account's own.
     pub fn order_key(&self, section: &str) -> String {
-        if section == "labels" {
+        if section == "labels" && self.every {
+            "labels:every".to_string()
+        } else if section == "labels" {
             format!("labels:{}", self.shown)
         } else {
             section.to_string()
@@ -143,7 +157,7 @@ impl Sidebar<'_> {
     }
 
     fn name(&self, view: View) -> Option<String> {
-        match view {
+        match view.base() {
             View::Label(index) => self.label_ids.get(index).cloned(),
             view => view_name(view).map(str::to_string),
         }
@@ -168,6 +182,7 @@ impl Sidebar<'_> {
 
     /// Whether the mailbox is hidden (the inbox never is).
     pub fn is_hidden(&self, view: View) -> bool {
+        let view = view.base();
         view != View::Inbox
             && view_name(view).is_some_and(|name| self.hidden.iter().any(|h| h == name))
     }
@@ -188,7 +203,7 @@ impl Sidebar<'_> {
         if self.several() {
             rows.push(Row::AllInboxes);
             for id in &self.accounts {
-                if open("accounts") || (id == self.shown && self.mailbox != View::AllInboxes) {
+                if open("accounts") || (id == self.shown && !self.mailbox.is_every()) {
                     rows.push(Row::Account(id.clone()));
                 }
             }
@@ -208,8 +223,8 @@ impl Sidebar<'_> {
     pub fn here(&self) -> Row {
         match self.mailbox {
             View::Search => Row::Search,
-            View::AllInboxes if !self.several() => Row::Mailbox(View::Inbox),
-            View::AllInboxes => Row::AllInboxes,
+            View::ALL_INBOXES if !self.several() => Row::Mailbox(View::Inbox),
+            View::ALL_INBOXES => Row::AllInboxes,
             view => Row::Mailbox(view),
         }
     }
@@ -382,6 +397,7 @@ mod tests {
             shown: "",
             mailbox,
             demo: false,
+            every: accounts.len() >= 2 && mailbox.is_every(),
             folders: false,
             labels: 3,
             label_ids: vec!["L0".into(), "L1".into(), "L2".into()],
@@ -390,6 +406,45 @@ mod tests {
             hidden: &[],
             revealing: &[],
         }
+    }
+
+    #[test]
+    fn all_inboxes_lists_every_accounts_mailboxes() {
+        let several = ids(2);
+        let all = sidebar(&several, &[], View::ALL_INBOXES);
+        let rows = all.rows();
+        // The inbox is All inboxes itself; the rest are every account's.
+        assert!(!rows.contains(&Row::Mailbox(View::Inbox)));
+        assert!(!rows.contains(&Row::Mailbox(View::every(View::Inbox))));
+        for view in [View::Trash, View::Sent, View::Important, View::Label(0)] {
+            assert!(rows.contains(&Row::Mailbox(View::every(view))), "{view:?}");
+            assert!(!rows.contains(&Row::Mailbox(view)), "{view:?}");
+        }
+        // No Split Inbox: All inboxes is every account's inbox.
+        for view in [View::Primary, View::Updates, View::Promotions, View::Social] {
+            assert!(!rows.contains(&Row::Mailbox(View::every(view))), "{view:?}");
+            assert!(!rows.contains(&Row::Mailbox(view)), "{view:?}");
+        }
+        assert_eq!(all.here(), Row::AllInboxes);
+        // Every account's Trash open: still every account's mailboxes, Trash the one here.
+        let trash = sidebar(&several, &[], View::every(View::Trash));
+        assert_eq!(trash.here(), Row::Mailbox(View::every(View::Trash)));
+        assert!(
+            trash
+                .rows()
+                .contains(&Row::Mailbox(View::every(View::Sent)))
+        );
+        // One account's own mailbox: its own again.
+        let own = sidebar(&several, &[], View::Trash).rows();
+        assert!(own.contains(&Row::Mailbox(View::Inbox)));
+        assert!(own.contains(&Row::Mailbox(View::Sent)));
+        // Hiding a mailbox hides every account's too.
+        let hidden = ["sent".to_string()];
+        let bar = Sidebar {
+            hidden: &hidden,
+            ..sidebar(&several, &[], View::ALL_INBOXES)
+        };
+        assert!(!bar.rows().contains(&Row::Mailbox(View::every(View::Sent))));
     }
 
     static NO_ORDER: std::sync::LazyLock<std::collections::HashMap<String, Vec<String>>> =
@@ -479,35 +534,8 @@ mod tests {
         assert!(rows.contains(&Row::Account(String::new())));
         assert!(!rows.contains(&Row::Account("a1".into())));
         // In All inboxes no account is shown, so none stays.
-        let all = sidebar(&accounts, &collapsed, View::AllInboxes).rows();
+        let all = sidebar(&accounts, &collapsed, View::ALL_INBOXES).rows();
         assert!(!all.iter().any(|r| matches!(r, Row::Account(_))));
-    }
-
-    #[test]
-    fn all_inboxes_leaves_out_the_accounts_own_sections() {
-        let several = ids(2);
-        let mut all = sidebar(&several, &[], View::AllInboxes);
-        all.labels = 3;
-        assert!(!all.account_sections());
-        assert_eq!(
-            all.rows(),
-            vec![
-                Row::Search,
-                Row::AllInboxes,
-                Row::Account(several[0].clone()),
-                Row::Account(several[1].clone()),
-                Row::Settings,
-            ]
-        );
-        // One account's mailbox shows them again.
-        let mut one = sidebar(&several, &[], View::Inbox);
-        one.labels = 3;
-        assert!(one.account_sections());
-        assert!(one.rows().contains(&Row::Mailbox(View::Starred)));
-        assert!(one.rows().contains(&Row::Mailbox(View::Label(0))));
-        // With one account, All inboxes is its inbox: everything shows.
-        let single = ids(1);
-        assert!(sidebar(&single, &[], View::AllInboxes).account_sections());
     }
 
     #[test]
@@ -544,11 +572,11 @@ mod tests {
             Row::Mailbox(View::Drafts)
         );
         assert_eq!(
-            sidebar(&several, &[], View::AllInboxes).here(),
+            sidebar(&several, &[], View::ALL_INBOXES).here(),
             Row::AllInboxes
         );
         assert_eq!(sidebar(&one, &[], View::Search).here(), Row::Search);
-        for (accounts, mailbox) in [(&one, View::Starred), (&several, View::AllInboxes)] {
+        for (accounts, mailbox) in [(&one, View::Starred), (&several, View::ALL_INBOXES)] {
             let s = sidebar(accounts, &[], mailbox);
             assert!(s.rows().contains(&s.here()));
         }
