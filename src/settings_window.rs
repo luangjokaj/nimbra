@@ -368,7 +368,7 @@ impl SettingsWindow {
             .font_weight(FontWeight::SEMIBOLD)
             .cursor_pointer()
             .hover(|s| s.opacity(0.9))
-            .child("Remove")
+            .child("Sign out")
             .on_click(cx.listener(|this, _, _, cx| this.confirm_remove(cx)));
         Some(
             div()
@@ -416,7 +416,7 @@ impl SettingsWindow {
                                 .text_size(px(15.))
                                 .line_height(px(20.))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!("Remove {email}?")),
+                                .child(format!("Sign out of {email}?")),
                         )
                         .child(
                             div().text_color(t.text2).child(
@@ -1093,7 +1093,7 @@ impl SettingsWindow {
                     .flex_none()
                     .items_center()
                     .gap(px(4.))
-                    // Remove asks first, in a dialog.
+                    // Sign out asks first, in a dialog.
                     .child(
                         div()
                             .id(("remove-account", i))
@@ -1104,9 +1104,9 @@ impl SettingsWindow {
                             .rounded(px(8.))
                             .cursor_pointer()
                             .hover(move |s| s.bg(rose.opacity(0.12)))
-                            .tooltip(tip(t.dark, "Remove account", ""))
+                            .tooltip(tip(t.dark, "Sign out", ""))
                             .group(SharedString::from(format!("remove-account-{i}")))
-                            .child(icon("trash", 15., t.text3).group_hover(
+                            .child(icon("sign-out", 15., t.text3).group_hover(
                                 SharedString::from(format!("remove-account-{i}")),
                                 move |s| s.text_color(rose),
                             ))

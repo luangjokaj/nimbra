@@ -77,6 +77,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "detach",
     "attach",
     "trash",
+    "sign-out",
     "search",
     "reply",
     "reply-all",

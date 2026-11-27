@@ -1077,7 +1077,7 @@ impl Nimbra {
         });
         if on_its_way {
             self.notice = Some(
-                "A message from this account is still being sent. Remove it again in a moment."
+                "A message from this account is still being sent. Sign out again in a moment."
                     .into(),
             );
             cx.notify();

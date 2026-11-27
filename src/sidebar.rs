@@ -857,6 +857,8 @@ impl Nimbra {
         let mailbox_rows = section_rows("mailbox");
         let split_hidden = hidden_row("split", cx);
         let mailbox_hidden = hidden_row("mailbox", cx);
+        // Under All inboxes the account's own sections are left out, headers and all.
+        let sections = bar.account_sections();
 
         let scrolled = div()
             .id("sidebar")
@@ -972,7 +974,7 @@ impl Nimbra {
                 .children(accounts_toggle)
                 .children(account_rows)
             })
-            .when(!folders, |d| d.child(split_toggle))
+            .when(sections && !folders, |d| d.child(split_toggle))
             .children(split_rows)
             .when(demo, |d| {
                 d.children(self.fold_row(
@@ -1001,37 +1003,39 @@ impl Nimbra {
                 ))
             })
             .children(split_hidden)
-            .child(mailbox_toggle)
+            .when(sections, |d| d.child(mailbox_toggle))
             .children(mailbox_rows)
             .children(mailbox_hidden)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(labels_toggle.flex_1())
-                    .when(!demo && self.connection.is_some(), |d| {
-                        let hover = t.hover;
-                        d.child(
-                            div()
-                                .id("new-label-sidebar")
-                                .mt(px(10.))
-                                .mr(px(4.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .size(px(22.))
-                                .rounded(px(6.))
-                                .cursor_pointer()
-                                .text_color(t.text3)
-                                .hover(move |s| s.bg(hover))
-                                .tooltip(tip(t.dark, "New label", ""))
-                                .child("+")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_label_sheet(LabelSheet::New { apply: false }, cx)
-                                })),
-                        )
-                    }),
-            )
+            .when(sections, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(labels_toggle.flex_1())
+                        .when(!demo && self.connection.is_some(), |d| {
+                            let hover = t.hover;
+                            d.child(
+                                div()
+                                    .id("new-label-sidebar")
+                                    .mt(px(10.))
+                                    .mr(px(4.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(22.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .text_color(t.text3)
+                                    .hover(move |s| s.bg(hover))
+                                    .tooltip(tip(t.dark, "New label", ""))
+                                    .child("+")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_label_sheet(LabelSheet::New { apply: false }, cx)
+                                    })),
+                            )
+                        }),
+                )
+            })
             .when(demo, |d| {
                 d.children(self.fold_row(
                     "labels",

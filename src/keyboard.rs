@@ -102,8 +102,17 @@ impl Sidebar<'_> {
         !self.demo && self.accounts.len() >= 2
     }
 
+    /// Whether the account's own sections (Split Inbox, Mailbox, Labels) show: not under
+    /// All inboxes, whose list is every account's while they would be one account's.
+    pub fn account_sections(&self) -> bool {
+        !(self.several() && self.mailbox == View::AllInboxes)
+    }
+
     /// The section's mailboxes in their default order.
     fn defaults(&self, section: &str) -> Vec<View> {
+        if !self.account_sections() {
+            return Vec::new();
+        }
         match section {
             "split" if self.demo => vec![View::Inbox],
             "split" => nimbra_core::listing::split_mailboxes(self.folders),
@@ -472,6 +481,33 @@ mod tests {
         // In All inboxes no account is shown, so none stays.
         let all = sidebar(&accounts, &collapsed, View::AllInboxes).rows();
         assert!(!all.iter().any(|r| matches!(r, Row::Account(_))));
+    }
+
+    #[test]
+    fn all_inboxes_leaves_out_the_accounts_own_sections() {
+        let several = ids(2);
+        let mut all = sidebar(&several, &[], View::AllInboxes);
+        all.labels = 3;
+        assert!(!all.account_sections());
+        assert_eq!(
+            all.rows(),
+            vec![
+                Row::Search,
+                Row::AllInboxes,
+                Row::Account(several[0].clone()),
+                Row::Account(several[1].clone()),
+                Row::Settings,
+            ]
+        );
+        // One account's mailbox shows them again.
+        let mut one = sidebar(&several, &[], View::Inbox);
+        one.labels = 3;
+        assert!(one.account_sections());
+        assert!(one.rows().contains(&Row::Mailbox(View::Starred)));
+        assert!(one.rows().contains(&Row::Mailbox(View::Label(0))));
+        // With one account, All inboxes is its inbox: everything shows.
+        let single = ids(1);
+        assert!(sidebar(&single, &[], View::AllInboxes).account_sections());
     }
 
     #[test]
