@@ -62,11 +62,11 @@ fn ink(width: impl Into<gpui::Length> + Clone, thick: f32, line: f32, color: Hsl
     div()
         .flex()
         .flex_shrink()
-        .min_w(px(0.))
+        .min_w(dp(0.))
         .items_center()
-        .h(px(line))
+        .h(dp(line))
         .w(width)
-        .child(div().w_full().h(px(thick)).rounded_full().bg(color))
+        .child(div().w_full().h(dp(thick)).rounded_full().bg(color))
 }
 
 /// The wave. `down` is how far down the screen the element is, 0 to 1, so that the light
@@ -98,7 +98,7 @@ impl Nimbra {
         div()
             .flex()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(dp(0.))
             .h_full()
             .bg(t.surface)
             .when(self.list_open, |d| d.child(self.skeleton_list(t)))
@@ -115,9 +115,9 @@ impl Nimbra {
         let switch = div()
             .flex()
             .flex_none()
-            .gap(px(2.))
-            .p(px(3.))
-            .rounded(px(10.))
+            .gap(dp(2.))
+            .p(dp(3.))
+            .rounded(dp(10.))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
@@ -126,9 +126,9 @@ impl Nimbra {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .w(px(width))
-                    .h(px(SEGMENT_H))
-                    .rounded(px(7.))
+                    .w(dp(width))
+                    .h(dp(SEGMENT_H))
+                    .rounded(dp(7.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if label == "All" { t.text } else { t.text3 })
                     .when(label == "All", |d| d.bg(t.raised))
@@ -138,51 +138,51 @@ impl Nimbra {
         let heading = |width: f32| {
             div()
                 .flex_none()
-                .pl(px(ROW_PAD))
-                .pt(px(14.))
-                .pb(px(6.))
+                .pl(dp(ROW_PAD))
+                .pt(dp(14.))
+                .pb(dp(6.))
                 .child(ink(px(width), 8., 12., soft))
         };
         // Only those that fit: the wave draws each one again every frame.
-        let height = self.frame.map_or(920., |f| f32::from(f.size.height));
-        let fitting = ((height - TOP_BAR) / ROW_H).ceil().max(1.) as usize;
+        let height = self.frame.map_or(920., |f| from_screen(f.size.height));
+        let fitting = ((height - crate::ui::top_bar()) / ROW_H).ceil().max(1.) as usize;
         let rows = (0..fitting).flat_map(|i| {
             let mail = &MAIL[i % MAIL.len()];
             let top_line = div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .h(px(22.))
+                .gap(dp(8.))
+                .h(dp(22.))
                 .child(ink(relative(mail.sender), 11., 22., strong))
                 .child(div().flex_1())
-                .child(ink(px(26.), 8., 22., soft).flex_none());
+                .child(ink(dp(26.), 8., 22., soft).flex_none());
             let row = div()
                 .relative()
                 .flex()
                 .flex_none()
-                .gap(px(ROW_PAD))
-                .px(px(ROW_PAD))
-                .py(px(12.))
-                .rounded(px(12.))
+                .gap(dp(ROW_PAD))
+                .px(dp(ROW_PAD))
+                .py(dp(12.))
+                .rounded(dp(12.))
                 .child(
                     div()
                         .flex()
                         .flex_none()
                         .items_center()
-                        .child(div().size(px(28.)).rounded_full().bg(soft)),
+                        .child(div().size(dp(28.)).rounded_full().bg(soft)),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .flex_1()
-                        .min_w(px(0.))
-                        .gap(px(super::list::LINE_GAP))
+                        .min_w(dp(0.))
+                        .gap(dp(super::list::LINE_GAP))
                         .child(top_line)
                         .child(
                             div()
                                 .flex()
-                                .gap(px(6.))
+                                .gap(dp(6.))
                                 .child(ink(relative(mail.subject), 10., 18., strong))
                                 .child(ink(relative(mail.snippet), 10., 18., soft)),
                         ),
@@ -199,7 +199,7 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(self.list_width))
+            .w(dp(self.list_width))
             .h_full()
             .overflow_hidden()
             .border_r_1()
@@ -208,7 +208,7 @@ impl Nimbra {
                 div()
                     .relative()
                     .flex_none()
-                    .h(px(TOP_BAR))
+                    .h(dp(crate::ui::top_bar()))
                     .border_b_1()
                     .border_color(t.border)
                     .child(
@@ -217,8 +217,8 @@ impl Nimbra {
                             .items_center()
                             .justify_between()
                             .size_full()
-                            .pl(px(LIST_LEFT))
-                            .pr(px(LIST_RIGHT))
+                            .pl(dp(LIST_LEFT))
+                            .pr(dp(LIST_RIGHT))
                             .opacity(WAITING)
                             .child(switch)
                             .child(div().flex_1())
@@ -226,23 +226,23 @@ impl Nimbra {
                             .child({
                                 let worded = compose != ComposeLook::Icon;
                                 super::reading::action_button(t, "draft", "Compose", worded)
-                                    .mr(px(if worded { -9. } else { -7. }))
+                                    .mr(dp(if worded { -9. } else { -7. }))
                             }),
                     )
                     .child(shield()),
             )
             // The checking-for-mail strip.
-            .child(div().flex_none().h(px(2.)))
+            .child(div().flex_none().h(dp(2.)))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .min_h(px(0.))
+                    .min_h(dp(0.))
                     .overflow_hidden()
-                    .gap(px(2.))
-                    .pl(px(LIST_LEFT))
-                    .pr(px(LIST_RIGHT))
+                    .gap(dp(2.))
+                    .pl(dp(LIST_LEFT))
+                    .pr(dp(LIST_RIGHT))
                     .children(rows),
             )
     }
@@ -250,15 +250,15 @@ impl Nimbra {
     fn skeleton_reading(&self, t: &Theme) -> Div {
         let worded = self
             .frame
-            .is_none_or(|f| f32::from(f.size.width) - self.pane_left() >= 600.);
+            .is_none_or(|f| from_screen(f.size.width) - self.pane_left() >= 600.);
         let tools = div()
             .flex()
             .items_center()
-            .gap(px(2.))
+            .gap(dp(2.))
             .size_full()
             .overflow_hidden()
-            .pl(px(LIST_RIGHT - 7.))
-            .pr(px(LIST_RIGHT - 7.))
+            .pl(dp(LIST_RIGHT - 7.))
+            .pr(dp(LIST_RIGHT - 7.))
             .opacity(WAITING)
             // As the real toolbar (`reading.rs`).
             .child(icon_button(t, "list"))
@@ -284,14 +284,14 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(dp(0.))
             .h_full()
             .overflow_hidden()
             .child(
                 div()
                     .relative()
                     .flex_none()
-                    .h(px(TOP_BAR))
+                    .h(dp(crate::ui::top_bar()))
                     .border_b_1()
                     .border_color(t.border)
                     .child(tools)
@@ -316,10 +316,10 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_none()
-            .gap(px(12.))
-            .px(px(super::reading::ORIGINAL_SIDE))
-            .pt(px(16.))
-            .pb(px(super::reading::ORIGINAL_SIDE))
+            .gap(dp(12.))
+            .px(dp(super::reading::ORIGINAL_SIDE))
+            .pt(dp(16.))
+            .pb(dp(super::reading::ORIGINAL_SIDE))
             .border_b_1()
             .border_color(t.border)
             .child(wave(100, 0.05, ink(relative(0.46), 20., 30., strong)))
@@ -331,24 +331,24 @@ impl Nimbra {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
-                    .child(div().flex_none().size(px(28.)).rounded_full().bg(soft))
+                    .gap(dp(12.))
+                    .child(div().flex_none().size(dp(28.)).rounded_full().bg(soft))
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(dp(0.))
                             .child(
                                 div()
                                     .flex()
-                                    .gap(px(8.))
-                                    .child(ink(px(112.), 14., 18., strong))
-                                    .child(ink(px(168.), 11., 18., soft)),
+                                    .gap(dp(8.))
+                                    .child(ink(dp(112.), 14., 18., strong))
+                                    .child(ink(dp(168.), 11., 18., soft)),
                             )
-                            .child(ink(px(138.), 10., 16., soft)),
+                            .child(ink(dp(138.), 10., 16., soft)),
                     )
-                    .child(ink(px(28.), 10., 16., soft).flex_none()),
+                    .child(ink(dp(28.), 10., 16., soft).flex_none()),
             ))
     }
 
@@ -359,12 +359,12 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_none()
-            .gap(px(22.))
-            .px(px(64.))
-            .pt(px(40.))
-            .pb(px(24.))
+            .gap(dp(22.))
+            .px(dp(64.))
+            .pt(dp(40.))
+            .pb(dp(24.))
             // Where a label would be.
-            .child(div().h(px(22.)))
+            .child(div().h(dp(22.)))
             .child(wave(100, 0.1, ink(relative(0.62), 28., 43., strong)))
             .child(div())
             .child(wave(
@@ -373,11 +373,11 @@ impl Nimbra {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .child(div().flex_none().size(px(28.)).rounded_full().bg(soft))
-                    .child(ink(px(180.), 11., 18., soft))
+                    .gap(dp(10.))
+                    .child(div().flex_none().size(dp(28.)).rounded_full().bg(soft))
+                    .child(ink(dp(180.), 11., 18., soft))
                     .child(div().flex_1())
-                    .child(ink(px(28.), 10., 16., soft).flex_none()),
+                    .child(ink(dp(28.), 10., 16., soft).flex_none()),
             ))
     }
 
@@ -399,15 +399,15 @@ impl Nimbra {
             (0.58, paragraph(&CLOSING)),
             (0.70, paragraph(&SIGN_OFF)),
         ];
-        div().flex_1().min_h(px(0.)).overflow_hidden().child(
+        div().flex_1().min_h(dp(0.)).overflow_hidden().child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(20.))
+                .gap(dp(20.))
                 .w_full()
-                .max_w(px(680. + 2. * side))
-                .px(px(side))
-                .pt(px(top))
+                .max_w(dp(680. + 2. * side))
+                .px(dp(side))
+                .pt(dp(top))
                 .children(
                     parts
                         .into_iter()

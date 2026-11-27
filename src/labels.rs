@@ -378,12 +378,12 @@ impl Nimbra {
             .child(
                 div()
                     .id("new-label")
-                    .w(px(400.))
+                    .w(dp(400.))
                     .flex()
                     .flex_col()
-                    .gap(px(14.))
-                    .p(px(22.))
-                    .rounded(px(18.))
+                    .gap(dp(14.))
+                    .p(dp(22.))
+                    .rounded(dp(18.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
@@ -405,13 +405,13 @@ impl Nimbra {
                     ))
                     .child(
                         div()
-                            .px(px(12.))
-                            .py(px(8.))
-                            .rounded(px(10.))
+                            .px(dp(12.))
+                            .py(dp(8.))
+                            .rounded(dp(10.))
                             .bg(t.hover)
                             .border_1()
                             .border_color(t.border)
-                            .text_size(px(14.))
+                            .text_size(dp(14.))
                             .children(input),
                     )
                     .child(meta(
@@ -427,7 +427,7 @@ impl Nimbra {
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(8.))
+                            .gap(dp(8.))
                             .child(
                                 button(t, ButtonKind::Ghost, "Cancel", None)
                                     .id("label-cancel").press_soft()

@@ -16,7 +16,10 @@ actions!(
         DockSent,
         UseSystemAppearance,
         UseLightAppearance,
-        UseDarkAppearance
+        UseDarkAppearance,
+        ZoomIn,
+        ZoomOut,
+        ActualSize
     ]
 );
 
@@ -80,6 +83,9 @@ pub fn install(cx: &mut App) {
         }
     };
     cx.on_action(move |_: &ToggleTheme, cx| with_main(cx, Nimbra::toggle_theme));
+    cx.on_action(move |_: &ZoomIn, cx| with_main(cx, |n, cx| n.step_zoom(1, cx)));
+    cx.on_action(move |_: &ZoomOut, cx| with_main(cx, |n, cx| n.step_zoom(-1, cx)));
+    cx.on_action(move |_: &ActualSize, cx| with_main(cx, |n, cx| n.set_interface_zoom(100, cx)));
     cx.on_action(move |_: &UseSystemAppearance, cx| {
         with_main(cx, |n, cx| n.set_theme(ThemeChoice::System, cx))
     });
@@ -608,6 +614,27 @@ impl Nimbra {
     }
 
     /// Light, Dark, or following the Mac; remembered.
+    /// Settings › Appearance › Interface size, ⌘+, ⌘- and ⌘0: draws every window at
+    /// `percent` (kept to a step, see `Settings::zoom`).
+    pub(super) fn set_interface_zoom(&mut self, percent: u16, cx: &mut Context<Self>) {
+        self.settings.interface_zoom = percent;
+        crate::ui::set_zoom(self.settings.zoom());
+        // Menus and toasts are their own windows, sized for the zoom they opened at.
+        self.close_menu_window(cx);
+        self.save_settings(cx);
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    /// ⌘+ and ⌘-: the next interface size up or down, stopping at either end.
+    pub(super) fn step_zoom(&mut self, by: isize, cx: &mut Context<Self>) {
+        let steps = crate::settings::ZOOM_STEPS;
+        let now = (self.settings.zoom() * 100.).round() as u16;
+        let at = steps.iter().position(|s| *s == now).unwrap_or(1) as isize;
+        let to = (at + by).clamp(0, steps.len() as isize - 1) as usize;
+        self.set_interface_zoom(steps[to], cx);
+    }
+
     pub(super) fn set_theme(&mut self, choice: ThemeChoice, cx: &mut Context<Self>) {
         self.settings.theme = choice;
         self.save_settings(cx);

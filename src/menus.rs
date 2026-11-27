@@ -166,10 +166,10 @@ pub(super) fn account_row(
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(10.))
-        .h(px(ACCOUNT_ROW))
-        .px(px(8.))
-        .rounded(px(7.))
+        .gap(dp(10.))
+        .h(dp(ACCOUNT_ROW))
+        .px(dp(8.))
+        .rounded(dp(7.))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .press(t)
@@ -177,7 +177,7 @@ pub(super) fn account_row(
         .child(
             div()
                 .flex_1()
-                .min_w(px(0.))
+                .min_w(dp(0.))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -190,18 +190,18 @@ pub(super) fn account_row(
 pub(super) fn account_list(t: &Theme, rows: impl IntoIterator<Item = Stateful<Div>>) -> Div {
     div()
         .size_full()
-        .p(px(MENU_MARGIN))
+        .p(dp(MENU_MARGIN))
         .font_family(crate::theme::SANS)
-        .text_size(px(13.))
-        .line_height(px(18.))
+        .text_size(dp(13.))
+        .line_height(dp(18.))
         .text_color(t.text)
         .child(
             div()
                 .size_full()
                 .flex()
                 .flex_col()
-                .p(px(4.))
-                .rounded(px(10.))
+                .p(dp(4.))
+                .rounded(dp(10.))
                 .bg(t.raised)
                 .border_1()
                 .border_color(t.border_strong)
@@ -243,7 +243,9 @@ pub(super) struct UpdatePill {
 }
 
 impl Render for UpdatePill {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         use crate::update::Stage;
         let t = if self.dark {
             Theme::dark()
@@ -253,15 +255,15 @@ impl Render for UpdatePill {
         let version = &self.progress.version;
         let frame = div()
             .size_full()
-            .p(px(MENU_MARGIN))
+            .p(dp(MENU_MARGIN))
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text);
         let card = div()
             .size_full()
             .flex()
-            .rounded(px(12.))
+            .rounded(dp(12.))
             .bg(t.raised)
             .border_1()
             .border_color(t.border_strong)
@@ -273,18 +275,18 @@ impl Render for UpdatePill {
                 .child(
                     card.items_center()
                         .justify_between()
-                        .gap(px(toast::GAP))
-                        .pl(px(toast::LEFT))
-                        .pr(px(toast::RIGHT))
+                        .gap(dp(toast::GAP))
+                        .pl(dp(toast::LEFT))
+                        .pr(dp(toast::RIGHT))
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(0.))
+                                .min_w(dp(0.))
                                 .whitespace_nowrap()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .text_size(px(toast::FONT))
-                                .line_height(px(toast::LINE))
+                                .text_size(dp(toast::FONT))
+                                .line_height(dp(toast::LINE))
                                 .child(system_events::update_notice(version)),
                         )
                         .child(
@@ -292,8 +294,8 @@ impl Render for UpdatePill {
                                 .id("restart-to-update")
                                 .justify_center()
                                 .flex_none()
-                                .w(px(toast::DISMISS.0))
-                                .h(px(toast::DISMISS.1))
+                                .w(dp(toast::DISMISS.0))
+                                .h(dp(toast::DISMISS.1))
                                 .press_soft()
                                 .on_click(cx.listener(move |_, _, _, cx| {
                                     owner
@@ -321,17 +323,17 @@ impl Render for UpdatePill {
             .child(
                 card.flex_col()
                     .justify_center()
-                    .gap(px(10.))
-                    .px(px(toast::LEFT))
+                    .gap(dp(10.))
+                    .px(dp(toast::LEFT))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(12.))
+                            .gap(dp(12.))
                             .child(
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
+                                    .min_w(dp(0.))
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .text_ellipsis()
@@ -340,7 +342,7 @@ impl Render for UpdatePill {
                             .child(div().flex_none().text_color(t.text3).child(amount)),
                     )
                     .child(
-                        div().h(px(4.)).w_full().rounded_full().bg(t.hover).child(
+                        div().h(dp(4.)).w_full().rounded_full().bg(t.hover).child(
                             div()
                                 .h_full()
                                 .w(gpui::relative(fraction))
@@ -361,7 +363,9 @@ pub(super) struct NoticeToast {
 }
 
 impl Render for NoticeToast {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         let t = if self.dark {
             Theme::dark()
         } else {
@@ -370,21 +374,21 @@ impl Render for NoticeToast {
         let owner = self.owner.clone();
         div()
             .size_full()
-            .p(px(MENU_MARGIN))
+            .p(dp(MENU_MARGIN))
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap(px(toast::GAP))
+                    .gap(dp(toast::GAP))
                     .size_full()
-                    .pl(px(toast::LEFT))
-                    .pr(px(toast::RIGHT))
-                    .rounded(px(12.))
+                    .pl(dp(toast::LEFT))
+                    .pr(dp(toast::RIGHT))
+                    .rounded(dp(12.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
@@ -393,17 +397,17 @@ impl Render for NoticeToast {
                     .child(
                         div()
                             .flex_none()
-                            .w(px(self.toast.text_width))
-                            .text_size(px(toast::FONT))
-                            .line_height(px(toast::LINE))
+                            .w(dp(self.toast.text_width))
+                            .text_size(dp(toast::FONT))
+                            .line_height(dp(toast::LINE))
                             .child(self.toast.text.clone()),
                     )
                     .child(
                         button(&t, ButtonKind::Secondary, "Dismiss", None)
                             .id("dismiss-notice")
                             .justify_center()
-                            .w(px(toast::DISMISS.0))
-                            .h(px(toast::DISMISS.1))
+                            .w(dp(toast::DISMISS.0))
+                            .h(dp(toast::DISMISS.1))
                             .press_soft()
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 owner
@@ -426,7 +430,9 @@ pub(super) struct UndoToast {
 }
 
 impl Render for UndoToast {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         let t = if self.dark {
             Theme::dark()
         } else {
@@ -435,20 +441,20 @@ impl Render for UndoToast {
         let owner = self.owner.clone();
         div()
             .size_full()
-            .p(px(MENU_MARGIN))
+            .p(dp(MENU_MARGIN))
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text)
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(dp(12.))
                     .size_full()
-                    .pl(px(16.))
-                    .pr(px(6.))
-                    .rounded(px(12.))
+                    .pl(dp(16.))
+                    .pr(dp(6.))
+                    .rounded(dp(12.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
@@ -456,7 +462,7 @@ impl Render for UndoToast {
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(dp(0.))
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .child(self.label.clone()),
@@ -489,7 +495,9 @@ impl MenuPopup {
 }
 
 impl Render for MenuPopup {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         let t = if self.dark {
             Theme::dark()
         } else {
@@ -513,18 +521,18 @@ impl Render for MenuPopup {
         let enabled = self.enabled;
         div()
             .size_full()
-            .p(px(MENU_MARGIN))
+            .p(dp(MENU_MARGIN))
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .size_full()
-                    .p(px(6.))
-                    .rounded(px(12.))
+                    .p(dp(6.))
+                    .rounded(dp(12.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
@@ -538,10 +546,10 @@ impl Render for MenuPopup {
                                     .id(("menu-item", index))
                                     .flex()
                                     .items_center()
-                                    .gap(px(10.))
-                                    .px(px(10.))
-                                    .py(px(7.))
-                                    .rounded(px(8.))
+                                    .gap(dp(10.))
+                                    .px(dp(10.))
+                                    .py(dp(7.))
+                                    .rounded(dp(8.))
                                     .child(icon(name, 16., *tint))
                                     .child(div().flex_1().child(label.clone()))
                                     .when(!enabled, |d| d.text_color(t.text3))
@@ -826,7 +834,7 @@ impl Nimbra {
         let (left, top) = match menu {
             Menu::Labels => (pane_left + 150., 50.),
             Menu::MoveTo => (pane_left + 186., 50.),
-            Menu::More => (f32::from(viewport.width) - 20. - width, 50.),
+            Menu::More => (from_screen(viewport.width) - 20. - width, 50.),
             // Under the composer's From button, its photos over the button's.
             Menu::From => {
                 let (left, bottom) = self.from_anchor.get();
@@ -834,7 +842,7 @@ impl Nimbra {
             }
             // Above the composer's Send later button.
             Menu::SendLater => {
-                let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
+                let (vw, vh) = (from_screen(viewport.width), from_screen(viewport.height));
                 match &self.compose {
                     Some(c) if !c.full => {
                         let (w, h) = c.size;
@@ -846,17 +854,22 @@ impl Nimbra {
             }
             // At the pointer, nudged back inside the window if it would hang over an edge.
             Menu::Row(_) | Menu::Label(_) | Menu::Mailbox(_) | Menu::Signature => (
-                self.menu_at.0.min(f32::from(viewport.width) - width - 8.),
-                self.menu_at.1.min(f32::from(viewport.height) - height - 8.),
+                self.menu_at.0.min(from_screen(viewport.width) - width - 8.),
+                self.menu_at
+                    .1
+                    .min(from_screen(viewport.height) - height - 8.),
             ),
         };
         let origin = window.bounds().origin;
         let bounds = gpui::Bounds::new(
             gpui::point(
-                origin.x + px(left - MENU_MARGIN),
-                origin.y + px(top - MENU_MARGIN),
+                origin.x + to_screen(left - MENU_MARGIN),
+                origin.y + to_screen(top - MENU_MARGIN),
             ),
-            gpui::size(px(width + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
+            gpui::size(
+                to_screen(width + 2. * MENU_MARGIN),
+                to_screen(height + 2. * MENU_MARGIN),
+            ),
         );
         let owner = cx.weak_entity();
         let dark = self.dark;
@@ -1109,7 +1122,7 @@ impl Nimbra {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu_at = (f32::from(at.x), f32::from(at.y));
+        self.menu_at = (from_screen(at.x), from_screen(at.y));
         // A second right-click should always open the menu again, never just close it.
         self.menu_dismissed = None;
         self.toggle_menu(Menu::Row(index), window, cx);
@@ -1177,8 +1190,10 @@ impl Nimbra {
         };
         let lift = self.update_lift();
         let origin = gpui::point(
-            frame.origin.x + (frame.size.width - px(size.0)) / 2. - px(MENU_MARGIN),
-            frame.origin.y + frame.size.height - px(size.1 + 24. + lift) - px(MENU_MARGIN),
+            frame.origin.x + (frame.size.width - to_screen(size.0)) / 2. - to_screen(MENU_MARGIN),
+            frame.origin.y + frame.size.height
+                - to_screen(size.1 + 24. + lift)
+                - to_screen(MENU_MARGIN),
         );
         let owner = cx.weak_entity();
         let dark = self.dark;
@@ -1186,7 +1201,10 @@ impl Nimbra {
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
                     origin,
-                    gpui::size(px(size.0 + 2. * MENU_MARGIN), px(size.1 + 2. * MENU_MARGIN)),
+                    gpui::size(
+                        to_screen(size.0 + 2. * MENU_MARGIN),
+                        to_screen(size.1 + 2. * MENU_MARGIN),
+                    ),
                 ))),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
@@ -1245,8 +1263,10 @@ impl Nimbra {
         // Above the Undo pill when that is showing too.
         let lift = if self.undo_window.is_some() { 54. } else { 0. } + self.update_lift();
         let origin = gpui::point(
-            frame.origin.x + (frame.size.width - px(width)) / 2. - px(MENU_MARGIN),
-            frame.origin.y + frame.size.height - px(height + 24. + lift) - px(MENU_MARGIN),
+            frame.origin.x + (frame.size.width - to_screen(width)) / 2. - to_screen(MENU_MARGIN),
+            frame.origin.y + frame.size.height
+                - to_screen(height + 24. + lift)
+                - to_screen(MENU_MARGIN),
         );
         let owner = cx.weak_entity();
         let dark = self.dark;
@@ -1254,7 +1274,10 @@ impl Nimbra {
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
                     origin,
-                    gpui::size(px(width + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
+                    gpui::size(
+                        to_screen(width + 2. * MENU_MARGIN),
+                        to_screen(height + 2. * MENU_MARGIN),
+                    ),
                 ))),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
@@ -1328,14 +1351,17 @@ impl Nimbra {
             size: (width, height),
         } = place;
         let origin = gpui::point(
-            frame.origin.x + (frame.size.width - px(width)) / 2. - px(MENU_MARGIN),
-            frame.origin.y + frame.size.height - px(height + 24.) - px(MENU_MARGIN),
+            frame.origin.x + (frame.size.width - to_screen(width)) / 2. - to_screen(MENU_MARGIN),
+            frame.origin.y + frame.size.height - to_screen(height + 24.) - to_screen(MENU_MARGIN),
         );
         let opened = cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
                     origin,
-                    gpui::size(px(width + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
+                    gpui::size(
+                        to_screen(width + 2. * MENU_MARGIN),
+                        to_screen(height + 2. * MENU_MARGIN),
+                    ),
                 ))),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
@@ -1386,10 +1412,10 @@ impl Nimbra {
                 .press(t)
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(10.))
-                .py(px(7.))
-                .rounded(px(8.))
+                .gap(dp(10.))
+                .px(dp(10.))
+                .py(dp(7.))
+                .rounded(dp(8.))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .child(icon(icon_name, 16., tint))
@@ -1398,12 +1424,12 @@ impl Nimbra {
         let panel = div()
             .id("menu")
             .absolute()
-            .top(px(50.))
+            .top(dp(50.))
             .flex()
             .flex_col()
-            .min_w(px(220.))
-            .p(px(6.))
-            .rounded(px(12.))
+            .min_w(dp(220.))
+            .p(dp(6.))
+            .rounded(dp(12.))
             .bg(t.raised)
             .border_1()
             .border_color(t.border_strong)
@@ -1429,9 +1455,9 @@ impl Nimbra {
             Menu::Labels => {
                 let tints = [t.violet, t.rose, t.amber, t.sky, t.mint];
                 panel
-                    .left(px(150.))
+                    .left(dp(150.))
                     .when(self.labels.is_empty(), |d| {
-                        d.child(div().px(px(10.)).py(px(7.)).text_color(t.text3).child(
+                        d.child(div().px(dp(10.)).py(dp(7.)).text_color(t.text3).child(
                             if self.is_demo() {
                                 "Labels need a connected account."
                             } else {
@@ -1459,7 +1485,7 @@ impl Nimbra {
             }
             Menu::More => {
                 panel
-                    .right(px(20.))
+                    .right(dp(20.))
                     .children(self.more_menu().into_iter().enumerate().map(
                         |(index, (_, icon, label))| {
                             item(index, icon, label, t.text2).on_click(cx.listener(

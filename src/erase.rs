@@ -45,7 +45,7 @@ pub fn fade(height: f32, clear: f32, material: Hsla, scroll: ScrollHandle) -> im
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
-            let strength = (-f32::from(scroll.offset().y) / clear).clamp(0., 1.);
+            let strength = (-crate::ui::from_screen(scroll.offset().y) / clear).clamp(0., 1.);
             if strength == 0. {
                 return;
             }

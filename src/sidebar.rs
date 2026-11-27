@@ -44,7 +44,7 @@ impl Nimbra {
                     move |d, delta| {
                         let shown = if open { delta } else { 1. - delta };
                         // The text fades well before the row gets thin, so no slivers show.
-                        d.h(px(NAV_ROW * shown)).opacity(shown.powi(3))
+                        d.h(dp(NAV_ROW * shown)).opacity(shown.powi(3))
                     },
                 )
                 .into_any_element(),
@@ -66,10 +66,10 @@ impl Nimbra {
             .group("section")
             .flex()
             .items_center()
-            .gap(px(4.))
-            .pl(px(10.))
-            .pt(px(18.))
-            .pb(px(8.))
+            .gap(dp(4.))
+            .pl(dp(10.))
+            .pt(dp(18.))
+            .pb(dp(8.))
             .cursor_pointer()
             .child(overline(label, t.text3).group_hover("section", move |s| s.text_color(bright)))
             .child(
@@ -476,18 +476,20 @@ impl Nimbra {
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .size(px(28.))
-                .rounded(px(7.))
+                .size(dp(28.))
+                .rounded(dp(7.))
                 .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
                 .child(icon(name, 17., if enabled { t.text2 } else { t.faint }))
         };
         div()
             .absolute()
-            .top(px(11.))
-            .left(px(x + 84.))
+            // Beside the traffic lights, which keep their size and place whatever the zoom:
+            // centred on their line (y = 25) and clear of them (84 from the sidebar's edge).
+            .top(dp(25. / crate::ui::zoom() - 14.))
+            .left(dp(x + 84. / crate::ui::zoom()))
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(dp(4.))
             .child(
                 control("sidebar", true)
                     .id("toggle-sidebar")
@@ -497,7 +499,7 @@ impl Nimbra {
                     .tooltip(tip(t.dark, "Show or hide sidebar", "⌘B"))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
-            .child(div().w(px(6.)))
+            .child(div().w(dp(6.)))
             .child(
                 control("back", self.can_go_back())
                     .id("go-back")
@@ -512,7 +514,7 @@ impl Nimbra {
                     .tooltip(tip(t.dark, "Forward", "⌘]"))
                     .on_click(cx.listener(|this, _, _, cx| this.go_forward(cx))),
             )
-            .child(div().w(px(6.)))
+            .child(div().w(dp(6.)))
             .child(
                 div()
                     .id("reload")
@@ -530,8 +532,8 @@ impl Nimbra {
                     .flex_none()
                     .items_center()
                     .justify_center()
-                    .size(px(28.))
-                    .rounded(px(7.))
+                    .size(dp(28.))
+                    .rounded(dp(7.))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
@@ -570,9 +572,9 @@ impl Nimbra {
                         d.child(
                             div()
                                 .absolute()
-                                .top(px(3.))
-                                .right(px(3.))
-                                .size(px(6.))
+                                .top(dp(3.))
+                                .right(dp(3.))
+                                .size(dp(6.))
                                 .rounded_full()
                                 .bg(t.amber),
                         )
@@ -595,15 +597,15 @@ impl Nimbra {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(6.))
-            .px(px(8.))
-            .py(px(2.))
+            .gap(dp(6.))
+            .px(dp(8.))
+            .py(dp(2.))
             .rounded_full()
             .bg(t.amber.opacity(0.14))
             .border_1()
             .border_color(t.amber.opacity(0.4))
-            .h(px(22.))
-            .when(!words, |d| d.w(px(22.)).justify_center())
+            .h(dp(22.))
+            .when(!words, |d| d.w(dp(22.)).justify_center())
             .tooltip(tip(
                 t.dark,
                 if words {
@@ -613,7 +615,7 @@ impl Nimbra {
                 },
                 "",
             ))
-            .child(div().size(px(6.)).flex_none().rounded_full().bg(t.amber))
+            .child(div().size(dp(6.)).flex_none().rounded_full().bg(t.amber))
             .when(words, |d| d.child(meta(self.offline_label(), t.text2)))
     }
 
@@ -699,10 +701,10 @@ impl Nimbra {
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(px(10.))
-                        .px(px(10.))
-                        .h(px(30.))
-                        .rounded(px(NAV_RADIUS))
+                        .gap(dp(10.))
+                        .px(dp(10.))
+                        .h(dp(30.))
+                        .rounded(dp(NAV_RADIUS))
                         .cursor_pointer()
                         .when(shown, |d| d.relative().child(active_pill(t)))
                         .when(!shown, |d| d.hover(move |s| s.bg(hover)))
@@ -717,7 +719,7 @@ impl Nimbra {
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(0.))
+                                .min_w(dp(0.))
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_color(if shown { t.text } else { t.text2 })
@@ -810,7 +812,8 @@ impl Nimbra {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                        this.menu_at = (f32::from(event.position.x), f32::from(event.position.y));
+                        this.menu_at =
+                            (from_screen(event.position.x), from_screen(event.position.y));
                         this.menu_dismissed = None;
                         this.toggle_menu(Menu::Mailbox(view), window, cx);
                     }),
@@ -927,14 +930,14 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(dp(0.))
             // With several accounts it can be taller than the window: it scrolls.
             .overflow_y_scroll()
-            .px(px(12.))
-            .pb(px(10.))
+            .px(dp(12.))
+            .pb(dp(10.))
             .child(
                 div()
-                    .h(px(SIDEBAR_CLEAR))
+                    .h(dp(SIDEBAR_CLEAR))
                     .flex_none()
                     .on_mouse_down(MouseButton::Left, drag_or_zoom),
             )
@@ -942,11 +945,11 @@ impl Nimbra {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .pl(px(10.))
-                    .pr(px(6.))
-                    .py(px(6.))
-                    .rounded(px(9.))
+                    .gap(dp(8.))
+                    .pl(dp(10.))
+                    .pr(dp(6.))
+                    .py(dp(6.))
+                    .rounded(dp(9.))
                     .bg(t.hover)
                     .border_1()
                     .border_color(t.border)
@@ -966,7 +969,7 @@ impl Nimbra {
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(dp(0.))
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_color(if self.query.is_empty() {
@@ -991,8 +994,8 @@ impl Nimbra {
                             .flex_none()
                             .items_center()
                             .justify_center()
-                            .size(px(20.))
-                            .rounded(px(5.))
+                            .size(dp(20.))
+                            .rounded(dp(5.))
                             .cursor_pointer()
                             .hover(move |s| s.bg(hover))
                             .tooltip(tip(t.dark, "Clear search", "Esc"))
@@ -1015,7 +1018,7 @@ impl Nimbra {
                         self.mailbox.is_every(),
                         None,
                     )
-                    .mt(px(SEARCH_GAP))
+                    .mt(dp(SEARCH_GAP))
                     .id("all-inboxes")
                     .press(t)
                     .on_click(
@@ -1078,13 +1081,13 @@ impl Nimbra {
                         d.child(
                             div()
                                 .id("new-label-sidebar")
-                                .mt(px(10.))
-                                .mr(px(4.))
+                                .mt(dp(10.))
+                                .mr(dp(4.))
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .size(px(22.))
-                                .rounded(px(6.))
+                                .size(dp(22.))
+                                .rounded(dp(6.))
                                 .cursor_pointer()
                                 .text_color(t.text3)
                                 .hover(move |s| s.bg(hover))
@@ -1159,7 +1162,7 @@ impl Nimbra {
                             MouseButton::Right,
                             cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
                                 this.menu_at =
-                                    (f32::from(event.position.x), f32::from(event.position.y));
+                                    (from_screen(event.position.x), from_screen(event.position.y));
                                 this.menu_dismissed = None;
                                 this.toggle_menu(Menu::Label(index), window, cx);
                             }),
@@ -1199,11 +1202,11 @@ impl Nimbra {
                 .id("update-ready")
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .mb(px(6.))
-                .px(px(10.))
-                .py(px(7.))
-                .rounded(px(10.))
+                .gap(dp(8.))
+                .mb(dp(6.))
+                .px(dp(10.))
+                .py(dp(7.))
+                .rounded(dp(10.))
                 .bg(t.hover)
                 .border_1()
                 .border_color(t.border)
@@ -1211,17 +1214,17 @@ impl Nimbra {
                 .hover(move |s| s.bg(hover))
                 .tooltip(tip(t.dark, "Restart Nimbra to update", ""))
                 .on_click(cx.listener(|this, _, _, cx| this.restart_to_update(cx)))
-                .child(div().size(px(7.)).rounded_full().bg(t.mint))
+                .child(div().size(dp(7.)).rounded_full().bg(t.mint))
                 .child(
                     div()
                         .flex_1()
-                        .min_w(px(0.))
+                        .min_w(dp(0.))
                         .truncate()
                         .child(meta(format!("Nimbra {version} is ready"), t.text2)),
                 )
                 .child(
                     div()
-                        .text_size(px(12.5))
+                        .text_size(dp(12.5))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(t.text)
                         .child("Restart"),
@@ -1230,8 +1233,8 @@ impl Nimbra {
         // Settings stays at the bottom, whatever is scrolled above it.
         let footer = div()
             .flex_none()
-            .px(px(12.))
-            .py(px(8.))
+            .px(dp(12.))
+            .py(dp(8.))
             .border_t_1()
             .border_color(t.border_strong)
             .children(update)
@@ -1249,9 +1252,9 @@ impl Nimbra {
                 )
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .p(px(6.))
-                .rounded(px(10.))
+                .gap(dp(10.))
+                .p(dp(6.))
+                .rounded(dp(10.))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .press(t)
@@ -1261,9 +1264,9 @@ impl Nimbra {
                     div()
                         .flex()
                         .flex_1()
-                        .min_w(px(0.))
+                        .min_w(dp(0.))
                         .items_center()
-                        .gap(px(10.))
+                        .gap(dp(10.))
                         .child({
                             // With several accounts, the default one's profile.
                             let default = (!demo && self.settings.accounts.len() >= 2)
@@ -1300,7 +1303,7 @@ impl Nimbra {
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(0.))
+                                .min_w(dp(0.))
                                 .child(
                                     div()
                                         .font_weight(FontWeight::SEMIBOLD)
@@ -1334,7 +1337,7 @@ impl Nimbra {
                         .flex_none()
                         .items_center()
                         .justify_center()
-                        .size(px(30.))
+                        .size(dp(30.))
                         .child(icon("settings", 16., t.text3)),
                 )
             });
@@ -1343,7 +1346,7 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(self.side_w()))
+            .w(dp(self.side_w()))
             .h_full()
             // Floating, the panel around it has the colour and the outline. The border keeps
             // its 1pt, so that docking moves nothing inside.
@@ -1357,7 +1360,7 @@ impl Nimbra {
             // Space for the native traffic lights; dragging here moves the window.
             .child(
                 div()
-                    .h(px(SIDEBAR_TOP))
+                    .h(dp(SIDEBAR_TOP))
                     .flex_none()
                     .on_mouse_down(MouseButton::Left, drag_or_zoom),
             )
@@ -1367,7 +1370,7 @@ impl Nimbra {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .min_h(px(0.))
+                    .min_h(dp(0.))
                     .child(scrolled)
                     .child(crate::erase::fade(
                         SIDEBAR_FADE,
@@ -1480,15 +1483,15 @@ impl DraggedView {
             Theme::light()
         };
         div()
-            .px(px(12.))
-            .py(px(6.))
-            .rounded(px(NAV_RADIUS))
+            .px(dp(12.))
+            .py(dp(6.))
+            .rounded(dp(NAV_RADIUS))
             .bg(t.raised)
             .border_1()
             .border_color(t.border_strong)
             .shadow(vec![shadow(t.shadow, 8., 24., -6.)])
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
+            .text_size(dp(13.))
             .text_color(t.text)
             .cursor(gpui::CursorStyle::ClosedHand)
             .child(self.title.clone())
@@ -1542,11 +1545,11 @@ pub(super) fn nav(
     div()
         .flex()
         .items_center()
-        .gap(px(10.))
-        .px(px(10.))
-        .h(px(NAV_ROW))
+        .gap(dp(10.))
+        .px(dp(10.))
+        .h(dp(NAV_ROW))
         .flex_none()
-        .rounded(px(NAV_RADIUS))
+        .rounded(dp(NAV_RADIUS))
         .cursor_pointer()
         .when(selected, |d| {
             d.relative()
@@ -1582,7 +1585,8 @@ pub(super) fn reveal(
                 return;
             }
             let view = handle.bounds();
-            let above = f32::from(view.top()) + top - f32::from(bounds.top());
+            // `top` is design points; the bounds are on the screen.
+            let above = f32::from(view.top()) + top * crate::ui::zoom() - f32::from(bounds.top());
             let below = f32::from(bounds.bottom()) - f32::from(view.bottom());
             let shift = if above > 0. {
                 above
@@ -1612,8 +1616,8 @@ fn count_pill(t: &Theme, count: String, shown: bool) -> Div {
         .flex()
         .flex_none()
         .items_center()
-        .h(px(18.))
-        .px(px(COUNT_PAD))
+        .h(dp(18.))
+        .px(dp(COUNT_PAD))
         .rounded_full()
         .bg(if shown { t.selected } else { t.hover })
         .child(meta(count, if shown { t.text } else { t.text2 }))

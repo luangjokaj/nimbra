@@ -52,11 +52,13 @@ impl Nimbra {
         };
         let rows = people.len();
         let dark = self.dark;
-        let margin = f64::from(MENU_MARGIN);
-        let corner = (at.0 - margin, at.1 - f64::from(GAP) + margin);
+        // `at` is on the screen already; the margins are design points.
+        let zoom = f64::from(crate::ui::zoom());
+        let margin = f64::from(MENU_MARGIN) * zoom;
+        let corner = (at.0 - margin, at.1 - f64::from(GAP) * zoom + margin);
         let size = gpui::size(
-            px(SUGGEST_WIDTH + 2. * MENU_MARGIN),
-            px(rows as f32 * ROW + CHROME + 2. * MENU_MARGIN),
+            to_screen(SUGGEST_WIDTH + 2. * MENU_MARGIN),
+            to_screen(rows as f32 * ROW + CHROME + 2. * MENU_MARGIN),
         );
         // Already showing: given the rows, and moved or resized when that changed.
         if let Some((handle, placed, placed_rows)) = self.suggest_window {
@@ -178,7 +180,9 @@ impl Nimbra {
 }
 
 impl Render for SuggestPopup {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         let t = if self.dark {
             Theme::dark()
         } else {
@@ -193,12 +197,12 @@ impl Render for SuggestPopup {
                 .id(("suggest", i))
                 .press(&t)
                 .flex_none()
-                .h(px(ROW))
+                .h(dp(ROW))
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(8.))
-                .rounded(px(7.))
+                .gap(dp(10.))
+                .px(dp(8.))
+                .rounded(dp(7.))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .when(i == selected, |d| d.bg(t.hover))
@@ -210,7 +214,7 @@ impl Render for SuggestPopup {
                 .child(
                     div()
                         .flex_1()
-                        .min_w(px(0.))
+                        .min_w(dp(0.))
                         .child(short(p.label(), 44))
                         .when(!p.name.is_empty(), |d| {
                             d.child(meta(short(&p.address, 50), t.text3))
@@ -228,17 +232,17 @@ impl Render for SuggestPopup {
         });
         div()
             .size_full()
-            .p(px(MENU_MARGIN))
+            .p(dp(MENU_MARGIN))
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
+            .text_size(dp(13.))
             .text_color(t.text)
             .child(
                 div()
                     .size_full()
                     .flex()
                     .flex_col()
-                    .p(px(4.))
-                    .rounded(px(10.))
+                    .p(dp(4.))
+                    .rounded(dp(10.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)

@@ -401,10 +401,10 @@ impl Nimbra {
                 .id(("finder-row", id))
                 .flex()
                 .items_center()
-                .gap(px(12.))
-                .px(px(12.))
-                .py(px(8.))
-                .rounded(px(10.))
+                .gap(dp(12.))
+                .px(dp(12.))
+                .py(dp(8.))
+                .rounded(dp(10.))
                 .cursor_pointer()
                 .when(active, |d| d.bg(t.selected))
                 .when(!active, |d| d.hover(move |s| s.bg(hover)))
@@ -412,9 +412,9 @@ impl Nimbra {
         };
         let section = |label: &str| {
             div()
-                .pl(px(12.))
-                .pt(px(10.))
-                .pb(px(6.))
+                .pl(dp(12.))
+                .pt(dp(10.))
+                .pb(dp(6.))
                 .child(overline(label.to_string(), t.faint))
         };
         let mut rows: Vec<AnyElement> = Vec::new();
@@ -425,17 +425,17 @@ impl Nimbra {
                     div()
                         .flex()
                         .items_end()
-                        .pr(px(6.))
+                        .pr(dp(6.))
                         .child(section("RECENT").flex_1())
                         .child(
                             div()
                                 .id("finder-clear-recent")
-                                .mb(px(3.))
-                                .px(px(6.))
-                                .py(px(2.))
-                                .rounded(px(6.))
+                                .mb(dp(3.))
+                                .px(dp(6.))
+                                .py(dp(2.))
+                                .rounded(dp(6.))
                                 .cursor_pointer()
-                                .text_size(px(11.5))
+                                .text_size(dp(11.5))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(t.text3)
                                 .hover(move |s| s.bg(hover).text_color(t.text))
@@ -457,7 +457,7 @@ impl Nimbra {
                     row_base(i, self.finder_sel == i)
                         .group("finder-recent")
                         .child(icon("clock", 15., t.text3))
-                        .child(div().flex_1().min_w(px(0.)).child(short(text, 70)))
+                        .child(div().flex_1().min_w(dp(0.)).child(short(text, 70)))
                         .child({
                             // Removes just this search.
                             let gone = text.clone();
@@ -466,8 +466,8 @@ impl Nimbra {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .size(px(22.))
-                                .rounded(px(6.))
+                                .size(dp(22.))
+                                .rounded(dp(6.))
                                 .when(self.finder_sel != i, |d| {
                                     d.invisible().group_hover("finder-recent", |s| s.visible())
                                 })
@@ -499,13 +499,13 @@ impl Nimbra {
                         .child(
                             div()
                                 .font_family(crate::theme::MONO)
-                                .text_size(px(12.5))
+                                .text_size(dp(12.5))
                                 .child(*tip),
                         )
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(0.))
+                                .min_w(dp(0.))
                                 .text_color(t.text3)
                                 .child(*what),
                         )
@@ -533,15 +533,15 @@ impl Nimbra {
                             .flex_none()
                             .items_center()
                             .justify_center()
-                            .size(px(28.))
-                            .rounded(px(8.))
+                            .size(dp(28.))
+                            .rounded(dp(8.))
                             .bg(gradient(135., c(0x8b7cff, 1.), c(0xff7ab6, 1.)))
                             .child(icon("search", 15., gpui::white())),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(dp(0.))
                             .child(format!("All results for “{}”", short(&query, 50))),
                     )
                     .when(self.finder_sel == 0, |d| d.child(kbd(t, "↵")))
@@ -560,12 +560,12 @@ impl Nimbra {
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(0.))
+                                .min_w(dp(0.))
                                 .child(
                                     div()
                                         .flex()
                                         .items_center()
-                                        .gap(px(8.))
+                                        .gap(dp(8.))
                                         .child(
                                             div()
                                                 .font_weight(if hit.unread {
@@ -576,7 +576,7 @@ impl Nimbra {
                                                 .child(short(&hit.sender, 30)),
                                         )
                                         .when(hit.unread, |d| {
-                                            d.child(div().size(px(6.)).rounded_full().bg(t.mint))
+                                            d.child(div().size(dp(6.)).rounded_full().bg(t.mint))
                                         })
                                         .child(div().flex_1())
                                         .child(mono(hit.time.clone(), t.text3)),
@@ -593,7 +593,7 @@ impl Nimbra {
                                     d.child(
                                         div()
                                             .truncate()
-                                            .text_size(px(12.))
+                                            .text_size(dp(12.))
                                             .text_color(t.text3)
                                             .child(hit.snippet.clone()),
                                     )
@@ -610,8 +610,8 @@ impl Nimbra {
             if self.finder_hits.is_empty() && !self.finder_loading {
                 rows.push(
                     div()
-                        .px(px(12.))
-                        .py(px(14.))
+                        .px(dp(12.))
+                        .py(dp(14.))
                         .text_color(t.text3)
                         .child("Nothing here yet. Press Return to search all of Gmail.")
                         .into_any_element(),
@@ -622,7 +622,7 @@ impl Nimbra {
             div()
                 .flex()
                 .items_center()
-                .gap(px(5.))
+                .gap(dp(5.))
                 .children(keys.iter().map(|k| kbd(t, k)))
                 .child(meta(label.to_string(), t.text3))
         };
@@ -633,7 +633,7 @@ impl Nimbra {
             .flex()
             .items_start()
             .justify_center()
-            .pt(px(140.))
+            .pt(dp(140.))
             .bg(t.scrim)
             .occlude()
             .on_mouse_down(
@@ -643,11 +643,11 @@ impl Nimbra {
             .child(
                 div()
                     .id("finder")
-                    .w(px(680.))
+                    .w(dp(680.))
                     .flex()
                     .flex_col()
                     .overflow_hidden()
-                    .rounded(px(18.))
+                    .rounded(dp(18.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
@@ -660,16 +660,16 @@ impl Nimbra {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(12.))
-                            .pl(px(20.))
-                            .pr(px(16.))
-                            .py(px(16.))
+                            .gap(dp(12.))
+                            .pl(dp(20.))
+                            .pr(dp(16.))
+                            .py(dp(16.))
                             .child(icon("search", 18., t.text3))
                             .child(
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
-                                    .text_size(px(17.))
+                                    .min_w(dp(0.))
+                                    .text_size(dp(17.))
                                     .child(self.finder.clone()),
                             )
                             .when(self.finder_loading, |d| {
@@ -677,7 +677,7 @@ impl Nimbra {
                                     div()
                                         .flex()
                                         .items_center()
-                                        .gap(px(6.))
+                                        .gap(dp(6.))
                                         .child(icon("reload", 13., t.violet).with_animation(
                                             "finder-busy",
                                             Animation::new(Duration::from_millis(900)).repeat(),
@@ -699,8 +699,8 @@ impl Nimbra {
                                         .flex_none()
                                         .items_center()
                                         .justify_center()
-                                        .size(px(24.))
-                                        .rounded(px(6.))
+                                        .size(dp(24.))
+                                        .rounded(dp(6.))
                                         .cursor_pointer()
                                         .hover(move |s| s.bg(hover))
                                         .tooltip(tip(t.dark, "Clear", ""))
@@ -717,25 +717,25 @@ impl Nimbra {
                                 )
                             }),
                     )
-                    .child(div().h(px(1.)).bg(t.border))
+                    .child(div().h(dp(1.)).bg(t.border))
                     .child(
                         div()
                             .id("finder-rows")
                             .flex()
                             .flex_col()
-                            .max_h(px(420.))
+                            .max_h(dp(420.))
                             .overflow_y_scroll()
                             .track_scroll(&self.finder_scroll)
-                            .p(px(8.))
+                            .p(dp(8.))
                             .children(rows),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(16.))
-                            .px(px(20.))
-                            .py(px(12.))
+                            .gap(dp(16.))
+                            .px(dp(20.))
+                            .py(dp(12.))
                             .border_t_1()
                             .border_color(t.border)
                             .bg(t.hover)

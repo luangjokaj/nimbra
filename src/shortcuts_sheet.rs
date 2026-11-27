@@ -102,9 +102,9 @@ impl ShortcutsSheet {
         let ((to_x, to_w), (from_x, from_w)) = (spot(self.tab), spot(self.from_tab));
         let pill = div()
             .absolute()
-            .top(px(TAB_INSET))
-            .h(px(TAB_H))
-            .rounded(px(7.))
+            .top(dp(TAB_INSET))
+            .h(dp(TAB_H))
+            .rounded(dp(7.))
             .bg(t.raised)
             .border_1()
             .border_color(t.border)
@@ -119,23 +119,23 @@ impl ShortcutsSheet {
                 ("shortcut-tab-pill", self.switches),
                 Animation::new(SWITCH).with_easing(ease_out_quint()),
                 move |d, delta| {
-                    d.left(px(TAB_INSET + from_x + (to_x - from_x) * delta))
-                        .w(px(from_w + (to_w - from_w) * delta))
+                    d.left(dp(TAB_INSET + from_x + (to_x - from_x) * delta))
+                        .w(dp(from_w + (to_w - from_w) * delta))
                 },
             )
             .into_any_element()
         } else {
-            pill.left(px(TAB_INSET + to_x))
-                .w(px(to_w))
+            pill.left(dp(TAB_INSET + to_x))
+                .w(dp(to_w))
                 .into_any_element()
         };
         div()
             .relative()
             .flex()
             .flex_none()
-            .gap(px(TAB_GAP))
-            .p(px(TAB_INSET))
-            .rounded(px(10.))
+            .gap(dp(TAB_GAP))
+            .p(dp(TAB_INSET))
+            .rounded(dp(10.))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
@@ -143,8 +143,8 @@ impl ShortcutsSheet {
             .children(SHORTCUT_TABS.iter().enumerate().map(|(i, (name, _))| {
                 div()
                     .id(("shortcut-tab", i))
-                    .w(px(widths[i]))
-                    .h(px(TAB_H))
+                    .w(dp(widths[i]))
+                    .h(dp(TAB_H))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -164,13 +164,13 @@ impl ShortcutsSheet {
         let cell_head = |label: &str| {
             div()
                 .flex_1()
-                .child(mono(label.to_string(), t.text3).text_size(px(10.5)))
+                .child(mono(label.to_string(), t.text3).text_size(dp(10.5)))
         };
         let table = div()
             .flex()
             .flex_col()
             .flex_none()
-            .rounded(px(12.))
+            .rounded(dp(12.))
             .border_1()
             .border_color(t.border)
             .overflow_hidden()
@@ -178,12 +178,12 @@ impl ShortcutsSheet {
                 div()
                     .flex()
                     .items_center()
-                    .h(px(TABLE_HEAD))
-                    .px(px(14.))
+                    .h(dp(TABLE_HEAD))
+                    .px(dp(14.))
                     .bg(t.hover)
                     // GPUI clips to a rectangle, not the table's rounded corners: the band
                     // rounds its own, inside the border (12 less its 1).
-                    .rounded_t(px(11.))
+                    .rounded_t(dp(11.))
                     .child(cell_head("KEY"))
                     .child(cell_head("ACTION")),
             )
@@ -191,11 +191,11 @@ impl ShortcutsSheet {
                 div()
                     .flex()
                     .items_center()
-                    .h(px(ROW_H))
-                    .px(px(14.))
+                    .h(dp(ROW_H))
+                    .px(dp(14.))
                     .border_t_1()
                     .border_color(t.border)
-                    .child(div().flex_1().flex().items_center().gap(px(6.)).children(
+                    .child(div().flex_1().flex().items_center().gap(dp(6.)).children(
                         caps.iter().map(|cap| match cap {
                             Cap::Key(key) => kbd(t, key),
                             Cap::Word(word) => meta(word.to_string(), t.text3),
@@ -208,17 +208,19 @@ impl ShortcutsSheet {
                 .with_animation(
                     ("shortcut-table", self.switches),
                     Animation::new(SWITCH).with_easing(ease_out_quint()),
-                    move |d, delta| d.h(px(from_h + (to_h - from_h) * delta)),
+                    move |d, delta| d.h(dp(from_h + (to_h - from_h) * delta)),
                 )
                 .into_any_element()
         } else {
-            table.h(px(to_h)).into_any_element()
+            table.h(dp(to_h)).into_any_element()
         }
     }
 }
 
 impl Render for ShortcutsSheet {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         let t = if self.dark {
             Theme::dark()
         } else {
@@ -227,16 +229,16 @@ impl Render for ShortcutsSheet {
         let tallest = (0..SHORTCUT_TABS.len())
             .map(table_height)
             .fold(0., f32::max);
-        let height = f32::from(window.viewport_size().height);
+        let height = from_screen(window.viewport_size().height);
         let top = ((height - CARD_CHROME - tallest) / 2.).max(16.);
         let card = div()
             .id("shortcuts-card")
-            .w(px(CARD_W))
+            .w(dp(CARD_W))
             .flex()
             .flex_col()
-            .gap(px(20.))
-            .p(px(28.))
-            .rounded(px(18.))
+            .gap(dp(20.))
+            .p(dp(28.))
+            .rounded(dp(18.))
             .bg(t.raised)
             .border_1()
             .border_color(t.border_strong)
@@ -257,14 +259,14 @@ impl Render for ShortcutsSheet {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(6.))
+                            .gap(dp(6.))
                             .child(serif("One key for everything.", 34., t.text))
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.))
-                                    .text_size(px(13.))
+                                    .gap(dp(6.))
+                                    .text_size(dp(13.))
                                     .text_color(t.text3)
                                     .child("Press")
                                     .child(kbd(&t, "?"))
@@ -287,17 +289,17 @@ impl Render for ShortcutsSheet {
                 this.key(event, window, cx)
             }))
             .size_full()
-            .rounded(px(WINDOW_RADIUS))
+            .rounded(dp(WINDOW_RADIUS))
             .bg(t.scrim)
             // The card's top stays put while its table changes height: where the tallest
             // tab would sit centred.
             .flex()
             .flex_col()
             .items_center()
-            .pt(px(top))
+            .pt(dp(top))
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text)
             .on_mouse_down(
                 gpui::MouseButton::Left,
