@@ -2603,7 +2603,7 @@ impl Render for Nimbra {
             let ready = system_events::update_notice(&p.version);
             let ready = Toast::new(&ready, room, window.text_system());
             UpdatePlace {
-                frame: window.bounds(),
+                frame: self.popup_frame(window.bounds()),
                 dark: self.dark,
                 size: (ready.width, ready.height),
             }

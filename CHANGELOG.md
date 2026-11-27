@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Pop-ups centre on the mail.** With the sidebar fixed, the Undo and sending pill, notices and the update's card sit in the middle of the mail, right of the sidebar; with the sidebar hiding, in the middle of the window as before.
+
 ## [0.1.8] - 2026-11-27
 
 ### Changed
