@@ -9,6 +9,9 @@
 - **What's new, in the sidebar.** After an update, Nimbra no longer opens the release notes in the browser: a card above Settings says it just updated and links to the changelog. It stays until it is opened or dismissed with its X, and after another update it links to the newest notes.
 - **A Help menu.** Report a Problem… (⌥⇧⌘I) opens a new issue on GitHub, with Nimbra's and macOS's versions filled in; Keyboard Shortcuts opens the shortcuts sheet; Release Notes opens this version's notes.
 
+### Fixed
+- **Rounded corners on the search panel.** Its footer (and the command palette's) no longer shows square corners past the panel's rounded ones.
+
 ## [0.1.8] - 2026-11-27
 
 ### Changed

@@ -741,6 +741,9 @@ impl Nimbra {
                             .border_t_1()
                             .border_color(t.border)
                             .bg(t.hover)
+                            // Its own background: rounded with the panel, whose clip is
+                            // square (17pt, the panel's 18 inside its border).
+                            .rounded_b(dp(17.))
                             .child(hint(&["↑", "↓"], "Navigate"))
                             .child(hint(&["↵"], "Open"))
                             .child(hint(&["esc"], "Close"))
