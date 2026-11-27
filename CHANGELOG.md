@@ -1,5 +1,10 @@
 # Nimbra changelog
 
+## [Unreleased]
+
+### Fixed
+- **Make default after an update.** After Nimbra updated itself, Settings › General could not make it the default mail app, and macOS ran it from a hidden temporary copy. Updates now install as a normal app in Applications.
+
 ## [0.1.5] - 2026-11-27
 
 ### New
