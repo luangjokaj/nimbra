@@ -182,10 +182,10 @@ SHA="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
 python3 - "$VERSION" "$TAG" "$SHA" > dist/latest.json <<'PY'
 import json, sys
 version, tag, sha = sys.argv[1:4]
-# The repo's old address: GitHub redirects it to nimbra-mail/desktop, and 0.1.4 and older
-# only download from it. Switch to https://github.com/nimbra-mail/desktop/releases once
-# nobody runs those versions.
-base = "https://github.com/luangjokaj/nimbra/releases"
+# The repo's own address. 0.1.5 and newer download from it; 0.1.4 and older only from the
+# old one (luangjokaj/nimbra), so 0.1.5's manifest kept that address for them to reach
+# 0.1.5, the last release they can update to by themselves.
+base = "https://github.com/nimbra-mail/desktop/releases"
 print(json.dumps({
     "version": version,
     "url": f"{base}/download/{tag}/Nimbra-{version}.dmg",
