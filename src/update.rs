@@ -313,6 +313,14 @@ fn fetch_and_unpack(
     if version_of(&staged).as_deref() != Some(manifest.version.as_str()) {
         bail!("the update is not version {}", manifest.version);
     }
+    // Nimbra quarantines what it writes (LSFileQuarantineEnabled), this copy included. Once
+    // it is checked above, it is ours: left quarantined, macOS would run it from a random
+    // read-only copy (App Translocation), where it is not the app in Applications (the
+    // default mail app could never be it) and cannot update itself.
+    run(Command::new("/usr/bin/xattr")
+        .args(["-d", "-r", "com.apple.quarantine"])
+        .arg(&staged))
+    .context("clearing the update's quarantine")?;
     Ok(())
 }
 
