@@ -205,10 +205,10 @@ enum Status {
 /// Something that needs a yes before it happens.
 #[derive(Clone)]
 enum Ask {
-    /// Delete these threads for good.
-    DeleteForever(Vec<String>),
-    /// Ask Google for permanent deletion, then delete these threads.
-    GrantFullAccess(Vec<String>),
+    /// Delete these threads for good, by (thread id, account).
+    DeleteForever(Vec<(String, String)>),
+    /// Ask Google for permanent deletion, then delete these threads (the account shown's).
+    GrantFullAccess(Vec<(String, String)>),
     /// Delete a label (id, name); the mail stays.
     DeleteLabel(String, String),
 }
@@ -335,8 +335,14 @@ pub struct Nimbra {
     all_inboxes_saved_empty: bool,
     /// Every account was reached by the last All inboxes listing.
     all_inboxes_reached: bool,
-    /// Each account's next page in All inboxes.
-    all_next: HashMap<String, String>,
+    /// Each account's next page in every account's mailboxes (All inboxes is one), by
+    /// mailbox and then account.
+    all_next: HashMap<View, HashMap<String, String>>,
+    /// Every account's labels, one per name: what every account's `View::Label(i)` is.
+    every_labels: Vec<nimbra_core::listing::NamedLabel>,
+    /// The other accounts' sidebar counts by label id, as the last listing of every
+    /// account's mailboxes found them (the account shown has `counts`).
+    account_counts: HashMap<String, HashMap<String, (u32, u32)>>,
     /// The mailboxes that threads were cleared from since they were last listed whole from
     /// the top: their page tokens may be off.
     shifted: HashSet<View>,
@@ -966,6 +972,8 @@ impl Nimbra {
             pending_notes: Vec::new(),
             others: HashMap::new(),
             account_unread: HashMap::new(),
+            every_labels: Vec::new(),
+            account_counts: HashMap::new(),
             compose_host: None,
             format_hint: None,
             compose_detached: false,
@@ -1169,6 +1177,7 @@ impl Nimbra {
                     html: None,
                     reply: None,
                 },
+                None,
                 cx,
             );
             if let Some(composer) = &mut this.compose {
@@ -1312,7 +1321,16 @@ impl Nimbra {
 
     fn title(&self, view: View) -> SharedString {
         match view {
-            View::AllInboxes => "All inboxes".into(),
+            View::ALL_INBOXES => "All inboxes".into(),
+            // Every account's: named as each account's is, a label by its shared name.
+            View::Every(_) => match view.base() {
+                View::Label(index) => self
+                    .every_labels
+                    .get(index)
+                    .map(|label| SharedString::from(label.name.clone()))
+                    .unwrap_or_else(|| "Label".into()),
+                base => self.title(base),
+            },
             View::Inbox if self.is_demo() => "Important".into(),
             View::Inbox => "Inbox".into(),
             View::Primary => "Primary".into(),
@@ -1884,7 +1902,7 @@ impl Nimbra {
                         .iter()
                         .any(|field| field.to_lowercase().contains(demo_query))
             }
-            (true, View::Inbox | View::AllInboxes) | (false, _) => {
+            (true, View::Inbox | View::ALL_INBOXES) | (false, _) => {
                 // The open thread stays listed under Unread even once it is read.
                 !self.done[i] && (!self.unread_only || self.mails[i].unread || i == self.selected)
             }
@@ -1932,6 +1950,12 @@ impl Nimbra {
         }
         self.close_shortcuts(cx);
         self.leave_sidebar(cx);
+        // Under All inboxes, to every account's: G then T goes to every account's Trash.
+        let view = if self.every_mode() {
+            View::every(view)
+        } else {
+            view
+        };
         self.select_mailbox(view, cx);
     }
 

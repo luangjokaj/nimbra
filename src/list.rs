@@ -45,7 +45,7 @@ impl Nimbra {
             View::Inbox if self.is_demo() => true,
             View::Inbox => self.all_cleared() && !self.next_pages.contains_key(&View::Inbox),
             // Not while mail is filtered away (Unread), unchecked or past an account's last page.
-            View::AllInboxes => self.all_inboxes_whole && self.all_cleared(),
+            View::ALL_INBOXES => self.all_inboxes_whole && self.all_cleared(),
             _ => false,
         }
     }
@@ -127,7 +127,7 @@ impl Nimbra {
         self.status == Status::Loading
             && match self.mailbox {
                 View::Inbox => self.store.is_none() && self.inbox_saved_empty,
-                View::AllInboxes => self.all_inboxes_saved_empty,
+                View::ALL_INBOXES => self.all_inboxes_saved_empty,
                 _ => false,
             }
     }
@@ -183,7 +183,7 @@ impl Nimbra {
                             .when(
                                 inbox_like
                                     || matches!(
-                                        self.mailbox,
+                                        self.mailbox.base(),
                                         View::Done
                                             | View::Spam
                                             | View::Trash
@@ -233,7 +233,7 @@ impl Nimbra {
                                     }),
                                 ))
                             })
-                            .when(self.mailbox != View::Spam && !self.is_demo(), |d| {
+                            .when(self.mailbox.base() != View::Spam && !self.is_demo(), |d| {
                                 d.child(action("bulk-spam", "ban", "Spam").on_click(cx.listener(
                                     |this, _, _, cx| this.remove_selected(mail::Change::Spam, cx),
                                 )))
@@ -1066,7 +1066,7 @@ impl Nimbra {
         // Not empty at all: filtered, or the rest could not be had.
         let filtered = self.unread_only && !self.all_cleared();
         let unlisted = match self.mailbox {
-            View::AllInboxes => !self.all_inboxes_whole,
+            View::ALL_INBOXES => !self.all_inboxes_whole,
             view => self.next_pages.contains_key(&view),
         };
         let (title, line) = if filtered {
@@ -1087,7 +1087,7 @@ impl Nimbra {
         } else {
             (
                 format!("Nothing in {}", self.inbox_name()),
-                match self.mailbox {
+                match self.mailbox.base() {
                     View::Snoozed => "Press H on a thread to put it away until later.",
                     View::Reminders => {
                         "Press H and pick “Remind me if no reply” to be told when nobody answers."

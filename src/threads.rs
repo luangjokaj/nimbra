@@ -28,15 +28,44 @@ impl Nimbra {
         crate::listing::forget(&mut self.history, &mut self.history_groups, position);
     }
 
-    /// Deletes threads for good (after a yes). If the sign-in cannot do that yet, asks to
-    /// give Nimbra that permission first.
-    pub(super) fn delete_forever(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
-        let Some(client) = self.connection.clone() else {
+    /// The threads in these rows, by (thread id, account), for `delete_forever`.
+    pub(super) fn delete_keys(&self, rows: &[usize]) -> Vec<(String, String)> {
+        rows.iter()
+            .filter_map(|i| {
+                let mail = self.mails.get(*i)?;
+                Some((mail.id.clone()?, self.account_of(mail).to_string()))
+            })
+            .collect()
+    }
+
+    /// Deletes threads for good (after a yes), each through its own account (every
+    /// account's Trash mixes them). If the account shown's sign-in cannot do that yet, asks
+    /// to give Nimbra that permission first; another account's is opened to do that.
+    pub(super) fn delete_forever(&mut self, ids: Vec<(String, String)>, cx: &mut Context<Self>) {
+        let mut by_account: Vec<(String, Arc<mail::Client>, Vec<String>)> = Vec::new();
+        for (id, account) in &ids {
+            match by_account.iter_mut().find(|(a, _, _)| a == account) {
+                Some((_, _, list)) => list.push(id.clone()),
+                None => {
+                    let Some(client) = self.client_for(Some(account)) else {
+                        continue; // not connected: left as it is
+                    };
+                    by_account.push((account.clone(), client, vec![id.clone()]));
+                }
+            }
+        }
+        if by_account.is_empty() {
             return;
-        };
+        }
         // Out of the list now; there is no undo for this.
-        for (index, mail) in self.mails.iter().enumerate() {
-            if mail.id.as_ref().is_some_and(|id| ids.contains(id)) {
+        for index in 0..self.mails.len() {
+            let mail = &self.mails[index];
+            let account = self.account_of(mail);
+            if mail
+                .id
+                .as_ref()
+                .is_some_and(|id| ids.iter().any(|(i, a)| i == id && a == account))
+            {
                 self.done[index] = true;
             }
         }
@@ -53,17 +82,20 @@ impl Nimbra {
         cx.notify();
         let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
-            let list = ids.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     let _working = working;
                     let mut deleted = 0;
-                    for id in &list {
-                        client.delete_thread(id)?;
-                        deleted += 1;
+                    for (account, client, list) in &by_account {
+                        for id in list {
+                            if let Err(error) = client.delete_thread(id) {
+                                return Err((deleted, account.clone(), error));
+                            }
+                            deleted += 1;
+                        }
                     }
-                    anyhow::Ok(deleted)
+                    Ok(deleted)
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -78,13 +110,24 @@ impl Nimbra {
                         );
                         this.persist(cx);
                     }
-                    Err(error) => {
+                    Err((_, account, error)) => {
                         // Put back what was not deleted.
                         this.refresh(cx);
-                        if error.is::<gmail::NeedsFullAccess>() {
-                            this.confirm = Some(Ask::GrantFullAccess(ids));
-                        } else {
+                        if !error.is::<gmail::NeedsFullAccess>() {
                             this.fail(error, cx);
+                        } else if account == this.account_id {
+                            let shown: Vec<(String, String)> =
+                                ids.into_iter().filter(|(_, a)| *a == account).collect();
+                            this.confirm = Some(Ask::GrantFullAccess(shown));
+                        } else {
+                            let email = this.email_of(&account).unwrap_or_default();
+                            this.notice = Some(
+                                format!(
+                                    "To delete permanently from {email}, open that account and \
+                                     delete there once."
+                                )
+                                .into(),
+                            );
                         }
                     }
                 }
@@ -259,8 +302,8 @@ impl Nimbra {
                     self.sync(index, mail::Change::Archive, false, cx);
                 }
                 // Snoozed again from Snoozed or Reminders: the new time, or off to the other.
-                if matches!(self.mailbox, View::Snoozed | View::Reminders) {
-                    if (self.mailbox == View::Reminders) == choice.no_reply {
+                if matches!(self.mailbox.base(), View::Snoozed | View::Reminders) {
+                    if (self.mailbox.base() == View::Reminders) == choice.no_reply {
                         self.mails[index].time = snooze_time(choice.until_ms);
                     } else {
                         self.done[index] = true;
@@ -490,7 +533,8 @@ impl Nimbra {
                                 this.notice = Some(
                                     format!("{title}: {}", short(&item.mail.subject, 50)).into(),
                                 );
-                                if inbox_like(this.mailbox) || this.mailbox == View::Snoozed {
+                                if inbox_like(this.mailbox) || this.mailbox.base() == View::Snoozed
+                                {
                                     this.refresh(cx);
                                 }
                             }
@@ -561,10 +605,18 @@ impl Nimbra {
         if !inbox {
             return;
         }
-        // `counts` are the shown account's; the others have only their inbox's number.
+        // `counts` are the shown account's; the others have their inbox's number, and the
+        // counts their last listing in every account's mailboxes found.
         if let Some(other) = mail.account.as_deref().filter(|a| *a != self.account_id) {
             if let Some(unread) = self.account_unread.get_mut(other) {
                 *unread = (*unread as i32 + delta).max(0) as u32;
+            }
+            if let Some(counts) = self.account_counts.get_mut(other) {
+                for id in mail.labels.iter().filter(|l| *l != "INBOX") {
+                    if let Some((unread, _)) = counts.get_mut(id) {
+                        *unread = (*unread as i32 + delta).max(0) as u32;
+                    }
+                }
             }
             return;
         }
@@ -612,10 +664,26 @@ impl Nimbra {
     pub(super) fn open_in_gmail(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
         // Thread ids are validated as plain alphanumerics before they get here.
-        if let Some(id) = self.mails.get(self.selected).and_then(|m| m.id.as_ref())
+        if let Some(mail) = self.mails.get(self.selected)
+            && let Some(id) = mail.id.as_ref()
             && id.chars().all(|c| c.is_ascii_alphanumeric())
         {
-            cx.open_url(&format!("https://mail.google.com/mail/u/0/#all/{id}"));
+            // In the browser's sign-in for the thread's own account, not just the first one.
+            let account = self
+                .email_of(self.account_of(mail))
+                .filter(|email| {
+                    email.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+')
+                    })
+                })
+                .map(|email| {
+                    format!(
+                        "?authuser={}",
+                        email.replace('@', "%40").replace('+', "%2B")
+                    )
+                })
+                .unwrap_or_default();
+            cx.open_url(&format!("https://mail.google.com/mail/{account}#all/{id}"));
         }
         cx.notify();
     }
@@ -658,7 +726,7 @@ impl Nimbra {
         let Some(change) = self.done_change() else {
             return;
         };
-        if matches!(self.mailbox, View::Snoozed | View::Reminders) {
+        if matches!(self.mailbox.base(), View::Snoozed | View::Reminders) {
             self.forget_snoozes(&self.targets());
         }
         self.remove_selected(change, cx);
@@ -671,7 +739,7 @@ impl Nimbra {
             cx.notify();
             return false;
         };
-        if matches!(self.mailbox, View::Snoozed | View::Reminders) {
+        if matches!(self.mailbox.base(), View::Snoozed | View::Reminders) {
             self.forget_snoozes(&[index]);
         }
         self.remove_thread(index, change, cx);
@@ -680,7 +748,7 @@ impl Nimbra {
 
     /// What Done does in the open mailbox.
     pub(super) fn done_change(&self) -> Option<mail::Change> {
-        Some(match self.mailbox {
+        Some(match self.mailbox.base() {
             view if inbox_like(view) => mail::Change::Archive,
             View::Done => mail::Change::Unarchive,
             View::Spam => mail::Change::NotSpam,
@@ -705,14 +773,15 @@ impl Nimbra {
     /// Trash from a message window (in Trash: asks before deleting forever). Whether it
     /// was taken on.
     pub(super) fn trash_thread(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
-        if self.mailbox != View::Trash {
+        if self.mailbox.base() != View::Trash {
             self.remove_thread(index, mail::Change::Trash, cx);
             return true;
         }
-        let Some(id) = self.mails[index].id.clone() else {
+        let ids = self.delete_keys(&[index]);
+        if ids.is_empty() {
             return false;
-        };
-        self.confirm = Some(Ask::DeleteForever(vec![id]));
+        }
+        self.confirm = Some(Ask::DeleteForever(ids));
         cx.notify();
         true
     }
@@ -721,12 +790,8 @@ impl Nimbra {
     /// Moves the open (or picked) threads to Trash; in Trash itself, offers to delete them
     /// permanently.
     pub(super) fn trash(&mut self, cx: &mut Context<Self>) {
-        if self.mailbox == View::Trash {
-            let ids: Vec<String> = self
-                .targets()
-                .iter()
-                .filter_map(|i| self.mails[*i].id.clone())
-                .collect();
+        if self.mailbox.base() == View::Trash {
+            let ids = self.delete_keys(&self.targets());
             if !ids.is_empty() {
                 self.confirm = Some(Ask::DeleteForever(ids));
                 cx.notify();

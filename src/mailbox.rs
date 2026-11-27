@@ -62,7 +62,7 @@ impl Nimbra {
     /// The same from All inboxes, for each account's Inbox. Only when it lists all of them
     /// whole: else what is not listed would be saved as gone.
     fn save_inboxes_from_all(&mut self) {
-        if self.mailbox != View::AllInboxes
+        if self.mailbox != View::ALL_INBOXES
             || self.status != Status::Ready
             || !self.all_inboxes_whole
         {
@@ -160,7 +160,10 @@ impl Nimbra {
         // A mailbox seen before (this session or on disk) shows at once, even when it
         // was empty: "Nothing in …" is known, so there is no loading screen for it.
         // An empty All inboxes is out of date once mail has been seen in an Inbox.
-        if view == View::AllInboxes
+        if view.is_every() {
+            self.refresh_every_labels();
+        }
+        if view == View::ALL_INBOXES
             && self.cache.get(&view).is_some_and(Vec::is_empty)
             && self.inbox_has_mail()
         {
@@ -489,8 +492,8 @@ impl Nimbra {
         }
         self.sync_owed = false;
         // All inboxes cannot be patched from one feed: list it again.
-        if self.mailbox == View::AllInboxes {
-            self.fetch_all_inboxes(cx);
+        if self.mailbox.is_every() {
+            self.fetch_every(cx);
             self.checks.quiet();
             return;
         }
@@ -772,7 +775,7 @@ impl Nimbra {
             return;
         };
         // All inboxes mixes accounts: it is never saved in any one account's store.
-        if matches!(self.mailbox, View::Search | View::AllInboxes) || self.status != Status::Ready {
+        if matches!(self.mailbox, View::Search | View::Every(_)) || self.status != Status::Ready {
             return;
         }
         // Keep the store small: the newest threads of a mailbox, and the full text of the
@@ -819,10 +822,10 @@ impl Nimbra {
             if account == self.account_id {
                 id = thread;
             } else {
-                if self.mailbox == View::AllInboxes {
+                if self.mailbox == View::ALL_INBOXES {
                     self.refresh(cx);
                 } else {
-                    self.select_mailbox_now(View::AllInboxes, cx);
+                    self.select_mailbox_now(View::ALL_INBOXES, cx);
                 }
                 self.unread_only = false;
                 if thread != "more" && !self.open_listed(&thread, cx) {
@@ -990,7 +993,7 @@ impl Nimbra {
                         // First look, just after the account was opened: mail that arrived
                         // while its list was loading is behind this point, and no later look
                         // would bring it. All inboxes is listed afresh anyway.
-                        if changes.is_none() && this.mailbox != View::AllInboxes {
+                        if changes.is_none() && !this.mailbox.is_every() {
                             this.sync_owed = true;
                         }
                         this.keep_up(cx);
@@ -1187,11 +1190,11 @@ impl Nimbra {
                             }
                         }
                         if changed
-                            && this.mailbox == View::AllInboxes
+                            && this.mailbox.is_every()
                             && this.compose.is_none()
                             && !this.fetching()
                         {
-                            this.fetch_all_inboxes(cx);
+                            this.fetch_every(cx);
                             this.checks.quiet();
                         }
                         cx.notify();
@@ -1204,8 +1207,8 @@ impl Nimbra {
     }
 
     pub(super) fn fetch_inbox(&mut self, cx: &mut Context<Self>) {
-        if self.mailbox == View::AllInboxes {
-            self.fetch_all_inboxes(cx);
+        if self.mailbox.is_every() {
+            self.fetch_every(cx);
             return;
         }
         let Some(client) = self.connection.clone() else {
@@ -1301,74 +1304,180 @@ impl Nimbra {
         .detach();
     }
 
-    /// All inboxes: the first page of every signed-in account's inbox, fetched side by side,
-    /// merged newest first, each row marked with its account. Also every account's unread
-    /// count. An account that fails is left out (with a note); all failing is an error.
-    fn fetch_all_inboxes(&mut self, cx: &mut Context<Self>) {
-        let Some(shown) = self.connection.clone() else {
-            return;
+    /// Every account's labels by name (`every_labels`): the one shown's, and the others' as
+    /// their stores last kept them. An open label of every account's stays open by name
+    /// when the list moves under it. Disk, small.
+    pub(super) fn refresh_every_labels(&mut self) {
+        let open = match self.mailbox.base() {
+            View::Label(index) if self.mailbox.is_every() => {
+                self.every_labels.get(index).map(|l| l.name.to_lowercase())
+            }
+            _ => None,
         };
-        let mut accounts: Vec<(String, Arc<mail::Client>)> = vec![(self.account_id.clone(), shown)];
-        for account in &self.settings.accounts {
-            if let Some(client) = self.others.get(&account.id) {
-                accounts.push((account.id.clone(), client.clone()));
+        let labels: Vec<(String, Vec<mail::Label>)> = self
+            .settings
+            .accounts
+            .iter()
+            .map(|account| {
+                let labels = if account.id == self.account_id {
+                    self.labels.clone()
+                } else {
+                    self.other_stores
+                        .get(&account.id)
+                        .and_then(|store| store.load::<Saved>("meta"))
+                        .map(|saved| saved.labels)
+                        .unwrap_or_default()
+                };
+                (account.id.clone(), labels)
+            })
+            .collect();
+        self.every_labels = listing::labels_by_name(
+            labels
+                .iter()
+                .map(|(account, labels)| (account.as_str(), labels.as_slice())),
+        );
+        if let Some(name) = open {
+            match self
+                .every_labels
+                .iter()
+                .position(|l| l.name.to_lowercase() == name)
+            {
+                Some(index) => self.mailbox = View::every(View::Label(index)),
+                None => self.mailbox = View::ALL_INBOXES,
             }
         }
+    }
+
+    /// The accounts that take part in every account's `view`, with their connections and,
+    /// for a label, their label of that name: Gmail's own mailboxes leave out the accounts
+    /// with their own servers, and a label those without one by its name.
+    pub(super) fn every_accounts(
+        &self,
+        view: View,
+    ) -> Vec<(String, Arc<mail::Client>, Option<String>)> {
+        self.settings
+            .accounts
+            .iter()
+            .filter(|account| listing::takes_part(view, account.servers.is_some()))
+            .filter_map(|account| {
+                let label = match view.base() {
+                    View::Label(index) => Some(
+                        self.every_labels
+                            .get(index)?
+                            .ids
+                            .iter()
+                            .find(|(id, _)| *id == account.id)?
+                            .1
+                            .clone(),
+                    ),
+                    _ => None,
+                };
+                Some((
+                    account.id.clone(),
+                    self.client_for(Some(&account.id))?,
+                    label,
+                ))
+            })
+            .collect()
+    }
+
+    /// Every account's mailbox (All inboxes is every account's inbox): the first pages of
+    /// each account's, fetched side by side, merged newest first, each row marked with its
+    /// account. Also each account's count of it. An account that fails is left out (with a
+    /// note); all failing is an error.
+    fn fetch_every(&mut self, cx: &mut Context<Self>) {
+        if self.connection.is_none() {
+            return;
+        }
+        self.refresh_every_labels();
+        let view = self.mailbox;
         // As far as it was scrolled: listing again must not drop the pages below the first.
         // Cleared rows do not count, or each listing after a Done would reach further.
-        let accounts: Vec<(String, Arc<mail::Client>, usize)> = accounts
+        let accounts: Vec<_> = self
+            .every_accounts(view)
             .into_iter()
-            .map(|(id, client)| {
+            .map(|(id, client, label)| {
                 let listed = self
                     .mails
                     .iter()
                     .zip(&self.done)
                     .filter(|(mail, done)| !**done && self.account_of(mail) == id)
                     .count();
-                (id, client, listing::all_inboxes_count(listed))
+                (id, client, label, listing::all_inboxes_count(listed))
             })
             .collect();
-        if self.mails.is_empty() && !self.cache.contains_key(&View::AllInboxes) {
+        let inbox = view == View::ALL_INBOXES;
+        if self.mails.is_empty() && !self.cache.contains_key(&view) {
             self.status = Status::Loading;
             // As when Nimbra opens: what was saved picks what to draw until Gmail answers.
-            self.all_inboxes_saved_empty = !self.inbox_has_mail()
+            self.all_inboxes_saved_empty = inbox
+                && !self.inbox_has_mail()
                 && self.settings.accounts.iter().all(|account| {
                     crate::store::Store::saved_empty(&account.id, &record(View::Inbox))
                 });
         }
-        let check = self.checks.start(View::AllInboxes, "");
+        let check = self.checks.start(view, "");
         let seen = Asked::now(self.changes_seen());
         cx.notify();
         let generation = self.account_gen;
+        let counted = self.every_count_ids();
         cx.spawn(async move |this, cx| {
             let executor = cx.background_executor();
             // A deadline each, so that one account cannot hold up the others.
-            let results =
-                futures::future::join_all(accounts.into_iter().map(|(id, client, count)| {
+            let results = futures::future::join_all(accounts.into_iter().map(
+                |(id, client, label, count)| {
                     let account = id.clone();
+                    let ids = counted.clone();
                     let listing = within(executor, async move {
-                        listing::account_inbox::<Mail>(&*client, &account, count)
+                        let part = listing::account_view::<Mail>(
+                            &*client,
+                            &account,
+                            view,
+                            label.as_deref(),
+                            count,
+                        )?;
+                        // The sidebar's counts of every account's mailboxes, while here.
+                        Ok((part, client.counts(&ids)))
                     });
                     async move { (id, listing.await) }
-                }))
-                .await;
+                },
+            ))
+            .await;
             this.update(cx, |this, cx| {
                 if this.account_gen != generation || !this.finish_check(check, cx) {
                     return;
                 }
                 let asked = results.len();
+                let mut parts = Vec::new();
+                for (id, result) in results {
+                    let result: anyhow::Result<_> = result;
+                    parts.push((
+                        id.clone(),
+                        result.map(|(part, counts)| {
+                            if id != this.account_id {
+                                this.account_counts.insert(id.clone(), counts);
+                            }
+                            part
+                        }),
+                    ));
+                }
                 let listing::AllInboxes {
                     rows: fresh,
                     pages,
                     unread,
                     failed,
                     first_error,
-                } = listing::all_inboxes(results);
-                this.account_unread.extend(unread);
-                this.all_inboxes_reached = failed == 0 && asked >= this.settings.accounts.len();
-                this.set_all_pages(pages);
+                } = listing::all_inboxes(parts);
+                if inbox {
+                    this.account_unread.extend(unread);
+                    this.all_inboxes_reached = failed == 0 && asked >= this.settings.accounts.len();
+                }
+                this.set_all_pages(view, pages);
                 if !this.writes.any() {
-                    this.shifted.remove(&View::AllInboxes);
+                    this.shifted.remove(&view);
+                }
+                if this.mailbox != view {
+                    return;
                 }
                 if failed == asked
                     && let Some(error) = first_error
@@ -1378,7 +1487,7 @@ impl Nimbra {
                 }
                 this.install(fresh, cx);
                 if failed == 0 {
-                    this.checked.insert(this.record_for(View::AllInboxes), seen);
+                    this.checked.insert(this.record_for(view), seen);
                 }
                 // After the listing, which clears the notice.
                 if failed > 0 {
@@ -1388,11 +1497,21 @@ impl Nimbra {
                     );
                 }
                 // Count only; never addresses or subjects.
-                eprintln!("nimbra: All inboxes listed ({} threads)", this.mails.len());
+                eprintln!(
+                    "nimbra: every account's {:?} listed ({} threads)",
+                    view.base(),
+                    this.mails.len()
+                );
             })
             .ok();
         })
         .detach();
+    }
+
+    /// The labels every account's mailboxes are counted by in the sidebar: the system ones
+    /// with a count (see `listing::count_of`).
+    fn every_count_ids(&self) -> Vec<String> {
+        listing::count_ids(std::iter::empty())
     }
 
     /// Shows a freshly fetched listing, reusing thread contents already in memory and
@@ -1694,31 +1813,47 @@ impl Nimbra {
     }
 
     /// "Load more" at the end of the list: the next page of the mailbox.
-    /// Where each account's next page in All inboxes starts.
-    fn set_all_pages(&mut self, pages: HashMap<String, String>) {
-        self.all_next = pages;
-        self.all_inboxes_whole = self.all_inboxes_reached && self.all_next.is_empty();
-        if self.all_next.is_empty() {
-            self.next_pages.remove(&View::AllInboxes);
+    /// Where each account's next page in every account's `view` starts.
+    fn set_all_pages(&mut self, view: View, pages: HashMap<String, String>) {
+        if view == View::ALL_INBOXES {
+            self.all_inboxes_whole = self.all_inboxes_reached && pages.is_empty();
+        }
+        if pages.is_empty() {
+            self.next_pages.remove(&view);
+            self.all_next.remove(&view);
         } else {
             // That there is a next page. The accounts' tokens are in `all_next`.
-            self.next_pages.insert(View::AllInboxes, String::new());
+            self.next_pages.insert(view, String::new());
+            self.all_next.insert(view, pages);
         }
     }
 
-    /// The next page of every account that has one, merged into All inboxes.
+    /// The next page of every account that has one, merged into every account's mailbox.
     fn load_more_of_all(&mut self, from_top: bool, cx: &mut Context<Self>) {
         if self.loading_more || self.fetching() {
             return;
         }
-        let asked: Vec<_> = self
-            .all_next
+        let view = self.mailbox;
+        let pages = self.all_next.get(&view).cloned().unwrap_or_default();
+        let labels: HashMap<String, Option<String>> = self
+            .every_accounts(view)
+            .into_iter()
+            .map(|(id, _, label)| (id, label))
+            .collect();
+        let asked: Vec<_> = pages
             .iter()
-            .filter_map(|(id, page)| Some((id.clone(), self.client_for(Some(id))?, page.clone())))
+            .filter_map(|(id, page)| {
+                Some((
+                    id.clone(),
+                    self.client_for(Some(id))?,
+                    labels.get(id)?.clone(),
+                    page.clone(),
+                ))
+            })
             .collect();
         if asked.is_empty() {
             // Theirs are accounts that are not connected.
-            self.more_failed.insert(View::AllInboxes);
+            self.more_failed.insert(view);
             return;
         }
         self.loading_more = true;
@@ -1727,24 +1862,25 @@ impl Nimbra {
         let count = if from_top { self.mails.len() + 30 } else { 30 };
         cx.spawn(async move |this, cx| {
             let executor = cx.background_executor();
-            let results = futures::future::join_all(asked.into_iter().map(|(id, client, page)| {
-                let from = (!from_top).then(|| page.clone());
-                let listing = within(executor, async move {
-                    client.threads_page(View::Inbox, None, count, from.as_deref())
-                });
-                async move { (id, page, listing.await) }
-            }))
-            .await;
+            let results =
+                futures::future::join_all(asked.into_iter().map(|(id, client, label, page)| {
+                    let from = (!from_top).then(|| page.clone());
+                    let listing = within(executor, async move {
+                        client.threads_page(view.base(), label.as_deref(), count, from.as_deref())
+                    });
+                    async move { (id, page, listing.await) }
+                }))
+                .await;
             this.update(cx, |this, cx| {
                 if this.account_gen != generation {
                     return;
                 }
                 this.loading_more = false;
-                if this.mailbox != View::AllInboxes {
+                if this.mailbox != view {
                     cx.notify();
                     return;
                 }
-                let mut pages = this.all_next.clone();
+                let mut pages = this.all_next.get(&view).cloned().unwrap_or_default();
                 let mut list = this.listed();
                 let before = list.len();
                 // A listing made meanwhile has other pages: what is not from them is left.
@@ -1756,12 +1892,12 @@ impl Nimbra {
                 let first_error =
                     listing::more_of_all_inboxes(&mut list, &known, &mut pages, results);
                 if from_top && list.len() == before && !pages.is_empty() {
-                    this.more_failed.insert(View::AllInboxes); // or it would ask without end
+                    this.more_failed.insert(view); // or it would ask without end
                 }
-                this.set_all_pages(pages);
+                this.set_all_pages(view, pages);
                 this.install(list, cx);
                 if let Some(error) = first_error {
-                    this.more_failed.insert(View::AllInboxes);
+                    this.more_failed.insert(view);
                     this.fail(error, cx);
                 }
                 cx.notify();
@@ -1808,7 +1944,7 @@ impl Nimbra {
             self.ask_again_soon(cx);
             return;
         }
-        if self.mailbox == View::AllInboxes {
+        if self.mailbox.is_every() {
             self.load_more_of_all(from_top, cx);
             return;
         }

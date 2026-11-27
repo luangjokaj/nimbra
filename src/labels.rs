@@ -205,11 +205,15 @@ impl Nimbra {
             .collect()
     }
 
+    /// The account shown's labels on a thread of its own. Another account's thread (in
+    /// every account's mailboxes) has none of them: label ids are each account's own, and
+    /// the same id there would be another label.
     fn labels_on<'a>(&'a self, mail: &'a Mail) -> impl Iterator<Item = (usize, &'a mail::Label)> {
+        let own = self.account_of(mail) == self.account_id;
         self.labels
             .iter()
             .enumerate()
-            .filter(|(_, label)| mail.labels.contains(&label.id))
+            .filter(move |(_, label)| own && mail.labels.contains(&label.id))
     }
 
     /// The first of them, which a row shows as its tag.

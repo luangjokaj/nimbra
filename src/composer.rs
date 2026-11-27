@@ -929,12 +929,14 @@ impl Nimbra {
         }
     }
 
-    /// Opens the draft behind a row of the Drafts mailbox in the composer.
+    /// Opens the draft behind a row of the Drafts mailbox in the composer, from the row's
+    /// own account (every account's Drafts mixes them).
     pub(super) fn open_draft(&mut self, index: usize, cx: &mut Context<Self>) {
-        let (Some(client), Some(thread_id)) = (
-            self.connection.clone(),
-            self.mails.get(index).and_then(|m| m.id.clone()),
-        ) else {
+        let Some(mail) = self.mails.get(index) else {
+            return;
+        };
+        let account = self.account_of(mail).to_string();
+        let (Some(client), Some(thread_id)) = (self.client_at(index), mail.id.clone()) else {
             return;
         };
         if self.compose.is_some() {
@@ -947,7 +949,7 @@ impl Nimbra {
                 .spawn(async move { client.draft_for_thread(&thread_id) })
                 .await;
             this.update(cx, |this, cx| match result {
-                Ok(draft) => this.edit_draft(draft, cx),
+                Ok(draft) => this.edit_draft(draft, Some(account), cx),
                 Err(error) => this.fail(error, cx),
             })
             .ok();
@@ -955,11 +957,21 @@ impl Nimbra {
         .detach();
     }
 
-    pub(super) fn edit_draft(&mut self, draft: mail::Draft, cx: &mut Context<Self>) {
+    /// Opens `draft` in the composer, from `account` (whose draft it is; `None`: as a new
+    /// message is), so it is saved and sent there again.
+    pub(super) fn edit_draft(
+        &mut self,
+        draft: mail::Draft,
+        account: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.open_compose(ComposeKind::New, cx);
         let Some(mut composer) = self.compose.take() else {
             return;
         };
+        if account.is_some() {
+            composer.account = account;
+        }
         composer
             .to
             .update(cx, |input, cx| input.set(draft.to, usize::MAX, cx));
@@ -1247,7 +1259,7 @@ impl Nimbra {
             (None, _) if again => self.save_composer(serial, false, cx),
             _ => {}
         }
-        if refresh && self.mailbox == View::Drafts {
+        if refresh && self.mailbox.base() == View::Drafts {
             self.refresh(cx);
         }
         cx.notify();
@@ -1425,7 +1437,7 @@ impl Nimbra {
                                 this.notice =
                                     Some(format!("The draft was not deleted: {error}").into());
                             }
-                            if this.mailbox == View::Drafts {
+                            if this.mailbox.base() == View::Drafts {
                                 this.refresh(cx);
                             }
                             cx.notify();
