@@ -409,6 +409,17 @@ impl Nimbra {
             && let Some(source) = source
         {
             use nimbra_core::composing::{self, Answer};
+            // Who "me" is: the address of the account the message is in (in All inboxes,
+            // not necessarily the one shown).
+            let me = source
+                .account
+                .as_ref()
+                .and_then(|id| {
+                    self.signature_accounts()
+                        .into_iter()
+                        .find(|(account, _)| account == id)
+                })
+                .map_or_else(|| self.account.to_string(), |(_, email)| email);
             let answered = composing::answer(
                 match kind {
                     ComposeKind::Forward => Answer::Forward,
@@ -424,7 +435,7 @@ impl Nimbra {
                     fallback_to: source.fallback_to.clone(),
                     fallback_all: &source.fallback_all,
                 },
-                &self.account,
+                &me,
                 &long_date(source.header.date_ms),
                 self.settings.quote_replies,
             );

@@ -6,6 +6,7 @@
 - **Reply from another account.** A reply shows From like a new message, with your accounts to choose from. It goes from the conversation's account unless you change it; from another account it is still a reply for whoever gets it (it answers their message), and changing back puts it in the conversation again.
 
 ### Fixed
+- **Replying to your own message.** Reply on a message you sent goes to the people you sent it to (Reply all adds those on Cc), not back to you.
 - **Every message of a conversation in its original formatting.** The original view showed only the latest email of a thread. It now shows the whole conversation, as the reader does: earlier messages fold to a line and open in place, several at once, each email in its own HTML at the pane's full width, as tall as it is, so the conversation scrolls as one. A message with no HTML shows its text. In the reader, an open message no longer shows its sender twice: its header replaces its line, and a click on its avatar or name folds it. Threads kept from before are downloaded again when opened, so their earlier emails have their HTML too.
 - **Restart from the update card.** The card that says an update is ready no longer flickers, and its Restart button works on the first click. It used to close and reopen whenever one of Nimbra's own windows took the keyboard, which could swallow the click.
 
