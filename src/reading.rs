@@ -1325,9 +1325,12 @@ impl Nimbra {
                                         .child(mono(m.time.clone(), t.text3)),
                                 )
                                 .when(!m.brief.is_empty(), |d| d.child(self.brief(t, m)))
+                                // The folded messages, each between two lines: the stack closes
+                                // with its own line, right under the last one, so the last sits
+                                // as the others do (the column's gap comes after the line).
                                 .when(!m.earlier.is_empty(), |d| {
-                                    d.child(div().children(m.earlier.iter().enumerate().map(
-                                        |(k, e)| {
+                                    d.child(div().border_b_1().border_color(t.border).children(
+                                        m.earlier.iter().enumerate().map(|(k, e)| {
                                             let (tone, initials, when) = m.earlier_look(k);
                                             // Click a collapsed message to read it in full.
                                             div()
@@ -1395,10 +1398,10 @@ impl Nimbra {
                                                             ),
                                                     )
                                                 })
-                                        },
-                                    )))
+                                        }),
+                                    ))
                                 })
-                                .child(divider())
+                                .when(m.earlier.is_empty(), |d| d.child(divider()))
                                 .child(self.message_header(t, m, 0, true, cx))
                                 .child(
                                     self.message_body(
