@@ -12,10 +12,10 @@ pub(super) struct MessageWindow {
     account: String,
     /// The thread as last seen, for when it is no longer in the open mailbox.
     last: Mail,
-    /// Original formatting (a web view) rather than the reader.
+    /// Emails in their original formatting (web views) rather than drawn by the reader.
     original: bool,
-    html_view: Option<std::rc::Rc<HtmlView>>,
-    html_shown: Option<(String, bool, bool, bool)>,
+    /// The emails' web views (`mail_views.rs`).
+    mail_views: crate::mail_views::MailViews,
     /// Holds the keyboard so R, A, F, E and ⌫ work here.
     focus: FocusHandle,
     focused_once: bool,
@@ -23,6 +23,9 @@ pub(super) struct MessageWindow {
     layouts: super::selection::Layouts,
     _observe: gpui::Subscription,
 }
+
+/// The reader's column padding on either side, in a message window.
+const WINDOW_SIDE: f32 = 36.;
 
 /// The key a thread is known by here.
 pub(super) fn key_of(mail: &Mail) -> String {
@@ -38,14 +41,27 @@ impl MessageWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let observe = cx.observe(&owner, |_, _, cx| cx.notify());
+        let (mail_views, mut events) = crate::mail_views::MailViews::new();
+        // Each email's height, as its page works it out.
+        cx.spawn(async move |this, cx| {
+            use futures::StreamExt as _;
+            while let Some(event) = events.next().await {
+                let changed = this
+                    .update(cx, |this, _| this.mail_views.handle(event))
+                    .unwrap_or(false);
+                if changed {
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                }
+            }
+        })
+        .detach();
         MessageWindow {
             owner,
             key: key_of(&mail),
             account,
             last: mail,
             original,
-            html_view: None,
-            html_shown: None,
+            mail_views,
             focus: cx.focus_handle(),
             focused_once: false,
             layouts: Default::default(),
@@ -125,39 +141,9 @@ impl MessageWindow {
         });
     }
 
-    fn sync_web_view(
-        &mut self,
-        mail: &Mail,
-        dark: bool,
-        darkened: bool,
-        images: bool,
-        text_scale: f32,
-        window: &mut Window,
-    ) {
-        let wanted = self.original && mail.loaded && mail.html.is_some();
-        if !wanted {
-            if let Some(view) = &self.html_view {
-                view.set_visible(false);
-            }
-            return;
-        }
-        if self.html_view.is_none() {
-            self.html_view = HtmlView::new(window).map(std::rc::Rc::new);
-        }
-        let Some(view) = &self.html_view else {
-            self.original = false;
-            return;
-        };
-        let shown = (self.key.clone(), dark, darkened, images);
-        if self.html_shown.as_ref() != Some(&shown) {
-            view.set_dark(dark, darkened);
-            if let Some(html) = &mail.html {
-                view.show(html, images, Some(&self.account));
-            }
-            self.html_shown = Some(shown);
-        }
-        view.set_zoom(text_scale);
-        view.set_visible(true);
+    /// The thread's key among its web views.
+    fn thread(&self) -> String {
+        format!("{}:{}", self.account, self.key)
     }
 }
 
@@ -186,17 +172,68 @@ impl Render for MessageWindow {
             (!c.full).then_some((x, y, c.size.0, c.size.1))
         });
         let full_reply = compose.is_some() && reply_rect.is_none();
-        if full_reply {
-            if let Some(view) = &self.html_view {
-                view.set_visible(false);
-            }
+        let original = self.original && m.has_html() && m.loaded;
+        let thread = self.thread();
+        let wanted = if original {
+            crate::mail_views::wanted(&m, &thread, true)
         } else {
-            self.sync_web_view(&m, dark, darkened, images, text_scale, window);
-            if let Some(view) = &self.html_view {
-                view.set_hole(if compose.is_some() { reply_rect } else { None });
-            }
+            Vec::new()
+        };
+        let look = crate::mail_views::Look {
+            images,
+            dark,
+            darkened,
+        };
+        let hole = if compose.is_some() { reply_rect } else { None };
+        if !self.mail_views.sync(
+            wanted,
+            look,
+            &self.account,
+            text_scale,
+            !full_reply,
+            hole,
+            window,
+        ) {
+            self.original = false;
+            self.mail_views.clear();
         }
-        let original = self.original && m.html.is_some();
+        // Each message's email, where it has one (0 the latest, k + 1 `earlier[k]`).
+        let emails: Vec<_> = (0..=m.earlier.len())
+            .map(|index| {
+                let id = match index {
+                    0 => m.header.message_id.as_str(),
+                    k => m.earlier[k - 1].header.message_id.as_str(),
+                };
+                original
+                    .then(|| {
+                        self.mail_views
+                            .slot(&crate::mail_views::message_key(&thread, id, index))
+                    })
+                    .flatten()
+            })
+            .collect();
+        let body_of = |n: &Nimbra,
+                       cx: &mut Context<Nimbra>,
+                       index: usize,
+                       gaps: (f32, f32),
+                       blocks: &[crate::rich::Block],
+                       selectable: &super::selection::Selectable|
+         -> Div {
+            match emails[index].clone() {
+                Some(slot) => super::reading::email_frame(
+                    slot,
+                    super::reading::ORIGINAL_SIDE,
+                    gaps,
+                    0.,
+                    None,
+                    darkened,
+                    &t,
+                ),
+                None => n
+                    .message_body(&t, blocks, index * 1000, selectable, n.account_of(&m), cx)
+                    .pl(dp(40.)),
+            }
+        };
         let width = from_screen(window.viewport_size().width);
 
         // As the main window's toolbar (`reading.rs`): the actions as words, then icons.
@@ -246,23 +283,25 @@ impl Render for MessageWindow {
                     |this, _, window, cx| this.act(window, cx, |n, row, cx| n.done_thread(row, cx)),
                 )),
             )
+            // Reply with its word, Reply all and Forward as icons beside it, as in the main
+            // window.
             .child(action("reply", "Reply", "Reply", 0).on_click(
                 cx.listener(|this, _, window, cx| this.reply(ComposeKind::Reply, window, cx)),
             ))
-            .child(action("forward", "Forward", "Forward", 2).on_click(
-                cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx)),
-            ))
-            .child(div().flex_1())
             .child(tool("reply-all", "Reply all", 1).on_click(
                 cx.listener(|this, _, window, cx| this.reply(ComposeKind::ReplyAll, window, cx)),
             ))
+            .child(tool("forward", "Forward", 2).on_click(
+                cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx)),
+            ))
+            .child(div().flex_1())
             .child(tool("trash", "Move to trash", 4).on_click(cx.listener(
                 |this, _, window, cx| this.act(window, cx, |n, row, cx| n.trash_thread(row, cx)),
             )))
-            .when(m.html.is_some(), |d| {
+            .when(m.has_html(), |d| {
                 d.child(div().w(dp(1.)).h(dp(16.)).mx(dp(6.)).bg(t.border_strong))
             })
-            .when(m.html.is_some(), |d| {
+            .when(m.has_html(), |d| {
                 d.child(
                     button(
                         &t,
@@ -297,58 +336,6 @@ impl Render for MessageWindow {
                 .read(cx)
                 .loading_pane(&t, &m, self.owner.clone())
                 .into_any_element()
-        } else if original {
-            let view = self.html_view.clone();
-            let top = self.owner.update(cx, |n, cx| {
-                div()
-                    .flex()
-                    .flex_none()
-                    .flex_col()
-                    .gap(dp(12.))
-                    // In line with the email under it (the web view's page padding), and
-                    // as much room under the sender as beside it, as in the main window.
-                    .px(dp(super::reading::ORIGINAL_SIDE))
-                    .pt(dp(18.))
-                    .pb(dp(super::reading::ORIGINAL_SIDE))
-                    .border_b_1()
-                    .border_color(t.border)
-                    .child(header(
-                        n,
-                        cx,
-                        (width - 2. * super::reading::ORIGINAL_SIDE).max(0.),
-                    ))
-                    .child(n.message_header(&t, &m, 0, false, cx))
-            });
-            let tray = (!m.header.attachments.is_empty()).then(|| {
-                self.owner.update(cx, |n, cx| {
-                    n.attachment_tray(&t, &m.header.attachments, m.account.as_deref(), cx)
-                })
-            });
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(dp(0.))
-                .child(top)
-                .child(
-                    gpui::canvas(
-                        move |bounds, _, _| {
-                            if let Some(view) = &view {
-                                view.set_bounds(
-                                    f32::from(bounds.origin.x),
-                                    f32::from(bounds.origin.y),
-                                    f32::from(bounds.size.width),
-                                    f32::from(bounds.size.height),
-                                );
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .flex_1()
-                    .size_full(),
-                )
-                .children(tray)
-                .into_any_element()
         } else {
             let column = width.min(860.);
             self.layouts.borrow_mut().clear();
@@ -356,17 +343,34 @@ impl Render for MessageWindow {
                 place: super::selection::Place::Window(self.key.clone()),
                 layouts: self.layouts.clone(),
             };
+            // The original view's lines run across the window, past the column's padding.
+            let across = if original {
+                super::reading::ORIGINAL_SIDE
+            } else {
+                0.
+            };
             let content = self.owner.update(cx, |n, cx| {
                 let mut d = div()
                     .flex()
                     .flex_col()
                     .gap(dp(16.))
                     .w_full()
-                    .max_w(dp(860.))
-                    .mx_auto()
-                    .px(dp(36.))
+                    // Emails in their own formatting take the window's whole width.
+                    .when(!original, |d| d.max_w(dp(860.)).mx_auto())
+                    .px(dp(if original {
+                        super::reading::ORIGINAL_SIDE
+                    } else {
+                        WINDOW_SIDE
+                    }))
                     .pt(dp(26.))
-                    .pb(dp(48.))
+                    // An email last in the window runs to its bottom.
+                    .pb(dp(if !original || emails[0].is_none() {
+                        48.
+                    } else if m.header.attachments.is_empty() {
+                        0.
+                    } else {
+                        super::reading::ORIGINAL_SIDE
+                    }))
                     .child(header(n, cx, (column - 72.).max(0.)));
                 // Every message, oldest first, the latest last.
                 for (k, e) in m.earlier.iter().enumerate() {
@@ -376,20 +380,29 @@ impl Render for MessageWindow {
                             .flex_col()
                             .gap(dp(12.))
                             .pt(dp(14.))
+                            // Lines across the window in the original view.
+                            .mx(dp(-across))
+                            .px(dp(across))
                             .border_t_1()
                             .border_color(t.border)
                             .child(n.message_header(&t, &m, k + 1, false, cx))
-                            .child(
-                                n.message_body(
-                                    &t,
-                                    &e.blocks,
-                                    (k + 1) * 1000,
-                                    &selectable,
-                                    n.account_of(&m),
-                                    cx,
-                                )
-                                .pl(dp(40.)),
-                            )
+                            .child(body_of(
+                                n,
+                                cx,
+                                k + 1,
+                                // The message's gap over it; under it, its gap to the
+                                // attachments, or the column's to the next message.
+                                (
+                                    12.,
+                                    if e.header.attachments.is_empty() {
+                                        16.
+                                    } else {
+                                        12. - super::reading::ORIGINAL_SIDE
+                                    },
+                                ),
+                                &e.blocks,
+                                &selectable,
+                            ))
                             .when(!e.header.attachments.is_empty(), |d| {
                                 d.child(
                                     n.attachment_row(
@@ -399,7 +412,9 @@ impl Render for MessageWindow {
                                         m.account.as_deref(),
                                         cx,
                                     )
-                                    .pl(dp(40.)),
+                                    .pl(dp(
+                                        super::reading::attachments_indent(emails[k + 1].is_some()),
+                                    )),
                                 )
                             }),
                     );
@@ -410,13 +425,26 @@ impl Render for MessageWindow {
                         .flex_col()
                         .gap(dp(12.))
                         .pt(dp(14.))
+                        .mx(dp(-across))
+                        .px(dp(across))
                         .border_t_1()
                         .border_color(t.border)
                         .child(n.message_header(&t, &m, 0, false, cx))
-                        .child(
-                            n.message_body(&t, &m.body, 0, &selectable, n.account_of(&m), cx)
-                                .pl(dp(40.)),
-                        )
+                        .child(body_of(
+                            n,
+                            cx,
+                            0,
+                            (
+                                12.,
+                                if m.header.attachments.is_empty() {
+                                    0.
+                                } else {
+                                    12. - super::reading::ORIGINAL_SIDE
+                                },
+                            ),
+                            &m.body,
+                            &selectable,
+                        ))
                         .when(!m.header.attachments.is_empty(), |d| {
                             d.child(
                                 n.attachment_row(
@@ -426,7 +454,7 @@ impl Render for MessageWindow {
                                     m.account.as_deref(),
                                     cx,
                                 )
-                                .pl(dp(40.)),
+                                .pl(dp(super::reading::attachments_indent(emails[0].is_some()))),
                             )
                         }),
                 )
@@ -463,8 +491,8 @@ impl Render for MessageWindow {
                     let mail = this.mail(cx);
                     this.owner
                         .update(cx, |n, cx| n.copy_selection(&place, &mail, cx));
-                } else if let Some(view) = &this.html_view {
-                    view.copy();
+                } else {
+                    this.mail_views.copy();
                 }
             }))
             // The same single-letter keys as in the main window, unless a reply is open here.

@@ -201,6 +201,14 @@ impl Nimbra {
     /// Puts what is known of the mailbox entered on screen (`None`: nothing, it is loaded)
     /// and brings it up to date.
     fn show_listed(&mut self, view: View, known: Option<Vec<Mail>>, cx: &mut Context<Self>) {
+        let mut known = known;
+        // With what was changed here since it was kept (`pending`).
+        if let Some(mails) = known.as_mut() {
+            let shown = self.account_id.clone();
+            self.pending.apply(view, &shown, mails, false, true, |m| {
+                m.account.clone().unwrap_or_else(|| shown.clone())
+            });
+        }
         if let Some(mails) = &known {
             self.cache.insert(view, mails.clone());
         }
@@ -748,7 +756,12 @@ impl Nimbra {
                 // The labels kept are as they were when last saved: ask Gmail how they
                 // are now (one deleted or made since, here or elsewhere).
                 this.refresh_labels(true, cx);
-                if let Some(mails) = mails {
+                if let Some(mut mails) = mails {
+                    let shown = this.account_id.clone();
+                    this.pending
+                        .apply(view, &shown, &mut mails, false, true, |m| {
+                            m.account.clone().unwrap_or_else(|| shown.clone())
+                        });
                     if mails.is_empty() {
                         // Known to be empty, so checking it again needs no loading screen.
                         this.cache.insert(view, Vec::new());
@@ -1663,7 +1676,56 @@ impl Nimbra {
             return;
         };
         let account = self.account_of(&self.mails[index]).to_string();
+        let mail = self.mails[index].clone();
+        self.reflect(&account, &mail, change);
         self.sync_thread(client, account, id, change, removed, cx);
+    }
+
+    /// What `change` to `mail` (of `account`) does to the other mailboxes, at once: the
+    /// same thread kept in memory elsewhere shows its star and read state, and it shows in
+    /// the mailbox it goes to and leaves the ones it goes from (`pending`), before they are
+    /// listed again.
+    pub(super) fn reflect(&mut self, account: &str, mail: &Mail, change: mail::Change) {
+        use mail::Change::*;
+        let Some(thread) = mail.id.clone() else {
+            return;
+        };
+        let mut now = mail.clone();
+        match change {
+            Star => now.starred = true,
+            Unstar => now.starred = false,
+            MarkRead => now.unread = false,
+            MarkUnread => now.unread = true,
+            _ => {}
+        }
+        let shown = self.account_id.clone();
+        for list in self.cache.values_mut() {
+            for kept in list.iter_mut().filter(|m| {
+                m.id.as_deref() == Some(thread.as_str())
+                    && m.account.as_deref().unwrap_or(&shown) == account
+            }) {
+                kept.starred = now.starred;
+                kept.unread = now.unread;
+            }
+        }
+        let pending = &mut self.pending;
+        let (into, out_of): (&[View], &[View]) = match change {
+            Star => (&[View::Starred], &[]),
+            Unstar => (&[], &[View::Starred]),
+            Archive => (&[View::Done], &[View::Inbox]),
+            Unarchive => (&[View::Inbox], &[View::Done]),
+            Trash => (&[View::Trash], &[View::Inbox, View::Starred, View::Done]),
+            Untrash => (&[], &[View::Trash]),
+            Spam => (&[View::Spam], &[View::Inbox, View::Starred, View::Done]),
+            NotSpam => (&[View::Inbox], &[View::Spam]),
+            MarkRead | MarkUnread => (&[], &[]),
+        };
+        for &view in into {
+            pending.add(view, account, &now);
+        }
+        for &view in out_of {
+            pending.remove(view, account, &thread);
+        }
     }
 
     /// `sync` for a thread by its id and account, listed or not.

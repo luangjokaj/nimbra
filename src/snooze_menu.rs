@@ -164,10 +164,11 @@ impl SnoozeMenu {
         cx: &mut Context<Self>,
     ) {
         let origin = window.bounds().origin;
+        let display = crate::popup::display_of(window, cx);
         window.remove_window();
         self.owner
             .update(cx, |owner, cx| {
-                owner.open_snooze_window(origin, Mode::Calendar(month, hours), cx)
+                owner.open_snooze_window(origin, display, Mode::Calendar(month, hours), cx)
             })
             .ok();
     }
@@ -235,10 +236,11 @@ impl SnoozeMenu {
     /// From the calendar back to the quick times.
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let origin = window.bounds().origin;
+        let display = crate::popup::display_of(window, cx);
         window.remove_window();
         self.owner
             .update(cx, |owner, cx| {
-                owner.open_snooze_window(origin, Mode::List, cx)
+                owner.open_snooze_window(origin, display, Mode::List, cx)
             })
             .ok();
     }
@@ -733,13 +735,15 @@ impl Nimbra {
             origin.x + to_screen(left - MENU_MARGIN),
             origin.y + to_screen(top - MENU_MARGIN),
         );
-        self.open_snooze_window(origin, mode, cx);
+        let display = crate::popup::display_of(window, cx);
+        self.open_snooze_window(origin, display, mode, cx);
     }
 
     /// The menu's window, its top-left corner (margin included) at `origin` on screen.
     pub(super) fn open_snooze_window(
         &mut self,
         origin: gpui::Point<gpui::Pixels>,
+        display: Option<gpui::DisplayId>,
         mode: Mode,
         cx: &mut Context<Self>,
     ) {
@@ -763,16 +767,12 @@ impl Nimbra {
             .snooze_day
             .filter(|d| *d >= Local::now().date_naive())
             .unwrap_or_else(|| first_open_day(time));
-        // Kept on screen as it grows (the hours open downwards).
-        let origin = match cx
-            .displays()
-            .into_iter()
-            .map(|d| d.bounds())
-            .find(|b| b.contains(&origin))
-        {
+        // Kept on its display as it grows (the hours open downwards). `origin` is relative
+        // to that display, as the bounds of the window it was placed by are.
+        let origin = match display.and_then(|id| cx.find_display(id)) {
             Some(screen) => {
-                let bottom = screen.bottom() - bounds.size.height - to_screen(8.);
-                gpui::point(origin.x, origin.y.min(bottom).max(screen.top()))
+                let bottom = screen.bounds().size.height - bounds.size.height - to_screen(8.);
+                gpui::point(origin.x, origin.y.min(bottom).max(px(0.)))
             }
             None => origin,
         };
@@ -782,6 +782,7 @@ impl Nimbra {
                 window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
+                display_id: display,
                 focus: true,
                 is_movable: false,
                 is_resizable: false,

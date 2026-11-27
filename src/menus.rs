@@ -6,7 +6,6 @@ use super::*;
 /// What the reading pane's ⋯ menu can do (what the toolbar leaves out).
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum MoreAction {
-    ReplyAll,
     ToggleOriginal,
     MarkUnread,
     OpenInGmail,
@@ -79,20 +78,28 @@ pub(super) enum SignatureChoice {
 
 pub(super) const MENU_WIDTH: f32 = 220.;
 
-/// Closes one of the small pop-up windows (a menu, the Undo or notice pill). While that
-/// window is busy (its own button was clicked) it cannot be closed from here, so it is
-/// closed right after instead of being left on screen.
+/// Closes one of the small pop-up windows (a menu, the Undo or notice pill), once it has
+/// faded out.
 pub(super) fn remove_popup<V: 'static>(handle: gpui::WindowHandle<V>, cx: &mut App) {
-    if handle
-        .update(cx, |_, window, _| window.remove_window())
-        .is_err()
-    {
-        cx.defer(move |cx| {
+    // It fades out first (`popup::leave`), then goes. A window busy with its own button's
+    // click (Undo, Restart) cannot be reached now: it fades as soon as that is over.
+    let faded = handle
+        .update(cx, |_, window, _| crate::popup::leave(window))
+        .is_ok();
+    cx.spawn(async move |cx| {
+        if !faded {
             handle
-                .update(cx, |_, window, _| window.remove_window())
+                .update(cx, |_, window, _| crate::popup::leave(window))
                 .ok();
-        });
-    }
+        }
+        cx.background_executor()
+            .timer(std::time::Duration::from_secs_f64(crate::popup::FADE))
+            .await;
+        handle
+            .update(cx, |_, window, _| window.remove_window())
+            .ok();
+    })
+    .detach();
 }
 
 /// What a menu row has beside its label: the card's border (1) and padding (6) and the row's
@@ -240,19 +247,101 @@ pub(super) struct UpdatePill {
     pub(super) owner: gpui::WeakEntity<Nimbra>,
     pub(super) progress: crate::update::Progress,
     pub(super) dark: bool,
+    /// What it said before it moved on to another stage, fading out over it (`show`).
+    pub(super) previous: Option<crate::update::Progress>,
+    /// How many times it moved on, so each fade is an animation of its own.
+    pub(super) changes: u64,
+    /// When it opened: the checking bar moves by this clock, so it carries on unbroken
+    /// while it fades out (an animation of its own would start over in the fading layer).
+    pub(super) opened: std::time::Instant,
+}
+
+/// How long the card's content takes to fade from one stage to the next.
+const UPDATE_FADE: Duration = Duration::from_millis(240);
+
+impl UpdatePill {
+    pub(super) fn new(
+        owner: gpui::WeakEntity<Nimbra>,
+        progress: crate::update::Progress,
+        dark: bool,
+    ) -> Self {
+        Self {
+            owner,
+            progress,
+            dark,
+            previous: None,
+            changes: 0,
+            opened: std::time::Instant::now(),
+        }
+    }
+
+    /// Shows `progress`. Moving on to another stage (checking to up to date, downloading
+    /// to ready), what it said fades out over the new one; a download only counts up.
+    pub(super) fn show(&mut self, progress: crate::update::Progress, cx: &mut Context<Self>) {
+        let moved_on =
+            std::mem::discriminant(&progress.stage) != std::mem::discriminant(&self.progress.stage);
+        if moved_on {
+            self.previous = Some(std::mem::replace(&mut self.progress, progress));
+            self.changes += 1;
+            let change = self.changes;
+            // Gone once faded, so it never sits over the new one's Restart button.
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(UPDATE_FADE).await;
+                this.update(cx, |this, cx| {
+                    if this.changes == change {
+                        this.previous = None;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        } else {
+            self.progress = progress;
+        }
+        cx.notify();
+    }
 }
 
 impl Render for UpdatePill {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Every window draws at the interface zoom.
         crate::ui::apply_zoom(window);
+        let progress = self.progress.clone();
+        let now = self.card(&progress, window, cx);
+        let Some(previous) = self.previous.clone() else {
+            return now;
+        };
+        // The new stage underneath, whole; the old one over it, fading out.
+        let before = self.card(&previous, window, cx);
+        div()
+            .size_full()
+            .relative()
+            .child(div().absolute().inset_0().child(now))
+            .child(div().absolute().inset_0().child(before).with_animation(
+                gpui::ElementId::NamedInteger("update-fade".into(), self.changes),
+                gpui::Animation::new(UPDATE_FADE).with_easing(gpui::ease_in_out),
+                |layer, delta| layer.opacity(1. - delta),
+            ))
+            .into_any_element()
+    }
+}
+
+impl UpdatePill {
+    /// The card as it is at `progress`.
+    fn card(
+        &self,
+        progress: &crate::update::Progress,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         use crate::update::Stage;
         let t = if self.dark {
             Theme::dark()
         } else {
             Theme::light()
         };
-        let version = &self.progress.version;
+        let version = &progress.version;
         let frame = div()
             .size_full()
             .p(dp(MENU_MARGIN))
@@ -268,8 +357,48 @@ impl Render for UpdatePill {
             .border_1()
             .border_color(t.border_strong)
             .shadow(vec![popup_shadow(&t)]);
+        // Asked for, and there is nothing newer: the same card says so, with the check
+        // Settings shows beside Nimbra as the default mail app, and goes by itself.
+        if progress.stage == Stage::Current {
+            return frame
+                .child(
+                    card.items_center()
+                        .gap(dp(10.))
+                        .pl(dp(toast::LEFT))
+                        .pr(dp(toast::LEFT))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .justify_center()
+                                .size(dp(18.))
+                                .rounded_full()
+                                .bg(t.mint)
+                                .child(icon("done", 11., t.surface)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(dp(0.))
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_size(dp(toast::FONT))
+                                .line_height(dp(toast::LINE))
+                                .child(system_events::UP_TO_DATE),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(t.text3)
+                                .child(format!("Nimbra {version}")),
+                        ),
+                )
+                .into_any_element();
+        }
         // Ready: the same card says so, laid out as a notice with its Restart button.
-        if self.progress.stage == Stage::Ready {
+        if progress.stage == Stage::Ready {
             let owner = self.owner.clone();
             return frame
                 .child(
@@ -306,19 +435,44 @@ impl Render for UpdatePill {
                 )
                 .into_any_element();
         }
-        let (label, amount) = match self.progress.stage {
+        let (label, amount) = match progress.stage {
             Stage::Downloading { done, total } => (
                 format!("Updating to Nimbra {version}…"),
-                match self.progress.fraction() {
+                match progress.fraction() {
                     Some(f) if total.is_some() => format!("{}%", (f * 100.).floor() as u32),
                     _ => format!("{:.1} MB", done as f64 / (1024. * 1024.)),
                 },
             ),
-            Stage::Verifying | Stage::Ready => {
+            Stage::Checking => (system_events::CHECKING.to_string(), String::new()),
+            Stage::Verifying | Stage::Ready | Stage::Current => {
                 (format!("Checking Nimbra {version}…"), String::new())
             }
         };
-        let fraction = self.progress.fraction().unwrap_or(0.);
+        let fraction = progress.fraction().unwrap_or(0.);
+        // Checking has no amount yet: a short piece of the bar goes back and forth.
+        let bar = if progress.stage == Stage::Checking {
+            const ROUND: f32 = 1.1;
+            let delta = (self.opened.elapsed().as_secs_f32() % ROUND) / ROUND;
+            // There and back: 0 → 1 → 0 over one round, easing at each end.
+            let at = gpui::ease_in_out(1. - (2. * delta - 1.).abs());
+            window.request_animation_frame();
+            div()
+                .absolute()
+                .top_0()
+                .left(gpui::relative(0.7 * at))
+                .h_full()
+                .w(gpui::relative(0.3))
+                .rounded_full()
+                .bg(crate::ui::primary_fill(0.))
+                .into_any_element()
+        } else {
+            div()
+                .h_full()
+                .w(gpui::relative(fraction))
+                .rounded_full()
+                .bg(crate::ui::primary_fill(0.))
+                .into_any_element()
+        };
         frame
             .child(
                 card.flex_col()
@@ -342,13 +496,14 @@ impl Render for UpdatePill {
                             .child(div().flex_none().text_color(t.text3).child(amount)),
                     )
                     .child(
-                        div().h(dp(4.)).w_full().rounded_full().bg(t.hover).child(
-                            div()
-                                .h_full()
-                                .w(gpui::relative(fraction))
-                                .rounded_full()
-                                .bg(crate::ui::primary_fill(0.)),
-                        ),
+                        div()
+                            .relative()
+                            .overflow_hidden()
+                            .h(dp(4.))
+                            .w_full()
+                            .rounded_full()
+                            .bg(t.hover)
+                            .child(bar),
                     ),
             )
             .into_any_element()
@@ -913,11 +1068,13 @@ impl Nimbra {
         );
         let owner = cx.weak_entity();
         let dark = self.dark;
+        let display_id = crate::popup::display_of(window, cx);
         let opened = cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
+                display_id,
                 focus: true,
                 is_movable: false,
                 is_resizable: false,
@@ -1005,10 +1162,7 @@ impl Nimbra {
     /// The ⋯ menu's items, in order: what the toolbar leaves out.
     pub(super) fn more_menu(&self) -> Vec<(MoreAction, &'static str, SharedString)> {
         let demo = self.is_demo();
-        let html = self
-            .mails
-            .get(self.selected)
-            .is_some_and(|m| m.html.is_some());
+        let html = self.mails.get(self.selected).is_some_and(|m| m.has_html());
         let draft = self.mailbox.base() == View::Drafts && !demo;
         let mut items = Vec::new();
         // First, where there is an original to show (not a draft, not plain text): the
@@ -1021,7 +1175,6 @@ impl Nimbra {
             };
             items.push((MoreAction::ToggleOriginal, "eye", label.into()));
         }
-        items.push((MoreAction::ReplyAll, "reply-all", "Reply all".into()));
         items.push((MoreAction::MarkUnread, "inbox", "Mark as unread".into()));
         if !demo {
             if !self.own_servers() {
@@ -1095,7 +1248,6 @@ impl Nimbra {
                 }
             }
             (Menu::More, index) => match self.more_actions.get(index).copied() {
-                Some(MoreAction::ReplyAll) => self.open_compose(ComposeKind::ReplyAll, cx),
                 Some(MoreAction::ToggleOriginal) => self.toggle_original(cx),
                 Some(MoreAction::MarkUnread) => self.mark_unread(cx),
                 Some(MoreAction::OpenInGmail) => self.open_in_gmail(cx),
@@ -1263,6 +1415,7 @@ impl Nimbra {
                 ))),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
+                display_id: self.display,
                 // Keyboard focus stays in the main window, so ⌘Z still reaches it.
                 focus: false,
                 is_movable: false,
@@ -1273,10 +1426,16 @@ impl Nimbra {
             },
             |window, cx| {
                 crate::blur::no_window_shadow(window);
+                // Comes in smoothly, and stays with the main window.
+                crate::popup::enter(window, true);
                 cx.new(|cx| {
                     // It goes away by itself too, so it can never be left behind.
                     cx.spawn_in(window, async move |_, cx| {
                         cx.background_executor().timer(shown).await;
+                        cx.update(|window, _| crate::popup::leave(window)).ok();
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs_f64(crate::popup::FADE))
+                            .await;
                         cx.update(|window, _| window.remove_window()).ok();
                     })
                     .detach();
@@ -1344,6 +1503,7 @@ impl Nimbra {
                 ))),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
+                display_id: self.display,
                 focus: false,
                 is_movable: false,
                 is_resizable: false,
@@ -1353,6 +1513,8 @@ impl Nimbra {
             },
             |window, cx| {
                 crate::blur::no_window_shadow(window);
+                // Comes in smoothly, and stays with the main window.
+                crate::popup::enter(window, true);
                 cx.new(|_| NoticeToast { owner, toast, dark })
             },
         );
@@ -1397,8 +1559,7 @@ impl Nimbra {
             && self.update_window_for == placed
         {
             let redrawn = handle.update(cx, |pill, _, cx| {
-                pill.progress = progress.clone();
-                cx.notify();
+                pill.show(progress.clone(), cx);
             });
             if redrawn.is_ok() {
                 return;
@@ -1428,6 +1589,7 @@ impl Nimbra {
                 ))),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
+                display_id: self.display,
                 // Keyboard focus stays in the main window.
                 focus: false,
                 is_movable: false,
@@ -1438,11 +1600,9 @@ impl Nimbra {
             },
             |window, cx| {
                 crate::blur::no_window_shadow(window);
-                cx.new(|_| UpdatePill {
-                    owner,
-                    progress,
-                    dark,
-                })
+                // Comes in smoothly, and stays with the main window.
+                crate::popup::enter(window, true);
+                cx.new(|_| UpdatePill::new(owner, progress, dark))
             },
         );
         self.update_window = opened.ok();

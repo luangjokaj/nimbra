@@ -8,6 +8,34 @@
 ### Fixed
 - **Adding an address twice.** Adding an address that's already in Nimbra is refused, instead of replacing that account's sign-in.
 - **The Add account form and the keyboard.** Escape closes the form in Settings too, typing while it checks starts over, and after a refused password the keyboard is back in the password field, ready to type over it.
+
+## [0.1.8] - 2026-11-27
+
+### Changed
+- **The list keeps its width.** Dragged wider or narrower, it opens at that width next time, and double-clicking its edge puts it back to its first width (as the sidebar's edge does), rather than closing the list.
+- **Changes show everywhere at once.** A thread you star is in Starred straight away, and one you archive, move to Trash or Spam, or label is in that mailbox (and gone from the one it left) without waiting for the next check. Its star and read state follow it into the other mailboxes, and Sent is listed again right after a message goes.
+- **Search by Cc and Bcc.** The search tips show `cc:` and `bcc:`, and IMAP accounts now understand them too, with `has:attachment` and `newer_than:` (or `older_than:`) days, weeks, months or years.
+- **Pop-ups come and go smoothly.** The Undo and sending pill, notices and the update's card rise into place as they fade in, and sink back as they fade out; menus fade. They stay with Nimbra's window: they move with it, and go behind other apps' windows when Nimbra is not in front.
+- **Check for Updates** answers at once: the update's card says "Checking for updates…" and fades, in place, into the download's progress or "Already up to date" with a green check.
+
+### Fixed
+- **Reply all keeps Cc and Bcc.** Who was on Cc goes on Cc again, and on a message you sent with Gmail, who was on Bcc goes on Bcc; they used to all go on To.
+- **Long addresses in a message's details** end in "…" when there is no room for them, rather than running out of their chip.
+- **Pop-ups on a second screen.** Menus, notices, address suggestions and tooltips open on the screen Nimbra's window is on, in the right place and at that screen's size, rather than on the main screen.
+
+## [0.1.7] - 2026-11-27
+
+### New
+- **The whole conversation in its original formatting.** The original view showed only the latest email of a thread. It now shows the conversation as the reader does: earlier messages fold to a line and open in place, several at once, with a smooth animation that leaves the sender where it was. Each email shows in its own HTML at the pane's full width and as tall as it is, so the conversation scrolls as one, and a message with no HTML shows its text. Threads kept from before are downloaded again when opened, so their earlier emails have their HTML too.
+- **Reply from another account.** A reply shows From like a new message, with your accounts to choose from. It goes from the conversation's account unless you change it; from another account it is still a reply for whoever gets it (it answers their message), and changing back puts it in the conversation again.
+
+### Changed
+- **Reply all in the toolbar.** Reply all sits beside Reply, as an icon with Forward after it, in the main window and in a message's own window; it is no longer in More actions. Both show their name when you point at them.
+- **Message details.** The addresses and date in a message's details sit evenly spaced, and each shows its copy button only as you point at it, making room for it without moving to another line or past the card.
+- **Opening a folded message.** Its header takes the place of its line, so the sender no longer shows twice; a click on the header folds it again. This is in the reader too.
+
+### Fixed
+- **Replying to your own message.** Reply on a message you sent goes to the people you sent it to (Reply all adds those on Cc), not back to you.
 - **Restart from the update card.** The card that says an update is ready no longer flickers, and its Restart button works on the first click. It used to close and reopen whenever one of Nimbra's own windows took the keyboard, which could swallow the click.
 
 ## [0.1.6] - 2026-11-27

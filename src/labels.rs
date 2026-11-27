@@ -285,9 +285,7 @@ impl Nimbra {
         self.pending_focus = Some(input.read(cx).focus_handle(cx));
         self.new_label = Some(input);
         self._new_label_subscription = Some(subscription);
-        if let Some(view) = &self.html_view {
-            view.set_visible(false);
-        }
+        self.mail_views.hide();
         cx.notify();
     }
 
@@ -703,6 +701,11 @@ impl Nimbra {
         let (Some(client), Some(id)) = (self.connection.clone(), mail.id.clone()) else {
             return;
         };
+        // In the label's mailbox at once, before it is listed there again (`pending`).
+        let (account, now) = (self.account_of(mail).to_string(), mail.clone());
+        if let Some(position) = self.labels.iter().position(|l| l.id == label.id) {
+            self.pending.add(View::Label(position), &account, &now);
+        }
         let name = label.name.clone();
         let working = self.writes.begin();
         cx.spawn(async move |this, cx| {

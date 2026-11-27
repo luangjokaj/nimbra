@@ -37,6 +37,8 @@ impl Hit {
 /// Search tips shown while the search box is empty: what to type, and what it finds.
 pub(super) const SEARCH_TIPS: &[(&str, &str)] = &[
     ("from:", "From someone"),
+    ("cc:", "Copied to someone"),
+    ("bcc:", "Sent to someone unseen"),
     ("has:attachment", "With attachments"),
     ("is:unread", "Unread only"),
     ("newer_than:7d", "From the last week"),

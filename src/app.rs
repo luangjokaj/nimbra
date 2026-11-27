@@ -94,11 +94,10 @@ mod palette;
 #[path = "shortcuts_sheet.rs"]
 mod shortcuts_sheet;
 use shortcuts_sheet::ShortcutsSheet;
-#[path = "suggest_popup.rs"]
-mod suggest_popup;
-use suggest_popup::SuggestPopup;
 #[path = "snooze_menu.rs"]
 mod snooze_menu;
+#[path = "suggest_popup.rs"]
+mod suggest_popup;
 use snooze_menu::SnoozeMenu;
 
 #[path = "system_events.rs"]
@@ -371,6 +370,18 @@ pub struct Nimbra {
     /// The message whose full header (all recipients, date) is expanded: thread id and
     /// message index (0 is the latest).
     details: Option<(String, usize)>,
+    /// Earlier messages opening or folding, by thread and place (`reading::Fold`).
+    folds: std::cell::RefCell<HashMap<(ThreadKey, usize), reading::Fold>>,
+    /// The height of an open earlier message as last laid out, by thread and place.
+    fold_heights: reading::FoldHeights,
+    /// A folded message's line, as last laid out: where one opens from and folds to.
+    fold_line: std::rc::Rc<std::cell::Cell<f32>>,
+    /// A message opening or folding, for the emails under it (`reading::FoldLead`).
+    fold_lead: reading::FoldLead,
+    /// The display the main window is on (`popup::display_of`).
+    display: Option<gpui::DisplayId>,
+    /// Changes to other mailboxes than the one on screen, until they list them (`pending`).
+    pending: crate::pending::Pending,
     /// The formatted message editor (a web view), made the first time it is needed.
     editor: Option<std::rc::Rc<crate::editor::EditorView>>,
     /// No editor on this system: composers use the plain line fields.
@@ -391,6 +402,11 @@ pub struct Nimbra {
     settings: crate::settings::Settings,
     /// What was copied last from a message's details, and when (shows "Copied").
     copied: Option<(String, std::time::Instant)>,
+    /// The details' copy buttons, opening (hovered) or closing, and since when, by key.
+    copy_hover: HashMap<String, (bool, std::time::Instant)>,
+    /// The details' chips' widths, and the room their lines have, as last laid out (design
+    /// points), by key: the lines are broken from them (`reading::chip_lines`).
+    chip_sizes: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     /// Closing a composer with something in it: asking whether to save it as a draft.
     compose_ask: bool,
     /// When that question opened (a stray Esc right after it must not cancel it).
@@ -495,7 +511,8 @@ pub struct Nimbra {
     /// What the last check found, for Settings › About.
     update_status: Option<SharedString>,
     /// The address suggestions' window, where it was put, and for how many rows.
-    suggest_window: Option<(gpui::WindowHandle<SuggestPopup>, (f64, f64), usize)>,
+    /// The address suggestions' window, where it was put, its rows and its display.
+    suggest_window: Option<suggest_popup::Shown>,
     /// The accounts whose first look for people to suggest runs (`contacts.rs`).
     contacts_scans: HashSet<String>,
     notice_shown: Option<SharedString>,
@@ -680,12 +697,13 @@ pub struct Nimbra {
     /// Remote images allowed in the web view for the open thread. On by default; the
     /// strip above the message can block them.
     original_images: bool,
-    /// The web view, created the first time it is needed.
-    html_view: Option<std::rc::Rc<HtmlView>>,
+    /// The open thread's emails in their own formatting, one web view per open message.
+    mail_views: crate::mail_views::MailViews,
     /// The hidden web view that print jobs are laid out in, always light.
     print_view: Option<HtmlView>,
-    /// What the web view currently shows (thread, images allowed), to avoid reloading.
-    html_shown: Option<(String, bool, bool, bool)>,
+    /// The thread the original view last showed, so another starts with its own images
+    /// setting.
+    html_shown: Option<String>,
     /// The message being written, if the composer is open.
     compose: Option<Composer>,
     /// Focus to hand over on the next frame (set where no window is at hand).
@@ -803,6 +821,7 @@ impl Nimbra {
                 .then(|| crate::microsoft::Config::new(crate::microsoft::Config::PLACEHOLDER))
                 .flatten()
         });
+        let (mail_views, mail_events) = crate::mail_views::MailViews::new();
         let mut settings = crate::settings::load();
         crate::ui::set_zoom(settings.zoom());
         crate::usage::opened(settings.usage_counts);
@@ -848,6 +867,12 @@ impl Nimbra {
             Ok("open") => true,
             _ => !settings.sidebar_auto_hide,
         };
+        // As it was last dragged to; NIMBRA_LIST_WIDTH=<px> overrides it (screenshots).
+        let list_width = std::env::var("NIMBRA_LIST_WIDTH")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(settings.list_width)
+            .clamp(LIST_MIN, LIST_MAX);
         let mut this = Self {
             inbox_saved_empty: false,
             all_inboxes_whole: false,
@@ -994,6 +1019,8 @@ impl Nimbra {
             editor_origin: Default::default(),
             signature_choices: Vec::new(),
             copied: None,
+            copy_hover: HashMap::new(),
+            chip_sizes: Default::default(),
             parked: Vec::new(),
             composer_serial: 0,
             scheduled: Vec::new(),
@@ -1001,6 +1028,12 @@ impl Nimbra {
             schedule_watch: false,
             send_later_times: Vec::new(),
             details: None,
+            folds: Default::default(),
+            fold_heights: Default::default(),
+            fold_line: std::rc::Rc::new(std::cell::Cell::new(53.)),
+            fold_lead: Default::default(),
+            display: None,
+            pending: Default::default(),
             store: None,
             notify_from: None,
             synced_to: HashMap::new(),
@@ -1043,7 +1076,7 @@ impl Nimbra {
             from_anchor: Default::default(),
             original: false,
             original_images: true,
-            html_view: None,
+            mail_views,
             html_shown: None,
             print_view: None,
             compose: None,
@@ -1083,11 +1116,7 @@ impl Nimbra {
             palette_sel: 0,
             dark: std::env::var("NIMBRA_THEME").as_deref() != Ok("light"),
             list_open: std::env::var("NIMBRA_LIST").as_deref() != Ok("closed"),
-            // NIMBRA_LIST_WIDTH=<px> starts with the list at that width (screenshots).
-            list_width: std::env::var("NIMBRA_LIST_WIDTH")
-                .ok()
-                .and_then(|v| v.parse::<f32>().ok())
-                .map_or(452., |w| w.clamp(300., 720.)),
+            list_width,
             list_grab: None,
             sidebar_grab: None,
             list_toggled: None,
@@ -1131,6 +1160,22 @@ impl Nimbra {
             }
         }
         // NIMBRA_SCREEN=offline: as if the network were gone (screenshots).
+        // NIMBRA_SCREEN=up-to-date: Check for Updates, a moment after the window is up (the
+        // sample checks, then finds nothing newer).
+        if screen == "up-to-date" {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(800))
+                    .await;
+                // It shows while Nimbra is in front, so it comes to the front.
+                this.update(cx, |this, cx| {
+                    cx.activate(true);
+                    this.check_for_updates(cx);
+                })
+                .ok();
+            })
+            .detach();
+        }
         if screen == "offline" {
             this.offline = true;
         }
@@ -1176,6 +1221,20 @@ impl Nimbra {
         // native reader instead. Messages without HTML always use the reader.
         this.original = this.settings.original_view && std::env::var_os("NIMBRA_READER").is_none();
         this.original_images = this.settings.load_images;
+        // Each email's height, as its page works it out (`mail_views.rs`).
+        cx.spawn(async move |this, cx| {
+            use futures::StreamExt as _;
+            let mut events = mail_events;
+            while let Some(event) = events.next().await {
+                let changed = this
+                    .update(cx, |this, _| this.mail_views.handle(event))
+                    .unwrap_or(false);
+                if changed {
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                }
+            }
+        })
+        .detach();
         // NIMBRA_SCREEN=draft opens a sample draft in the composer (screenshots).
         if screen == "draft" {
             this.edit_draft(
@@ -1693,6 +1752,14 @@ impl Nimbra {
         self.settings.welcomed = true;
         crate::notify::welcome_sound();
         self.save_settings(cx);
+    }
+
+    /// Keeps the list's width as it was dragged to, for the next launch.
+    pub(super) fn keep_list_width(&mut self, cx: &mut Context<Self>) {
+        if self.settings.list_width != self.list_width {
+            self.settings.list_width = self.list_width;
+            self.save_settings(cx);
+        }
     }
 
     fn save_settings(&self, _cx: &mut Context<Self>) {
@@ -2397,6 +2464,10 @@ fn welcome_icon(t: &Theme, motion: bool) -> AnyElement {
 
 impl Render for Nimbra {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The window the notices are attached to (`popup::enter`), and its display, which
+        // they open on as they are placed by its frame.
+        crate::popup::note_main(window);
+        self.display = crate::popup::display_of(window, cx);
         // Every window draws at the interface zoom.
         crate::ui::apply_zoom(window);
         if std::mem::take(&mut self.more_on_start) {
@@ -2534,6 +2605,8 @@ impl Render for Nimbra {
             .filter(|_| crate::integration::app_is_active());
         // As big as the notice it turns into once the update is ready, so that notice takes
         // its place exactly.
+        // Every stage is that size, so the card changes in place from one to the next
+        // (checking, downloading, ready or up to date) rather than going and coming back.
         let placed = shown.as_ref().map(|p| {
             let room = from_screen(window.bounds().size.width);
             let ready = system_events::update_notice(&p.version);
@@ -2807,14 +2880,20 @@ impl Render for Nimbra {
                 };
                 if event.pressed_button != Some(MouseButton::Left) {
                     this.list_grab = None;
+                    this.keep_list_width(cx);
                     return;
                 }
-                this.list_width = (width + from_screen(event.position.x) - start).clamp(300., 720.);
+                this.list_width =
+                    (width + from_screen(event.position.x) - start).clamp(LIST_MIN, LIST_MAX);
                 cx.notify();
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _, _, _| this.list_grab = None),
+                cx.listener(|this, _, _, cx| {
+                    if this.list_grab.take().is_some() {
+                        this.keep_list_width(cx);
+                    }
+                }),
             )
             .on_action(cx.listener(|this, _: &ToggleList, _, cx| this.toggle_list(cx)))
             .relative()

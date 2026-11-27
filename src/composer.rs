@@ -54,6 +54,10 @@ pub(super) struct Composer {
     pub(super) subject: Entity<TextInput>,
     pub(super) lines: Vec<Entity<TextInput>>,
     pub(super) reply: Option<mail::ReplyTo>,
+    /// A reply's own account and its thread there, once From changed: a reply written from
+    /// another account has no thread in it (only its reply headers), and has it again when
+    /// From changes back.
+    pub(super) reply_home: Option<(String, String)>,
     /// The Gmail draft being edited, if this message was saved or opened from Drafts.
     pub(super) draft_id: Option<String>,
     /// The account it is written from, when not the one shown (a reply in All inboxes).
@@ -379,6 +383,7 @@ impl Nimbra {
             subject,
             lines: vec![line],
             reply: None,
+            reply_home: None,
             full: false,
             position: None,
             size: (720., 520.),
@@ -404,6 +409,17 @@ impl Nimbra {
             && let Some(source) = source
         {
             use nimbra_core::composing::{self, Answer};
+            // Who "me" is: the address of the account the message is in (in All inboxes,
+            // not necessarily the one shown).
+            let me = source
+                .account
+                .as_ref()
+                .and_then(|id| {
+                    self.signature_accounts()
+                        .into_iter()
+                        .find(|(account, _)| account == id)
+                })
+                .map_or_else(|| self.account.to_string(), |(_, email)| email);
             let answered = composing::answer(
                 match kind {
                     ComposeKind::Forward => Answer::Forward,
@@ -419,7 +435,7 @@ impl Nimbra {
                     fallback_to: source.fallback_to.clone(),
                     fallback_all: &source.fallback_all,
                 },
-                &self.account,
+                &me,
                 &long_date(source.header.date_ms),
                 self.settings.quote_replies,
             );
@@ -433,12 +449,22 @@ impl Nimbra {
                 composer.quoted = answered.quoted;
                 composer.kept = answered.kept;
             } else {
-                if !answered.to.is_empty() {
-                    let to = answered.to.join(", ");
-                    composer
-                        .to
-                        .update(cx, |input, cx| input.set(to, usize::MAX, cx));
-                    composer.chipify(Field::To, true, cx);
+                // Each address in the field it was in (reply-all keeps Cc on Cc, and on my
+                // own message Bcc on Bcc), with the Cc and Bcc row open when either has one.
+                composer.show_cc = !answered.cc.is_empty() || !answered.bcc.is_empty();
+                for (field, list) in [
+                    (Field::To, &answered.to),
+                    (Field::Cc, &answered.cc),
+                    (Field::Bcc, &answered.bcc),
+                ] {
+                    if list.is_empty() {
+                        continue;
+                    }
+                    let text = list.join(", ");
+                    if let Some(input) = composer.input(field) {
+                        input.update(cx, |input, cx| input.set(text, usize::MAX, cx));
+                    }
+                    composer.chipify(field, true, cx);
                 }
                 composer.reply = answered.reply;
                 // The message being answered is quoted below, folded behind "•••".
@@ -1822,19 +1848,16 @@ impl Nimbra {
         )
     }
 
-    /// The composer's From can change: a new message or a forward (not a reply, which
-    /// belongs to its thread's account), with more than one account.
+    /// The composer's From can change: with more than one account. A reply too: it goes
+    /// from its thread's account unless changed (see `Composer::reply_home`).
     fn can_change_from(&self) -> bool {
-        !self.is_demo()
-            && self.settings.accounts.len() >= 2
-            && self.compose.as_ref().is_some_and(|c| c.reply.is_none())
+        !self.is_demo() && self.settings.accounts.len() >= 2 && self.compose.is_some()
     }
 
-    /// The From row shows: where it can change, and in the sample's new messages (with its
-    /// one address), so the sample looks like the real thing.
+    /// The From row shows: where it can change, and in the sample (with its one address),
+    /// so the sample looks like the real thing.
     fn shows_from(&self) -> bool {
-        self.can_change_from()
-            || (self.is_demo() && self.compose.as_ref().is_some_and(|c| c.reply.is_none()))
+        self.can_change_from() || (self.is_demo() && self.compose.is_some())
     }
 
     /// The composer's From changes. A draft it already saved is deleted from the old
@@ -1951,6 +1974,21 @@ impl Nimbra {
             return;
         };
         composer.account = Some(id.clone());
+        // A reply's thread is its own account's: from another, it goes without it (its
+        // reply headers still thread it for whoever gets it), and back home it has it again.
+        if let Some(reply) = &mut composer.reply {
+            if composer.reply_home.is_none()
+                && let Some(home) = old.clone()
+                && !reply.thread_id.is_empty()
+            {
+                composer.reply_home = Some((home, reply.thread_id.clone()));
+            }
+            reply.thread_id = match &composer.reply_home {
+                Some((home, thread)) if *home == id => thread.clone(),
+                Some(_) => String::new(),
+                None => reply.thread_id.clone(),
+            };
+        }
         // A message from another account has that account's signature.
         let signature = self.default_signature_for(&id);
         let Some(composer) = &mut self.compose else {

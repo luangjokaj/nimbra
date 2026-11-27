@@ -25,20 +25,38 @@
 /// with some margin, as mail clients show it, not the browser's bare serif page.
 ///
 /// `:where()` gives these rules zero specificity, so anything the email sets wins, and they
-/// only touch inherited text properties, never table or image sizing.
+/// only touch inherited text properties, never table or image sizing. The body also holds
+/// its children's margins (`flow-root`, where they would otherwise run out past it), so its
+/// box is as tall as the email, which is how tall the email's view is made (`MEASURE`).
 ///
 /// The one rule that does win is the space around the email: 20pt on every side, as the
 /// subject and sender above it have (in line with the toolbar's first icon), whatever margins the email sets (many set none, and
 /// their content would touch the edges). It is the page's padding, so the email's own
 /// background still fills the view (a body's background spreads to the whole page).
 const DEFAULTS: &str = ":where(html){font:14px/1.5 -apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif}\
-html{padding:20px!important}body{margin:0!important}\
+html{padding:20px!important}body{margin:0!important}:where(body){display:flow-root}\
 :where(pre,code,tt){font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.92em}";
 
 /// How much an email in its own formatting is zoomed at the mail text size: as much larger
 /// or smaller than Default as the reader's text is (1 at Default).
 pub fn zoom_for(size: crate::settings::TextSize) -> f32 {
     size.metrics().0 / crate::settings::TextSize::Default.metrics().0
+}
+
+/// How tall the email is, in CSS pixels: its body (the page's padding included), however
+/// tall the view showing it is; the body holds its children's margins (`DEFAULTS`). A page
+/// that still runs past the view (something placed outside the body) is as tall as it
+/// scrolls. Run by the app, not the mail; fixed text.
+const MEASURE: &str = "(function(){var d=document.documentElement,b=document.body;\
+if(!b)return 0;var s=getComputedStyle(d),r=b.getBoundingClientRect(),y=window.scrollY;\
+var h=Math.max(r.bottom+y,r.top+y+b.scrollHeight)+parseFloat(s.paddingBottom||0);\
+if(d.scrollHeight>window.innerHeight+1)h=Math.max(h,d.scrollHeight);\
+return Math.ceil(h);})()";
+
+/// The height `MEASURE` answered, in points at `zoom`.
+fn measured(answer: &str, zoom: f32) -> Option<f32> {
+    let css: f32 = answer.trim().parse().ok()?;
+    (css.is_finite() && css > 0.).then(|| (css * zoom).ceil())
 }
 
 pub fn document(body: &str, images: bool) -> String {
@@ -144,11 +162,23 @@ mod platform {
         /// The account of the mail shown, for the `mailto:` links in it.
         #[cfg(target_os = "macos")]
         account: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+        /// The view that clips it to a scrolling column (`place`), made the first time.
+        #[cfg(target_os = "macos")]
+        clip: std::cell::Cell<Option<usize>>,
     }
 
     impl HtmlView {
         /// Creates the (hidden) web view as a child of the app window.
         pub fn new(window: &gpui::Window) -> Option<Self> {
+            Self::build(window, None)
+        }
+
+        /// As `new`, with `loaded` called each time a page has loaded (its images too).
+        pub fn with_loaded(window: &gpui::Window, loaded: impl Fn() + 'static) -> Option<Self> {
+            Self::build(window, Some(Box::new(loaded)))
+        }
+
+        fn build(window: &gpui::Window, loaded: Option<Box<dyn Fn()>>) -> Option<Self> {
             let builder = WebViewBuilder::new()
                 .with_javascript_disabled()
                 .with_incognito(true)
@@ -192,6 +222,14 @@ mod platform {
                     follow(&link);
                     NewWindowResponse::Deny
                 });
+            let builder = match loaded {
+                Some(loaded) => builder.with_on_page_load_handler(move |event, _| {
+                    if matches!(event, wry::PageLoadEvent::Finished) {
+                        loaded();
+                    }
+                }),
+                None => builder,
+            };
             let view = builder.build_as_child(window).ok()?;
             // Without the check there is no view at all (the reader shows the mail instead).
             #[cfg(target_os = "windows")]
@@ -214,6 +252,8 @@ mod platform {
                 applied: std::cell::Cell::new(None),
                 #[cfg(target_os = "macos")]
                 account,
+                #[cfg(target_os = "macos")]
+                clip: std::cell::Cell::new(None),
             })
         }
 
@@ -276,6 +316,97 @@ mod platform {
             });
         }
 
+        /// Places the whole email at `full` (window points) and shows only the part of it
+        /// inside `clip`, such as the scrolling column it is in: nothing outside `clip` is
+        /// drawn or takes a click. Hidden when nothing of it is inside.
+        #[cfg(target_os = "macos")]
+        pub fn place(&self, full: (f32, f32, f32, f32), clip: (f32, f32, f32, f32)) {
+            use objc::runtime::Object;
+            use wry::WebViewExtMacOS as _;
+            let (x, y, w, h) = full;
+            let left = x.max(clip.0);
+            let top = y.max(clip.1);
+            let right = (x + w).min(clip.0 + clip.2);
+            let bottom = (y + h).min(clip.1 + clip.3);
+            let seen = (left, top, (right - left).max(0.), (bottom - top).max(0.));
+            self.frame.set(full);
+            let webview = self.view.webview();
+            let webview = &*webview as *const _ as *mut Object;
+            // SAFETY: main thread, a live WKWebView inside the app's view; see `clip`.
+            unsafe {
+                let container = match self.clip.get() {
+                    Some(container) => container as *mut Object,
+                    None => {
+                        let Some(container) = clip::wrap(webview) else {
+                            return;
+                        };
+                        self.clip.set(Some(container as usize));
+                        container
+                    }
+                };
+                clip::place(container, webview, full, seen);
+                clip::show(container, self.shown.get() && seen.2 > 0. && seen.3 > 0.);
+            }
+            if self.hole.get().is_some() || self.applied.get().is_some_and(|(_, h)| h.is_some()) {
+                self.apply_hole();
+            }
+        }
+
+        /// As above: WebView2 cannot be clipped, so it covers what of the email is inside.
+        #[cfg(target_os = "windows")]
+        pub fn place(&self, full: (f32, f32, f32, f32), clip: (f32, f32, f32, f32)) {
+            let (x, y, w, h) = full;
+            let top = y.max(clip.1);
+            let bottom = (y + h).min(clip.1 + clip.3);
+            self.set_bounds(x, top, w, (bottom - top).max(0.));
+        }
+
+        /// Asks how tall the email is (points, at the current zoom); `answer` gets it once
+        /// the page has worked it out.
+        pub fn measure(&self, answer: impl Fn(f32) + Send + 'static) {
+            let zoom = self.zoom.get();
+            let _ = self
+                .view
+                .evaluate_script_with_callback(super::MEASURE, move |result| {
+                    if let Some(height) = super::measured(&result, zoom) {
+                        answer(height);
+                    }
+                });
+        }
+
+        /// Whether the keyboard is in the email (it was clicked last), for ⌘C.
+        #[cfg(target_os = "macos")]
+        #[allow(unexpected_cfgs)]
+        pub fn focused(&self) -> bool {
+            use objc::runtime::Object;
+            use objc::{msg_send, sel, sel_impl};
+            use wry::WebViewExtMacOS as _;
+            if !self.shown.get() {
+                return false;
+            }
+            let webview = self.view.webview();
+            let webview = &*webview as *const _ as *mut Object;
+            // SAFETY: main thread, a live WKWebView; the first responder is checked to be a
+            // view before it is asked about its place.
+            unsafe {
+                let window: *mut Object = msg_send![webview, window];
+                if window.is_null() {
+                    return false;
+                }
+                let first: *mut Object = msg_send![window, firstResponder];
+                if first.is_null() {
+                    return false;
+                }
+                let is_view: bool = msg_send![first, isKindOfClass: objc::class!(NSView)];
+                is_view && msg_send![first, isDescendantOf: webview]
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        pub fn focused(&self) -> bool {
+            self.shown.get()
+        }
+
         /// Sizes the email up or down with the mail text size (1 is as the sender made it).
         pub fn set_zoom(&self, zoom: f32) {
             if self.zoom.replace(zoom) != zoom {
@@ -287,6 +418,11 @@ mod platform {
         pub fn set_visible(&self, visible: bool) {
             self.shown.set(visible);
             let _ = self.view.set_visible(visible);
+            #[cfg(target_os = "macos")]
+            if let Some(container) = self.clip.get() {
+                // SAFETY: main thread, the live container `place` made.
+                unsafe { clip::show(container as *mut objc::runtime::Object, visible) };
+            }
             // A hidden view keeps no hole (its click-through view would block the app).
             if !visible && self.applied.get().is_some_and(|(_, hole)| hole.is_some()) {
                 self.hole.set(None);
@@ -325,15 +461,6 @@ mod platform {
         /// Opens the system print panel for what the view shows.
         pub fn print(&self) {
             let _ = self.view.print();
-        }
-
-        /// Space and Shift-Space: a page down or up. The mail's own scripts are off; one
-        /// run by the app still is, and this one is fixed text.
-        pub fn scroll_page(&self, down: bool) {
-            let sign = if down { "" } else { "-" };
-            let _ = self.view.evaluate_script(&format!(
-                "window.scrollBy({{top: {sign}window.innerHeight * 0.9, behavior: 'smooth'}})"
-            ));
         }
 
         /// Makes the page see a light or dark colour scheme, following the app's theme
@@ -595,6 +722,211 @@ mod platform {
         }
     }
 
+    /// A web view inside a scrolling column: it sits in a view of its own that clips it,
+    /// so the part of the email scrolled out of the column is neither drawn nor clicked.
+    #[cfg(target_os = "macos")]
+    #[allow(unexpected_cfgs)]
+    mod clip {
+        use objc::declare::ClassDecl;
+        use objc::runtime::{BOOL, Class, Object, Sel, YES};
+        use objc::{Encode, Encoding, class, msg_send, sel, sel_impl};
+
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Rect {
+            x: f64,
+            y: f64,
+            width: f64,
+            height: f64,
+        }
+        unsafe impl Encode for Rect {
+            fn encode() -> Encoding {
+                // SAFETY: the encoding of CGRect / NSRect on 64-bit macOS.
+                unsafe { Encoding::from_str("{CGRect={CGPoint=dd}{CGSize=dd}}") }
+            }
+        }
+
+        /// A plain view, flipped so that its subview's frame reads from the top.
+        fn class() -> &'static Class {
+            if let Some(class) = Class::get("NimbraClipView") {
+                return class;
+            }
+            extern "C" fn flipped(_: &Object, _: Sel) -> BOOL {
+                YES
+            }
+            let mut decl =
+                ClassDecl::new("NimbraClipView", class!(NSView)).expect("class name free");
+            // SAFETY: the signature matches -[NSView isFlipped].
+            unsafe {
+                decl.add_method(
+                    sel!(isFlipped),
+                    flipped as extern "C" fn(&Object, Sel) -> BOOL,
+                );
+            }
+            decl.register()
+        }
+
+        #[link(name = "objc")]
+        unsafe extern "C" {
+            fn class_addMethod(
+                class: *const Class,
+                name: Sel,
+                imp: extern "C" fn(&Object, Sel, *mut Object),
+                types: *const std::ffi::c_char,
+            ) -> BOOL;
+        }
+
+        /// Up and down scrolling over an email in a column scrolls the column: the email is as
+        /// tall as its page, so it has nothing to scroll itself. A sideways scroll stays with
+        /// the email (one wider than the column), as does any scroll over another web view.
+        extern "C" fn scroll_wheel(this: &Object, _: Sel, event: *mut Object) {
+            // SAFETY: AppKit calls this on the main thread with a live view and event.
+            unsafe {
+                let container: *mut Object = msg_send![this, superview];
+                let clipped = !container.is_null() && {
+                    let is: bool = msg_send![container, isKindOfClass: class()];
+                    is
+                };
+                if clipped {
+                    let dx: f64 = msg_send![event, scrollingDeltaX];
+                    let dy: f64 = msg_send![event, scrollingDeltaY];
+                    let app: *mut Object = msg_send![container, superview];
+                    if dy.abs() >= dx.abs() && !app.is_null() {
+                        let _: () = msg_send![app, scrollWheel: event];
+                        return;
+                    }
+                }
+                let _: () = msg_send![super(this, class!(WKWebView)), scrollWheel: event];
+            }
+        }
+
+        /// Gives wry's web view class the `scroll_wheel` above, once. The method is added to
+        /// the class, never by changing a view's class: AppKit's key-value observing already
+        /// replaces that, and taking its place makes removing the view throw.
+        ///
+        /// # Safety
+        /// Main thread only, with a live WKWebView built by wry.
+        unsafe fn take_scrolls(webview: *mut Object) {
+            unsafe {
+                // What `class` answers is the class itself, also under key-value observing.
+                let own: *const Class = msg_send![webview, class];
+                if own.is_null() || std::ptr::eq(own, class!(WKWebView)) {
+                    return;
+                }
+                // Refused (and harmless) when the class has the method already.
+                let _ = class_addMethod(own, sel!(scrollWheel:), scroll_wheel, c"v@:@".as_ptr());
+            }
+        }
+
+        /// Puts the web view in a clipping view where it was, and makes it hand its up and
+        /// down scrolling to the app (`take_scrolls`). The container is owned by the web
+        /// view's superview.
+        ///
+        /// # Safety
+        /// Main thread only, with a live WKWebView inside the app's view.
+        pub(super) unsafe fn wrap(webview: *mut Object) -> Option<*mut Object> {
+            unsafe {
+                let parent: *mut Object = msg_send![webview, superview];
+                if parent.is_null() {
+                    return None;
+                }
+                let container: *mut Object = msg_send![class(), alloc];
+                let frame: Rect = msg_send![webview, frame];
+                let container: *mut Object = msg_send![container, initWithFrame: frame];
+                if container.is_null() {
+                    return None;
+                }
+                // Clipping is on by default before macOS 14, and a switch since.
+                let clips = sel!(setClipsToBounds:);
+                let can: bool = msg_send![container, respondsToSelector: clips];
+                if can {
+                    let _: () = msg_send![container, setClipsToBounds: true];
+                }
+                // NSWindowBelow = -1, relative to none: under every other native view, such
+                // as the composer's editor. An email is part of the page under them, as the
+                // app's own drawing is.
+                let none: *mut Object = std::ptr::null_mut();
+                let _: () =
+                    msg_send![parent, addSubview: container positioned: -1isize relativeTo: none];
+                let _: () = msg_send![container, release];
+                // wry keeps its own reference to the web view, so it lives through the move.
+                let _: () = msg_send![webview, removeFromSuperview];
+                let _: () = msg_send![container, addSubview: webview];
+                // Its frame is set in full each time (`place`), never resized along.
+                let _: () = msg_send![webview, setAutoresizingMask: 0usize];
+                take_scrolls(webview);
+                Some(container)
+            }
+        }
+
+        /// The container at `seen` and the web view at `full` in it, both in window points
+        /// from the top left.
+        ///
+        /// # Safety
+        /// Main thread only, with the container `wrap` made and its web view.
+        pub(super) unsafe fn place(
+            container: *mut Object,
+            webview: *mut Object,
+            full: (f32, f32, f32, f32),
+            seen: (f32, f32, f32, f32),
+        ) {
+            unsafe {
+                let parent: *mut Object = msg_send![container, superview];
+                if parent.is_null() {
+                    return;
+                }
+                let (x, y, w, h) = (seen.0 as f64, seen.1 as f64, seen.2 as f64, seen.3 as f64);
+                let parent_flipped: bool = msg_send![parent, isFlipped];
+                let y_in_parent = if parent_flipped {
+                    y
+                } else {
+                    let bounds: Rect = msg_send![parent, bounds];
+                    bounds.height - y - h
+                };
+                let outer = Rect {
+                    x,
+                    y: y_in_parent,
+                    width: w,
+                    height: h,
+                };
+                let inner = Rect {
+                    x: full.0 as f64 - x,
+                    y: full.1 as f64 - y,
+                    width: (full.2 as f64).max(1.),
+                    height: (full.3 as f64).max(1.),
+                };
+                let old: Rect = msg_send![container, frame];
+                if (old.x, old.y, old.width, old.height) != (x, y_in_parent, w, h) {
+                    let _: () = msg_send![container, setFrame: outer];
+                }
+                let old: Rect = msg_send![webview, frame];
+                if (old.x, old.y, old.width, old.height)
+                    != (inner.x, inner.y, inner.width, inner.height)
+                {
+                    let _: () = msg_send![webview, setFrame: inner];
+                }
+            }
+        }
+
+        /// # Safety
+        /// Main thread only, with the container `wrap` made.
+        pub(super) unsafe fn show(container: *mut Object, shown: bool) {
+            unsafe {
+                let _: () = msg_send![container, setHidden: !shown];
+            }
+        }
+
+        /// Takes the container away with the web view.
+        ///
+        /// # Safety
+        /// Main thread only, with the container `wrap` made.
+        pub(super) unsafe fn remove(container: *mut Object) {
+            unsafe {
+                let _: () = msg_send![container, removeFromSuperview];
+            }
+        }
+    }
+
     /// The hole: a mask on the web view's layer (even-odd, so the rounded rectangle is left
     /// out), and an empty view laid over it. That view handles no events itself, so AppKit
     /// passes clicks and scrolls there up to its superview, the app's own view.
@@ -809,6 +1141,11 @@ mod platform {
             let webview = self.view.webview();
             // SAFETY: main thread, live WKWebView; see `hole::remove`.
             unsafe { hole::remove(&*webview as *const _ as *mut objc::runtime::Object) };
+            if let Some(container) = self.clip.get() {
+                // SAFETY: main thread, the container `place` made, which wry's web view
+                // leaves with (its own drop takes it out of the container).
+                unsafe { clip::remove(container as *mut objc::runtime::Object) };
+            }
         }
     }
 
@@ -844,7 +1181,14 @@ mod platform {
         pub fn copy(&self) -> bool {
             false
         }
-        pub fn scroll_page(&self, _down: bool) {}
+        pub fn with_loaded(_window: &gpui::Window, _loaded: impl Fn() + 'static) -> Option<Self> {
+            None
+        }
+        pub fn place(&self, _full: (f32, f32, f32, f32), _clip: (f32, f32, f32, f32)) {}
+        pub fn measure(&self, _answer: impl Fn(f32) + Send + 'static) {}
+        pub fn focused(&self) -> bool {
+            false
+        }
     }
 }
 
@@ -876,6 +1220,15 @@ mod tests {
                 .all(|rule| rule.starts_with(":where(") || space.contains(&rule))
         );
         assert!(!DEFAULTS.contains("max-width") && !DEFAULTS.contains("overflow-wrap"));
+    }
+
+    #[test]
+    fn an_emails_height_is_read_in_points() {
+        assert_eq!(measured("412", 1.), Some(412.));
+        assert_eq!(measured("100.2", 1.25), Some(126.));
+        for bad in ["0", "-3", "null", "\"x\"", "NaN", "Infinity", ""] {
+            assert_eq!(measured(bad, 1.), None, "{bad}");
+        }
     }
 
     #[test]

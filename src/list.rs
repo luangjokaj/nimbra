@@ -38,6 +38,10 @@ pub(super) const CLOSE_SECONDS: f32 = 0.22;
 
 pub(super) const SETTLE_SECONDS: f32 = 0.7;
 
+/// How narrow and how wide the list can be dragged.
+pub(super) const LIST_MIN: f32 = 300.;
+pub(super) const LIST_MAX: f32 = 720.;
+
 impl Nimbra {
     /// Whether nothing on screen means Inbox Zero, rather than nothing in this mailbox.
     pub(super) fn is_zero(&self) -> bool {
@@ -855,8 +859,12 @@ impl Nimbra {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                            // Twice: back to its first width.
                             if event.click_count == 2 {
-                                this.toggle_list(cx);
+                                this.list_grab = None;
+                                this.list_width = crate::settings::Settings::default().list_width;
+                                this.keep_list_width(cx);
+                                cx.notify();
                             } else {
                                 this.list_grab =
                                     Some((from_screen(event.position.x), this.list_width));

@@ -84,6 +84,12 @@ impl Mail {
         }
     }
 
+    /// Whether any message of the thread has HTML of its own, so the original view has
+    /// something to show.
+    pub fn has_html(&self) -> bool {
+        self.html.is_some() || self.earlier.iter().any(|e| e.html.is_some())
+    }
+
     /// An earlier message's avatar colour, initials and time label.
     pub fn earlier_look(&self, k: usize) -> (Tone, SharedString, SharedString) {
         let Some(e) = self.earlier.get(k) else {
@@ -179,6 +185,17 @@ fn person(name: &str, address: &str) -> mail::Person {
     }
 }
 
+/// A sample attachment. Opening it needs an account, which sample mail has not.
+fn attachment(name: &str, mime: &str, size: u64) -> mail::Attachment {
+    mail::Attachment {
+        message_id: String::new(),
+        attachment_id: format!("sample-{name}"),
+        name: name.into(),
+        mime: mime.into(),
+        size,
+    }
+}
+
 fn paragraphs(items: &[&'static str]) -> Vec<Block> {
     rich::from_text(items.iter().map(|p| p.to_string()).collect())
 }
@@ -207,6 +224,35 @@ const SAMPLE_HTML: &str = r#"<html><head><meta name="color-scheme" content="ligh
 --color-rose:   #ff7ab6;</pre>
                 <p>Thanks,<br>Elena</p></div></body></html>"#;
 
+/// The sample hero thread in HTML, one email per message, each styled its own way, so the
+/// original view's messages can be told apart.
+const MIRA_FIRST_HTML: &str = r#"<html><head><style>.card{border:1px solid #e3e0f5;border-radius:12px;padding:16px 20px;font-family:Georgia,serif}
+                h1{font-size:20px;color:#5b47e0;margin:0 0 8px}</style></head>
+                <body><div class="card"><h1>Q4 launch plan: first pass</h1>
+                <p>First pass of the deck. Timeline still says <b>Nov 28</b>, fixing now.</p>
+                <p>Draft is here: <a href="https://example.com/q4-launch-plan">q4-launch-plan</a></p>
+                <p>Mira</p></div></body></html>"#;
+
+const JONAH_HTML: &str = r#"<div style="font-family:-apple-system,sans-serif">
+                <p>Numbers look right to me. Looping Luan in for final sign-off.</p>
+                <table cellpadding="6" style="border-collapse:collapse"><tr style="background:#eef7f2"><th align="left">Line</th><th align="right">Q4</th></tr>
+                <tr><td>Paid ads</td><td align="right">€18,000</td></tr><tr><td>Events</td><td align="right">€9,500</td></tr></table>
+                <p>The only open question on my side is the <i>embargo date</i>.</p>
+                <p style="color:#6b7280">Jonah Reyes · Northwind Studio</p></div>"#;
+
+const MIRA_LATEST_HTML: &str = r#"<html><head><meta name="color-scheme" content="light dark">
+                <style>body{font-family:-apple-system,sans-serif}.note{background:#fff6e5;border-left:3px solid #ffb86b;padding:10px 14px}
+                @media (prefers-color-scheme: dark){.note{background:#3a2f1f}}</style></head>
+                <body><p>Hi Luan,</p>
+                <p>Final deck is attached with the updated timeline. We pushed the public launch to <b>December 9</b> so the new onboarding flow gets one more round of testing. Budget stays exactly where it was.</p>
+                <div class="note">Two things before Friday: the pricing tiers on slide 14, and a date for the press embargo.</div>
+                <p>Thanks,<br>Mira</p></body></html>"#;
+
+/// The message that started the moodboard thread.
+const MOODBOARD_ASK_HTML: &str = r#"<p>Hi Elena,</p>
+                <p>Could you pull a few references for the <b>wallpaper</b> and the serif? Anything with an
+                aurora feel is welcome.</p><p>Luan</p>"#;
+
 pub fn inbox() -> Vec<Mail> {
     vec![
         {
@@ -229,6 +275,7 @@ pub fn inbox() -> Vec<Mail> {
                     person("Jonah Reyes", "jonah@northwind.studio"),
                 ],
                 cc: vec![person("", "launch@northwind.studio")],
+                bcc: Vec::new(),
                 reply_to: None,
                 date_ms: 0,
                 attachments: Vec::new(),
@@ -246,7 +293,20 @@ pub fn inbox() -> Vec<Mail> {
                         "The only open question on my side is the embargo date.",
                     ]),
                     expanded: false,
-                    header: Header::default(),
+                    header: Header {
+                        attachments: vec![attachment(
+                            "Q4-budget.xlsx",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            48_200,
+                        )],
+                        from: person("Jonah Reyes", "jonah@northwind.studio"),
+                        to: vec![
+                            person("Luan Gjokaj", "luan@example.com"),
+                            person("Mira Kovač", "mira@northwind.studio"),
+                        ],
+                        ..Header::default()
+                    },
+                    html: Some(JONAH_HTML.into()),
                 },
                 Earlier {
                     sender: "Mira Kovač".into(),
@@ -257,7 +317,12 @@ pub fn inbox() -> Vec<Mail> {
                         "Draft is here: https://example.com/q4-launch-plan",
                     ]),
                     expanded: false,
-                    header: Header::default(),
+                    header: Header {
+                        from: person("Mira Kovač", "mira@northwind.studio"),
+                        to: vec![person("Jonah Reyes", "jonah@northwind.studio")],
+                        ..Header::default()
+                    },
+                    html: Some(MIRA_FIRST_HTML.into()),
                 },
             ]
             .into();
@@ -268,6 +333,7 @@ pub fn inbox() -> Vec<Mail> {
                 "Two things before Friday: the pricing tiers on slide 14, and a date for the press embargo.",
                 "Thanks,\nMira",
             ]).into();
+            m.html = Some(MIRA_LATEST_HTML.into());
             m
         },
         {
@@ -362,7 +428,31 @@ pub fn inbox() -> Vec<Mail> {
             );
             m.thread = Some("2".into());
             m.yesterday = true;
-            // An HTML message, to exercise the rich-text viewer.
+            m.participants = "Elena and you · 2 messages".into();
+            m.sample = vec![(Tone::Graphite, "Mon")];
+            m.earlier = vec![Earlier {
+                sender: "Luan Gjokaj".into(),
+                snippet: "Could you pull a few references for the wallpaper?".into(),
+                blocks: rich::from_html(MOODBOARD_ASK_HTML),
+                expanded: false,
+                header: Header {
+                    from: person("Luan Gjokaj", "luan@example.com"),
+                    to: vec![person("Elena Brooks", "elena@example.com")],
+                    ..Header::default()
+                },
+                html: Some(MOODBOARD_ASK_HTML.into()),
+            }]
+            .into();
+            // An HTML message with attachments, to exercise the rich-text viewer.
+            m.header = Header {
+                from: person("Elena Brooks", "elena@example.com"),
+                to: vec![person("Luan Gjokaj", "luan@example.com")],
+                attachments: vec![
+                    attachment("aurora-wallpaper.png", "image/png", 2_480_000),
+                    attachment("moodboard.pdf", "application/pdf", 6_120_000),
+                ],
+                ..Header::default()
+            };
             m.body = rich::from_html(SAMPLE_HTML).into();
             m.html = Some(SAMPLE_HTML.into());
             m
@@ -460,3 +550,20 @@ pub const COMMANDS: &[(&str, &str, &str, &str, Option<&str>)] = &[
         None,
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_thread_has_an_original_when_any_message_has_html() {
+        let mut m = inbox().remove(0);
+        assert!(m.has_html());
+        m.html = None;
+        assert!(m.has_html(), "its earlier messages have");
+        for e in m.earlier.iter_mut() {
+            e.html = None;
+        }
+        assert!(!m.has_html());
+    }
+}

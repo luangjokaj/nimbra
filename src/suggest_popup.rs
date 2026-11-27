@@ -30,6 +30,14 @@ pub(super) struct SuggestPopup {
     dark: bool,
 }
 
+/// The address suggestions' window as shown: where it was put, its rows and its display.
+pub(super) type Shown = (
+    gpui::WindowHandle<SuggestPopup>,
+    (f64, f64),
+    usize,
+    Option<gpui::DisplayId>,
+);
+
 impl Nimbra {
     /// Puts the suggestions where the field's anchor was drawn: `at` is the anchor's top
     /// left on the screen (AppKit's, from the bottom). Opens the window, or updates and
@@ -61,7 +69,16 @@ impl Nimbra {
             to_screen(rows as f32 * ROW + CHROME + 2. * MENU_MARGIN),
         );
         // Already showing: given the rows, and moved or resized when that changed.
-        if let Some((handle, placed, placed_rows)) = self.suggest_window {
+        // On the display it goes to, so it is drawn at that display's scale: one moving to
+        // another display is opened there again.
+        let display_id = crate::popup::display_at(at, cx);
+        if let Some((handle, _, _, shown_on)) = self.suggest_window
+            && shown_on != display_id
+        {
+            self.suggest_window = None;
+            remove_popup(handle, cx);
+        }
+        if let Some((handle, placed, placed_rows, _)) = self.suggest_window {
             let kept = handle
                 .update(cx, |popup, window, cx| {
                     if popup.people != people || popup.selected != selected || popup.dark != dark {
@@ -80,7 +97,7 @@ impl Nimbra {
                 })
                 .is_ok();
             if kept {
-                self.suggest_window = Some((handle, corner, rows));
+                self.suggest_window = Some((handle, corner, rows, display_id));
                 return;
             }
             self.suggest_window = None;
@@ -94,6 +111,8 @@ impl Nimbra {
                 ))),
                 titlebar: None,
                 kind: gpui::WindowKind::PopUp,
+                // On the display it goes to, so it is drawn at that display's scale.
+                display_id,
                 focus: false,
                 is_movable: false,
                 is_resizable: false,
@@ -156,12 +175,12 @@ impl Nimbra {
             },
         );
         if let Ok(handle) = opened {
-            self.suggest_window = Some((handle, corner, rows));
+            self.suggest_window = Some((handle, corner, rows, display_id));
         }
     }
 
     pub(super) fn close_suggestions(&mut self, cx: &mut Context<Self>) {
-        if let Some((handle, _, _)) = self.suggest_window.take() {
+        if let Some((handle, _, _, _)) = self.suggest_window.take() {
             remove_popup(handle, cx);
         }
     }
