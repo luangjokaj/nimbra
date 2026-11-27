@@ -708,6 +708,7 @@ impl Nimbra {
         self.open_when_listed = None;
         self.search_opened = None;
         self.html_shown = None;
+        self.mail_views.clear();
         self.print_view = None;
         self.account = "".into();
         self.me_initials = "".into();

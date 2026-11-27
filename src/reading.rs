@@ -257,7 +257,7 @@ impl Nimbra {
         let has_html = self
             .mails
             .get(self.selected)
-            .is_some_and(|mail| mail.html.is_some());
+            .is_some_and(|mail| mail.has_html());
         if !self.original && !has_html {
             self.notice = Some("This message has no HTML version to show.".into());
         } else {
@@ -266,12 +266,11 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// The thread the web view should be showing right now, if any. It stays hidden
-    /// whenever something is drawn over the reading pane, because a native web view
+    /// Whether the open thread's emails show in their own formatting right now. They are
+    /// hidden whenever something is drawn over the reading pane, because a native web view
     /// always sits on top of everything GPUI paints.
-    fn original_target(&self) -> Option<(String, SharedString)> {
-        let ready = matches!(self.status, Status::Demo | Status::Ready);
-        // (A toolbar menu does not hide it: menus open in a window of their own, above it.)
+    fn original_shown(&self) -> bool {
+        // (A toolbar menu does not hide them: menus open in a window of their own.)
         let covered = self.palette
             || self.finder_open
             || self.picked.len() >= 2
@@ -279,19 +278,23 @@ impl Nimbra {
             || self.new_label.is_some()
             || self.account_sheet_over_main()
             || self.confirm.is_some();
-        if !self.original
-            || !ready
-            || covered
-            || self.mailbox.base() == View::Drafts
-            || !self.visible().contains(&self.selected)
-        {
-            return None;
-        }
-        let mail = self.mails.get(self.selected)?;
-        // Not the row: new mail would load the email again, undoing Block images.
+        !covered && self.visible().contains(&self.selected)
+    }
+
+    /// Whether the open thread is read in its original formatting (its messages with HTML
+    /// as web views), shown or not.
+    pub(super) fn original_on(&self) -> bool {
+        self.original
+            && matches!(self.status, Status::Demo | Status::Ready)
+            && self.mailbox.base() != View::Drafts
+            && self.mails.get(self.selected).is_some_and(Mail::has_html)
+    }
+
+    /// The open thread's key among the web views: its account and id, not its row (new
+    /// mail would load the emails again, undoing Block images).
+    fn original_thread(&self, mail: &Mail) -> String {
         let (thread, account) = self.thread_key(mail);
-        let key = format!("{account}:{thread}");
-        Some((key, mail.html.clone()?.into()))
+        format!("{account}:{thread}")
     }
 
     /// Whether light emails are given a dark page right now (Settings › Reading).
@@ -301,6 +304,8 @@ impl Nimbra {
 
     /// Creates, loads, shows or hides the web view to match the current state.
     pub(super) fn sync_html_view(&mut self, window: &mut Window) {
+        self.settle_folds();
+        self.fold_lead.set(None);
         // A print job has a view of its own, so the email shown does not replace it, and it
         // is light whatever the theme.
         if let Some(doc) = self.print_pending.take() {
@@ -314,62 +319,54 @@ impl Nimbra {
                 view.show(&doc, self.original_images, None);
             }
         }
-        let Some((key, html)) = self.original_target() else {
-            if let Some(view) = &self.html_view {
-                view.set_visible(false);
-            }
+        let Some(mail) = self.mails.get(self.selected).filter(|_| self.original_on()) else {
+            self.mail_views.clear();
             return;
         };
-        if self.html_view.is_none() {
-            self.html_view = HtmlView::new(window).map(std::rc::Rc::new);
-        }
-        let Some(view) = &self.html_view else {
-            // No web view on this platform: fall back to the native reader.
-            self.original = false;
-            self.notice = Some("The original view is not available on this system.".into());
-            return;
-        };
-        // A different thread starts with remote images on again.
-        if self
-            .html_shown
-            .as_ref()
-            .is_some_and(|(shown, ..)| *shown != key)
-        {
+        let thread = self.original_thread(mail);
+        // A different thread starts with its own images setting.
+        if self.html_shown.as_ref() != Some(&thread) {
             self.original_images = self.settings.load_images;
+            self.html_shown = Some(thread.clone());
         }
-        let darkened = self.darkens_mail();
-        let wanted = (key, self.original_images, self.dark, darkened);
-        if self.html_shown.as_ref() != Some(&wanted) {
-            // The page follows Nimbra's theme. Both take effect as the mail loads, so a
-            // change of either loads it again.
-            view.set_dark(self.dark, darkened);
-            let account = self.mails.get(self.selected).map(|m| self.account_of(m));
-            view.show(&html, self.original_images, account);
-            self.html_shown = Some(wanted);
-        }
-        // The mail text size reaches emails in their own formatting too.
-        view.set_zoom(crate::webview::zoom_for(self.settings.reader_text));
-        view.set_visible(true);
-        // The web view is above all the app draws, so the floating sidebar gets a hole in
-        // it, a frame ahead while it moves (see `pane_lead`).
+        let wanted = crate::mail_views::wanted(mail, &thread, false);
+        let look = crate::mail_views::Look {
+            images: self.original_images,
+            dark: self.dark,
+            darkened: self.darkens_mail(),
+        };
+        // The emails are above all the app draws, so the floating sidebar gets a hole in
+        // them, a frame ahead while it moves (see `pane_lead`).
         let ahead = if self.peek.moving() || self.sidebar_sliding() {
             self.frame_interval.get()
         } else {
             0.
         };
         let height = from_screen(window.viewport_size().height);
-        view.set_hole(
-            self.sidebar_place(ahead)
-                .filter(|place| place.inset > 0.)
-                .map(|place| {
-                    (
-                        place.x,
-                        place.inset,
-                        self.side_w(),
-                        height - 2. * place.inset,
-                    )
-                }),
-        );
+        let hole = self
+            .sidebar_place(ahead)
+            .filter(|place| place.inset > 0.)
+            .map(|place| {
+                (
+                    place.x,
+                    place.inset,
+                    self.side_w(),
+                    height - 2. * place.inset,
+                )
+            });
+        let account = self.account_of(mail).to_string();
+        let shown = self.original_shown();
+        // The mail text size reaches emails in their own formatting too.
+        let zoom = crate::webview::zoom_for(self.settings.reader_text);
+        if !self
+            .mail_views
+            .sync(wanted, look, &account, zoom, shown, hole, window)
+        {
+            // No web view on this platform: the native reader.
+            self.original = false;
+            self.mail_views.clear();
+            self.notice = Some("The original view is not available on this system.".into());
+        }
     }
 
     /// ⌘P: prints the open message with its sender, recipients and date.
@@ -612,12 +609,6 @@ impl Nimbra {
     /// Space and Shift-Space: the conversation a page further or back.
     pub(super) fn page_message(&mut self, down: bool, cx: &mut Context<Self>) {
         if self.palette || self.pane == Pane::Sidebar || self.visible().is_empty() {
-            return;
-        }
-        if self.original_target().is_some()
-            && let Some(view) = &self.html_view
-        {
-            view.scroll_page(down);
             return;
         }
         let handle = &self.reader_scroll;
@@ -917,6 +908,57 @@ impl Nimbra {
             )
     }
 
+    /// A message folded to one line, as in a thread: avatar, sender, the start of its text
+    /// and its time. Mail text, sized as the list's rows are; `column` is the width it has.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn folded_line(
+        &self,
+        t: &Theme,
+        column: f32,
+        tone: Tone,
+        initials: &str,
+        name: &str,
+        snippet: &str,
+        when: &str,
+    ) -> Div {
+        let row_text = super::list::RowText::of(self.settings.reader_text);
+        div()
+            .flex()
+            .items_center()
+            .gap(dp(12.))
+            .py(dp(FOLD_LINE_PAD))
+            .text_size(dp(row_text.size))
+            .line_height(dp(row_text.line))
+            .border_t_1()
+            .border_color(t.border)
+            // As large as an open message's, so the names line up.
+            .child(avatar(tone, initials, 28.))
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.text2)
+                    .child(name.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(dp(0.))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_color(t.text3)
+                    // Cut by characters to what the column leaves beside the name and
+                    // the time, so it ends with an ellipsis rather than mid-letter.
+                    .child(short(snippet, {
+                        let scale = row_text.size / 13.;
+                        let taken = 8. * scale * name.chars().count() as f32
+                            + 7.5 * when.chars().count() as f32;
+                        ((column - 160. - taken) / (7. * scale)).clamp(8., 110.) as usize
+                    })),
+            )
+            .child(mono(when.to_string(), t.faint))
+    }
+
     pub(super) fn reading(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let m = &self.mails[self.selected];
         // The subject is broken into lines by hand (see `balance_title`), for the width the
@@ -940,49 +982,19 @@ impl Nimbra {
         // Only switch panes when this thread really has HTML to show.
         // Drafts always use the reader, so a click on the text can open the editor.
         let is_draft = self.mailbox.base() == View::Drafts && !self.is_demo();
-        let original = self.original && m.html.is_some() && !is_draft;
+        let original = self.original_on();
+        let thread = self.original_thread(m);
+        // In the original view the latest email runs to the bottom of the pane unless
+        // something follows it (its attachments, the sample's extras).
+        let trailing = !m.header.attachments.is_empty() || m.rich;
+        let email_last = original && !trailing;
         // Until the message has been fetched we cannot know whether it has an original
         // (HTML) version, so show a loader, not the reader view that would flash by first.
         let loading = self.original && !is_draft && !m.loaded;
         let divider = || div().h(dp(1.)).bg(t.border);
 
-        // Folded messages are mail text: sized as the list's rows are.
-        let row_text = super::list::RowText::of(self.settings.reader_text);
         let earlier = |tone: Tone, initials: &str, name: &str, snippet: &str, when: &str| {
-            div()
-                .flex()
-                .items_center()
-                .gap(dp(12.))
-                .py(dp(12.))
-                .text_size(dp(row_text.size))
-                .line_height(dp(row_text.line))
-                .border_t_1()
-                .border_color(t.border)
-                .child(avatar(tone, initials, 24.))
-                .child(
-                    div()
-                        .flex_none()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(t.text2)
-                        .child(name.to_string()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(dp(0.))
-                        .whitespace_nowrap()
-                        .overflow_hidden()
-                        .text_color(t.text3)
-                        // Cut by characters to what the column leaves beside the name and
-                        // the time, so it ends with an ellipsis rather than mid-letter.
-                        .child(short(snippet, {
-                            let scale = row_text.size / 13.;
-                            let taken = 8. * scale * name.chars().count() as f32
-                                + 7.5 * when.chars().count() as f32;
-                            ((column - 160. - taken) / (7. * scale)).clamp(8., 110.) as usize
-                        })),
-                )
-                .child(mono(when.to_string(), t.faint))
+            self.folded_line(t, column, tone, initials, name, snippet, when)
         };
 
         let attachment = |name: &str, info: &str, from: u32, to: u32| {
@@ -1236,7 +1248,7 @@ impl Nimbra {
             )
             // Conversation (native reader)
             .when(loading, |d| d.child(self.loading_pane(t, m, cx.entity())))
-            .when(!original && !loading, |d| {
+            .when(!loading, |d| {
                 d.child(
                     div()
                         .id("conversation")
@@ -1268,158 +1280,203 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(dp(22.))
-                                .px(dp(64.))
+                                .gap(dp(if original { ORIGINAL_GAP } else { 22. }))
+                                // The original view takes the pane's whole width, as an email
+                                // in its own formatting does, under a compact head.
+                                .px(dp(if original { ORIGINAL_SIDE } else { READER_SIDE }))
                                 // Full view keeps lines a comfortable length.
                                 .when(self.focus_restore.is_some(), |d| d.w_full().max_w(dp(980.)))
-                                .pt(dp(40.))
-                                .pb(dp(24.))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .gap(dp(6.))
-                                        .when(m.rich, |d| d.child(pill(t, "Product", t.violet)))
-                                        .children(
-                                            m.tag
-                                                .clone()
-                                                .map(|(label, a)| pill(t, &label, t.accent(a))),
-                                        )
-                                        .when(m.rich, |d| d.child(pill(t, "Due Fri", t.amber)))
-                                        .when(!m.rich && m.tag.is_none(), |d| {
-                                            d.child(pill(
-                                                t,
-                                                &self.inbox_name(),
-                                                t.accent(Accent::Violet),
-                                            ))
-                                        }),
-                                )
-                                .child(self.subject_row(t, m, 38., column - 128., cx))
+                                .pt(dp(if original { 16. } else { 40. }))
+                                .pb(dp(if email_last {
+                                    0.
+                                } else if original {
+                                    ORIGINAL_SIDE
+                                } else {
+                                    24.
+                                }))
+                                .when(!original, |d| {
+                                    d.child(
+                                        div()
+                                            .flex()
+                                            .gap(dp(6.))
+                                            .when(m.rich, |d| d.child(pill(t, "Product", t.violet)))
+                                            .children(
+                                                m.tag
+                                                    .clone()
+                                                    .map(|(label, a)| pill(t, &label, t.accent(a))),
+                                            )
+                                            .when(m.rich, |d| d.child(pill(t, "Due Fri", t.amber)))
+                                            .when(!m.rich && m.tag.is_none(), |d| {
+                                                d.child(pill(
+                                                    t,
+                                                    &self.inbox_name(),
+                                                    t.accent(Accent::Violet),
+                                                ))
+                                            }),
+                                    )
+                                })
+                                .child(if original {
+                                    self.subject_row(t, m, 26., column - 2. * ORIGINAL_SIDE, cx)
+                                } else {
+                                    self.subject_row(t, m, 38., column - 128., cx)
+                                })
                                 .child(self.thread_banners(t, m, cx))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(dp(10.))
-                                        .child(
-                                            div()
-                                                .relative()
-                                                .flex_none()
-                                                .h(dp(28.))
-                                                .w(dp(if m.rich { 68. } else { 48. }))
-                                                .children(
-                                                    [
-                                                        Some((m.tone, m.initials.clone())),
-                                                        m.rich.then(|| {
-                                                            (Tone::Mint, SharedString::from("JR"))
+                                .when(!original, |d| {
+                                    d.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(dp(10.))
+                                            .child(
+                                                div()
+                                                    .relative()
+                                                    .flex_none()
+                                                    .h(dp(28.))
+                                                    .w(dp(if m.rich { 68. } else { 48. }))
+                                                    .children(
+                                                        [
+                                                            Some((m.tone, m.initials.clone())),
+                                                            m.rich.then(|| {
+                                                                (
+                                                                    Tone::Mint,
+                                                                    SharedString::from("JR"),
+                                                                )
+                                                            }),
+                                                            Some((
+                                                                Tone::Graphite,
+                                                                self.me_initials.clone(),
+                                                            )),
+                                                        ]
+                                                        .into_iter()
+                                                        .flatten()
+                                                        .enumerate()
+                                                        .map(|(n, (tone, initials))| {
+                                                            avatar(tone, &initials, 28.)
+                                                                .absolute()
+                                                                .top_0()
+                                                                .left(dp(n as f32 * 20.))
                                                         }),
-                                                        Some((
-                                                            Tone::Graphite,
-                                                            self.me_initials.clone(),
-                                                        )),
-                                                    ]
-                                                    .into_iter()
-                                                    .flatten()
-                                                    .enumerate()
-                                                    .map(|(n, (tone, initials))| {
-                                                        avatar(tone, &initials, 28.)
-                                                            .absolute()
-                                                            .top_0()
-                                                            .left(dp(n as f32 * 20.))
-                                                    }),
-                                                ),
-                                        )
-                                        .child(meta(m.participants.clone(), t.text3).flex_1())
-                                        .child(mono(m.time.clone(), t.text3)),
-                                )
-                                .when(!m.brief.is_empty(), |d| d.child(self.brief(t, m)))
+                                                    ),
+                                            )
+                                            .child(meta(m.participants.clone(), t.text3).flex_1())
+                                            .child(mono(m.time.clone(), t.text3)),
+                                    )
+                                })
+                                .when(!original && !m.brief.is_empty(), |d| {
+                                    d.child(self.brief(t, m))
+                                })
                                 // The folded messages, each between two lines: the stack closes
                                 // with its own line, right under the last one, so the last sits
                                 // as the others do (the column's gap comes after the line).
                                 .when(!m.earlier.is_empty(), |d| {
-                                    d.child(div().border_b_1().border_color(t.border).children(
-                                        m.earlier.iter().enumerate().map(|(k, e)| {
-                                            let (tone, initials, when) = m.earlier_look(k);
-                                            // Click a collapsed message to read it in full.
-                                            div()
-                                                .child(
-                                                    earlier(
-                                                        tone,
-                                                        &initials,
-                                                        &e.sender,
-                                                        if e.expanded { "" } else { &e.snippet },
+                                    // In the original view the lines run across the pane,
+                                    // as the one over each email does.
+                                    let across = if original { ORIGINAL_SIDE } else { 0. };
+                                    d.child(
+                                        div()
+                                            .mx(dp(-across))
+                                            .border_b_1()
+                                            .border_color(t.border)
+                                            .children(m.earlier.iter().enumerate().map(
+                                                |(k, e)| {
+                                                    let (tone, initials, when) = m.earlier_look(k);
+                                                    // Click a folded message to read it in
+                                                    // full; open, its header stands in for its
+                                                    // line, and the change is animated.
+                                                    let line = earlier(
+                                                        tone, &initials, &e.sender, &e.snippet,
                                                         &when,
                                                     )
-                                                    .id(("earlier", k))
-                                                    .cursor_pointer()
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        let selected = this.selected;
-                                                        if let Some(e) = this
-                                                            .mails
-                                                            .get_mut(selected)
-                                                            .and_then(|m| m.earlier.get_mut(k))
-                                                        {
-                                                            e.expanded = !e.expanded;
-                                                            cx.notify();
-                                                        }
-                                                    })),
-                                                )
-                                                .when(e.expanded, |d| {
-                                                    d.child(
-                                                        div()
-                                                            .flex()
-                                                            .flex_col()
-                                                            .gap(dp(12.))
-                                                            .pb(dp(14.))
-                                                            .child(self.message_header(
-                                                                t,
-                                                                m,
-                                                                k + 1,
-                                                                true,
-                                                                cx,
-                                                            ))
-                                                            .child(
-                                                                self.message_body(
-                                                                    t,
-                                                                    &e.blocks,
-                                                                    (k + 1) * 1000,
-                                                                    &selectable,
-                                                                    self.account_of(m),
-                                                                    cx,
-                                                                )
-                                                                .pl(dp(40.)),
-                                                            )
-                                                            .when(
-                                                                !e.header.attachments.is_empty(),
-                                                                |d| {
-                                                                    d.child(
-                                                                        self.attachment_row(
-                                                                            t,
-                                                                            &e.header.attachments,
-                                                                            (k + 1) * 100,
-                                                                            m.account.as_deref(),
-                                                                            cx,
-                                                                        )
-                                                                        .pl(dp(40.)),
-                                                                    )
+                                                    .px(dp(across));
+                                                    if !e.expanded {
+                                                        return self
+                                                            .folded_message(line, k, cx)
+                                                            .into_any_element();
+                                                    }
+                                                    let body = div()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap(dp(12.))
+                                                        // Where its line has its text, so it opens
+                                                        // without anything in it moving.
+                                                        .pt(dp(FOLD_LINE_PAD))
+                                                        .pb(dp(14.))
+                                                        .px(dp(across))
+                                                        .border_t_1()
+                                                        .border_color(t.border)
+                                                        .child(self.message_header(
+                                                            t,
+                                                            m,
+                                                            k + 1,
+                                                            true,
+                                                            cx,
+                                                        ))
+                                                        .child(self.message_text(
+                                                            t,
+                                                            m,
+                                                            k + 1,
+                                                            original.then_some(&thread),
+                                                            // The gap over it, and the gap or
+                                                            // padding under it.
+                                                            (
+                                                                12.,
+                                                                if e.header.attachments.is_empty() {
+                                                                    14.
+                                                                } else {
+                                                                    12. - ORIGINAL_SIDE
                                                                 },
                                                             ),
+                                                            &selectable,
+                                                            cx,
+                                                        ))
+                                                        .when(
+                                                            !e.header.attachments.is_empty(),
+                                                            |d| {
+                                                                d.child(
+                                                                    self.attachment_row(
+                                                                        t,
+                                                                        &e.header.attachments,
+                                                                        (k + 1) * 100,
+                                                                        m.account.as_deref(),
+                                                                        cx,
+                                                                    )
+                                                                    .pl(dp(attachments_indent(
+                                                                        original
+                                                                            && e.html.is_some(),
+                                                                    ))),
+                                                                )
+                                                            },
+                                                        );
+                                                    self.fold_block(
+                                                        (self.thread_key(m), k),
+                                                        body,
+                                                        line,
                                                     )
-                                                })
-                                        }),
-                                    ))
+                                                },
+                                            )),
+                                    )
                                 })
-                                .when(m.earlier.is_empty(), |d| d.child(divider()))
+                                .when(m.earlier.is_empty() && !original, |d| d.child(divider()))
                                 .child(self.message_header(t, m, 0, true, cx))
                                 .child(
-                                    self.message_body(
+                                    self.message_text(
                                         t,
-                                        &m.body,
+                                        m,
                                         0,
+                                        original.then_some(&thread),
+                                        // The column's gap over and under it
+                                        // (emails show only in the original view).
+                                        (
+                                            ORIGINAL_GAP,
+                                            if trailing {
+                                                ORIGINAL_GAP - ORIGINAL_SIDE
+                                            } else {
+                                                0.
+                                            },
+                                        ),
                                         &selectable,
-                                        self.account_of(m),
                                         cx,
                                     )
-                                    .pl(dp(40.))
                                     .when(!m.loaded, |d| {
                                         d.child(self.loading_line(t, m, cx.entity()))
                                     }),
@@ -1433,7 +1490,7 @@ impl Nimbra {
                                             m.account.as_deref(),
                                             cx,
                                         )
-                                        .pl(dp(40.)),
+                                        .pl(dp(attachments_indent(original && m.html.is_some()))),
                                     )
                                 })
                                 .when(m.rich, |d| {
@@ -1441,7 +1498,9 @@ impl Nimbra {
                                         div()
                                             .flex()
                                             .gap(dp(10.))
-                                            .pl(dp(40.))
+                                            .pl(dp(attachments_indent(
+                                                original && m.html.is_some(),
+                                            )))
                                             .child(attachment(
                                                 "Q4-Launch-Plan.pdf",
                                                 "PDF · 4.2 MB",
@@ -1459,7 +1518,6 @@ impl Nimbra {
                         ),
                 )
             })
-            .when(original, |d| d.child(self.original_pane(t, m, cx)))
             .children(self.menu_view(t, cx))
     }
 
@@ -1570,6 +1628,8 @@ impl Nimbra {
                     .press(t)
                     .tooltip(tip(t.dark, tip_text, ""))
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        // Not a click on the header row (which folds the message).
+                        cx.stop_propagation();
                         let source =
                             this.mails
                                 .get(this.selected)
@@ -1580,15 +1640,28 @@ impl Nimbra {
                         this.open_compose_from(kind, source, cx);
                     }))
             };
+        // An open earlier message in the main window folds again from its header row, as it
+        // opened from its line (its buttons and recipients keep their own clicks).
+        let foldable = actions && index > 0;
+        // The details card needs an address to show.
+        let has_details = !header.from.address.is_empty();
         div()
             .flex()
             .flex_col()
             .gap(dp(8.))
             .child(
                 div()
+                    .id(("header-row", index))
                     .flex()
-                    .items_center()
+                    // The avatar, the buttons and the time are in line with the name, as in
+                    // a folded message's line, so a message opens without them moving.
+                    .items_start()
                     .gap(dp(12.))
+                    .when(foldable, |d| {
+                        d.cursor_pointer().on_click(
+                            cx.listener(move |this, _, _, cx| this.fold(index - 1, true, cx)),
+                        )
+                    })
                     .child(if index == 0 {
                         // The latest message is the one DMARC was checked for.
                         self.sender_avatar(mail, 28.)
@@ -1605,6 +1678,7 @@ impl Nimbra {
                                 div()
                                     .flex()
                                     .items_center()
+                                    .h(dp(HEADER_LINE))
                                     .gap(dp(8.))
                                     .min_w(dp(0.))
                                     .overflow_hidden()
@@ -1672,8 +1746,12 @@ impl Nimbra {
                                     // size) instead of running under the reply buttons.
                                     .min_w(dp(0.))
                                     .overflow_hidden()
-                                    .cursor_pointer()
+                                    .when(has_details, |d| d.cursor_pointer())
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !has_details {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
                                         let key = (thread.clone(), index);
                                         this.details = if this.details.as_ref() == Some(&key) {
                                             None
@@ -1689,7 +1767,13 @@ impl Nimbra {
                                             .whitespace_nowrap()
                                             .child(meta(short(&summary, 90), t.text3)),
                                     )
-                                    .child(icon(if open { "up" } else { "down" }, 12., t.text3)),
+                                    .when(has_details, |d| {
+                                        d.child(icon(
+                                            if open { "up" } else { "down" },
+                                            12.,
+                                            t.text3,
+                                        ))
+                                    }),
                             ),
                     )
                     // As close together as the toolbar's icons.
@@ -1698,6 +1782,7 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .flex_none()
+                                .h(dp(HEADER_LINE))
                                 .items_center()
                                 .gap(dp(2.))
                                 .child(reply_button(
@@ -1731,14 +1816,114 @@ impl Nimbra {
                             })
                             .flatten()
                             .map(|(name, when)| {
-                                super::threads::snooze_chip(t, name, format!("Until {when}").into())
+                                div().flex().items_center().h(dp(HEADER_LINE)).child(
+                                    super::threads::snooze_chip(
+                                        t,
+                                        name,
+                                        format!("Until {when}").into(),
+                                    ),
+                                )
                             }),
                     )
-                    .child(mono(time, t.text3).flex_none()),
+                    .child(
+                        mono(time, t.text3)
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .h(dp(HEADER_LINE)),
+                    ),
             )
             .when(open && !header.from.address.is_empty(), |d| {
                 d.child(self.details_card(t, header, &card_thread, index, &person, cx))
             })
+    }
+
+    /// A details chip was hovered or left: its copy button opens or closes (`copy_button`).
+    fn hover_copy(&mut self, key: &str, hovered: bool, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        // Turned back part-way: from where it is, so it does not jump.
+        let started = match self.copy_hover.get(key) {
+            Some((was, since)) if *was != hovered => {
+                let gone = since.elapsed().as_secs_f32().min(COPY_TIME);
+                now.checked_sub(std::time::Duration::from_secs_f32(COPY_TIME - gone))
+                    .unwrap_or(now)
+            }
+            _ => now,
+        };
+        self.copy_hover.insert(key.to_string(), (hovered, started));
+        cx.notify();
+    }
+
+    /// A details chip's copy button, in the chip after what it copies: the copy icon, which
+    /// opens as the chip is hovered (and closes as it is left), or "Copied" for a moment
+    /// after a copy. The chip grows for it, which pushes the chips after it along its line
+    /// (each line has room for it: `chip_lines`). `None` while closed.
+    fn copy_button(&self, t: &Theme, key: &str, done: bool, said: &str) -> Option<Div> {
+        if done {
+            // Its width noted, for breaking the lines while one shows (`COPIED_KEY`).
+            let sizes = self.chip_sizes.clone();
+            let button = div()
+                .relative()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(dp(4.))
+                .pl(dp(COPY_GAP))
+                .child(icon("done", 12., t.mint))
+                .child(div().text_color(t.mint).child(said.to_string()))
+                .child(
+                    gpui::canvas(
+                        move |bounds, _, _| {
+                            sizes
+                                .borrow_mut()
+                                .insert(COPIED_KEY.into(), from_screen(bounds.size.width));
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                );
+            return Some(button);
+        }
+        let (hovered, since) = self.copy_hover.get(key).copied()?;
+        let t_ = (since.elapsed().as_secs_f32() / COPY_TIME).min(1.);
+        let open = if hovered {
+            ease_in_out(t_)
+        } else {
+            1. - ease_in_out(t_)
+        };
+        if open <= 0. {
+            return None;
+        }
+        let moving = t_ < 1.;
+        let grow = COPY_ROOM * open;
+        // It grows from nothing to its space and the icon's width, the icon kept whole.
+        let button = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .overflow_hidden()
+            .w(dp(grow))
+            .opacity(open)
+            .child(
+                div()
+                    .flex_none()
+                    .pl(dp(COPY_GAP))
+                    .child(icon("copy", 12., t.text3)),
+            )
+            .when(moving, |d| {
+                d.child(
+                    gpui::canvas(
+                        |_, window, _| window.request_animation_frame(),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_0(),
+                )
+            });
+        Some(button)
     }
 
     /// A message's full header (From, To, Cc, Reply-To, Date). Each address copies on
@@ -1767,20 +1952,34 @@ impl Nimbra {
             let address = p.address.clone();
             let mine = p.address.eq_ignore_ascii_case(&me);
             let hover = t.hover;
-            div()
-                .id(("detail-person", serial))
-                .group("detail-person")
+            let hover_key = key.clone();
+            let copy_button = self.copy_button(t, &key, done, "Copied");
+            // Its width without the copy button (what is in it and its padding), which a
+            // click or a hover does not change, for breaking the lines.
+            let sizes = self.chip_sizes.clone();
+            let size_key = key.clone();
+            let measure = gpui::canvas(
+                move |bounds, window, _| {
+                    let width = from_screen(bounds.size.width) + 2. * CHIP_PAD;
+                    let old = sizes.borrow_mut().insert(size_key.clone(), width);
+                    if old.is_none_or(|old| (old - width).abs() > 0.5) {
+                        window.refresh();
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
+            let chip_key = key.clone();
+            // Name, address and "You", then the copy button, which brings its own space.
+            let who = div()
+                .relative()
                 .flex()
-                .flex_wrap()
                 .items_center()
                 .gap_x(dp(6.))
-                .max_w_full()
-                .px(dp(7.))
-                .py(dp(3.))
-                .rounded(dp(7.))
-                .cursor_pointer()
-                .hover(move |s| s.bg(hover))
-                .press(t)
+                .whitespace_nowrap()
                 .when(!p.name.is_empty(), |d| {
                     d.child(
                         div()
@@ -1791,30 +1990,32 @@ impl Nimbra {
                 })
                 .child(
                     div()
-                        .min_w(dp(0.))
                         .text_color(if p.name.is_empty() { t.text } else { t.text3 })
                         .child(p.address.clone()),
                 )
-                .when(mine, |d| d.child(pill(t, "You", t.violet)))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(dp(4.))
-                        .when(done, |d| {
-                            d.child(icon("done", 12., t.mint))
-                                .child(div().text_color(t.mint).child("Copied"))
-                        })
-                        .when(!done, |d| {
-                            d.invisible()
-                                .group_hover("detail-person", |s| s.visible())
-                                .child(icon("copy", 12., t.text3))
-                        }),
-                )
+                .when(mine, |d| d.child(pill(t, "You", t.violet)));
+            let chip = div()
+                .id(("detail-person", serial))
+                .relative()
+                .flex()
+                .flex_none()
+                .items_center()
+                .px(dp(CHIP_PAD))
+                .py(dp(3.))
+                .rounded(dp(7.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .press(t)
+                .child(who.child(measure))
+                .children(copy_button)
+                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    this.hover_copy(&hover_key, *hovered, cx)
+                }))
                 .tooltip(tip(t.dark, "Copy address", ""))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.copy_text(key.clone(), address.clone(), cx)
-                }))
+                }));
+            (chip_key, chip)
         };
         // The label as wide as the longest ("Reply-To") needs, and level with the first line
         // of its value: one address is 24pt tall, and several wrap under it.
@@ -1837,17 +2038,75 @@ impl Nimbra {
                 )
                 .child(div().flex_1().min_w(dp(0.)).child(value))
         };
-        let people = |list: &[mail::Person],
-                      chip: &mut dyn FnMut(&mail::Person, &mut Context<Self>) -> Stateful<Div>,
-                      cx: &mut Context<Self>| {
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(dp(2.))
-                .ml(dp(-7.))
-                .children(list.iter().map(|p| chip(p, cx)).collect::<Vec<_>>())
-                .into_any_element()
-        };
+        let sizes = self.chip_sizes.clone();
+        let people =
+            |list: &[mail::Person], field: &str, chip: &mut ChipFn, cx: &mut Context<Self>| {
+                let chips: Vec<_> = list.iter().map(|p| chip(p, cx)).collect();
+                let room_key = format!("{base}/{field}");
+                let lines = {
+                    let known = sizes.borrow();
+                    known.get(&room_key).copied().and_then(|room| {
+                        // A chip showing "Copied" is that much wider, from the frame it shows.
+                        let copied_w = known.get(COPIED_KEY).copied().unwrap_or(COPIED_GUESS);
+                        let widths = chips
+                            .iter()
+                            .map(|(key, _)| {
+                                let extra = if copied(key) { copied_w } else { 0. };
+                                known.get(key).map(|w| w + extra)
+                            })
+                            .collect::<Option<Vec<_>>>()?;
+                        Some(chip_lines(&widths, room))
+                    })
+                };
+                // The room the lines have: the whole width the value has (not what the chips
+                // take, which would only ever fit them), and the padding they start into.
+                let noted = sizes.clone();
+                let measure = gpui::canvas(
+                    move |bounds, window, _| {
+                        let room = from_screen(bounds.size.width) + CHIP_PAD;
+                        let old = noted.borrow_mut().insert(room_key.clone(), room);
+                        if old.is_none_or(|old| (old - room).abs() > 0.5) {
+                            window.refresh();
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full();
+                let base = div().ml(dp(-CHIP_PAD));
+                let chips_el = match lines {
+                    // Broken by hand, each line with room for a copy button: a chip that opens
+                    // pushes the ones after it along, and never off its line or out of the card.
+                    Some(lines) => {
+                        let mut chips = chips.into_iter().map(|(_, chip)| chip);
+                        base.flex()
+                            .flex_col()
+                            .gap_y(dp(CHIP_GAP))
+                            .children(lines.into_iter().map(|count| {
+                                div()
+                                    .flex()
+                                    .gap_x(dp(CHIP_GAP))
+                                    .children(chips.by_ref().take(count).collect::<Vec<_>>())
+                            }))
+                            .into_any_element()
+                    }
+                    // Not laid out yet: as they wrap.
+                    None => base
+                        .flex()
+                        .flex_wrap()
+                        .gap(dp(CHIP_GAP))
+                        .children(chips.into_iter().map(|(_, chip)| chip))
+                        .into_any_element(),
+                };
+                div()
+                    .relative()
+                    .w_full()
+                    .child(measure)
+                    .child(chips_el)
+                    .into_any_element()
+            };
         // The whole header as text, for "Copy all".
         let mut all = vec![format!("From: {}", person(&header.from))];
         let join = |list: &[mail::Person]| list.iter().map(person).collect::<Vec<_>>().join(", ");
@@ -1870,18 +2129,16 @@ impl Nimbra {
         let date_key = format!("{base}/date");
         let date_done = copied(&date_key);
         let hover = t.hover;
-        let from = people(std::slice::from_ref(&header.from), &mut chip, cx);
-        let to = (!header.to.is_empty()).then(|| people(&header.to, &mut chip, cx));
-        let cc = (!header.cc.is_empty()).then(|| people(&header.cc, &mut chip, cx));
+        let from = people(std::slice::from_ref(&header.from), "from", &mut chip, cx);
+        let to = (!header.to.is_empty()).then(|| people(&header.to, "to", &mut chip, cx));
+        let cc = (!header.cc.is_empty()).then(|| people(&header.cc, "cc", &mut chip, cx));
         let reply_to = header
             .reply_to
             .as_ref()
-            .map(|p| people(std::slice::from_ref(p), &mut chip, cx));
-        // In line with the text under it: the sender's name and the message in the reader,
-        // the avatar and the email itself in the original view (which starts at the left).
-        let flush = self.original_target().is_some();
+            .map(|p| people(std::slice::from_ref(p), "reply-to", &mut chip, cx));
+        // In line with the text under it: the sender's name and the message.
         div()
-            .ml(dp(if flush { 0. } else { 40. }))
+            .ml(dp(40.))
             .flex()
             .flex_col()
             .gap(dp(6.))
@@ -1902,39 +2159,36 @@ impl Nimbra {
             .children(reply_to.map(|v| row("Reply-To", v)))
             .children(date.map(|date| {
                 let text = date.clone();
+                let hover_key = date_key.clone();
+                let copy_button = self.copy_button(t, &date_key, date_done, "Copied");
                 row(
                     "Date",
+                    // As wide as the date, as an address is.
                     div()
-                        .id(("detail-date", index))
-                        .group("detail-date")
                         .flex()
-                        .items_center()
-                        .gap(dp(6.))
-                        .ml(dp(-7.))
-                        .px(dp(7.))
-                        .py(dp(3.))
-                        .rounded(dp(7.))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .press(t)
-                        .child(div().text_color(t.text2).child(date))
-                        .child(if date_done {
+                        .child(
                             div()
+                                .id(("detail-date", index))
                                 .flex()
                                 .items_center()
-                                .gap(dp(4.))
-                                .child(icon("done", 12., t.mint))
-                                .child(div().text_color(t.mint).child("Copied"))
-                        } else {
-                            div()
-                                .invisible()
-                                .group_hover("detail-date", |s| s.visible())
-                                .child(icon("copy", 12., t.text3))
-                        })
-                        .tooltip(tip(t.dark, "Copy date", ""))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.copy_text(date_key.clone(), text.clone(), cx)
-                        }))
+                                .whitespace_nowrap()
+                                .ml(dp(-7.))
+                                .px(dp(7.))
+                                .py(dp(3.))
+                                .rounded(dp(7.))
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(hover))
+                                .press(t)
+                                .child(div().text_color(t.text2).child(date))
+                                .children(copy_button)
+                                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                    this.hover_copy(&hover_key, *hovered, cx)
+                                }))
+                                .tooltip(tip(t.dark, "Copy date", ""))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_text(date_key.clone(), text.clone(), cx)
+                                })),
+                        )
                         .into_any_element(),
                 )
             }))
@@ -2260,111 +2514,344 @@ impl Nimbra {
             })
     }
 
-    /// The area the web view covers, with a strip above it explaining what is blocked.
-    fn original_pane(&self, t: &Theme, m: &Mail, cx: &mut Context<Self>) -> impl IntoElement {
-        let view = self.html_view.clone();
-        let pane_w = self.frame.map_or(0., |f| from_screen(f.size.width)) - self.pane_left();
-        // The email is a native view: it is moved one frame ahead while a panel slides
-        // (see `pane_lead`), so it keeps up with the rest of the window.
-        let lead = self.pane_lead();
-        div()
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h(dp(0.))
-            // Subject, sender, recipients and attachments stay native above the email.
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .flex_col()
-                    .gap(dp(12.))
-                    .px(dp(ORIGINAL_SIDE))
-                    .pt(dp(16.))
-                    // As much room under the sender as beside it.
-                    .pb(dp(ORIGINAL_SIDE))
-                    .border_b_1()
-                    .border_color(t.border)
-                    .child(self.subject_row(t, m, 26., pane_w - 2. * ORIGINAL_SIDE, cx))
-                    .child(self.thread_banners(t, m, cx))
-                    .child(self.message_header(t, m, 0, false, cx)),
-            )
-            // The web view is a native layer; this element only reserves its space and
-            // tells it where that space is each frame.
+    /// A message's body in the conversation: its email in its own formatting (`thread`,
+    /// the original view's key for it) when it has HTML and its web view is up, else its
+    /// text drawn natively. `index` is 0 for the latest, `k + 1` for `earlier[k]`; `gaps`
+    /// are the column's space over and under it (see `email_frame`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn message_text(
+        &self,
+        t: &Theme,
+        m: &Mail,
+        index: usize,
+        thread: Option<&String>,
+        gaps: (f32, f32),
+        selectable: &super::selection::Selectable,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (blocks, message_id) = match index {
+            0 => (&m.body[..], m.header.message_id.as_str()),
+            k => {
+                let e = &m.earlier[k - 1];
+                (&e.blocks[..], e.header.message_id.as_str())
+            }
+        };
+        let slot = thread.and_then(|thread| {
+            self.mail_views
+                .slot(&crate::mail_views::message_key(thread, message_id, index))
+        });
+        match slot {
+            Some(slot) => email_frame(
+                slot,
+                ORIGINAL_SIDE,
+                gaps,
+                self.pane_lead(),
+                Some(self.fold_lead.clone()),
+                self.darkens_mail(),
+                t,
+            ),
+            None => self
+                .message_body(t, blocks, index * 1000, selectable, self.account_of(m), cx)
+                .pl(dp(40.)),
+        }
+    }
+
+    /// Opens (`folded` false) or folds `earlier[k]` of the open thread. Unless motion is
+    /// reduced, the message grows from its line or shrinks back to it (`fold_block`); a
+    /// folding message is folded once it is back to its line (`settle_folds`).
+    pub(super) fn fold(&mut self, k: usize, folded: bool, cx: &mut Context<Self>) {
+        let selected = self.selected;
+        let Some(mail) = self.mails.get(selected) else {
+            return;
+        };
+        let key = (self.thread_key(mail), k);
+        let animate = !crate::integration::display_options().reduce_motion;
+        let line = self.fold_line.get();
+        let now = std::time::Instant::now();
+        if folded && animate {
+            // From where it is: as laid out, or part-way through opening.
+            let shown = self
+                .folds
+                .borrow()
+                .get(&key)
+                .map(|f| f.shown)
+                .unwrap_or_else(|| {
+                    self.fold_heights
+                        .borrow()
+                        .get(&key)
+                        .map_or(line, |h| h.get().max(line))
+                });
+            self.folds.borrow_mut().insert(
+                key,
+                Fold {
+                    from: shown,
+                    shown,
+                    start: now,
+                    closing: true,
+                    done: false,
+                },
+            );
+            cx.notify();
+            return;
+        }
+        if let Some(e) = self
+            .mails
+            .get_mut(selected)
+            .and_then(|m| m.earlier.get_mut(k))
+        {
+            e.expanded = !folded;
+        }
+        if folded || !animate {
+            self.folds.borrow_mut().remove(&key);
+        } else {
+            let shown = self.folds.borrow().get(&key).map_or(line, |f| f.shown);
+            self.folds.borrow_mut().insert(
+                key,
+                Fold {
+                    from: shown,
+                    shown,
+                    start: now,
+                    closing: false,
+                    done: false,
+                },
+            );
+        }
+        cx.notify();
+    }
+
+    /// Folds the messages whose folding has ended (`fold_block` cannot: it only reads).
+    pub(super) fn settle_folds(&mut self) {
+        let done: Vec<_> = self
+            .folds
+            .borrow()
+            .iter()
+            .filter(|(_, f)| f.done)
+            .map(|(key, f)| (key.clone(), f.closing))
+            .collect();
+        for (key, closing) in done {
+            self.folds.borrow_mut().remove(&key);
+            if !closing {
+                continue;
+            }
+            let (thread, k) = &key;
+            let at = self
+                .mails
+                .iter()
+                .position(|m| self.thread_key(m) == *thread);
+            if let Some(e) = at
+                .and_then(|i| self.mails.get_mut(i))
+                .and_then(|m| m.earlier.get_mut(*k))
+            {
+                e.expanded = false;
+            }
+        }
+    }
+
+    /// A folded earlier message: its line, which opens it on a click, and whose height is
+    /// noted for opening from and folding to.
+    fn folded_message(&self, line: Div, k: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let height = self.fold_line.clone();
+        line.relative()
+            .id(("earlier", k))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| this.fold(k, false, cx)))
             .child(
                 gpui::canvas(
-                    move |bounds, _, _| {
-                        if let Some(view) = &view {
-                            view.set_bounds(
-                                f32::from(bounds.origin.x) + lead,
-                                f32::from(bounds.origin.y),
-                                f32::from(bounds.size.width) - lead,
-                                f32::from(bounds.size.height),
-                            );
-                        }
+                    move |bounds, _, _| height.set(f32::from(bounds.size.height)),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+    }
+
+    /// An open earlier message (`body`), noting its height; while it opens or folds, only
+    /// as much of it shows as it has grown to, with its `line` fading out over it, and what
+    /// is under it moves along. The height follows where it is going smoothly, also when
+    /// that changes on the way (its email's height arriving).
+    fn fold_block(&self, key: (ThreadKey, usize), body: Div, line: Div) -> AnyElement {
+        let height = self
+            .fold_heights
+            .borrow_mut()
+            .entry(key.clone())
+            .or_insert_with(|| std::rc::Rc::new(std::cell::Cell::new(0.)))
+            .clone();
+        let noted = height.clone();
+        let body = div().relative().flex_none().child(body).child(
+            gpui::canvas(
+                move |bounds, _, _| noted.set(f32::from(bounds.size.height)),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        );
+        let mut folds = self.folds.borrow_mut();
+        let Some(fold) = folds.get_mut(&key).filter(|f| !f.done) else {
+            return body.into_any_element();
+        };
+        let line_h = self.fold_line.get();
+        let open = height.get().max(line_h);
+        let target = if fold.closing { line_h } else { open };
+        // Where the curve has it now, by the clock (not by frames, which can come late).
+        let at = |t: f32| fold.from + (target - fold.from) * ease_in_out(t.clamp(0., 1.));
+        let t = fold.start.elapsed().as_secs_f32() / FOLD_TIME;
+        let shown = at(t);
+        fold.shown = shown;
+        fold.done = t >= 1.;
+        // How much it grows (or shrinks) by the next frame, for what is under it.
+        let next = if fold.done {
+            0.
+        } else {
+            at(t + self.frame_interval.get() / FOLD_TIME) - shown
+        };
+        let lead = self.fold_lead.clone();
+        let progress = if open <= line_h + 0.5 {
+            0.
+        } else {
+            ((shown - line_h) / (open - line_h)).clamp(0., 1.)
+        };
+        // The pointer stays the hand it was over the line, all the way.
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .h(px(shown))
+            .overflow_hidden()
+            .cursor_pointer()
+            .child(body.opacity(progress))
+            .child(
+                line.absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .cursor_pointer()
+                    .opacity(1. - progress),
+            )
+            .child(
+                gpui::canvas(
+                    move |bounds, window, _| {
+                        window.request_animation_frame();
+                        lead.set(Some((f32::from(bounds.bottom()), next)));
                     },
                     |_, _, _, _| {},
                 )
-                .flex_1()
-                .w_full()
-                .bg(if self.darkens_mail() {
-                    t.surface
-                } else {
-                    gpui::white()
-                }),
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
             )
-            .when(!m.header.attachments.is_empty(), |d| {
-                d.child(self.attachment_tray(t, &m.header.attachments, m.account.as_deref(), cx))
-            })
-    }
-
-    /// The attachments of an email shown in its original formatting, in a tray under it.
-    pub(super) fn attachment_tray(
-        &self,
-        t: &Theme,
-        attachments: &[mail::Attachment],
-        account: Option<&str>,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let total: u64 = attachments.iter().map(|a| a.size).sum();
-        let count = attachments.len();
-        div()
-            .flex()
-            .flex_none()
-            .flex_col()
-            .gap(dp(10.))
-            .px(dp(ORIGINAL_SIDE))
-            .pt(dp(12.))
-            .pb(dp(14.))
-            .bg(t.surface)
-            .border_t_1()
-            .border_color(t.border)
-            .shadow(vec![shadow(c(0x000000, 0.12), -4., 12., 0.)])
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(dp(8.))
-                    .child(icon("clip", 14., t.text3))
-                    .child(
-                        div()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(t.text2)
-                            .child(if count == 1 {
-                                "1 attachment".to_string()
-                            } else {
-                                format!("{count} attachments")
-                            }),
-                    )
-                    .child(meta(format!("· {}", file_size(total)), t.text3)),
-            )
-            .child(self.attachment_row(t, attachments, 0, account, cx))
+            .into_any_element()
     }
 }
 
-/// The original view's side margin (its header, attachments and the email's page): in
-/// line with the toolbar's first icon, whose glyph starts this far in.
+/// The reader's column padding on either side (the conversation's `px`).
+pub(super) const READER_SIDE: f32 = 64.;
+
+/// The original view's: in line with the toolbar's first icon, whose glyph starts this far
+/// in, and with the text of an email's page, whose padding is as wide.
 pub(super) const ORIGINAL_SIDE: f32 = 20.;
+
+/// Where a message opening or folding ends (window px), and how much it will have grown by
+/// the next frame: what under it moves by then. Set while it is drawn, cleared each frame.
+pub(super) type FoldLead = std::rc::Rc<std::cell::Cell<Option<(f32, f32)>>>;
+
+/// Open earlier messages' heights as last laid out, by thread and place.
+pub(super) type FoldHeights =
+    std::cell::RefCell<HashMap<(ThreadKey, usize), std::rc::Rc<std::cell::Cell<f32>>>>;
+
+/// An earlier message opening or folding: how tall it shows (px), as `fold_block` moves it.
+pub(super) struct Fold {
+    /// The height it started from, and since when (`FOLD_TIME`).
+    from: f32,
+    start: std::time::Instant,
+    /// How tall it showed when last drawn: where it starts from if turned back.
+    shown: f32,
+    closing: bool,
+    /// There: `settle_folds` takes it away, and folds the message if it was folding.
+    done: bool,
+}
+
+/// The space before a details chip's copy button.
+const COPY_GAP: f32 = 6.;
+
+/// A details chip's padding at its sides.
+const CHIP_PAD: f32 = 7.;
+
+/// Makes a details chip for a person: its key and the chip.
+type ChipFn<'a> = dyn FnMut(&mail::Person, &mut Context<Nimbra>) -> (String, Stateful<Div>) + 'a;
+
+/// Where the width of a details chip's "Copied" is noted among `chip_sizes`, and what it
+/// is taken to be before it was ever shown (design points).
+const COPIED_KEY: &str = "copied";
+const COPIED_GUESS: f32 = 66.;
+
+/// The space between details chips.
+const CHIP_GAP: f32 = 2.;
+
+/// How many details chips go on each line, given their widths (without a copy button) and
+/// the line's room: each line keeps room for one copy button to open (`COPY_ROOM`), and
+/// has at least one chip.
+fn chip_lines(widths: &[f32], room: f32) -> Vec<usize> {
+    let mut lines = Vec::new();
+    let (mut count, mut used) = (0, 0.);
+    for &width in widths {
+        let next = if count == 0 {
+            width
+        } else {
+            used + CHIP_GAP + width
+        };
+        if count > 0 && next + COPY_ROOM > room {
+            lines.push(count);
+            (count, used) = (1, width);
+        } else {
+            (count, used) = (count + 1, next);
+        }
+    }
+    if count > 0 {
+        lines.push(count);
+    }
+    lines
+}
+
+/// How much a details chip grows for its copy button: its space and the icon.
+const COPY_ROOM: f32 = COPY_GAP + 12.;
+
+/// How long a details chip takes to make room for its copy button (seconds).
+const COPY_TIME: f32 = 0.15;
+
+/// How long a message takes to open or fold (seconds).
+const FOLD_TIME: f32 = 0.28;
+
+/// Slow out, slow in (cubic): no jump at the start, none at the end.
+fn ease_in_out(t: f32) -> f32 {
+    if t < 0.5 {
+        4. * t * t * t
+    } else {
+        1. - (-2. * t + 2.).powi(3) / 2.
+    }
+}
+
+/// A message header's first line (avatar, name, buttons, time), as tall as the avatar: as
+/// a folded message's line is.
+const HEADER_LINE: f32 = 28.;
+
+/// The space over and under a folded message's line.
+const FOLD_LINE_PAD: f32 = 12.;
+
+/// The original view's gap between the parts of a conversation.
+const ORIGINAL_GAP: f32 = 12.;
+
+/// Where a message's attachments start: under its email, in line with the email's text
+/// (the column's edge, where the email's page padding ends), else in line with the
+/// reader's text, past the sender's avatar. Under an email they are as far below it as its
+/// text is from its sides: `email_frame` is given `gap - ORIGINAL_SIDE` under it for that.
+pub(super) fn attachments_indent(under_email: bool) -> f32 {
+    if under_email { 0. } else { 40. }
+}
 
 /// The blank edge inside a 16pt icon (Lucide draws in 2 of its 24 units from each side).
 const GLYPH_INSET: f32 = 16. * 2. / 24.;
@@ -2372,6 +2859,85 @@ const GLYPH_INSET: f32 = 16. * 2. / 24.;
 /// A divider in a toolbar, with as much room on each side as Compose has from the list's
 /// line (LIST_RIGHT), counted to the glyphs: `before` and `after` are the inner padding of
 /// the buttons beside it, and the toolbar's 2pt gap is on both sides too.
+/// Where a message's email shows in the conversation: room as tall as the email, which
+/// places its web view each frame inside what of the pane is on screen. The email takes
+/// the pane's whole width, as in its own formatting it was made to, past the column's
+/// `side` padding (its page has padding of its own). `lead` moves it a frame ahead while a
+/// panel slides (`pane_lead`); under it is the page's own background, while it loads.
+///
+/// `gaps` are the space the column leaves over and under it: the email takes it, so the
+/// room around its text is its page's padding, as at its sides, and over it a line across
+/// the pane, as far under the header as the header is under the line over it.
+///
+/// `below` is where a message over it is opening or folding (`FoldLead`): an email under
+/// it moves with it a frame ahead, as for `lead`, so it does not shake.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn email_frame(
+    slot: std::rc::Rc<crate::mail_views::Slot>,
+    side: f32,
+    gaps: (f32, f32),
+    lead: f32,
+    below: Option<FoldLead>,
+    darkened: bool,
+    t: &Theme,
+) -> Div {
+    // While it opens, the web view keeps its full height and only that much shows.
+    let (height, opening) = slot.shown_height();
+    let full = slot.height();
+    div()
+        .ml(dp(-side))
+        .mr(dp(-side))
+        // Under its header, as much room as over it (a folded line's), then a line across
+        // the pane; the email's page puts its own padding between the line and its text.
+        .mt(dp(FOLD_LINE_PAD - gaps.0))
+        .mb(dp(-gaps.1))
+        .border_t_1()
+        .border_color(t.border)
+        .child(
+            gpui::canvas(
+                move |bounds, window, _| {
+                    if opening {
+                        window.request_animation_frame();
+                    }
+                    // Under a message opening or folding: where the next frame has it.
+                    let ahead = below
+                        .as_ref()
+                        .and_then(|b| b.get())
+                        .filter(|(bottom, _)| f32::from(bounds.origin.y) >= bottom - 1.)
+                        .map_or(0., |(_, dy)| dy);
+                    let bounds = gpui::Bounds {
+                        origin: gpui::point(bounds.origin.x, bounds.origin.y + px(ahead)),
+                        size: bounds.size,
+                    };
+                    // What of the pane is on screen, and of the email has opened.
+                    let clip = window.content_mask().bounds.intersect(&bounds);
+                    slot.place(
+                        (
+                            f32::from(bounds.origin.x) + lead,
+                            f32::from(bounds.origin.y),
+                            f32::from(bounds.size.width) - lead,
+                            full,
+                        ),
+                        (
+                            f32::from(clip.origin.x) + lead,
+                            f32::from(clip.origin.y),
+                            f32::from(clip.size.width) - lead,
+                            f32::from(clip.size.height),
+                        ),
+                    );
+                },
+                |_, _, _, _| {},
+            )
+            .w_full()
+            .h(px(height))
+            .bg(if darkened || height <= 0. {
+                t.surface
+            } else {
+                gpui::white()
+            }),
+        )
+}
+
 pub(super) fn toolbar_rule(t: &Theme, before: f32, after: f32) -> Div {
     div()
         .flex_none()
@@ -2428,6 +2994,28 @@ pub(super) fn action_button(t: &Theme, name: &str, label: &str, worded: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chip_lines_keep_room_for_a_copy_button() {
+        // 100 + 2 + 100 + the button's 18 fits 220, not 219.
+        assert_eq!(chip_lines(&[100., 100.], 220.), [2]);
+        assert_eq!(chip_lines(&[100., 100.], 219.), [1, 1]);
+        assert_eq!(chip_lines(&[50., 50., 50., 50.], 160.), [2, 2]);
+        // One wider than the room still gets a line of its own.
+        assert_eq!(chip_lines(&[500., 10.], 100.), [1, 1]);
+        assert!(chip_lines(&[], 100.).is_empty());
+    }
+
+    #[test]
+    fn opening_starts_and_ends_gently() {
+        assert_eq!(ease_in_out(0.), 0.);
+        assert_eq!(ease_in_out(1.), 1.);
+        assert!((ease_in_out(0.5) - 0.5).abs() < 1e-6);
+        // Barely moving at either end, and always forward.
+        assert!(ease_in_out(0.05) < 0.001 && ease_in_out(0.95) > 0.999);
+        let steps: Vec<f32> = (0..=20).map(|i| ease_in_out(i as f32 / 20.)).collect();
+        assert!(steps.windows(2).all(|w| w[1] >= w[0]));
+    }
     use std::path::{Path, PathBuf};
 
     /// An empty folder of the test's own, removed when it ends.
