@@ -131,6 +131,7 @@ impl MessageWindow {
         dark: bool,
         darkened: bool,
         images: bool,
+        text_scale: f32,
         window: &mut Window,
     ) {
         let wanted = self.original && mail.loaded && mail.html.is_some();
@@ -155,6 +156,7 @@ impl MessageWindow {
             }
             self.html_shown = Some(shown);
         }
+        view.set_zoom(text_scale);
         view.set_visible(true);
     }
 }
@@ -162,9 +164,14 @@ impl MessageWindow {
 impl Render for MessageWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let m = self.mail(cx);
-        let (dark, darkened, images) = {
+        let (dark, darkened, images, text_scale) = {
             let n = self.owner.read(cx);
-            (n.dark, n.darkens_mail(), n.settings.load_images)
+            (
+                n.dark,
+                n.darkens_mail(),
+                n.settings.load_images,
+                crate::webview::zoom_for(n.settings.reader_text),
+            )
         };
         let t = if dark { Theme::dark() } else { Theme::light() };
         window.set_window_title(&m.subject);
@@ -182,7 +189,7 @@ impl Render for MessageWindow {
                 view.set_visible(false);
             }
         } else {
-            self.sync_web_view(&m, dark, darkened, images, window);
+            self.sync_web_view(&m, dark, darkened, images, text_scale, window);
             if let Some(view) = &self.html_view {
                 view.set_hole(if compose.is_some() { reply_rect } else { None });
             }

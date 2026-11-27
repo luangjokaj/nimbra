@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Changed
+- **Mail text size reaches all your mail.** Settings › Appearance › Mail text size now sizes the message list and folded messages too, and emails shown in their original formatting, not only the reader's text. There's a new Extra large step.
 - **Settings at the bottom of the sidebar.** The whole row (your profile, its name and a gear) opens Settings. The light and dark switch that was there moved to Settings › Appearance, and ⌘⇧L still switches.
 
 ### Fixed

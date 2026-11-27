@@ -471,7 +471,8 @@ impl Nimbra {
         let hover = t.hover;
         // How many characters fit on a row at the list's current width (the text is cut
         // with an ellipsis by character count, so this follows the resize handle).
-        let line = ((self.list_width - 120.) / 7.4).max(8.) as usize;
+        let text = RowText::of(self.settings.reader_text);
+        let line = ((self.list_width - 120.) / text.char_w()).max(8.) as usize;
         // On a narrow list the tag gives way so the sender's name stays readable.
         let tag = m
             .tag
@@ -487,12 +488,17 @@ impl Nimbra {
                 self.first_label(m)
                     .map(|(index, label)| (short(&label.name, 18), accents[index % accents.len()]))
             })
-            .filter(|_| line >= 36);
+            // By the list's width, not the text's: the pill keeps its own size.
+            .filter(|_| self.list_width - 120. >= 36. * 7.4);
         let tag_chars = tag
             .as_ref()
             .map_or(0, |(label, _)| label.chars().count() + 6);
+        // The time, the count, the star and the tag keep their own size whatever the mail
+        // text's: their room is counted at the default size (7.4pt a character), then in
+        // characters of the row's text.
         let extras =
             13 + tag_chars + if m.thread.is_some() { 3 } else { 0 } + if m.starred { 3 } else { 0 };
+        let extras = (extras as f32 * 7.4 / text.char_w()).ceil() as usize;
         let sender_max = line.saturating_sub(extras).max(6);
         let subject = short(m.subject.split(',').next().unwrap_or(&m.subject), line);
         let snippet_max = line.saturating_sub(subject.chars().count() + 2);
@@ -509,7 +515,9 @@ impl Nimbra {
             .relative()
             .flex()
             .flex_none()
-            .h(px(ROW_H))
+            .h(px(text.height()))
+            .text_size(px(text.size))
+            .line_height(px(text.line))
             .gap(px(ROW_PAD))
             .px(px(ROW_PAD))
             .py(px(12.))
@@ -546,7 +554,7 @@ impl Nimbra {
                         .left(px((ROW_PAD - 6.) / 2.))
                         // Level with the avatar's middle: the row's padding (12), then half
                         // of its two lines and their gap.
-                        .top(px(12. + (22. + LINE_GAP + 18.) / 2. - 3.))
+                        .top(px(12. + (text.first + LINE_GAP + text.second) / 2. - 3.))
                         .size(px(6.))
                         .rounded_full()
                         .bg(t.violet),
@@ -572,7 +580,7 @@ impl Nimbra {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .h(px(22.))
+                            .h(px(text.first))
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -713,6 +721,7 @@ impl Nimbra {
                     .child(
                         div()
                             .flex()
+                            .h(px(text.second))
                             .gap(px(6.))
                             .child(
                                 // Long subjects shrink with an ellipsis instead of
@@ -985,6 +994,7 @@ impl Nimbra {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let pull = self.pull_indicator(t);
+        let row_h = RowText::of(self.settings.reader_text).height();
         let lead = self.pull_height().map_or(0., |h| h + SLOT_GAP);
         let view_h = f32::from(self.list_scroll.bounds().size.height);
         let target = self.pick_end.unwrap_or(self.selected);
@@ -992,15 +1002,15 @@ impl Nimbra {
             && self.reveal_row.replace(false)
             && let Some(k) = slots.iter().position(|s| *s == Slot::Row(target))
         {
-            let top = lead + slot_top(slots, k);
+            let top = lead + slot_top(slots, k, row_h);
             let scroll = -f32::from(self.list_scroll.offset().y);
-            if let Some(to) = reveal_scroll(top, top + ROW_H, scroll, view_h) {
+            if let Some(to) = reveal_scroll(top, top + row_h, scroll, view_h) {
                 self.list_scroll.set_offset(gpui::point(px(0.), px(-to)));
             }
         }
         // As GPUI will clamp it once laid out, so rows removed at the end of a scrolled
         // list never leave a frame with nothing drawn.
-        let total = slot_top(slots, slots.len());
+        let total = slot_top(slots, slots.len(), row_h);
         let scroll = (-f32::from(self.list_scroll.offset().y))
             .min((lead + total + 10. - view_h).max(0.))
             - lead;
@@ -1008,7 +1018,7 @@ impl Nimbra {
         // or right after a resize, when the list's own bounds are a frame old.
         let tallest = f32::from(window.viewport_size().height);
         let (range, above, below) =
-            window_of(slots, scroll - OVERDRAW, scroll + tallest + OVERDRAW);
+            window_of(slots, scroll - OVERDRAW, scroll + tallest + OVERDRAW, row_h);
         let group = |label: &'static str| {
             div()
                 .flex_none()
@@ -1429,6 +1439,44 @@ pub(super) const ROW_H: f32 = 12. + 22. + LINE_GAP + 18. + 12.;
 /// Between a row's two lines: with the room above the subject's letters, as much as a
 /// label on the first line has beside it (8).
 pub(super) const LINE_GAP: f32 = 5.;
+
+/// A thread row's text at the mail text size: its size and line height, and the heights
+/// of its two lines (the sender's, and the subject's). Default is the one `ROW_H` is for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct RowText {
+    pub(super) size: f32,
+    pub(super) line: f32,
+    pub(super) first: f32,
+    pub(super) second: f32,
+}
+
+impl RowText {
+    pub(super) fn of(size: crate::settings::TextSize) -> Self {
+        use crate::settings::TextSize::{Default, ExtraLarge, Large, Small};
+        let (size, line, first, second) = match size {
+            Small => (12., 17., 20., 17.),
+            Default => (13., 18., 22., 18.),
+            Large => (14.5, 20., 24., 20.),
+            ExtraLarge => (16., 22., 26., 22.),
+        };
+        RowText {
+            size,
+            line,
+            first,
+            second,
+        }
+    }
+
+    /// The row's height: its padding, its two lines and the gap between them.
+    pub(super) fn height(self) -> f32 {
+        12. + self.first + LINE_GAP + self.second + 12.
+    }
+
+    /// An average character's width, for cutting text to fit by count.
+    pub(super) fn char_w(self) -> f32 {
+        7.4 * self.size / 13.
+    }
+}
 const HEADER_H: f32 = 14. + 12. + 6.;
 const WAITING_H: f32 = 14. + 3. + 9. + 8. + 9. + 14.;
 const SLOT_GAP: f32 = 2.;
@@ -1445,10 +1493,11 @@ pub(super) enum Slot {
 }
 
 impl Slot {
-    fn height(self) -> f32 {
+    /// Its height, with thread rows `row_h` tall (`RowText::height`).
+    fn height(self, row_h: f32) -> f32 {
         match self {
             Slot::Header(_) => HEADER_H,
-            Slot::Row(_) => ROW_H,
+            Slot::Row(_) => row_h,
             Slot::Waiting(_) => WAITING_H,
         }
     }
@@ -1472,20 +1521,25 @@ pub(super) fn slots(rows: impl Iterator<Item = (usize, bool)> + Clone, more: boo
 }
 
 /// Where entry `k` starts, from the top of the first.
-pub(super) fn slot_top(slots: &[Slot], k: usize) -> f32 {
-    slots[..k].iter().map(|s| s.height() + SLOT_GAP).sum()
+pub(super) fn slot_top(slots: &[Slot], k: usize, row_h: f32) -> f32 {
+    slots[..k].iter().map(|s| s.height(row_h) + SLOT_GAP).sum()
 }
 
 /// The entries that reach into `from..to` (from the top of the first), and the space above
 /// and below them that stands in for the rest.
-pub(super) fn window_of(slots: &[Slot], from: f32, to: f32) -> (std::ops::Range<usize>, f32, f32) {
+pub(super) fn window_of(
+    slots: &[Slot],
+    from: f32,
+    to: f32,
+    row_h: f32,
+) -> (std::ops::Range<usize>, f32, f32) {
     let mut top = 0.;
     let mut start = slots.len();
     let mut end = slots.len();
     let mut above = 0.;
     for (k, slot) in slots.iter().enumerate() {
         let gap = if k == 0 { 0. } else { SLOT_GAP };
-        let bottom = top + gap + slot.height();
+        let bottom = top + gap + slot.height(row_h);
         if start == slots.len() && bottom > from {
             start = k;
             above = top;
@@ -1496,7 +1550,7 @@ pub(super) fn window_of(slots: &[Slot], from: f32, to: f32) -> (std::ops::Range<
         }
         top = bottom;
     }
-    let total = slot_top(slots, slots.len()) - if slots.is_empty() { 0. } else { SLOT_GAP };
+    let total = slot_top(slots, slots.len(), row_h) - if slots.is_empty() { 0. } else { SLOT_GAP };
     if start == slots.len() {
         return (start..start, total, 0.);
     }
@@ -1504,7 +1558,7 @@ pub(super) fn window_of(slots: &[Slot], from: f32, to: f32) -> (std::ops::Range<
     let rendered_end = if end == 0 {
         0.
     } else {
-        slot_top(slots, end) - SLOT_GAP
+        slot_top(slots, end, row_h) - SLOT_GAP
     };
     (start..end, above, (total - rendered_end).max(0.))
 }
@@ -1598,11 +1652,14 @@ mod tests {
     #[test]
     fn the_window_and_its_spacers_add_up_to_the_whole_list_wherever_it_is_scrolled() {
         let s = sample();
-        let total = slot_top(&s, s.len()) - SLOT_GAP;
+        let total = slot_top(&s, s.len(), ROW_H) - SLOT_GAP;
         for from in [-500., 0., 33., 700., 2000., total - 100., total + 300.] {
             let to = from + 900.;
-            let (range, above, below) = window_of(&s, from, to);
-            let drawn: f32 = s[range.clone()].iter().map(|x| x.height()).sum::<f32>()
+            let (range, above, below) = window_of(&s, from, to, ROW_H);
+            let drawn: f32 = s[range.clone()]
+                .iter()
+                .map(|x| x.height(ROW_H))
+                .sum::<f32>()
                 + SLOT_GAP * range.len().saturating_sub(1) as f32
                 + if range.start > 0 && !range.is_empty() {
                     SLOT_GAP
@@ -1615,13 +1672,47 @@ mod tests {
             );
             // Every entry that reaches into the band is drawn.
             for k in 0..s.len() {
-                let top = slot_top(&s, k);
-                let bottom = top + s[k].height();
+                let top = slot_top(&s, k, ROW_H);
+                let bottom = top + s[k].height(ROW_H);
                 if bottom > from && top < to {
                     assert!(range.contains(&k), "{from}: {k} missing from {range:?}");
                 }
             }
         }
+    }
+
+    #[test]
+    fn rows_grow_with_the_mail_text_size_and_default_is_row_h() {
+        use crate::settings::TextSize;
+        assert_eq!(RowText::of(TextSize::Default).height(), ROW_H);
+        let sizes = [
+            TextSize::Small,
+            TextSize::Default,
+            TextSize::Large,
+            TextSize::ExtraLarge,
+        ]
+        .map(RowText::of);
+        for pair in sizes.windows(2) {
+            assert!(pair[0].height() < pair[1].height());
+            assert!(pair[0].char_w() < pair[1].char_w());
+            // Each line is tall enough for its text.
+            assert!(pair[1].first >= pair[1].line && pair[1].second >= pair[1].line);
+        }
+    }
+
+    #[test]
+    fn the_window_holds_with_taller_rows() {
+        let s = sample();
+        let row_h = RowText::of(crate::settings::TextSize::ExtraLarge).height();
+        let total = slot_top(&s, s.len(), row_h) - SLOT_GAP;
+        let (range, above, below) = window_of(&s, 500., 1400., row_h);
+        let drawn: f32 = s[range.clone()]
+            .iter()
+            .map(|x| x.height(row_h))
+            .sum::<f32>()
+            + SLOT_GAP * range.len().saturating_sub(1) as f32
+            + if range.start > 0 { SLOT_GAP } else { 0. };
+        assert!((above + drawn + below - total).abs() < 0.01);
     }
 
     #[test]
