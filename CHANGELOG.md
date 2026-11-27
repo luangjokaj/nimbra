@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.6] - 2026-11-27
 
 ### New
 - **Brand logos.** Mail from a company that publishes its logo (BIMI), such as PayPal, Apple or LinkedIn, shows that logo instead of initials, but only when the message passed the sender's email authentication (DMARC) and the company enforces it. The logo is looked up once per company and kept on your Mac.
