@@ -941,7 +941,7 @@ impl Nimbra {
                             match () {
                                 _ if sheet.microsoft => "Finish signing in with Microsoft in your browser…",
                                 _ if sheet.busy => "Finding the servers and checking the password…",
-                                _ => "The password is kept in your Mac’s keychain. For Gmail, or with two-step sign-in on, use an app password.",
+                                _ => "The password is kept in your Mac’s keychain. With two-step sign-in on, use an app password.",
                             },
                             t.text3,
                         )
