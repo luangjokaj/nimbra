@@ -285,9 +285,7 @@ impl Nimbra {
         self.pending_focus = Some(input.read(cx).focus_handle(cx));
         self.new_label = Some(input);
         self._new_label_subscription = Some(subscription);
-        if let Some(view) = &self.html_view {
-            view.set_visible(false);
-        }
+        self.mail_views.hide();
         cx.notify();
     }
 

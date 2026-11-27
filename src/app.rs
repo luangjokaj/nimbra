@@ -371,6 +371,14 @@ pub struct Nimbra {
     /// The message whose full header (all recipients, date) is expanded: thread id and
     /// message index (0 is the latest).
     details: Option<(String, usize)>,
+    /// Earlier messages opening or folding, by thread and place (`reading::Fold`).
+    folds: std::cell::RefCell<HashMap<(ThreadKey, usize), reading::Fold>>,
+    /// The height of an open earlier message as last laid out, by thread and place.
+    fold_heights: reading::FoldHeights,
+    /// A folded message's line, as last laid out: where one opens from and folds to.
+    fold_line: std::rc::Rc<std::cell::Cell<f32>>,
+    /// A message opening or folding, for the emails under it (`reading::FoldLead`).
+    fold_lead: reading::FoldLead,
     /// The formatted message editor (a web view), made the first time it is needed.
     editor: Option<std::rc::Rc<crate::editor::EditorView>>,
     /// No editor on this system: composers use the plain line fields.
@@ -391,6 +399,11 @@ pub struct Nimbra {
     settings: crate::settings::Settings,
     /// What was copied last from a message's details, and when (shows "Copied").
     copied: Option<(String, std::time::Instant)>,
+    /// The details' copy buttons, opening (hovered) or closing, and since when, by key.
+    copy_hover: HashMap<String, (bool, std::time::Instant)>,
+    /// The details' chips' widths, and the room their lines have, as last laid out (design
+    /// points), by key: the lines are broken from them (`reading::chip_lines`).
+    chip_sizes: std::rc::Rc<std::cell::RefCell<HashMap<String, f32>>>,
     /// Closing a composer with something in it: asking whether to save it as a draft.
     compose_ask: bool,
     /// When that question opened (a stray Esc right after it must not cancel it).
@@ -680,12 +693,13 @@ pub struct Nimbra {
     /// Remote images allowed in the web view for the open thread. On by default; the
     /// strip above the message can block them.
     original_images: bool,
-    /// The web view, created the first time it is needed.
-    html_view: Option<std::rc::Rc<HtmlView>>,
+    /// The open thread's emails in their own formatting, one web view per open message.
+    mail_views: crate::mail_views::MailViews,
     /// The hidden web view that print jobs are laid out in, always light.
     print_view: Option<HtmlView>,
-    /// What the web view currently shows (thread, images allowed), to avoid reloading.
-    html_shown: Option<(String, bool, bool, bool)>,
+    /// The thread the original view last showed, so another starts with its own images
+    /// setting.
+    html_shown: Option<String>,
     /// The message being written, if the composer is open.
     compose: Option<Composer>,
     /// Focus to hand over on the next frame (set where no window is at hand).
@@ -803,6 +817,7 @@ impl Nimbra {
                 .then(|| crate::microsoft::Config::new(crate::microsoft::Config::PLACEHOLDER))
                 .flatten()
         });
+        let (mail_views, mail_events) = crate::mail_views::MailViews::new();
         let mut settings = crate::settings::load();
         crate::ui::set_zoom(settings.zoom());
         crate::usage::opened(settings.usage_counts);
@@ -994,6 +1009,8 @@ impl Nimbra {
             editor_origin: Default::default(),
             signature_choices: Vec::new(),
             copied: None,
+            copy_hover: HashMap::new(),
+            chip_sizes: Default::default(),
             parked: Vec::new(),
             composer_serial: 0,
             scheduled: Vec::new(),
@@ -1001,6 +1018,10 @@ impl Nimbra {
             schedule_watch: false,
             send_later_times: Vec::new(),
             details: None,
+            folds: Default::default(),
+            fold_heights: Default::default(),
+            fold_line: std::rc::Rc::new(std::cell::Cell::new(53.)),
+            fold_lead: Default::default(),
             store: None,
             notify_from: None,
             synced_to: HashMap::new(),
@@ -1043,7 +1064,7 @@ impl Nimbra {
             from_anchor: Default::default(),
             original: false,
             original_images: true,
-            html_view: None,
+            mail_views,
             html_shown: None,
             print_view: None,
             compose: None,
@@ -1176,6 +1197,20 @@ impl Nimbra {
         // native reader instead. Messages without HTML always use the reader.
         this.original = this.settings.original_view && std::env::var_os("NIMBRA_READER").is_none();
         this.original_images = this.settings.load_images;
+        // Each email's height, as its page works it out (`mail_views.rs`).
+        cx.spawn(async move |this, cx| {
+            use futures::StreamExt as _;
+            let mut events = mail_events;
+            while let Some(event) = events.next().await {
+                let changed = this
+                    .update(cx, |this, _| this.mail_views.handle(event))
+                    .unwrap_or(false);
+                if changed {
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                }
+            }
+        })
+        .detach();
         // NIMBRA_SCREEN=draft opens a sample draft in the composer (screenshots).
         if screen == "draft" {
             this.edit_draft(

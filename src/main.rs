@@ -14,6 +14,7 @@ mod inspiration;
 mod integration;
 mod keyboard;
 mod listing;
+mod mail_views;
 mod notify;
 mod quitting;
 mod signature_images;

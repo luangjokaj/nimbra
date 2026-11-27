@@ -124,11 +124,7 @@ impl Nimbra {
             targets,
             undo: self.can_undo(),
             original: open
-                && (self.original
-                    || self
-                        .mails
-                        .get(self.selected)
-                        .is_some_and(|m| m.html.is_some())),
+                && (self.original || self.mails.get(self.selected).is_some_and(|m| m.has_html())),
         }
     }
 

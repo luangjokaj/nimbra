@@ -280,9 +280,7 @@ impl Nimbra {
             self.copy_selection(&place, &mail, cx);
             return;
         }
-        if let Some(view) = &self.html_view {
-            view.copy();
-        }
+        self.mail_views.copy();
     }
 
     /// ⌘C where `place` shows `mail`: the selected text, a blank line between blocks.

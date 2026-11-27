@@ -1005,10 +1005,7 @@ impl Nimbra {
     /// The ⋯ menu's items, in order: what the toolbar leaves out.
     pub(super) fn more_menu(&self) -> Vec<(MoreAction, &'static str, SharedString)> {
         let demo = self.is_demo();
-        let html = self
-            .mails
-            .get(self.selected)
-            .is_some_and(|m| m.html.is_some());
+        let html = self.mails.get(self.selected).is_some_and(|m| m.has_html());
         let draft = self.mailbox.base() == View::Drafts && !demo;
         let mut items = Vec::new();
         // First, where there is an original to show (not a draft, not plain text): the
