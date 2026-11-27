@@ -2,7 +2,12 @@
 
 ## [Unreleased]
 
+### New
+- **Gmail with an app password.** Add account takes a Gmail or Google Workspace address with an app password too, over IMAP and SMTP, from the same form as any other address. Continue with Google is still the way in. When Google wants an app password rather than the account's own password, Nimbra says so, and Sign in again asks for a new one when the old one is revoked.
+
 ### Fixed
+- **Adding an address twice.** Adding an address that's already in Nimbra is refused, instead of replacing that account's sign-in.
+- **The Add account form and the keyboard.** Escape closes the form in Settings too, typing while it checks starts over, and after a refused password the keyboard is back in the password field, ready to type over it.
 - **Restart from the update card.** The card that says an update is ready no longer flickers, and its Restart button works on the first click. It used to close and reopen whenever one of Nimbra's own windows took the keyboard, which could swallow the click.
 
 ## [0.1.6] - 2026-11-27

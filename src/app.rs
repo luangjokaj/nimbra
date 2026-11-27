@@ -2203,7 +2203,9 @@ fn card(t: &Theme) -> Div {
 impl Nimbra {
     /// Shown in place of the mail panes while signed out, signing in, loading or failed.
     fn status_screen(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let own_servers = self.servers_of(&self.account_id).is_some();
+        let servers = self.servers_of(&self.account_id);
+        let own_servers = servers.is_some();
+        let gmail_password = servers.is_some_and(|s| s.is_gmail());
         let microsoft = self.is_microsoft(&self.account_id);
         let (title, message, action): (&str, SharedString, Option<&str>) = match &self.status {
             Status::SignedOut if microsoft => (
@@ -2217,6 +2219,13 @@ impl Nimbra {
                 "Waiting for Microsoft",
                 "Finish signing in in your browser, then come back here.".into(),
                 None,
+            ),
+            Status::SignedOut if gmail_password => (
+                "Sign in again",
+                "Google stopped taking this account’s app password. Sign in again with a new \
+                 one."
+                    .into(),
+                Some("Sign in"),
             ),
             Status::SignedOut if own_servers => (
                 "Sign in again",

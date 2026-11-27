@@ -496,6 +496,15 @@ impl Render for SettingsWindow {
             .remove_dialog(&t, cx)
             .or_else(|| self.delete_dialog(&t, cx));
         div()
+            // Escape leaves the Add account form, as Cancel does.
+            .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
+                this.owner.update(cx, |n, cx| {
+                    if n.account_sheet.as_ref().is_some_and(|s| s.in_settings) {
+                        n.close_account_sheet(cx);
+                    }
+                });
+                cx.notify();
+            }))
             .relative()
             .flex()
             .size_full()
