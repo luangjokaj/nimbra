@@ -74,6 +74,9 @@ pub struct Progress {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Stage {
+    /// Asked for, and the feed is being read: nothing known yet. `check` never reports
+    /// this one; the app shows it as the check starts.
+    Checking,
     /// Bytes of the disk image so far, and all of them when the server says.
     Downloading { done: u64, total: Option<u64> },
     /// Downloaded: its checksum, signature and notarization are being checked.
@@ -81,6 +84,9 @@ pub enum Stage {
     /// Checked and waiting: it is installed when Nimbra restarts. `check` never reports
     /// this one; the app shows it once `check` says the version is ready.
     Ready,
+    /// Asked for, and there is nothing newer: the version is the one running. `check`
+    /// never reports this one either.
+    Current,
 }
 
 impl Progress {
@@ -90,7 +96,8 @@ impl Progress {
             Stage::Downloading { done, total } => total
                 .filter(|t| *t > 0)
                 .map(|t| (done as f64 / t as f64).clamp(0., 1.) as f32),
-            Stage::Verifying | Stage::Ready => Some(1.),
+            Stage::Verifying | Stage::Ready | Stage::Current => Some(1.),
+            Stage::Checking => None,
         }
     }
 }

@@ -161,6 +161,25 @@ impl Nimbra {
     /// Nimbra › Check for Updates…, and the button in Settings › About: checks now, even
     /// with automatic updates off, and says what it found.
     pub(super) fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        // The sample shows what a check says when there is nothing newer, after a moment
+        // of checking.
+        if self.is_demo() {
+            self.update_progress = Some(checking());
+            cx.notify();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(1400))
+                    .await;
+                this.update(cx, |this, cx| {
+                    if this.update_progress == Some(checking()) {
+                        this.show_up_to_date(cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
+            return;
+        }
         if !crate::update::enabled() {
             self.update_status = Some("This build doesn’t update itself.".into());
             self.notice = Some(
@@ -186,6 +205,10 @@ impl Nimbra {
         }
         self.update_checking = true;
         self.update_status = Some("Checking for updates…".into());
+        // Asked for: the card says so at once, and turns into the download, or the answer.
+        if told {
+            self.update_progress = Some(checking());
+        }
         cx.notify();
         let reporter = crate::update::Reporter::default();
         // How far a download has got, read a few times a second while the check runs.
@@ -197,7 +220,8 @@ impl Nimbra {
                     .await;
                 let now = polled.lock().ok().and_then(|p| p.clone());
                 let checking = this.update(cx, |this, cx| {
-                    if this.update_checking && this.update_progress != now {
+                    // Nothing downloading yet: the card keeps saying it is checking.
+                    if this.update_checking && now.is_some() && this.update_progress != now {
                         this.update_progress = now;
                         cx.notify();
                     }
@@ -229,11 +253,9 @@ impl Nimbra {
                     }
                     Ok(None) => {
                         this.update_status = Some("Nimbra is up to date.".into());
+                        // Said in the card an update shows in, as asked for.
                         if told {
-                            this.notice = Some(
-                                format!("Nimbra is up to date ({}).", env!("CARGO_PKG_VERSION"))
-                                    .into(),
-                            );
+                            this.show_up_to_date(cx);
                         }
                     }
                     // Offline, or a download that was not right: tried again later.
@@ -725,8 +747,27 @@ impl Nimbra {
             version: version.to_string(),
             stage: crate::update::Stage::Ready,
         };
-        self.update_progress = Some(ready.clone());
         let seconds = (4. + update_notice(version).chars().count() as f32 / 25.).min(20.);
+        self.show_update_card(ready, seconds, cx);
+    }
+
+    /// "Already up to date", in the update's card, for a few seconds.
+    pub(super) fn show_up_to_date(&mut self, cx: &mut Context<Self>) {
+        let current = crate::update::Progress {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            stage: crate::update::Stage::Current,
+        };
+        self.show_update_card(current, 3.5, cx);
+    }
+
+    /// Shows `ready` in the update's card at the bottom of the window for `seconds`.
+    fn show_update_card(
+        &mut self,
+        ready: crate::update::Progress,
+        seconds: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_progress = Some(ready.clone());
         cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_secs_f32(seconds))
@@ -743,6 +784,20 @@ impl Nimbra {
         cx.notify();
     }
 }
+
+/// The update's card while a check that was asked for reads the feed.
+fn checking() -> crate::update::Progress {
+    crate::update::Progress {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        stage: crate::update::Stage::Checking,
+    }
+}
+
+/// What the update's card says while it checks.
+pub(super) const CHECKING: &str = "Checking for updates…";
+
+/// What the update's card says when asked and there is nothing newer.
+pub(super) const UP_TO_DATE: &str = "Already up to date";
 
 /// What the update's card says once the new version is ready (beside its Restart button).
 pub(super) fn update_notice(version: &str) -> SharedString {
