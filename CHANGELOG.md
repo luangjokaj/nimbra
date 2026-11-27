@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.5] - 2026-11-27
 
 ### New
 - **Every mailbox across your accounts.** Under All inboxes, Sent, Drafts, Trash, Starred and the rest of Mailbox show every account's mail together, newest first, and Labels lists every account's labels by name. All inboxes stays selected while you move between them; open an account to see its own, Split Inbox included.
