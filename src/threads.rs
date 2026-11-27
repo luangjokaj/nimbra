@@ -946,7 +946,8 @@ impl Nimbra {
         {
             self.undo_block(index, &label, cx);
             self.mails[index].labels.retain(|id| *id != label);
-            if let Some(client) = self.connection.clone() {
+            // The thread's own account: in All inboxes it may be another than the one shown.
+            if let Some(client) = self.client_at(index) {
                 let working = self.writes.begin();
                 cx.background_executor()
                     .spawn(async move {

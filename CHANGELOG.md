@@ -1,5 +1,10 @@
 # Nimbra changelog
 
+## [Unreleased]
+
+### Fixed
+- **Block a sender from All inboxes.** Blocking a conversation from another account no longer asks you to open that account first: the sender is blocked in the conversation's own account, the conversation goes to that account's Blocked label (made if it has none), and Undo unblocks them there again.
+
 ## [0.1.9] - 2026-11-28
 
 ### Changed

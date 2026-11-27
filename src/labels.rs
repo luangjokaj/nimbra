@@ -226,11 +226,18 @@ impl Nimbra {
         if self.is_foreign(index) {
             return;
         }
+        self.unlabel_row(index, label_id, cx);
+    }
+
+    /// Takes the label with this id (of the thread's own account) off the thread in that
+    /// row, in its account.
+    fn unlabel_row(&mut self, index: usize, label_id: String, cx: &mut Context<Self>) {
+        let client = self.client_at(index);
         let Some(mail) = self.mails.get_mut(index) else {
             return;
         };
         mail.labels.retain(|id| *id != label_id);
-        let (Some(client), Some(id)) = (self.connection.clone(), mail.id.clone()) else {
+        let (Some(client), Some(id)) = (client, mail.id.clone()) else {
             cx.notify();
             return;
         };
@@ -484,17 +491,18 @@ impl Nimbra {
         }
     }
 
-    /// The account's Blocked label, if it has one.
-    fn blocked_label(&self) -> Option<String> {
-        self.labels
-            .iter()
+    /// The Blocked label of the account the thread in row `index` is from, if it has one.
+    fn blocked_label(&self, index: usize) -> Option<String> {
+        let account = self.account_of(self.mails.get(index)?);
+        self.labels_of(account)
+            .into_iter()
             .find(|l| crate::blocking::is_label(&l.name))
-            .map(|l| l.id.clone())
+            .map(|l| l.id)
     }
 
-    /// Whether the thread in row `index` is in the Blocked label.
+    /// Whether the thread in row `index` is in its account's Blocked label.
     pub(super) fn sender_blocked(&self, index: usize) -> bool {
-        let (Some(label), Some(mail)) = (self.blocked_label(), self.mails.get(index)) else {
+        let (Some(label), Some(mail)) = (self.blocked_label(index), self.mails.get(index)) else {
             return false;
         };
         mail.labels.contains(&label)
@@ -511,13 +519,6 @@ impl Nimbra {
         if self.picked.len() >= 2 {
             return refuse(self, "Block one sender at a time.", cx);
         }
-        if self.is_foreign(index) {
-            return refuse(
-                self,
-                "Blocked senders belong to each account: open this conversation's account to block its sender.",
-                cx,
-            );
-        }
         let Some(mail) = self
             .mails
             .get(index)
@@ -530,21 +531,24 @@ impl Nimbra {
             return refuse(self, "Open the conversation to block its sender.", cx);
         }
         let name = short(mail.header.from.label(), 40);
-        let (Some(client), Some(store)) = (self.connection.clone(), self.store.clone()) else {
+        // Each account keeps its own blocked senders and Blocked label: the thread's.
+        let account = self.account_of(mail).to_string();
+        let (Some(client), Some(store)) = (self.client_at(index), self.store_of(&account)) else {
             return;
         };
+        let label = self.blocked_label(index);
         let unblock = self.sender_blocked(index);
         if unblock {
-            if let Some(label) = self.blocked_label() {
-                self.remove_label(index, label, cx);
+            if let Some(label) = label.clone() {
+                self.unlabel_row(index, label, cx);
             }
             self.move_selected(MoveTarget::Inbox, cx);
             self.notice = Some(format!("Unblocked {name}").into());
-        } else if let Some(label) = self.blocked_label() {
+        } else if let Some(label) = label.clone() {
             self.block_moved(label, &name, cx);
         }
         let meant = Some(self.meant_for(&[index]));
-        let had_label = self.blocked_label().is_some();
+        let had_label = label.is_some();
         let generation = self.account_gen;
         let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
@@ -570,8 +574,11 @@ impl Nimbra {
                     Ok(None) => {}
                     Ok(Some((label, moved))) => {
                         if !had_label {
-                            // Made just now: list it, then move the thread there.
-                            if !this.labels.iter().any(|l| l.id == label) {
+                            // Made just now: list it (the shown account's; another's is
+                            // listed when it is next refreshed), then move the thread there.
+                            if account == this.account_id
+                                && !this.labels.iter().any(|l| l.id == label)
+                            {
                                 let made = mail::Label {
                                     id: label.clone(),
                                     name: crate::blocking::LABEL.into(),
@@ -595,24 +602,76 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Moves the open thread to Blocked. Its Undo also unblocks the sender
-    /// (`Nimbra::undo_block`); out of the inbox nothing leaves the list, so nothing to undo.
+    /// Moves the open thread to Blocked, in its own account (`move_selected` knows only the
+    /// shown account's labels). Its Undo also unblocks the sender (`Nimbra::undo_block`);
+    /// out of the inbox nothing leaves the list, so nothing to undo.
     fn block_moved(&mut self, label: String, name: &str, cx: &mut Context<Self>) {
         let leaves = inbox_like(self.mailbox);
-        self.move_selected(MoveTarget::Label(label), cx);
+        let index = self.selected;
+        let Some(thread) = self.mails.get(index).and_then(|m| m.id.clone()) else {
+            return;
+        };
+        self.label_row(index, label.clone(), cx);
         if leaves {
+            self.moved.insert(thread, label);
+            self.remove_selected(mail::Change::Archive, cx);
             self.offer_undo(format!("Blocked {name}"), cx);
         } else {
             self.notice = Some(format!("Blocked {name}").into());
         }
     }
 
+    /// Puts the label with this id (of the thread's own account) on the thread in that
+    /// row, in its account. Shows in the shown account's label mailbox at once.
+    fn label_row(&mut self, index: usize, label_id: String, cx: &mut Context<Self>) {
+        let client = self.client_at(index);
+        let Some(mail) = self.mails.get_mut(index) else {
+            return;
+        };
+        if !mail.labels.contains(&label_id) {
+            mail.labels.push(label_id.clone());
+        }
+        let (Some(client), Some(id)) = (client, mail.id.clone()) else {
+            return;
+        };
+        let (account, now) = (
+            self.account_of(&self.mails[index]).to_string(),
+            self.mails[index].clone(),
+        );
+        if account == self.account_id
+            && let Some(position) = self.labels.iter().position(|l| l.id == label_id)
+        {
+            self.pending.add(View::Label(position), &account, &now);
+        }
+        let working = self.writes.begin();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let _working = working;
+                    client.add_label(&id, &label_id)
+                })
+                .await;
+            if let Err(error) = result {
+                this.update(cx, |this, cx| this.fail(error, cx)).ok();
+            }
+        })
+        .detach();
+    }
+
     /// Undoing a move to Blocked takes the sender off the list again.
     pub(super) fn undo_block(&mut self, index: usize, label: &str, cx: &mut Context<Self>) {
-        if self.blocked_label().as_deref() != Some(label) {
+        let Some(mail) = self.mails.get(index) else {
             return;
-        }
-        let (Some(mail), Some(store)) = (self.mails.get(index), self.store.clone()) else {
+        };
+        let account = self.account_of(mail);
+        let blocked = match self.labels_of(account).into_iter().find(|l| l.id == label) {
+            Some(listed) => crate::blocking::is_label(&listed.name),
+            // Not listed yet: the Blocked label that blocking just made in another account
+            // (only the shown account's list learns it at once).
+            None => true,
+        };
+        let Some(store) = self.store_of(account).filter(|_| blocked) else {
             return;
         };
         let address = mail.header.from.address.clone();

@@ -1434,6 +1434,19 @@ impl Nimbra {
         .detach();
     }
 
+    /// An account's labels: the one shown's, and another's as its store last kept them.
+    /// Disk, small.
+    pub(super) fn labels_of(&self, account: &str) -> Vec<mail::Label> {
+        if account == self.account_id {
+            return self.labels.clone();
+        }
+        self.other_stores
+            .get(account)
+            .and_then(|store| store.load::<Saved>("meta"))
+            .map(|saved| saved.labels)
+            .unwrap_or_default()
+    }
+
     /// Every account's labels by name (`every_labels`): the one shown's, and the others' as
     /// their stores last kept them. An open label of every account's stays open by name
     /// when the list moves under it. Disk, small.
@@ -1448,18 +1461,7 @@ impl Nimbra {
             .settings
             .accounts
             .iter()
-            .map(|account| {
-                let labels = if account.id == self.account_id {
-                    self.labels.clone()
-                } else {
-                    self.other_stores
-                        .get(&account.id)
-                        .and_then(|store| store.load::<Saved>("meta"))
-                        .map(|saved| saved.labels)
-                        .unwrap_or_default()
-                };
-                (account.id.clone(), labels)
-            })
+            .map(|account| (account.id.clone(), self.labels_of(&account.id)))
             .collect();
         self.every_labels = listing::labels_by_name(
             labels
