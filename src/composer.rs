@@ -449,12 +449,22 @@ impl Nimbra {
                 composer.quoted = answered.quoted;
                 composer.kept = answered.kept;
             } else {
-                if !answered.to.is_empty() {
-                    let to = answered.to.join(", ");
-                    composer
-                        .to
-                        .update(cx, |input, cx| input.set(to, usize::MAX, cx));
-                    composer.chipify(Field::To, true, cx);
+                // Each address in the field it was in (reply-all keeps Cc on Cc, and on my
+                // own message Bcc on Bcc), with the Cc and Bcc row open when either has one.
+                composer.show_cc = !answered.cc.is_empty() || !answered.bcc.is_empty();
+                for (field, list) in [
+                    (Field::To, &answered.to),
+                    (Field::Cc, &answered.cc),
+                    (Field::Bcc, &answered.bcc),
+                ] {
+                    if list.is_empty() {
+                        continue;
+                    }
+                    let text = list.join(", ");
+                    if let Some(input) = composer.input(field) {
+                        input.update(cx, |input, cx| input.set(text, usize::MAX, cx));
+                    }
+                    composer.chipify(field, true, cx);
                 }
                 composer.reply = answered.reply;
                 // The message being answered is quoted below, folded behind "•••".

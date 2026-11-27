@@ -1987,15 +1987,19 @@ impl Nimbra {
             .size_full();
             let chip_key = key.clone();
             // Name, address and "You", then the copy button, which brings its own space.
+            // On one line; where the card is too narrow for it, the address ends in "…" (the
+            // name and "You" keep their room).
             let who = div()
                 .relative()
                 .flex()
                 .items_center()
+                .min_w(dp(0.))
                 .gap_x(dp(6.))
                 .whitespace_nowrap()
                 .when(!p.name.is_empty(), |d| {
                     d.child(
                         div()
+                            .flex_none()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(t.text)
                             .child(p.name.clone()),
@@ -2003,15 +2007,19 @@ impl Nimbra {
                 })
                 .child(
                     div()
+                        .min_w(dp(0.))
+                        .truncate()
                         .text_color(if p.name.is_empty() { t.text } else { t.text3 })
                         .child(p.address.clone()),
                 )
-                .when(mine, |d| d.child(pill(t, "You", t.violet)));
+                .when(mine, |d| d.child(pill(t, "You", t.violet).flex_none()));
             let chip = div()
                 .id(("detail-person", serial))
                 .relative()
                 .flex()
                 .flex_none()
+                // No wider than its line: what is in it shortens instead.
+                .max_w_full()
                 .items_center()
                 .px(dp(CHIP_PAD))
                 .py(dp(3.))
