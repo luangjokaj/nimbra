@@ -7,6 +7,7 @@
 - **New mail is there when it is announced.** A thread that arrives goes into the Inbox and All inboxes, with its message, before its notification shows, so clicking the notification opens it at once.
 - **Every account's mailboxes open at once.** All inboxes, and every account's Sent, Trash, Drafts and the rest, open from what each account keeps on this Mac and are brought up to date behind it, rather than waiting on every account. Switching accounts no longer forgets them either.
 - **What's new, in the sidebar.** After an update, Nimbra no longer opens the release notes in the browser: a card above Settings says it just updated and links to the changelog. It stays until it is opened or dismissed with its X, and after another update it links to the newest notes.
+- **A Help menu.** Report a Problem… (⌥⇧⌘I) opens a new issue on GitHub, with Nimbra's and macOS's versions filled in; Keyboard Shortcuts opens the shortcuts sheet; Release Notes opens this version's notes.
 
 ## [0.1.8] - 2026-11-27
 

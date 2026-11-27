@@ -144,6 +144,10 @@ actions!(
         AboutNimbra,
         /// Nimbra › Check for Updates…
         CheckForUpdates,
+        /// Help › Report a Problem…: a new issue on GitHub.
+        ReportProblem,
+        /// Help › Release Notes: this version's, on the website.
+        ReleaseNotes,
         HideOthers,
         ShowAll,
         Minimize,
@@ -162,6 +166,7 @@ actions!(
         MenuToggleOriginal,
         MenuToggleSidebar,
         MenuSearch,
+        MenuShortcuts,
         Quit,
         // The keyboard (see `keyboard.rs`).
         FocusSidebar,
@@ -2809,6 +2814,12 @@ impl Render for Nimbra {
             }))
             .on_action(cx.listener(|this, _: &MenuToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &MenuSearch, _, cx| this.focus_search(cx)))
+            // Help › Keyboard Shortcuts opens the sheet, and leaves it open if it is.
+            .on_action(cx.listener(|this, _: &MenuShortcuts, window, cx| {
+                if this.shortcuts_window.is_none() {
+                    this.toggle_shortcuts(window, cx)
+                }
+            }))
             .on_action(cx.listener(|this, _: &SelectAllThreads, _, cx| {
                 let visible = this.visible();
                 if visible.len() >= 2 {

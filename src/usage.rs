@@ -88,7 +88,7 @@ fn first_today() -> bool {
 }
 
 /// The macOS major version ("26"), or empty when it cannot be read.
-fn macos_version() -> String {
+pub fn macos_version() -> String {
     std::process::Command::new("/usr/bin/sw_vers")
         .arg("-productVersion")
         .output()
