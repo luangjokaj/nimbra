@@ -709,6 +709,7 @@ impl Nimbra {
         self.search_opened = None;
         self.html_shown = None;
         self.mail_views.clear();
+        self.pending.clear();
         self.print_view = None;
         self.account = "".into();
         self.me_initials = "".into();
@@ -898,6 +899,12 @@ impl Nimbra {
     /// threads cleared in the meantime, then saves it.
     pub(super) fn install(&mut self, fresh: Vec<Mail>, cx: &mut Context<Self>) {
         let mut fresh = fresh;
+        // With what was changed here and is not listed yet (`pending`).
+        let shown = self.account_id.clone();
+        self.pending
+            .apply(self.mailbox, &shown, &mut fresh, true, false, |m| {
+                m.account.clone().unwrap_or_else(|| shown.clone())
+            });
         // For the chips of other accounts' snoozed threads (All inboxes), and Snoozed.
         self.read_snoozed_elsewhere();
         // Snoozed lists Gmail's own snoozed threads and the ones snoozed here; Reminders,

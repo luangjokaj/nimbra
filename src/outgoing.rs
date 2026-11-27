@@ -302,6 +302,55 @@ impl Nimbra {
         .detach();
     }
 
+    /// Lists `account`'s Sent again in the background, after a message went from it, and
+    /// keeps what it finds for when Sent is opened (from memory, or from its store after a
+    /// restart). Nothing is shown if it fails: Sent is listed when it is opened anyway.
+    fn refresh_sent(&mut self, account: String, cx: &mut Context<Self>) {
+        if self.is_demo() {
+            return;
+        }
+        let shown = account == self.account_id;
+        let store = if shown {
+            self.store.clone()
+        } else {
+            self.other_stores.get(&account).cloned()
+        };
+        let (Some(client), Some(store)) = (self.client_for(Some(&account)), store) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let listed =
+                cx.background_executor()
+                    .spawn(async move {
+                        nimbra_core::listing::refresh(&*client, &store, View::Sent, None)
+                    })
+                    .await;
+            let Ok(listed) = listed else {
+                return;
+            };
+            this.update(cx, |this, _| {
+                // Kept for the account on screen; another account's is in its store.
+                if account != this.account_id {
+                    return;
+                }
+                let fresh: Vec<Mail> = listed
+                    .rows
+                    .into_iter()
+                    .map(|row| {
+                        let mut mail = Mail::from(row);
+                        mail.refresh_time();
+                        mail
+                    })
+                    .collect();
+                let kept = this.cache.get(&View::Sent).cloned().unwrap_or_default();
+                this.cache
+                    .insert(View::Sent, crate::data::merge(&kept, fresh));
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Gmail answered a send, or could not be reached. Its account may not be the one
     /// shown, and may not have been when it was sent.
     fn send_ended(&mut self, job: Arc<Job>, result: anyhow::Result<()>, cx: &mut Context<Self>) {
@@ -328,6 +377,9 @@ impl Nimbra {
                 }
                 if matches!(self.mailbox.base(), View::Sent | View::Drafts) {
                     self.refresh(cx);
+                } else {
+                    // Sent is listed again now, so it shows the message when it is opened.
+                    self.refresh_sent(job.account.clone(), cx);
                 }
                 cx.notify();
                 return;

@@ -701,6 +701,11 @@ impl Nimbra {
         let (Some(client), Some(id)) = (self.connection.clone(), mail.id.clone()) else {
             return;
         };
+        // In the label's mailbox at once, before it is listed there again (`pending`).
+        let (account, now) = (self.account_of(mail).to_string(), mail.clone());
+        if let Some(position) = self.labels.iter().position(|l| l.id == label.id) {
+            self.pending.add(View::Label(position), &account, &now);
+        }
         let name = label.name.clone();
         let working = self.writes.begin();
         cx.spawn(async move |this, cx| {
