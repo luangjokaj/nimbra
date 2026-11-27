@@ -566,7 +566,7 @@ impl Nimbra {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .child(avatar(m.tone, &m.initials, 28.)),
+                    .child(self.sender_avatar(m, 28.)),
             )
             .child(
                 div()

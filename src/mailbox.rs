@@ -730,7 +730,8 @@ impl Nimbra {
                     this.refresh(cx);
                     return;
                 }
-                if let Some(saved) = saved {
+                // Kept in an older rows' format: listed afresh once (`Meta::current`).
+                if let Some(saved) = saved.map(Saved::current) {
                     if saved.account.contains('@') {
                         let generation = this.account_gen;
                         this.remember_account(&saved.account, cx);
@@ -798,6 +799,7 @@ impl Nimbra {
             counts: self.counts.clone(),
             labels: self.labels.clone(),
             synced_to: self.synced_to.clone(),
+            rows: nimbra_core::listing::ROWS,
         };
         // Written in turn on the store's thread, which also turns them into JSON. The list
         // first: a sync point ahead of its list would miss what changed.

@@ -1589,7 +1589,12 @@ impl Nimbra {
                     .flex()
                     .items_center()
                     .gap(dp(12.))
-                    .child(avatar(tone, &initials, 28.))
+                    .child(if index == 0 {
+                        // The latest message is the one DMARC was checked for.
+                        self.sender_avatar(mail, 28.)
+                    } else {
+                        avatar(tone, &initials, 28.).into_any_element()
+                    })
                     .child(
                         div()
                             .flex_1()
