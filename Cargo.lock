@@ -3138,7 +3138,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -4028,8 +4028,8 @@ dependencies = [
 
 [[package]]
 name = "nimbra-core"
-version = "0.1.5"
-source = "git+https://github.com/nimbra-mail/core?tag=v0.1.5#4bf699703c550faac38d22abf631b4b31209b273"
+version = "0.1.6"
+source = "git+https://github.com/nimbra-mail/core?tag=v0.1.6#b57e3d77643c75394dce70948965c24106fa7cff"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
