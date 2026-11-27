@@ -1,5 +1,10 @@
 # Nimbra changelog
 
+## [Unreleased]
+
+### Fixed
+- **Restart from the update card.** The card that says an update is ready no longer flickers, and its Restart button works on the first click. It used to close and reopen whenever one of Nimbra's own windows took the keyboard, which could swallow the click.
+
 ## [0.1.6] - 2026-11-27
 
 ### New
