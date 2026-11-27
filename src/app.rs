@@ -701,6 +701,13 @@ pub struct Nimbra {
     me_initials: SharedString,
     /// The account's Google profile photo, shown in place of the initial.
     photos: HashMap<String, Arc<gpui::Image>>,
+    /// Brand logos by sender domain (`bimi`), or that the domain has none.
+    brand_logos: HashMap<String, Option<Arc<gpui::Image>>>,
+    /// Domains whose logo is being looked up.
+    brand_asking: HashSet<String>,
+    /// Where logos are kept: one store for every account (`Store::open_shared`), opened on
+    /// first need.
+    brand_store: Option<Arc<crate::store::Store>>,
     /// What Google answered about each account's photo, once it has.
     photo_answers: HashMap<String, PhotoAnswer>,
     /// The accounts whose photo was asked for this session.
@@ -1050,6 +1057,9 @@ impl Nimbra {
             },
             me_initials: if demo { "LG".into() } else { "ME".into() },
             photos: HashMap::new(),
+            brand_logos: HashMap::new(),
+            brand_asking: HashSet::new(),
+            brand_store: None,
             photo_answers: HashMap::new(),
             photos_asked: HashSet::new(),
             notice: None,
@@ -2975,6 +2985,103 @@ fn photo_image(bytes: Vec<u8>) -> Option<Arc<gpui::Image>> {
         return None;
     };
     Some(Arc::new(gpui::Image::from_bytes(format, bytes)))
+}
+
+impl Nimbra {
+    /// A sender's avatar: their brand's logo (`bimi`), for mail that passed DMARC from a
+    /// domain that has one, else their initials.
+    fn sender_avatar(&self, m: &Mail, size: f32) -> AnyElement {
+        let logo = m
+            .brand_domain
+            .as_ref()
+            .and_then(|domain| self.brand_logos.get(domain))
+            .cloned()
+            .flatten();
+        match logo {
+            // Square, made to be cut to a circle; white under any see-through parts.
+            // GPUI clips children to a rectangle, so the image is rounded itself, as the
+            // profile photo is (`me_avatar`), with the same faint edge as the initials.
+            Some(logo) => div()
+                .flex_none()
+                .size(dp(size))
+                .rounded_full()
+                .overflow_hidden()
+                .bg(gpui::white())
+                .border_1()
+                .border_color(c(0xffffff, 0.18))
+                .child(gpui::img(logo).size_full().rounded_full())
+                .into_any_element(),
+            None => avatar(m.tone, &m.initials, size).into_any_element(),
+        }
+    }
+
+    /// Looks up the brand logos the listed rows can use and doesn't know yet, one domain at
+    /// a time in the background, kept in the one store all accounts share (`bimi::logo`):
+    /// a company writing to two accounts is fetched once.
+    pub(super) fn ask_brand_logos(&mut self, cx: &mut Context<Self>) {
+        let mut jobs: Vec<String> = Vec::new();
+        for m in &self.mails {
+            let Some(domain) = m.brand_domain.clone() else {
+                continue;
+            };
+            if !self.brand_logos.contains_key(&domain)
+                && !self.brand_asking.contains(&domain)
+                && !jobs.contains(&domain)
+            {
+                jobs.push(domain);
+            }
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        self.brand_asking.extend(jobs.iter().cloned());
+        let kept = self.brand_store.clone();
+        cx.spawn(async move |this, cx| {
+            let store = match kept {
+                Some(store) => store,
+                None => {
+                    let opened = cx
+                        .background_executor()
+                        .spawn(async { crate::store::Store::open_shared("brands") })
+                        .await;
+                    let Ok(store) = opened.map(Arc::new) else {
+                        // No keychain: no logos this time, asked again next time.
+                        this.update(cx, |this, _| this.brand_asking.clear()).ok();
+                        return;
+                    };
+                    let shared = store.clone();
+                    this.update(cx, |this, _| this.brand_store = Some(shared))
+                        .ok();
+                    store
+                }
+            };
+            for domain in jobs {
+                let store = store.clone();
+                let asked = domain.clone();
+                let found = cx
+                    .background_executor()
+                    .spawn(async move { nimbra_core::bimi::logo(&store, &asked) })
+                    .await;
+                let gone = this
+                    .update(cx, |this, cx| {
+                        this.brand_asking.remove(&domain);
+                        // Offline, or a resolver that didn't answer: asked again next time.
+                        if let Ok(svg) = found {
+                            let logo = svg.map(|svg| {
+                                Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Svg, svg))
+                            });
+                            this.brand_logos.insert(domain, logo);
+                            cx.notify();
+                        }
+                    })
+                    .is_err();
+                if gone {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
 }
 
 /// The signed-in account's avatar: its profile photo, or its initial.

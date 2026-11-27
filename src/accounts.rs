@@ -977,6 +977,8 @@ impl Nimbra {
         );
         self.load_selected(cx);
         cx.notify();
+        // Logos for the senders listed (each domain once).
+        self.ask_brand_logos(cx);
     }
 
     /// Signs in again in the browser, this time also allowing permanent deletion, then

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### New
+- **Brand logos.** Mail from a company that publishes its logo (BIMI), such as PayPal, Apple or LinkedIn, shows that logo instead of initials, but only when the message passed the sender's email authentication (DMARC) and the company enforces it. The logo is looked up once per company and kept on your Mac.
 - **Interface size.** Settings › Appearance › Interface size draws everything in Nimbra's windows at 90%, 100%, 110% or 125%: text, icons, rows and spacing. ⌘+ and ⌘- step through the sizes and ⌘0 goes back to 100%; they're in the View menu too.
 
 ### Changed
