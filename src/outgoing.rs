@@ -318,10 +318,14 @@ impl Nimbra {
                 if let Some(at) = parked {
                     self.parked.remove(at);
                 }
-                self.notice = Some(match serial {
-                    Some(_) => "Message sent.".into(),
-                    None => format!("Sent “{subject}”, which was waiting.").into(),
-                });
+                match serial {
+                    // Its sending pill says it, if it's still there.
+                    Some(_) if self.show_sent(cx) => {}
+                    Some(_) => self.notice = Some("Message sent.".into()),
+                    None => {
+                        self.notice = Some(format!("Sent “{subject}”, which was waiting.").into())
+                    }
+                }
                 if matches!(self.mailbox.base(), View::Sent | View::Drafts) {
                     self.refresh(cx);
                 }
@@ -330,6 +334,10 @@ impl Nimbra {
             }
             Err(error) => error,
         };
+        // Not sent: the sending pill makes way for what happened instead.
+        if self.undo_sending {
+            self.close_undo(cx);
+        }
         let offline = error.is::<mail::Offline>();
         let unsure = crate::outbox::failed(&error) == crate::outbox::Failed::Unsure;
         let room = parked.is_some() && self.compose.is_none();
@@ -988,7 +996,7 @@ impl Nimbra {
         if hold.is_zero() {
             self.finish_parked(serial, cx);
         } else {
-            self.offer_undo("Sending…", cx);
+            self.offer_undo_for("Sending…", Some(hold), cx);
             self.finish_parked_later(serial, hold, cx);
         }
         cx.notify();

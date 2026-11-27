@@ -1416,6 +1416,8 @@ impl Nimbra {
         match self.parked[pos].0 {
             Parked::Sending => {
                 let (_, composer) = self.parked.remove(pos);
+                // On its way: Undo can't stop it any more, and the pill waits for "Sent".
+                self.update_sending_toast(|toast| toast.can_undo = false, cx);
                 self.dispatch(composer, cx);
             }
             Parked::Discarded => {
