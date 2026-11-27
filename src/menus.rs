@@ -82,11 +82,16 @@ pub(super) const MENU_WIDTH: f32 = 220.;
 /// faded out.
 pub(super) fn remove_popup<V: 'static>(handle: gpui::WindowHandle<V>, cx: &mut App) {
     // It fades out first (`popup::leave`), then goes. A window busy with its own button's
-    // click is not faded, only closed once that is over.
-    handle
+    // click (Undo, Restart) cannot be reached now: it fades as soon as that is over.
+    let faded = handle
         .update(cx, |_, window, _| crate::popup::leave(window))
-        .ok();
+        .is_ok();
     cx.spawn(async move |cx| {
+        if !faded {
+            handle
+                .update(cx, |_, window, _| crate::popup::leave(window))
+                .ok();
+        }
         cx.background_executor()
             .timer(std::time::Duration::from_secs_f64(crate::popup::FADE))
             .await;
