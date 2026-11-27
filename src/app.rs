@@ -23,8 +23,8 @@ use crate::sending::{Job, QueuedMail, Stage};
 use crate::theme::{Accent, SERIF, Theme, Tone, c, fade, gradient};
 use crate::toast::{self, Toast};
 use crate::ui::{
-    ButtonKind, Press, TOP_BAR, avatar, button, icon, icon_button, kbd, meta, mono, overline, pill,
-    shadow, tip,
+    ButtonKind, Press, avatar, button, dp, from_screen, icon, icon_button, kbd, meta, mono,
+    overline, pill, shadow, tip, to_screen, zoom,
 };
 use crate::webview::HtmlView;
 
@@ -104,8 +104,8 @@ use snooze_menu::SnoozeMenu;
 #[path = "system_events.rs"]
 mod system_events;
 pub use system_events::{
-    DockDrafts, DockInbox, DockSent, DockSnoozed, DockStarred, UseDarkAppearance,
-    UseLightAppearance, UseSystemAppearance, install as install_system_actions,
+    ActualSize, DockDrafts, DockInbox, DockSent, DockSnoozed, DockStarred, UseDarkAppearance,
+    UseLightAppearance, UseSystemAppearance, ZoomIn, ZoomOut, install as install_system_actions,
 };
 
 actions!(
@@ -795,6 +795,7 @@ impl Nimbra {
                 .flatten()
         });
         let mut settings = crate::settings::load();
+        crate::ui::set_zoom(settings.zoom());
         crate::usage::opened(settings.usage_counts);
         // Screenshots show the sample account with signatures of its own.
         if !screen.is_empty() && settings.accounts.is_empty() && settings.signatures.is_empty() {
@@ -1427,12 +1428,12 @@ impl Nimbra {
             .child(
                 div()
                     .id("confirm")
-                    .w(px(440.))
+                    .w(dp(440.))
                     .flex()
                     .flex_col()
-                    .gap(px(12.))
-                    .p(px(22.))
-                    .rounded(px(18.))
+                    .gap(dp(12.))
+                    .p(dp(22.))
+                    .rounded(dp(18.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
@@ -1449,8 +1450,8 @@ impl Nimbra {
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(8.))
-                            .pt(px(6.))
+                            .gap(dp(8.))
+                            .pt(dp(6.))
                             .child(
                                 button(t, ButtonKind::Ghost, "Cancel", Some("esc"))
                                     .id("confirm-cancel")
@@ -1579,10 +1580,10 @@ impl Nimbra {
         let offset = self.message_windows.len() as f32 * 24.;
         // Opened after this update: the new window reads the app as it draws.
         cx.defer(move |cx| {
-            let size = gpui::size(px(900.), px(780.));
+            let size = gpui::size(to_screen(900.), to_screen(780.));
             let mut bounds = gpui::Bounds::centered(None, size, cx);
-            bounds.origin.x += px(offset);
-            bounds.origin.y += px(offset);
+            bounds.origin.x += to_screen(offset);
+            bounds.origin.y += to_screen(offset);
             let me = owner.clone();
             let opened = cx.open_window(
                 gpui::WindowOptions {
@@ -1592,7 +1593,7 @@ impl Nimbra {
                         appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(18.), px(18.))),
                     }),
-                    window_min_size: Some(gpui::size(px(520.), px(420.))),
+                    window_min_size: Some(gpui::size(to_screen(520.), to_screen(420.))),
                     ..Default::default()
                 },
                 |window, cx| {
@@ -1733,7 +1734,8 @@ impl Nimbra {
         let dark = self.dark;
         // Opened once this update is over: the new window reads the app as it draws.
         cx.defer(move |cx| {
-            let bounds = gpui::Bounds::centered(None, gpui::size(px(860.), px(620.)), cx);
+            let bounds =
+                gpui::Bounds::centered(None, gpui::size(to_screen(860.), to_screen(620.)), cx);
             let me = owner.clone();
             let opened = cx.open_window(
                 gpui::WindowOptions {
@@ -1743,7 +1745,7 @@ impl Nimbra {
                         appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(16.), px(16.))),
                     }),
-                    window_min_size: Some(gpui::size(px(720.), px(480.))),
+                    window_min_size: Some(gpui::size(to_screen(720.), to_screen(480.))),
                     ..Default::default()
                 },
                 |_, cx| {
@@ -2097,8 +2099,8 @@ fn serif(text: &str, size: f32, color: Hsla) -> Div {
     };
     div()
         .font_family(SERIF)
-        .text_size(px(size))
-        .line_height(px((size * 1.14).round()))
+        .text_size(dp(size))
+        .line_height(dp((size * 1.14).round()))
         .text_color(color)
         .child(StyledText::new(text.to_string()).with_highlights([(start..text.len(), italic)]))
 }
@@ -2180,7 +2182,7 @@ fn card(t: &Theme) -> Div {
         .bg(t.hover)
         .border_1()
         .border_color(t.border)
-        .rounded(px(12.))
+        .rounded(dp(12.))
 }
 
 // ---------------------------------------------------------------- panes
@@ -2254,9 +2256,9 @@ impl Nimbra {
         let icon = welcome.then(|| enter(0, welcome_icon(t, motion)));
         let action_row = action.map(|label| {
             div()
-                .pt(px(10.))
+                .pt(dp(10.))
                 .flex()
-                .gap(px(8.))
+                .gap(dp(8.))
                 .child(crate::ui::glow(
                     button(t, ButtonKind::Primary, label, None)
                         .id("status-action")
@@ -2286,23 +2288,23 @@ impl Nimbra {
         });
         div()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(dp(0.))
             .h_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(14.))
+            .gap(dp(14.))
             .bg(t.surface)
             .children(icon)
             .child(enter(1, serif(title, 56., t.text).into_any_element()))
             .child(enter(
                 2,
                 div()
-                    .max_w(px(560.))
+                    .max_w(dp(560.))
                     .text_center()
-                    .text_size(px(15.))
-                    .line_height(px(24.))
+                    .text_size(dp(15.))
+                    .line_height(dp(24.))
                     .text_color(t.text2)
                     .child(message)
                     .into_any_element(),
@@ -2332,7 +2334,7 @@ fn welcome_entrance(part: usize, element: AnyElement) -> AnyElement {
                 // fading in on a slower curve (smoothstep) so it never flashes up.
                 let eased = 1. - (1. - local).powi(3);
                 let shown = local * local * (3. - 2. * local);
-                d.opacity(shown).top(px(24. * (1. - eased)))
+                d.opacity(shown).top(dp(24. * (1. - eased)))
             },
         )
         .into_any_element()
@@ -2350,8 +2352,8 @@ fn welcome_icon(t: &Theme, motion: bool) -> AnyElement {
     .size_full();
     let glow = |level: f32| shadow(c(0x8b7cff, 0.28 + 0.2 * level), 16., 40. + 16. * level, -8.);
     let icon = div()
-        .size(px(SIZE))
-        .rounded(px(SIZE / 4.))
+        .size(dp(SIZE))
+        .rounded(dp(SIZE / 4.))
         .shadow(vec![glow(0.)])
         .child(image);
     let icon = if motion {
@@ -2368,11 +2370,13 @@ fn welcome_icon(t: &Theme, motion: bool) -> AnyElement {
     } else {
         icon.into_any_element()
     };
-    div().pb(px(10.)).child(icon).into_any_element()
+    div().pb(dp(10.)).child(icon).into_any_element()
 }
 
 impl Render for Nimbra {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         if std::mem::take(&mut self.more_on_start) {
             cx.defer_in(window, |this, window, cx| {
                 this.toggle_menu(Menu::More, window, cx)
@@ -2412,7 +2416,7 @@ impl Render for Nimbra {
         }
         let t = self.theme();
         let viewport = window.viewport_size();
-        let viewport = (f32::from(viewport.width), f32::from(viewport.height));
+        let viewport = (from_screen(viewport.width), from_screen(viewport.height));
         // The floating composer needs a concrete position before it can be dragged.
         if let Some(composer) = &mut self.compose
             && composer.position.is_none()
@@ -2453,7 +2457,7 @@ impl Render for Nimbra {
         // A new message (or none): show it in its window, after this frame.
         if self.notice != self.notice_shown {
             self.notice_shown = self.notice.clone();
-            let room = f32::from(window.bounds().size.width);
+            let room = from_screen(window.bounds().size.width);
             let toast = self
                 .notice
                 .as_ref()
@@ -2507,7 +2511,7 @@ impl Render for Nimbra {
         // As big as the notice it turns into once the update is ready, so that notice takes
         // its place exactly.
         let placed = shown.as_ref().map(|p| {
-            let room = f32::from(window.bounds().size.width);
+            let room = from_screen(window.bounds().size.width);
             let ready = system_events::update_notice(&p.version);
             let ready = Toast::new(&ready, room, window.text_system());
             UpdatePlace {
@@ -2548,7 +2552,8 @@ impl Render for Nimbra {
             if full_compose {
                 Some(18.)
             } else {
-                place.map(|place| 18. + place.x)
+                // The inset is macOS's, the sidebar's place is design points.
+                place.map(|place| 18. + place.x * zoom())
             },
         );
         if self.peek.moving() || self.sidebar_sliding() {
@@ -2623,7 +2628,7 @@ impl Render for Nimbra {
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
                     this.close_shortcuts(cx);
-                    if f32::from(event.position.x) > this.side_w() + FLOAT_INSET {
+                    if from_screen(event.position.x) > this.side_w() + FLOAT_INSET {
                         this.leave_sidebar(cx);
                     }
                 }),
@@ -2758,6 +2763,11 @@ impl Render for Nimbra {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleTheme, _, cx| this.toggle_theme(cx)))
+            // Here too, as the theme: the app-wide handlers reach this window only from
+            // the others (updating it from inside its own dispatch does nothing).
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.step_zoom(1, cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.step_zoom(-1, cx)))
+            .on_action(cx.listener(|this, _: &ActualSize, _, cx| this.set_interface_zoom(100, cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
             .on_action(cx.listener(|this, _: &CheckForUpdates, _, cx| this.check_for_updates(cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
@@ -2775,7 +2785,7 @@ impl Render for Nimbra {
                     this.list_grab = None;
                     return;
                 }
-                this.list_width = (width + f32::from(event.position.x) - start).clamp(300., 720.);
+                this.list_width = (width + from_screen(event.position.x) - start).clamp(300., 720.);
                 cx.notify();
             }))
             .on_mouse_up(
@@ -2787,8 +2797,8 @@ impl Render for Nimbra {
             .flex()
             .size_full()
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text)
             // The room the docked sidebar takes. The sidebar itself is drawn over it, so
             // floating in does not move or re-wrap anything. As it docks, what is around the
@@ -2797,7 +2807,7 @@ impl Render for Nimbra {
                 div()
                     .flex_none()
                     .h_full()
-                    .w(px(self.sidebar_width(0.)))
+                    .w(dp(self.sidebar_width(0.)))
                     .when(afloat > 0., |d| d.bg(t.surface)),
             )
             .map(|d| match self.status {
@@ -2825,9 +2835,9 @@ impl Render for Nimbra {
                     div()
                         .id("offline-dot")
                         .absolute()
-                        .left(px(8.))
-                        .top(px(22.))
-                        .size(px(6.))
+                        .left(dp(8.))
+                        .top(dp(22.))
+                        .size(dp(6.))
                         .rounded_full()
                         .bg(t.amber)
                         .tooltip(tip(t.dark, self.offline_label(), "")),
@@ -2845,41 +2855,41 @@ impl Render for Nimbra {
                     d.child(
                         div()
                             .absolute()
-                            .left(px(place.x))
-                            .top(px(place.inset))
-                            .w(px(self.side_w()))
-                            .h(px(height))
-                            .rounded(px(radius))
+                            .left(dp(place.x))
+                            .top(dp(place.inset))
+                            .w(dp(self.side_w()))
+                            .h(dp(height))
+                            .rounded(dp(radius))
                             .shadow(vec![shadow(t.shadow.opacity(afloat), 10., 30., -6.)]),
                     )
                     .child(
                         div()
                             .absolute()
-                            .left(px(place.x))
-                            .top(px(place.inset))
-                            .w(px(self.side_w()))
-                            .h(px(height))
+                            .left(dp(place.x))
+                            .top(dp(place.inset))
+                            .w(dp(self.side_w()))
+                            .h(dp(height))
                             .child(crate::erase::rounded(radius, t.surface)),
                     )
                 })
                 .child(
                     div()
                         .absolute()
-                        .left(px(place.x))
-                        .top(px(place.inset))
-                        .w(px(self.side_w()))
-                        .h(px(height))
+                        .left(dp(place.x))
+                        .top(dp(place.inset))
+                        .w(dp(self.side_w()))
+                        .h(dp(height))
                         .overflow_hidden()
                         .occlude()
-                        .when(floating, |d| d.rounded(px(radius)).bg(t.sidebar))
+                        .when(floating, |d| d.rounded(dp(radius)).bg(t.sidebar))
                         // Moved up by the gap, so that docking shifts nothing vertically.
                         .child(
                             div()
                                 .absolute()
                                 .left_0()
-                                .top(px(-place.inset))
-                                .w(px(self.side_w()))
-                                .h(px(viewport.1 - place.inset))
+                                .top(dp(-place.inset))
+                                .w(dp(self.side_w()))
+                                .h(dp(viewport.1 - place.inset))
                                 .child(self.sidebar(&t, floating, cx)),
                         )
                         // Over the contents, so it takes no width from them.
@@ -2888,7 +2898,7 @@ impl Render for Nimbra {
                                 div()
                                     .absolute()
                                     .inset_0()
-                                    .rounded(px(radius))
+                                    .rounded(dp(radius))
                                     .border_1()
                                     .border_color(t.border_strong.opacity(afloat)),
                             )
@@ -2910,10 +2920,10 @@ impl Render for Nimbra {
                         // floating sidebar) must not take it as a click.
                         .occlude()
                         .absolute()
-                        .left(px(place.x + self.side_w() - 4.))
-                        .top(px(place.inset))
-                        .w(px(8.))
-                        .h(px(height))
+                        .left(dp(place.x + self.side_w() - 4.))
+                        .top(dp(place.inset))
+                        .w(dp(8.))
+                        .h(dp(height))
                         .cursor(gpui::CursorStyle::ResizeLeftRight)
                         .on_mouse_down(
                             MouseButton::Left,
@@ -2926,7 +2936,7 @@ impl Render for Nimbra {
                                     this.save_settings(cx);
                                 } else {
                                     this.sidebar_grab =
-                                        Some((f32::from(event.position.x), this.side_w()));
+                                        Some((from_screen(event.position.x), this.side_w()));
                                 }
                                 cx.notify();
                             }),
@@ -2972,7 +2982,7 @@ fn me_avatar(photo: Option<&Arc<gpui::Image>>, initials: &str, size: f32) -> Any
     match photo {
         Some(photo) => div()
             .flex_none()
-            .size(px(size))
+            .size(dp(size))
             .rounded_full()
             .overflow_hidden()
             .border_1()
@@ -3004,7 +3014,7 @@ impl Nimbra {
                             this.sidebar_grab = None;
                             this.save_settings(cx);
                         } else {
-                            this.settings.sidebar_width = (width + f32::from(event.position.x)
+                            this.settings.sidebar_width = (width + from_screen(event.position.x)
                                 - start)
                                 .clamp(SIDEBAR_MIN, SIDEBAR_MAX);
                         }

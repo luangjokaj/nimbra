@@ -301,10 +301,10 @@ impl SnoozeMenu {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(10.))
-                .h(px(ROW))
-                .px(px(10.))
-                .rounded(px(8.))
+                .gap(dp(10.))
+                .h(dp(ROW))
+                .px(dp(10.))
+                .rounded(dp(8.))
                 .cursor_pointer()
                 .when(lit, |d| d.bg(hover))
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -317,11 +317,11 @@ impl SnoozeMenu {
         let divider = || {
             div()
                 .flex_none()
-                .h(px(DIVIDER))
+                .h(dp(DIVIDER))
                 .flex()
                 .items_center()
-                .px(px(4.))
-                .child(div().h(px(1.)).w_full().bg(t.border))
+                .px(dp(4.))
+                .child(div().h(dp(1.)).w_full().bg(t.border))
         };
         let times = self.choices.iter().enumerate().map(|(index, c)| {
             let picked = c.clone();
@@ -339,17 +339,17 @@ impl SnoozeMenu {
         // The switch: a pill with a knob, lit when on.
         let switch = div()
             .flex_none()
-            .w(px(30.))
-            .h(px(18.))
-            .p(px(2.))
-            .rounded(px(9.))
+            .w(dp(30.))
+            .h(dp(18.))
+            .p(dp(2.))
+            .rounded(dp(9.))
             .bg(if on { t.violet } else { t.border_strong })
             .child(
                 div()
-                    .size(px(14.))
-                    .rounded(px(7.))
+                    .size(dp(14.))
+                    .rounded(dp(7.))
                     .bg(gpui::white())
-                    .ml(px(if on { 12. } else { 0. })),
+                    .ml(dp(if on { 12. } else { 0. })),
             );
         div()
             .flex()
@@ -357,10 +357,10 @@ impl SnoozeMenu {
             .child(
                 div()
                     .flex_none()
-                    .h(px(HEADER))
+                    .h(dp(HEADER))
                     .flex()
                     .items_center()
-                    .px(px(10.))
+                    .px(dp(10.))
                     .child(meta("Snooze", t.text3)),
             )
             .children(times)
@@ -405,8 +405,8 @@ impl SnoozeMenu {
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .size(px(26.))
-                .rounded(px(7.))
+                .size(dp(26.))
+                .rounded(dp(7.))
                 .child(icon(name, 14., if enabled { t.text2 } else { t.faint }))
                 .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)))
         };
@@ -425,14 +425,14 @@ impl SnoozeMenu {
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .size(px(CELL))
+                .size(dp(CELL))
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(30.))
-                        .rounded(px(15.))
+                        .size(dp(30.))
+                        .rounded(dp(15.))
                         .when(is_today && !picked_day, |d| {
                             d.border_1().border_color(t.violet)
                         })
@@ -452,7 +452,7 @@ impl SnoozeMenu {
                 cell = cell
                     .cursor_pointer()
                     .when(!picked_day, |d| {
-                        d.hover(move |s| s.bg(hover).rounded(px(8.)))
+                        d.hover(move |s| s.bg(hover).rounded(dp(8.)))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| this.set_day(date, cx)));
             }
@@ -464,11 +464,11 @@ impl SnoozeMenu {
             .child(
                 div()
                     .flex_none()
-                    .h(px(CAL_HEAD))
+                    .h(dp(CAL_HEAD))
                     .flex()
                     .items_center()
-                    .gap(px(4.))
-                    .px(px(4.))
+                    .gap(dp(4.))
+                    .px(dp(4.))
                     .child(
                         nav("snooze-prev", "back", can_go_back).when(can_go_back, |d| {
                             d.on_click(cx.listener(move |this, _, window, cx| {
@@ -487,24 +487,24 @@ impl SnoozeMenu {
                         move |this, _, window, cx| this.calendar(next, hours, window, cx),
                     ))),
             )
-            .child(div().flex().flex_none().h(px(CAL_DAYS)).children(
+            .child(div().flex().flex_none().h(dp(CAL_DAYS)).children(
                 ["M", "T", "W", "T", "F", "S", "S"].into_iter().map(|d| {
                     div()
-                        .w(px(CELL))
+                        .w(dp(CELL))
                         .flex()
                         .justify_center()
                         .child(meta(d, t.text3))
                 }),
             ))
-            .child(div().flex().flex_wrap().w(px(7. * CELL)).children(cells))
+            .child(div().flex().flex_wrap().w(dp(7. * CELL)).children(cells))
             .child(
                 div()
                     .flex_none()
-                    .h(px(DIVIDER))
+                    .h(dp(DIVIDER))
                     .flex()
                     .items_center()
-                    .px(px(4.))
-                    .child(div().h(px(1.)).w_full().bg(t.border)),
+                    .px(dp(4.))
+                    .child(div().h(dp(1.)).w_full().bg(t.border)),
             )
             .child(
                 div()
@@ -512,12 +512,12 @@ impl SnoozeMenu {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(10.))
-                    .h(px(TIME_ROW))
+                    .gap(dp(10.))
+                    .h(dp(TIME_ROW))
                     // Its edges line up with the hours' grid below it.
-                    .mx(px(CHIP_INSET))
-                    .px(px(10.))
-                    .rounded(px(8.))
+                    .mx(dp(CHIP_INSET))
+                    .px(dp(10.))
+                    .rounded(dp(8.))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .when(hours, |d| d.bg(hover))
@@ -535,13 +535,13 @@ impl SnoozeMenu {
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(px(8.))
-                        .h(px(FIELD))
-                        .mt(px(CHIP_GAP))
-                        .mx(px(CHIP_INSET))
-                        .px(px(12.))
-                        .rounded(px(8.))
-                        .text_size(px(14.))
+                        .gap(dp(8.))
+                        .h(dp(FIELD))
+                        .mt(dp(CHIP_GAP))
+                        .mx(dp(CHIP_INSET))
+                        .px(dp(12.))
+                        .rounded(dp(8.))
+                        .text_size(dp(14.))
                         .border_1()
                         .border_color(if self.typed_bad {
                             t.rose
@@ -556,9 +556,9 @@ impl SnoozeMenu {
                         .flex()
                         .flex_wrap()
                         .flex_none()
-                        .gap(px(CHIP_GAP))
-                        .py(px(CHIP_GAP))
-                        .px(px(CHIP_INSET))
+                        .gap(dp(CHIP_GAP))
+                        .py(dp(CHIP_GAP))
+                        .px(dp(CHIP_INSET))
                         .children(HOURS.map(|hour| {
                             let chosen = time == (hour, 0);
                             div()
@@ -566,10 +566,10 @@ impl SnoozeMenu {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .w(px((7. * CELL - 2. * CHIP_INSET - 3. * CHIP_GAP) / 4.))
-                                .h(px(CHIP))
-                                .rounded(px(7.))
-                                .text_size(px(12.))
+                                .w(dp((7. * CELL - 2. * CHIP_INSET - 3. * CHIP_GAP) / 4.))
+                                .h(dp(CHIP))
+                                .rounded(dp(7.))
+                                .text_size(dp(12.))
                                 .cursor_pointer()
                                 .when(chosen, |d| d.bg(t.violet).text_color(gpui::white()))
                                 .when(!chosen, |d| {
@@ -592,11 +592,11 @@ impl SnoozeMenu {
             .child(
                 div()
                     .flex_none()
-                    .h(px(CAL_FOOT))
+                    .h(dp(CAL_FOOT))
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px(px(4.))
+                    .px(dp(4.))
                     .child(
                         // A secondary button the Snooze button's size, so the two line up.
                         div()
@@ -604,17 +604,17 @@ impl SnoozeMenu {
                             .flex()
                             .flex_none()
                             .items_center()
-                            .gap(px(6.))
-                            .h(px(FOOT_BUTTON))
-                            .pl(px(10.))
-                            .pr(px(14.))
-                            .rounded(px(9.))
+                            .gap(dp(6.))
+                            .h(dp(FOOT_BUTTON))
+                            .pl(dp(10.))
+                            .pr(dp(14.))
+                            .rounded(dp(9.))
                             .bg(t.hover)
                             .border_1()
                             .border_color(t.border_strong)
                             .cursor_pointer()
                             .hover(move |s| s.bg(selected))
-                            .text_size(px(12.))
+                            .text_size(dp(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(t.text)
                             .child(icon("back", 12., t.text2))
@@ -626,8 +626,8 @@ impl SnoozeMenu {
                         let ready = self.chosen().is_some();
                         let label = if ready { "Snooze" } else { "Pick a later time" };
                         let button = button(t, ButtonKind::Primary, label, Some("↵"))
-                            .text_size(px(12.))
-                            .h(px(FOOT_BUTTON))
+                            .text_size(dp(12.))
+                            .h(dp(FOOT_BUTTON))
                             .py_0()
                             .id("snooze-confirm")
                             .press_soft()
@@ -644,7 +644,9 @@ impl SnoozeMenu {
 }
 
 impl Render for SnoozeMenu {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         let t = if self.dark {
             Theme::dark()
         } else {
@@ -661,18 +663,18 @@ impl Render for SnoozeMenu {
                 this.key(event, window, cx)
             }))
             .size_full()
-            .p(px(MENU_MARGIN))
+            .p(dp(MENU_MARGIN))
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .size_full()
-                    .p(px(6.))
-                    .rounded(px(12.))
+                    .p(dp(6.))
+                    .rounded(dp(12.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
@@ -713,23 +715,23 @@ impl Nimbra {
         // A fresh menu starts from the first open day again.
         self.snooze_day = None;
         let viewport = window.viewport_size();
-        let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
+        let (vw, vh) = (from_screen(viewport.width), from_screen(viewport.height));
         let height = Mode::List.height(quick_times().len());
         let (x, y) = match at.or(self.snooze_anchor.get()) {
-            Some(point) => (f32::from(point.x), f32::from(point.y)),
+            Some(point) => (from_screen(point.x), from_screen(point.y)),
             // Under the reading pane's toolbar.
             None => {
                 let pane_left = if self.sidebar_open { self.side_w() } else { 0. }
                     + if self.list_open { self.list_width } else { 0. };
-                (pane_left + 110., TOP_BAR - 4.)
+                (pane_left + 110., crate::ui::top_bar() - 4.)
             }
         };
         let left = x.min(vw - WIDTH - 8.).max(8.);
         let top = y.min(vh - height - 8.).max(8.);
         let origin = window.bounds().origin;
         let origin = gpui::point(
-            origin.x + px(left - MENU_MARGIN),
-            origin.y + px(top - MENU_MARGIN),
+            origin.x + to_screen(left - MENU_MARGIN),
+            origin.y + to_screen(top - MENU_MARGIN),
         );
         self.open_snooze_window(origin, mode, cx);
     }
@@ -746,7 +748,10 @@ impl Nimbra {
         let height = mode.height(choices.len());
         let bounds = gpui::Bounds::new(
             origin,
-            gpui::size(px(WIDTH + 2. * MENU_MARGIN), px(height + 2. * MENU_MARGIN)),
+            gpui::size(
+                to_screen(WIDTH + 2. * MENU_MARGIN),
+                to_screen(height + 2. * MENU_MARGIN),
+            ),
         );
         let (owner, dark, alert, time) = (
             cx.weak_entity(),
@@ -766,7 +771,7 @@ impl Nimbra {
             .find(|b| b.contains(&origin))
         {
             Some(screen) => {
-                let bottom = screen.bottom() - bounds.size.height - px(8.);
+                let bottom = screen.bottom() - bounds.size.height - to_screen(8.);
                 gpui::point(origin.x, origin.y.min(bottom).max(screen.top()))
             }
             None => origin,

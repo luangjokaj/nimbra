@@ -1,16 +1,58 @@
 //! Small stateless building blocks shared by every pane.
 
 use gpui::{
-    AnimationExt, BoxShadow, Div, FontWeight, Hsla, SharedString, Stateful, Svg, div, point,
-    prelude::*, px, svg,
+    AnimationExt, BoxShadow, Div, FontWeight, Hsla, Pixels, Rems, SharedString, Stateful, Svg,
+    Window, div, point, prelude::*, px, rems, svg,
 };
+
+// ------------------------------------------------------------------ interface zoom
+//
+// The interface is laid out in design points: its size at 100%. Every window draws them
+// through GPUI's rem (`apply_zoom` sets it to 16 design points at the zoom), so sizes made
+// with `dp` grow and shrink with Settings › Appearance › Interface size. What arrives from
+// the screen (pointer positions, measured bounds) is in screen points: `from_screen` turns
+// it into design points, and `to_screen` turns design points into what takes only screen
+// points (window sizes, scroll offsets, shadows).
+
+/// The interface's scale, as `f32` bits (1.0 until the settings say otherwise).
+static ZOOM: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// The interface's scale (1 is its own size).
+pub fn zoom() -> f32 {
+    f32::from_bits(ZOOM.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Sets the scale every window draws at from its next frame.
+pub fn set_zoom(zoom: f32) {
+    ZOOM.store(zoom.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A size in design points: `n` points at 100%, scaled with the interface zoom.
+pub fn dp(n: f32) -> Rems {
+    rems(n / 16.)
+}
+
+/// Design points as screen points, for what takes only those.
+pub fn to_screen(n: f32) -> Pixels {
+    px(n * zoom())
+}
+
+/// Screen points (a pointer's position, measured bounds) as design points.
+pub fn from_screen(p: Pixels) -> f32 {
+    f32::from(p) / zoom()
+}
+
+/// Draws this window at the interface zoom: called first in each window's `render`.
+pub fn apply_zoom(window: &mut Window) {
+    window.set_rem_size(px(16. * zoom()));
+}
 
 use crate::theme::{MONO, Theme, Tone, c, gradient};
 
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
     svg()
         .path(SharedString::from(format!("icons/{name}.svg")))
-        .size(px(size))
+        .size(dp(size))
         .flex_none()
         .text_color(color)
 }
@@ -19,12 +61,18 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
 /// it on y = 25, the line of the traffic lights, with the same space above and below.
 pub const TOP_BAR: f32 = 51.;
 
+/// `TOP_BAR` in design points: the traffic lights don't zoom, so the bar they line up with
+/// keeps its 51 screen points whatever the interface zoom.
+pub fn top_bar() -> f32 {
+    TOP_BAR / zoom()
+}
+
 pub fn mono(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .font_family(MONO)
         .font_weight(FontWeight::MEDIUM)
-        .text_size(px(11.))
-        .line_height(px(14.))
+        .text_size(dp(11.))
+        .line_height(dp(14.))
         .text_color(color)
         .flex_none()
         .child(text.into())
@@ -34,16 +82,16 @@ pub fn overline(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
         .font_family(MONO)
         .font_weight(FontWeight::MEDIUM)
-        .text_size(px(10.))
-        .line_height(px(12.))
+        .text_size(dp(10.))
+        .line_height(dp(12.))
         .text_color(color)
         .child(text.into())
 }
 
 pub fn meta(text: impl Into<SharedString>, color: Hsla) -> Div {
     div()
-        .text_size(px(12.))
-        .line_height(px(16.))
+        .text_size(dp(12.))
+        .line_height(dp(16.))
         .text_color(color)
         .child(text.into())
 }
@@ -53,10 +101,10 @@ pub fn kbd(t: &Theme, key: &str) -> Div {
         .flex()
         .flex_none()
         .justify_center()
-        .min_w(px(18.))
-        .px(px(5.))
-        .py(px(2.))
-        .rounded(px(5.))
+        .min_w(dp(18.))
+        .px(dp(5.))
+        .py(dp(2.))
+        .rounded(dp(5.))
         .bg(t.kbd_bg)
         .border_1()
         .border_color(t.kbd_border)
@@ -69,13 +117,13 @@ pub fn avatar(tone: Tone, initials: &str, size: f32) -> Div {
         .flex_none()
         .items_center()
         .justify_center()
-        .size(px(size))
+        .size(dp(size))
         .rounded_full()
         .bg(tone.gradient())
         .border_1()
         .border_color(c(0xffffff, 0.18))
-        .text_size(px(size * 0.37))
-        .line_height(px(size * 0.5))
+        .text_size(dp(size * 0.37))
+        .line_height(dp(size * 0.5))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(gpui::white())
         .child(initials.to_string())
@@ -86,15 +134,15 @@ pub fn pill(t: &Theme, label: &str, dot: Hsla) -> Div {
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
-        .pl(px(7.))
-        .pr(px(9.))
-        .py(px(2.))
+        .gap(dp(6.))
+        .pl(dp(7.))
+        .pr(dp(9.))
+        .py(dp(2.))
         .rounded_full()
         .bg(t.hover)
         .border_1()
         .border_color(t.border)
-        .child(div().size(px(6.)).rounded_full().bg(dot))
+        .child(div().size(dp(6.)).rounded_full().bg(dot))
         .child(meta(label.to_string(), t.text2))
 }
 
@@ -108,8 +156,8 @@ pub fn icon_button(t: &Theme, name: &str) -> Div {
         .flex_none()
         .items_center()
         .justify_center()
-        .size(px(30.))
-        .rounded(px(8.))
+        .size(dp(30.))
+        .rounded(dp(8.))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(icon(name, 16., t.text2).group_hover("icon-button", move |s| s.text_color(bright)))
@@ -137,9 +185,9 @@ impl Press for Stateful<Div> {
 pub fn shadow(color: Hsla, y: f32, blur: f32, spread: f32) -> BoxShadow {
     BoxShadow {
         color,
-        offset: point(px(0.), px(y)),
-        blur_radius: px(blur),
-        spread_radius: px(spread),
+        offset: point(px(0.), to_screen(y)),
+        blur_radius: to_screen(blur),
+        spread_radius: to_screen(spread),
     }
 }
 
@@ -154,11 +202,11 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(8.))
-        .pl(px(14.))
-        .pr(px(if key.is_some() { 10. } else { 14. }))
-        .py(px(6.))
-        .rounded(px(9.))
+        .gap(dp(8.))
+        .pl(dp(14.))
+        .pr(dp(if key.is_some() { 10. } else { 14. }))
+        .py(dp(6.))
+        .rounded(dp(9.))
         .cursor_pointer()
         .font_weight(FontWeight::SEMIBOLD);
     let (hover, strong, selected) = (t.hover, t.border_strong, t.selected);
@@ -170,9 +218,9 @@ pub fn button(t: &Theme, kind: ButtonKind, label: &str, key: Option<&str>) -> Di
             .child(label.to_string())
             .children(key.map(|k| {
                 div()
-                    .px(px(5.))
-                    .py(px(2.))
-                    .rounded(px(5.))
+                    .px(dp(5.))
+                    .py(dp(2.))
+                    .rounded(dp(5.))
                     .bg(c(0xffffff, 0.18))
                     .child(mono(k.to_string(), gpui::white()))
             })),

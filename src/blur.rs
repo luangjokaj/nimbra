@@ -222,13 +222,15 @@ mod screen {
     }
 
     /// A point of the window (from its top left) on the screen.
+    /// A point in `window` (design points, see `ui::zoom`) on the screen.
     pub fn screen_point(window: &gpui::Window, x: f32, y: f32) -> Option<(f64, f64)> {
         let ns_window = ns_window(window)?;
+        let zoom = crate::ui::zoom();
         // SAFETY: a getter on a live NSWindow, main thread.
         let frame: Frame = unsafe { msg_send![ns_window, frame] };
         Some((
-            frame.origin.x + f64::from(x),
-            frame.origin.y + frame.size.y - f64::from(y),
+            frame.origin.x + f64::from(x * zoom),
+            frame.origin.y + frame.size.y - f64::from(y * zoom),
         ))
     }
 

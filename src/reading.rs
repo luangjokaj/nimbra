@@ -216,8 +216,8 @@ pub(super) fn attachment_button(t: &Theme, name: &str, busy: bool, done: bool) -
         .flex_none()
         .items_center()
         .justify_center()
-        .size(px(30.))
-        .rounded(px(8.))
+        .size(dp(30.))
+        .rounded(dp(8.))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(if busy {
@@ -357,7 +357,7 @@ impl Nimbra {
         } else {
             0.
         };
-        let height = f32::from(window.viewport_size().height);
+        let height = from_screen(window.viewport_size().height);
         view.set_hole(
             self.sidebar_place(ahead)
                 .filter(|place| place.inset > 0.)
@@ -646,21 +646,21 @@ impl Nimbra {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .text_size(px(self.settings.reader_text.metrics().0))
-            .line_height(px(self.settings.reader_text.metrics().1))
+            .gap(dp(12.))
+            .text_size(dp(self.settings.reader_text.metrics().0))
+            .line_height(dp(self.settings.reader_text.metrics().1))
             .text_color(t.text2)
             .when(pending, |d| {
                 d.child(
                     card(t)
                         .flex()
                         .items_center()
-                        .gap(px(10.))
-                        .pl(px(12.))
-                        .pr(px(6.))
-                        .py(px(6.))
-                        .text_size(px(13.))
-                        .line_height(px(18.))
+                        .gap(dp(10.))
+                        .pl(dp(12.))
+                        .pr(dp(6.))
+                        .py(dp(6.))
+                        .text_size(dp(13.))
+                        .line_height(dp(18.))
                         .child(icon("image", 16., t.text3))
                         .child(
                             div()
@@ -779,47 +779,47 @@ impl Nimbra {
                     _ => 17.,
                 };
                 div()
-                    .pt(px(6.))
-                    .text_size(px(size))
-                    .line_height(px(size * 1.35))
+                    .pt(dp(6.))
+                    .text_size(dp(size))
+                    .line_height(dp(size * 1.35))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(t.text)
                     .child(text(t.text))
             }
             Kind::Item { marker, depth } => div()
                 .flex()
-                .gap(px(10.))
-                .pl(px(4. + 20. * *depth as f32))
+                .gap(dp(10.))
+                .pl(dp(4. + 20. * *depth as f32))
                 .child(
                     div()
                         .flex_none()
-                        .min_w(px(14.))
+                        .min_w(dp(14.))
                         .text_color(t.text3)
                         .child(marker.clone()),
                 )
-                .child(div().flex_1().min_w(px(0.)).child(text(t.text))),
+                .child(div().flex_1().min_w(dp(0.)).child(text(t.text))),
             Kind::Code => div()
-                .px(px(14.))
-                .py(px(10.))
-                .rounded(px(10.))
+                .px(dp(14.))
+                .py(dp(10.))
+                .rounded(dp(10.))
                 .bg(t.hover)
                 .border_1()
                 .border_color(t.border)
                 .font_family(crate::theme::MONO)
-                .text_size(px(12.5))
-                .line_height(px(20.))
+                .text_size(dp(12.5))
+                .line_height(dp(20.))
                 .child(text(t.text)),
-            Kind::Rule => div().h(px(1.)).my(px(6.)).bg(t.border),
+            Kind::Rule => div().h(dp(1.)).my(dp(6.)).bg(t.border),
             Kind::Image { src, alt } => match self.images.get(src) {
                 Some(image) => {
-                    div().child(gpui::img(image.clone()).max_w(px(560.)).rounded(px(10.)))
+                    div().child(gpui::img(image.clone()).max_w(dp(560.)).rounded(dp(10.)))
                 }
                 None => div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .text_size(px(13.))
-                    .line_height(px(18.))
+                    .gap(dp(8.))
+                    .text_size(dp(13.))
+                    .line_height(dp(18.))
                     .text_color(t.text3)
                     .child(icon("image", 15., t.text3))
                     .child(if alt.is_empty() {
@@ -832,8 +832,8 @@ impl Nimbra {
         // Quoted text gets a bar on the left, one step per nesting level.
         if block.quote > 0 {
             div()
-                .ml(px(14. * (block.quote.min(4) - 1) as f32))
-                .pl(px(14.))
+                .ml(dp(14. * (block.quote.min(4) - 1) as f32))
+                .pl(dp(14.))
                 .border_l_2()
                 .border_color(t.border_strong)
                 .text_color(t.text3)
@@ -849,12 +849,12 @@ impl Nimbra {
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(dp(10.))
                 .child(
                     div()
-                        .size(px(16.))
+                        .size(dp(16.))
                         .flex_none()
-                        .rounded(px(5.))
+                        .rounded(dp(5.))
                         .border_1()
                         .border_color(t.border_strong),
                 )
@@ -863,25 +863,25 @@ impl Nimbra {
         };
         // GPUI has no gradient strokes, so the border is a 1px gradient frame around the card.
         div()
-            .p(px(1.))
-            .rounded(px(14.))
+            .p(dp(1.))
+            .rounded(dp(14.))
             .bg(gradient(100., c(0x8b7cff, 0.75), c(0xffb86b, 0.3)))
             .shadow(vec![shadow(c(0x8b7cff, 0.16), 12., 40., -12.)])
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(12.))
-                    .px(px(20.))
-                    .pt(px(16.))
-                    .pb(px(18.))
-                    .rounded(px(13.))
+                    .gap(dp(12.))
+                    .px(dp(20.))
+                    .pt(dp(16.))
+                    .pb(dp(18.))
+                    .rounded(dp(13.))
                     .bg(t.raised)
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(dp(8.))
                             .child(icon("sparkles", 16., t.mint))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("Brief"))
                             .child(
@@ -899,8 +899,8 @@ impl Nimbra {
                     )
                     .child(
                         div()
-                            .text_size(px(15.))
-                            .line_height(px(26.))
+                            .text_size(dp(15.))
+                            .line_height(dp(26.))
                             .text_color(t.text2)
                             .child(m.brief.clone()),
                     )
@@ -909,7 +909,7 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(8.))
+                                .gap(dp(8.))
                                 .child(todo("Confirm pricing tiers on slide 14", "Fri"))
                                 .child(todo("Sign off on the press embargo date", "Fri")),
                         )
@@ -921,7 +921,7 @@ impl Nimbra {
         let m = &self.mails[self.selected];
         // The subject is broken into lines by hand (see `balance_title`), for the width the
         // reader gives it.
-        let pane_w = self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left();
+        let pane_w = self.frame.map_or(0., |f| from_screen(f.size.width)) - self.pane_left();
         let column = if self.focus_restore.is_some() {
             pane_w.min(980.)
         } else {
@@ -944,7 +944,7 @@ impl Nimbra {
         // Until the message has been fetched we cannot know whether it has an original
         // (HTML) version, so show a loader, not the reader view that would flash by first.
         let loading = self.original && !is_draft && !m.loaded;
-        let divider = || div().h(px(1.)).bg(t.border);
+        let divider = || div().h(dp(1.)).bg(t.border);
 
         // Folded messages are mail text: sized as the list's rows are.
         let row_text = super::list::RowText::of(self.settings.reader_text);
@@ -952,10 +952,10 @@ impl Nimbra {
             div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
-                .py(px(12.))
-                .text_size(px(row_text.size))
-                .line_height(px(row_text.line))
+                .gap(dp(12.))
+                .py(dp(12.))
+                .text_size(dp(row_text.size))
+                .line_height(dp(row_text.line))
                 .border_t_1()
                 .border_color(t.border)
                 .child(avatar(tone, initials, 24.))
@@ -969,7 +969,7 @@ impl Nimbra {
                 .child(
                     div()
                         .flex_1()
-                        .min_w(px(0.))
+                        .min_w(dp(0.))
                         .whitespace_nowrap()
                         .overflow_hidden()
                         .text_color(t.text3)
@@ -989,17 +989,17 @@ impl Nimbra {
             card(t)
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .pl(px(8.))
-                .pr(px(14.))
-                .py(px(8.))
+                .gap(dp(10.))
+                .pl(dp(8.))
+                .pr(dp(14.))
+                .py(dp(8.))
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(30.))
-                        .rounded(px(8.))
+                        .size(dp(30.))
+                        .rounded(dp(8.))
                         .bg(gradient(135., c(from, 1.), c(to, 1.)))
                         .child(icon("file", 16., gpui::white())),
                 )
@@ -1024,7 +1024,7 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(dp(0.))
             .h_full()
             .bg(t.surface)
             .relative()
@@ -1037,13 +1037,13 @@ impl Nimbra {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(2.))
+                    .gap(dp(2.))
                     // Nothing to clear: the window controls leave with the sidebar. The first
                     // and last icons' glyphs sit as far from the edges as Compose does from
                     // the list's line (LIST_RIGHT), past their buttons' own 7pt.
-                    .pl(px(LIST_RIGHT - 7.))
-                    .pr(px(LIST_RIGHT - 7.))
-                    .h(px(TOP_BAR))
+                    .pl(dp(LIST_RIGHT - 7.))
+                    .pr(dp(LIST_RIGHT - 7.))
+                    .h(dp(crate::ui::top_bar()))
                     .border_b_1()
                     .border_color(t.border)
                     .on_mouse_down(MouseButton::Left, drag_or_zoom)
@@ -1059,7 +1059,7 @@ impl Nimbra {
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
                     )
                     .when(is_draft, |d| {
-                        d.child(div().w(px(6.)))
+                        d.child(div().w(dp(6.)))
                             .child(crate::ui::glow(
                                 button(t, ButtonKind::Primary, "Edit draft", None)
                                     .id("edit-draft")
@@ -1080,7 +1080,7 @@ impl Nimbra {
                                 "edit-draft",
                                 false,
                             ))
-                            .child(div().w(px(8.)))
+                            .child(div().w(dp(8.)))
                     })
                     .child(toolbar_rule(t, 7., if narrow { 7. } else { 9. }))
                     // What is done to a thread: as words, which the narrow pane drops.
@@ -1110,7 +1110,7 @@ impl Nimbra {
                                     move |bounds, _, _| {
                                         anchor.set(Some(gpui::point(
                                             bounds.left(),
-                                            bounds.bottom() + px(6.),
+                                            bounds.bottom() + to_screen(6.),
                                         )))
                                     },
                                     |_, _, _, _| {},
@@ -1241,7 +1241,7 @@ impl Nimbra {
                     div()
                         .id("conversation")
                         .flex_1()
-                        .min_h(px(0.))
+                        .min_h(dp(0.))
                         .overflow_y_scroll()
                         .track_scroll(&self.reader_scroll)
                         // Full view centres the column it keeps narrow.
@@ -1268,16 +1268,16 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(22.))
-                                .px(px(64.))
+                                .gap(dp(22.))
+                                .px(dp(64.))
                                 // Full view keeps lines a comfortable length.
-                                .when(self.focus_restore.is_some(), |d| d.w_full().max_w(px(980.)))
-                                .pt(px(40.))
-                                .pb(px(24.))
+                                .when(self.focus_restore.is_some(), |d| d.w_full().max_w(dp(980.)))
+                                .pt(dp(40.))
+                                .pb(dp(24.))
                                 .child(
                                     div()
                                         .flex()
-                                        .gap(px(6.))
+                                        .gap(dp(6.))
                                         .when(m.rich, |d| d.child(pill(t, "Product", t.violet)))
                                         .children(
                                             m.tag
@@ -1299,13 +1299,13 @@ impl Nimbra {
                                     div()
                                         .flex()
                                         .items_center()
-                                        .gap(px(10.))
+                                        .gap(dp(10.))
                                         .child(
                                             div()
                                                 .relative()
                                                 .flex_none()
-                                                .h(px(28.))
-                                                .w(px(if m.rich { 68. } else { 48. }))
+                                                .h(dp(28.))
+                                                .w(dp(if m.rich { 68. } else { 48. }))
                                                 .children(
                                                     [
                                                         Some((m.tone, m.initials.clone())),
@@ -1324,7 +1324,7 @@ impl Nimbra {
                                                         avatar(tone, &initials, 28.)
                                                             .absolute()
                                                             .top_0()
-                                                            .left(px(n as f32 * 20.))
+                                                            .left(dp(n as f32 * 20.))
                                                     }),
                                                 ),
                                         )
@@ -1368,8 +1368,8 @@ impl Nimbra {
                                                         div()
                                                             .flex()
                                                             .flex_col()
-                                                            .gap(px(12.))
-                                                            .pb(px(14.))
+                                                            .gap(dp(12.))
+                                                            .pb(dp(14.))
                                                             .child(self.message_header(
                                                                 t,
                                                                 m,
@@ -1386,7 +1386,7 @@ impl Nimbra {
                                                                     self.account_of(m),
                                                                     cx,
                                                                 )
-                                                                .pl(px(40.)),
+                                                                .pl(dp(40.)),
                                                             )
                                                             .when(
                                                                 !e.header.attachments.is_empty(),
@@ -1399,7 +1399,7 @@ impl Nimbra {
                                                                             m.account.as_deref(),
                                                                             cx,
                                                                         )
-                                                                        .pl(px(40.)),
+                                                                        .pl(dp(40.)),
                                                                     )
                                                                 },
                                                             ),
@@ -1419,7 +1419,7 @@ impl Nimbra {
                                         self.account_of(m),
                                         cx,
                                     )
-                                    .pl(px(40.))
+                                    .pl(dp(40.))
                                     .when(!m.loaded, |d| {
                                         d.child(self.loading_line(t, m, cx.entity()))
                                     }),
@@ -1433,15 +1433,15 @@ impl Nimbra {
                                             m.account.as_deref(),
                                             cx,
                                         )
-                                        .pl(px(40.)),
+                                        .pl(dp(40.)),
                                     )
                                 })
                                 .when(m.rich, |d| {
                                     d.child(
                                         div()
                                             .flex()
-                                            .gap(px(10.))
-                                            .pl(px(40.))
+                                            .gap(dp(10.))
+                                            .pl(dp(40.))
                                             .child(attachment(
                                                 "Q4-Launch-Plan.pdf",
                                                 "PDF · 4.2 MB",
@@ -1474,10 +1474,10 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(dp(0.))
             .items_center()
             .justify_center()
-            .gap(px(12.));
+            .gap(dp(12.));
         if self.body_failed.contains(&self.thread_key(mail)) {
             return pane.child(self.loading_line(t, mail, owner));
         }
@@ -1491,7 +1491,7 @@ impl Nimbra {
 
     /// The same in words, with a way to try again when it failed.
     fn loading_line(&self, t: &Theme, mail: &Mail, owner: gpui::Entity<Self>) -> Div {
-        let line = div().flex().items_center().gap(px(12.)).text_color(t.text3);
+        let line = div().flex().items_center().gap(dp(12.)).text_color(t.text3);
         let key = self.thread_key(mail);
         if !self.body_failed.contains(&key) {
             return line.child("Loading message…");
@@ -1583,25 +1583,25 @@ impl Nimbra {
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(dp(8.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(dp(12.))
                     .child(avatar(tone, &initials, 28.))
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(dp(0.))
                             // Name and address shrink (the address first) rather than run
                             // under the buttons beside them.
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(8.))
-                                    .min_w(px(0.))
+                                    .gap(dp(8.))
+                                    .min_w(dp(0.))
                                     .overflow_hidden()
                                     .child(
                                         div()
@@ -1630,7 +1630,7 @@ impl Nimbra {
                                                 div()
                                                     .relative()
                                                     .flex_1()
-                                                    .min_w(px(0.))
+                                                    .min_w(dp(0.))
                                                     .overflow_hidden()
                                                     .whitespace_nowrap()
                                                     .child(meta(shown, t.text3))
@@ -1638,7 +1638,7 @@ impl Nimbra {
                                                         gpui::canvas(
                                                             move |bounds, window, _| {
                                                                 let width =
-                                                                    f32::from(bounds.size.width);
+                                                                    from_screen(bounds.size.width);
                                                                 let old = rooms
                                                                     .borrow_mut()
                                                                     .insert(key, width);
@@ -1662,7 +1662,11 @@ impl Nimbra {
                                     .id(("recipients", index))
                                     .flex()
                                     .items_center()
-                                    .gap(px(4.))
+                                    .gap(dp(4.))
+                                    // Shrinks with the column (a narrow pane, a large interface
+                                    // size) instead of running under the reply buttons.
+                                    .min_w(dp(0.))
+                                    .overflow_hidden()
                                     .cursor_pointer()
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         let key = (thread.clone(), index);
@@ -1673,7 +1677,13 @@ impl Nimbra {
                                         };
                                         cx.notify();
                                     }))
-                                    .child(meta(short(&summary, 90), t.text3))
+                                    .child(
+                                        div()
+                                            .min_w(dp(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .child(meta(short(&summary, 90), t.text3)),
+                                    )
                                     .child(icon(if open { "up" } else { "down" }, 12., t.text3)),
                             ),
                     )
@@ -1684,7 +1694,7 @@ impl Nimbra {
                                 .flex()
                                 .flex_none()
                                 .items_center()
-                                .gap(px(2.))
+                                .gap(dp(2.))
                                 .child(reply_button(
                                     "reply",
                                     "Reply to this message",
@@ -1758,11 +1768,11 @@ impl Nimbra {
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .gap_x(px(6.))
+                .gap_x(dp(6.))
                 .max_w_full()
-                .px(px(7.))
-                .py(px(3.))
-                .rounded(px(7.))
+                .px(dp(7.))
+                .py(dp(3.))
+                .rounded(dp(7.))
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
                 .press(t)
@@ -1776,7 +1786,7 @@ impl Nimbra {
                 })
                 .child(
                     div()
-                        .min_w(px(0.))
+                        .min_w(dp(0.))
                         .text_color(if p.name.is_empty() { t.text } else { t.text3 })
                         .child(p.address.clone()),
                 )
@@ -1785,7 +1795,7 @@ impl Nimbra {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(4.))
+                        .gap(dp(4.))
                         .when(done, |d| {
                             d.child(icon("done", 12., t.mint))
                                 .child(div().text_color(t.mint).child("Copied"))
@@ -1807,20 +1817,20 @@ impl Nimbra {
             div()
                 .flex()
                 .items_start()
-                .gap(px(8.))
+                .gap(dp(8.))
                 .child(
                     div()
-                        .w(px(58.))
-                        .h(px(24.))
+                        .w(dp(58.))
+                        .h(dp(24.))
                         .flex()
                         .items_center()
                         .flex_none()
-                        .text_size(px(11.5))
+                        .text_size(dp(11.5))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(t.text3)
                         .child(name.to_string()),
                 )
-                .child(div().flex_1().min_w(px(0.)).child(value))
+                .child(div().flex_1().min_w(dp(0.)).child(value))
         };
         let people = |list: &[mail::Person],
                       chip: &mut dyn FnMut(&mail::Person, &mut Context<Self>) -> Stateful<Div>,
@@ -1828,8 +1838,8 @@ impl Nimbra {
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(2.))
-                .ml(px(-7.))
+                .gap(dp(2.))
+                .ml(dp(-7.))
                 .children(list.iter().map(|p| chip(p, cx)).collect::<Vec<_>>())
                 .into_any_element()
         };
@@ -1866,21 +1876,21 @@ impl Nimbra {
         // the avatar and the email itself in the original view (which starts at the left).
         let flush = self.original_target().is_some();
         div()
-            .ml(px(if flush { 0. } else { 40. }))
+            .ml(dp(if flush { 0. } else { 40. }))
             .flex()
             .flex_col()
-            .gap(px(6.))
-            .pl(px(14.))
-            .pr(px(10.))
-            .pt(px(10.))
-            .pb(px(8.))
-            .rounded(px(12.))
+            .gap(dp(6.))
+            .pl(dp(14.))
+            .pr(dp(10.))
+            .pt(dp(10.))
+            .pb(dp(8.))
+            .rounded(dp(12.))
             .bg(t.raised)
             .border_1()
             .border_color(t.border)
             .shadow(vec![shadow(c(0x000000, 0.06), 1., 3., 0.)])
-            .text_size(px(12.5))
-            .line_height(px(18.))
+            .text_size(dp(12.5))
+            .line_height(dp(18.))
             .child(row("From", from))
             .children(to.map(|v| row("To", v)))
             .children(cc.map(|v| row("Cc", v)))
@@ -1894,11 +1904,11 @@ impl Nimbra {
                         .group("detail-date")
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .ml(px(-7.))
-                        .px(px(7.))
-                        .py(px(3.))
-                        .rounded(px(7.))
+                        .gap(dp(6.))
+                        .ml(dp(-7.))
+                        .px(dp(7.))
+                        .py(dp(3.))
+                        .rounded(dp(7.))
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover))
                         .press(t)
@@ -1907,7 +1917,7 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(4.))
+                                .gap(dp(4.))
                                 .child(icon("done", 12., t.mint))
                                 .child(div().text_color(t.mint).child("Copied"))
                         } else {
@@ -1928,8 +1938,8 @@ impl Nimbra {
                     .flex()
                     .justify_end()
                     // As much room above Copy all as the card leaves below it.
-                    .pt(px(8.))
-                    .mt(px(2.))
+                    .pt(dp(8.))
+                    .mt(dp(2.))
                     .border_t_1()
                     .border_color(t.border)
                     .child(
@@ -1937,10 +1947,10 @@ impl Nimbra {
                             .id(("detail-copy-all", index))
                             .flex()
                             .items_center()
-                            .gap(px(6.))
-                            .px(px(8.))
-                            .py(px(4.))
-                            .rounded(px(7.))
+                            .gap(dp(6.))
+                            .px(dp(8.))
+                            .py(dp(4.))
+                            .rounded(dp(7.))
                             .cursor_pointer()
                             .text_color(if all_done { t.mint } else { t.text2 })
                             .font_weight(FontWeight::MEDIUM)
@@ -1971,7 +1981,7 @@ impl Nimbra {
         div()
             .flex()
             .flex_wrap()
-            .gap(px(10.))
+            .gap(dp(10.))
             .children(attachments.iter().enumerate().map(|(i, att)| {
                 let (preview, save) = (att.clone(), att.clone());
                 let from = account.map(str::to_string);
@@ -1986,26 +1996,26 @@ impl Nimbra {
                 card(t)
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .pl(px(8.))
-                    .pr(px(6.))
-                    .py(px(6.))
-                    .max_w(px(360.))
+                    .gap(dp(10.))
+                    .pl(dp(8.))
+                    .pr(dp(6.))
+                    .py(dp(6.))
+                    .max_w(dp(360.))
                     .child(
                         div()
                             .flex()
                             .flex_none()
                             .items_center()
                             .justify_center()
-                            .size(px(30.))
-                            .rounded(px(8.))
+                            .size(dp(30.))
+                            .rounded(dp(8.))
                             .bg(gradient(135., c(0x8b7cff, 1.), c(0x5b47e0, 1.)))
                             .child(icon("file", 16., gpui::white())),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(dp(0.))
                             .child(
                                 div()
                                     .font_weight(FontWeight::MEDIUM)
@@ -2078,13 +2088,13 @@ impl Nimbra {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(dp(10.))
             .when(!labels.is_empty(), |d| {
                 d.child(
                     div()
                         .flex()
                         .flex_wrap()
-                        .gap(px(6.))
+                        .gap(dp(6.))
                         .children(labels.into_iter().map(|(index, label)| {
                             let hover = t.hover;
                             let id = label.id.clone();
@@ -2092,17 +2102,17 @@ impl Nimbra {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
-                                .pl(px(8.))
-                                .pr(px(3.))
-                                .py(px(2.))
+                                .gap(dp(6.))
+                                .pl(dp(8.))
+                                .pr(dp(3.))
+                                .py(dp(2.))
                                 .rounded_full()
                                 .bg(t.hover)
                                 .border_1()
                                 .border_color(t.border)
                                 .child(
                                     div()
-                                        .size(px(6.))
+                                        .size(dp(6.))
                                         .rounded_full()
                                         .bg(tints[index % tints.len()]),
                                 )
@@ -2113,7 +2123,7 @@ impl Nimbra {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .size(px(16.))
+                                        .size(dp(16.))
                                         .rounded_full()
                                         .cursor_pointer()
                                         .text_color(t.text3)
@@ -2136,10 +2146,10 @@ impl Nimbra {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(10.))
-                        .px(px(14.))
-                        .py(px(8.))
-                        .rounded(px(10.))
+                        .gap(dp(10.))
+                        .px(dp(14.))
+                        .py(dp(8.))
+                        .rounded(dp(10.))
                         .bg(t.hover)
                         .border_1()
                         .border_color(t.border)
@@ -2167,10 +2177,10 @@ impl Nimbra {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(10.))
-                        .px(px(14.))
-                        .py(px(8.))
-                        .rounded(px(10.))
+                        .gap(dp(10.))
+                        .px(dp(14.))
+                        .py(dp(8.))
+                        .rounded(dp(10.))
                         .bg(t.rose.opacity(0.12))
                         .border_1()
                         .border_color(t.rose.opacity(0.4))
@@ -2213,8 +2223,8 @@ impl Nimbra {
         div()
             .flex()
             .items_start()
-            .gap(px(GAP))
-            .child(serif(&title, size, t.text).flex_1().min_w(px(0.)))
+            .gap(dp(GAP))
+            .child(serif(&title, size, t.text).flex_1().min_w(dp(0.)))
             .when_some(link, |d, link| {
                 // Where it goes is the sender's choice, so the tooltip says.
                 let hint = match url::Url::parse(&link).ok() {
@@ -2228,10 +2238,10 @@ impl Nimbra {
                     button(t, ButtonKind::Secondary, "Unsubscribe", None)
                         .id("unsubscribe")
                         .justify_center()
-                        .w(px(BUTTON_W))
-                        .h(px(BUTTON_H))
+                        .w(dp(BUTTON_W))
+                        .h(dp(BUTTON_H))
                         // Centred on the subject's first line.
-                        .mt(px(((size * 1.14).round() - BUTTON_H) / 2.))
+                        .mt(dp(((size * 1.14).round() - BUTTON_H) / 2.))
                         .press_soft()
                         .tooltip(tip(t.dark, hint, ""))
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -2248,7 +2258,7 @@ impl Nimbra {
     /// The area the web view covers, with a strip above it explaining what is blocked.
     fn original_pane(&self, t: &Theme, m: &Mail, cx: &mut Context<Self>) -> impl IntoElement {
         let view = self.html_view.clone();
-        let pane_w = self.frame.map_or(0., |f| f32::from(f.size.width)) - self.pane_left();
+        let pane_w = self.frame.map_or(0., |f| from_screen(f.size.width)) - self.pane_left();
         // The email is a native view: it is moved one frame ahead while a panel slides
         // (see `pane_lead`), so it keeps up with the rest of the window.
         let lead = self.pane_lead();
@@ -2256,18 +2266,18 @@ impl Nimbra {
             .flex()
             .flex_col()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(dp(0.))
             // Subject, sender, recipients and attachments stay native above the email.
             .child(
                 div()
                     .flex()
                     .flex_none()
                     .flex_col()
-                    .gap(px(12.))
-                    .px(px(ORIGINAL_SIDE))
-                    .pt(px(16.))
+                    .gap(dp(12.))
+                    .px(dp(ORIGINAL_SIDE))
+                    .pt(dp(16.))
                     // As much room under the sender as beside it.
-                    .pb(px(ORIGINAL_SIDE))
+                    .pb(dp(ORIGINAL_SIDE))
                     .border_b_1()
                     .border_color(t.border)
                     .child(self.subject_row(t, m, 26., pane_w - 2. * ORIGINAL_SIDE, cx))
@@ -2317,10 +2327,10 @@ impl Nimbra {
             .flex()
             .flex_none()
             .flex_col()
-            .gap(px(10.))
-            .px(px(ORIGINAL_SIDE))
-            .pt(px(12.))
-            .pb(px(14.))
+            .gap(dp(10.))
+            .px(dp(ORIGINAL_SIDE))
+            .pt(dp(12.))
+            .pb(dp(14.))
             .bg(t.surface)
             .border_t_1()
             .border_color(t.border)
@@ -2329,7 +2339,7 @@ impl Nimbra {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(dp(8.))
                     .child(icon("clip", 14., t.text3))
                     .child(
                         div()
@@ -2360,10 +2370,10 @@ const GLYPH_INSET: f32 = 16. * 2. / 24.;
 pub(super) fn toolbar_rule(t: &Theme, before: f32, after: f32) -> Div {
     div()
         .flex_none()
-        .w(px(1.))
-        .h(px(16.))
-        .ml(px(LIST_RIGHT - before - 2. - GLYPH_INSET))
-        .mr(px(LIST_RIGHT - after - 2. - GLYPH_INSET))
+        .w(dp(1.))
+        .h(dp(16.))
+        .ml(dp(LIST_RIGHT - before - 2. - GLYPH_INSET))
+        .mr(dp(LIST_RIGHT - after - 2. - GLYPH_INSET))
         .bg(t.border_strong)
 }
 
@@ -2392,10 +2402,10 @@ pub(super) fn action_button(t: &Theme, name: &str, label: &str, worded: bool) ->
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.))
-        .h(px(30.))
-        .px(px(if worded { 9. } else { 7. }))
-        .rounded(px(8.))
+        .gap(dp(6.))
+        .h(dp(30.))
+        .px(dp(if worded { 9. } else { 7. }))
+        .rounded(dp(8.))
         .cursor_pointer()
         .text_color(t.text2)
         .hover(move |s| s.bg(hover))
@@ -2403,7 +2413,7 @@ pub(super) fn action_button(t: &Theme, name: &str, label: &str, worded: bool) ->
         .when(worded, |d| {
             d.child(
                 div()
-                    .text_size(px(13.5))
+                    .text_size(dp(13.5))
                     .font_weight(FontWeight::MEDIUM)
                     .child(label.to_string()),
             )

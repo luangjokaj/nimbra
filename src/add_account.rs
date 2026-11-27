@@ -584,12 +584,12 @@ impl Nimbra {
             .child(
                 div()
                     .id("account-sheet")
-                    .w(px(480.))
+                    .w(dp(480.))
                     .flex()
                     .flex_col()
-                    .gap(px(14.))
-                    .p(px(22.))
-                    .rounded(px(18.))
+                    .gap(dp(14.))
+                    .p(dp(22.))
+                    .rounded(dp(18.))
                     .bg(t.raised)
                     .border_1()
                     .border_color(t.border_strong)
@@ -635,19 +635,19 @@ impl Nimbra {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(dp(8.))
                 .child(
                     div()
-                        .pl(px(4.))
+                        .pl(dp(4.))
                         .child(overline(title.to_uppercase(), t.text3)),
                 )
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(14.))
-                        .p(px(16.))
-                        .rounded(px(14.))
+                        .gap(dp(14.))
+                        .p(dp(16.))
+                        .rounded(dp(14.))
                         .bg(t.raised)
                         .border_1()
                         .border_color(t.border)
@@ -680,23 +680,23 @@ impl Nimbra {
 
     /// Continue with Microsoft, with its four squares.
     fn microsoft_button(&self, t: &Theme, cx: &mut Context<Self>) -> Stateful<Div> {
-        let square = |hex: u32| div().size(px(7.5)).bg(gpui::rgb(hex));
+        let square = |hex: u32| div().size(dp(7.5)).bg(gpui::rgb(hex));
         let logo = div()
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(1.))
+            .gap(dp(1.))
             .child(
                 div()
                     .flex()
-                    .gap(px(1.))
+                    .gap(dp(1.))
                     .child(square(0xF25022))
                     .child(square(0x7FBA00)),
             )
             .child(
                 div()
                     .flex()
-                    .gap(px(1.))
+                    .gap(dp(1.))
                     .child(square(0x00A4EF))
                     .child(square(0xFFB900)),
             );
@@ -704,7 +704,7 @@ impl Nimbra {
             .id("account-microsoft")
             .press_soft()
             .justify_center()
-            .gap(px(10.))
+            .gap(dp(10.))
             // The logo is added after the label: shown before it.
             .flex_row_reverse()
             .child(logo)
@@ -717,10 +717,10 @@ impl Nimbra {
             .id("account-google")
             .press_soft()
             .justify_center()
-            .gap(px(10.))
+            .gap(dp(10.))
             // The logo is added after the label: shown before it.
             .flex_row_reverse()
-            .child(gpui::img(GOOGLE_LOGO.clone()).size(px(16.)).flex_none())
+            .child(gpui::img(GOOGLE_LOGO.clone()).size(dp(16.)).flex_none())
             .on_click(cx.listener(|this, _, _, cx| {
                 this.close_account_sheet(cx);
                 this.add_google_account(cx);
@@ -741,19 +741,19 @@ impl Nimbra {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(dp(6.))
                 .child(meta(label.to_string(), t.text3))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .h(px(BOX_H))
-                        .px(px(12.))
-                        .rounded(px(10.))
+                        .h(dp(BOX_H))
+                        .px(dp(12.))
+                        .rounded(dp(10.))
                         .bg(t.hover)
                         .border_1()
                         .border_color(t.border)
-                        .text_size(px(14.))
+                        .text_size(dp(14.))
                         .child(div().w_full().child(input.clone())),
                 )
         };
@@ -771,10 +771,10 @@ impl Nimbra {
                         .flex_none()
                         .items_center()
                         .justify_center()
-                        .w(px(option_w))
+                        .w(dp(option_w))
                         .h_full()
-                        .rounded(px(7.))
-                        .text_size(px(13.))
+                        .rounded(dp(7.))
+                        .text_size(dp(13.))
                         .font_weight(FontWeight::MEDIUM)
                         .cursor_pointer()
                         .text_color(if value == choice { t.text } else { t.text3 })
@@ -829,10 +829,10 @@ impl Nimbra {
                 && changed.is_some_and(|at| at.elapsed() < Duration::from_millis(260));
             let pill = div()
                 .absolute()
-                .top(px(3.))
-                .w(px(option_w))
-                .h(px(BOX_H - 2. - 6.))
-                .rounded(px(7.))
+                .top(dp(3.))
+                .w(dp(option_w))
+                .h(dp(BOX_H - 2. - 6.))
+                .rounded(dp(7.))
                 .bg(t.raised)
                 .border_1()
                 .border_color(t.border)
@@ -846,26 +846,26 @@ impl Nimbra {
                 pill.with_animation(
                     (id, generation as usize),
                     Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
-                    move |d, delta| d.left(px(3. + from + (to - from) * delta)),
+                    move |d, delta| d.left(dp(3. + from + (to - from) * delta)),
                 )
                 .into_any_element()
             } else {
-                pill.left(px(3. + to)).into_any_element()
+                pill.left(dp(3. + to)).into_any_element()
             };
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(dp(6.))
                 .child(meta("Security".to_string(), t.text3))
                 .child(
                     div()
                         .relative()
                         .flex()
-                        .gap(px(2.))
-                        .w(px(SWITCH_W))
-                        .h(px(BOX_H))
-                        .p(px(3.))
-                        .rounded(px(10.))
+                        .gap(dp(2.))
+                        .w(dp(SWITCH_W))
+                        .h(dp(BOX_H))
+                        .p(dp(3.))
+                        .rounded(dp(10.))
                         .bg(t.hover)
                         .border_1()
                         .border_color(t.border)
@@ -880,15 +880,15 @@ impl Nimbra {
                           secured: AnyElement| {
             div()
                 .flex()
-                .gap(px(8.))
-                .child(div().flex_1().min_w(px(0.)).child(field(label, host)))
-                .child(div().w(px(76.)).flex_none().child(field("Port", port)))
-                .child(div().w(px(SWITCH_W)).flex_none().child(secured))
+                .gap(dp(8.))
+                .child(div().flex_1().min_w(dp(0.)).child(field(label, host)))
+                .child(div().w(dp(76.)).flex_none().child(field("Port", port)))
+                .child(div().w(dp(SWITCH_W)).flex_none().child(secured))
         };
         div()
             .flex()
             .flex_col()
-            .gap(px(14.))
+            .gap(dp(14.))
                     .child(field("Email", &sheet.email))
                     .child(field("Password", &sheet.password))
                     .when(sheet.manual, |d| {
@@ -924,7 +924,7 @@ impl Nimbra {
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(8.))
+                            .gap(dp(8.))
                             .child(
                                 button(t, ButtonKind::Ghost, "Cancel", None)
                                     .id("account-cancel")
@@ -1131,20 +1131,20 @@ fn error_callout(t: &Theme, error: &SharedString) -> AnyElement {
     let callout = div()
         .flex()
         .items_start()
-        .gap(px(10.))
-        .px(px(12.))
-        .py(px(10.))
-        .rounded(px(10.))
+        .gap(dp(10.))
+        .px(dp(12.))
+        .py(dp(10.))
+        .rounded(dp(10.))
         .bg(t.rose.opacity(0.1))
         .border_1()
         .border_color(t.rose.opacity(0.3))
-        .child(div().pt(px(1.)).child(icon("alert", 15., t.rose)))
+        .child(div().pt(dp(1.)).child(icon("alert", 15., t.rose)))
         .child(
             div()
                 .flex_1()
-                .min_w(px(0.))
-                .text_size(px(12.5))
-                .line_height(px(18.))
+                .min_w(dp(0.))
+                .text_size(dp(12.5))
+                .line_height(dp(18.))
                 .text_color(t.text)
                 .child(error.clone()),
         );
@@ -1165,7 +1165,7 @@ fn error_callout(t: &Theme, error: &SharedString) -> AnyElement {
             ("account-error", key),
             Animation::new(Duration::from_millis(280)).with_easing(ease_out_quint()),
             // Taller than any message, so the box is never cut once open.
-            |d, delta| d.max_h(px(160. * delta)).opacity(delta),
+            |d, delta| d.max_h(dp(160. * delta)).opacity(delta),
         )
         .into_any_element()
 }

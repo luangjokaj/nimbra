@@ -37,22 +37,24 @@ use nimbra_core::{
 
 use std::borrow::Cow;
 
+use crate::ui::to_screen;
+
 use gpui::{
     App, Application, AssetSource, Bounds, KeyBinding, SharedString, TitlebarOptions,
     WindowBackgroundAppearance, WindowBounds, WindowOptions, point, prelude::*, px, size,
 };
 
 use app::{
-    AboutNimbra, Back, CheckForUpdates, Compose, Confirm, Dismiss, DockDrafts, DockInbox, DockSent,
-    DockSnoozed, DockStarred, First, FocusSearch, FocusSidebar, Forward, ForwardMessage, GoAllMail,
-    GoDrafts, GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp, HideOthers, HideWindow,
-    Last, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReply,
-    MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal, MenuToggleSidebar,
-    MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenInWindow, OpenSettings, OpenSidebarRow,
-    PageDown, PageUp, PickDown, PickThread, PickUp, Prev, Print, Quit, Reload, Reply, ReplyAll,
-    SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList, ToggleOriginal,
-    TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
-    UseDarkAppearance, UseLightAppearance, UseSystemAppearance,
+    AboutNimbra, ActualSize, Back, CheckForUpdates, Compose, Confirm, Dismiss, DockDrafts,
+    DockInbox, DockSent, DockSnoozed, DockStarred, First, FocusSearch, FocusSidebar, Forward,
+    ForwardMessage, GoAllMail, GoDrafts, GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp,
+    HideOthers, HideWindow, Last, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone,
+    MenuMarkUnread, MenuReply, MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal,
+    MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenInWindow, OpenSettings,
+    OpenSidebarRow, PageDown, PageUp, PickDown, PickThread, PickUp, Prev, Print, Quit, Reload,
+    Reply, ReplyAll, SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList,
+    ToggleOriginal, TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash,
+    Undo, UseDarkAppearance, UseLightAppearance, UseSystemAppearance, ZoomIn, ZoomOut,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -298,6 +300,11 @@ fn main() {
             KeyBinding::new("h", TogglePalette, mail),
             KeyBinding::new("escape", Dismiss, None),
             KeyBinding::new("enter", Confirm, mail),
+            // Zoom In takes ⌘= too: ⌘+ is ⌘⇧= on most keyboards.
+            KeyBinding::new("cmd-=", ZoomIn, None),
+            KeyBinding::new("cmd-+", ZoomIn, None),
+            KeyBinding::new("cmd--", ZoomOut, None),
+            KeyBinding::new("cmd-0", ActualSize, None),
             KeyBinding::new("cmd-shift-l", ToggleTheme, None),
             KeyBinding::new("ctrl-shift-l", ToggleTheme, None),
             KeyBinding::new("cmd-b", ToggleSidebar, None),
@@ -422,6 +429,10 @@ fn main() {
                     MenuItem::action("Show or Hide List", ToggleList),
                     MenuItem::action("Original Formatting or Reader", MenuToggleOriginal),
                     MenuItem::separator(),
+                    MenuItem::action("Actual Size", ActualSize),
+                    MenuItem::action("Zoom In", ZoomIn),
+                    MenuItem::action("Zoom Out", ZoomOut),
+                    MenuItem::separator(),
                     // Checked by `set_menu_check`, which finds it by these titles.
                     MenuItem::submenu(Menu {
                         name: "Appearance".into(),
@@ -470,6 +481,8 @@ fn main() {
             MenuItem::action("Sent", DockSent),
         ]);
 
+        // The interface zoom, before anything is sized for it.
+        crate::ui::set_zoom(crate::settings::load().zoom());
         const MIN_SIZE: (f32, f32) = (1120., 720.);
         // Back where it was, on the same display, if that is still connected.
         let saved = window_frame::load().and_then(|saved| {
@@ -490,13 +503,13 @@ fn main() {
                 window_frame::clamp(saved.frame, &[whole], MIN_SIZE)?,
             ))
         });
-        let mut bounds = Bounds::centered(None, size(px(1480.), px(920.)), cx);
+        let mut bounds = Bounds::centered(None, size(to_screen(1480.), to_screen(920.)), cx);
         // NIMBRA_SHIFT=<px> nudges the window sideways (used to test the backdrop blur).
         if let Some(shift) = std::env::var("NIMBRA_SHIFT")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
         {
-            bounds.origin.x += px(shift);
+            bounds.origin.x += to_screen(shift);
         }
         let window_bounds = match saved {
             Some((_, frame)) => {
@@ -523,7 +536,7 @@ fn main() {
                         traffic_light_position: Some(point(px(18.), px(18.))),
                     }),
                     window_background: WindowBackgroundAppearance::Blurred,
-                    window_min_size: Some(size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
+                    window_min_size: Some(size(to_screen(MIN_SIZE.0), to_screen(MIN_SIZE.1))),
                     ..Default::default()
                 },
                 |window, cx| {

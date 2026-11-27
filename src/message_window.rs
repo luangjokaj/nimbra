@@ -163,6 +163,8 @@ impl MessageWindow {
 
 impl Render for MessageWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         let m = self.mail(cx);
         let (dark, darkened, images, text_scale) = {
             let n = self.owner.read(cx);
@@ -195,7 +197,7 @@ impl Render for MessageWindow {
             }
         }
         let original = self.original && m.html.is_some();
-        let width = f32::from(window.viewport_size().width);
+        let width = from_screen(window.viewport_size().width);
 
         // As the main window's toolbar (`reading.rs`): the actions as words, then icons.
         let worded = width >= 560.;
@@ -230,10 +232,10 @@ impl Render for MessageWindow {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(2.))
-            .h(px(crate::ui::TOP_BAR))
-            .pl(px(84.))
-            .pr(px(14.))
+            .gap(dp(2.))
+            .h(dp(crate::ui::top_bar()))
+            .pl(dp(84.))
+            .pr(dp(14.))
             .border_b_1()
             .border_color(t.border)
             .on_mouse_down(MouseButton::Left, |event, window, cx| {
@@ -258,7 +260,7 @@ impl Render for MessageWindow {
                 |this, _, window, cx| this.act(window, cx, |n, row, cx| n.trash_thread(row, cx)),
             )))
             .when(m.html.is_some(), |d| {
-                d.child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(t.border_strong))
+                d.child(div().w(dp(1.)).h(dp(16.)).mx(dp(6.)).bg(t.border_strong))
             })
             .when(m.html.is_some(), |d| {
                 d.child(
@@ -285,7 +287,7 @@ impl Render for MessageWindow {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(dp(12.))
                 .child(n.subject_row(&t, &m, 28., title_w, cx))
                 .child(n.thread_banners(&t, &m, cx))
         };
@@ -302,12 +304,12 @@ impl Render for MessageWindow {
                     .flex()
                     .flex_none()
                     .flex_col()
-                    .gap(px(12.))
+                    .gap(dp(12.))
                     // In line with the email under it (the web view's page padding), and
                     // as much room under the sender as beside it, as in the main window.
-                    .px(px(super::reading::ORIGINAL_SIDE))
-                    .pt(px(18.))
-                    .pb(px(super::reading::ORIGINAL_SIDE))
+                    .px(dp(super::reading::ORIGINAL_SIDE))
+                    .pt(dp(18.))
+                    .pb(dp(super::reading::ORIGINAL_SIDE))
                     .border_b_1()
                     .border_color(t.border)
                     .child(header(
@@ -326,7 +328,7 @@ impl Render for MessageWindow {
                 .flex()
                 .flex_col()
                 .flex_1()
-                .min_h(px(0.))
+                .min_h(dp(0.))
                 .child(top)
                 .child(
                     gpui::canvas(
@@ -358,13 +360,13 @@ impl Render for MessageWindow {
                 let mut d = div()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
+                    .gap(dp(16.))
                     .w_full()
-                    .max_w(px(860.))
+                    .max_w(dp(860.))
                     .mx_auto()
-                    .px(px(36.))
-                    .pt(px(26.))
-                    .pb(px(48.))
+                    .px(dp(36.))
+                    .pt(dp(26.))
+                    .pb(dp(48.))
                     .child(header(n, cx, (column - 72.).max(0.)));
                 // Every message, oldest first, the latest last.
                 for (k, e) in m.earlier.iter().enumerate() {
@@ -372,8 +374,8 @@ impl Render for MessageWindow {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
-                            .pt(px(14.))
+                            .gap(dp(12.))
+                            .pt(dp(14.))
                             .border_t_1()
                             .border_color(t.border)
                             .child(n.message_header(&t, &m, k + 1, false, cx))
@@ -386,7 +388,7 @@ impl Render for MessageWindow {
                                     n.account_of(&m),
                                     cx,
                                 )
-                                .pl(px(40.)),
+                                .pl(dp(40.)),
                             )
                             .when(!e.header.attachments.is_empty(), |d| {
                                 d.child(
@@ -397,7 +399,7 @@ impl Render for MessageWindow {
                                         m.account.as_deref(),
                                         cx,
                                     )
-                                    .pl(px(40.)),
+                                    .pl(dp(40.)),
                                 )
                             }),
                     );
@@ -406,14 +408,14 @@ impl Render for MessageWindow {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(12.))
-                        .pt(px(14.))
+                        .gap(dp(12.))
+                        .pt(dp(14.))
                         .border_t_1()
                         .border_color(t.border)
                         .child(n.message_header(&t, &m, 0, false, cx))
                         .child(
                             n.message_body(&t, &m.body, 0, &selectable, n.account_of(&m), cx)
-                                .pl(px(40.)),
+                                .pl(dp(40.)),
                         )
                         .when(!m.header.attachments.is_empty(), |d| {
                             d.child(
@@ -424,7 +426,7 @@ impl Render for MessageWindow {
                                     m.account.as_deref(),
                                     cx,
                                 )
-                                .pl(px(40.)),
+                                .pl(dp(40.)),
                             )
                         }),
                 )
@@ -432,7 +434,7 @@ impl Render for MessageWindow {
             div()
                 .id("message-window-scroll")
                 .flex_1()
-                .min_h(px(0.))
+                .min_h(dp(0.))
                 .overflow_y_scroll()
                 .child(content)
                 .into_any_element()
@@ -502,8 +504,8 @@ impl Render for MessageWindow {
             }))
             .bg(t.surface)
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text)
             .child(toolbar)
             .child(body)

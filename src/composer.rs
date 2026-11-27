@@ -724,7 +724,7 @@ impl Nimbra {
             && let Some(position) = composer.position
             && !composer.full
         {
-            let mouse = (f32::from(event.position.x), f32::from(event.position.y));
+            let mouse = (from_screen(event.position.x), from_screen(event.position.y));
             composer.grab = Some((grab, mouse, position, composer.size));
             cx.notify();
         }
@@ -747,8 +747,8 @@ impl Nimbra {
             composer.grab = None;
             return;
         }
-        let dx = f32::from(event.position.x) - start.0;
-        let dy = f32::from(event.position.y) - start.1;
+        let dx = from_screen(event.position.x) - start.0;
+        let dy = from_screen(event.position.y) - start.1;
         match grab {
             Grab::Move => {
                 composer.position = Some((
@@ -790,7 +790,7 @@ impl Nimbra {
             return None;
         }
         let size = window.viewport_size();
-        let viewport = (f32::from(size.width), f32::from(size.height));
+        let viewport = (from_screen(size.width), from_screen(size.height));
         let detached = self.compose_detached;
         if let Some(composer) = &mut self.compose {
             // A window of its own is all composer; elsewhere it floats as in the main window.
@@ -851,7 +851,8 @@ impl Nimbra {
         let owner = cx.entity();
         self.compose_home = self.compose_host;
         cx.defer(move |cx| {
-            let bounds = gpui::Bounds::centered(None, gpui::size(px(820.), px(700.)), cx);
+            let bounds =
+                gpui::Bounds::centered(None, gpui::size(to_screen(820.), to_screen(700.)), cx);
             let me = owner.clone();
             let opened = cx.open_window(
                 gpui::WindowOptions {
@@ -861,7 +862,7 @@ impl Nimbra {
                         appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(18.), px(18.))),
                     }),
-                    window_min_size: Some(gpui::size(px(520.), px(420.))),
+                    window_min_size: Some(gpui::size(to_screen(520.), to_screen(420.))),
                     ..Default::default()
                 },
                 |window, cx| {
@@ -2008,7 +2009,7 @@ impl Nimbra {
         // Full page keeps the text in a readable column instead of stretching it edge to edge.
         let column = |d: Div| {
             if full {
-                d.w_full().max_w(px(860.))
+                d.w_full().max_w(dp(860.))
             } else {
                 d.w_full()
             }
@@ -2028,12 +2029,12 @@ impl Nimbra {
                         .relative()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
-                        .px(px(20.))
-                        .py(px(10.))
+                        .gap(dp(12.))
+                        .px(dp(20.))
+                        .py(dp(10.))
                         .child(
                             div()
-                                .w(px(56.))
+                                .w(dp(56.))
                                 .flex_none()
                                 .text_color(t.text3)
                                 .child(label.to_string()),
@@ -2041,14 +2042,14 @@ impl Nimbra {
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(0.))
+                                .min_w(dp(0.))
                                 .flex()
                                 .flex_wrap()
                                 .items_center()
-                                .gap(px(6.))
-                                .text_size(px(14.))
+                                .gap(dp(6.))
+                                .text_size(dp(14.))
                                 .children(lead)
-                                .child(div().flex_1().min_w(px(120.)).child(input.clone())),
+                                .child(div().flex_1().min_w(dp(120.)).child(input.clone())),
                         )
                         .children(trailing)
                         .children(below),
@@ -2067,15 +2068,15 @@ impl Nimbra {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(4.))
-                        .pl(px(9.))
-                        .pr(px(3.))
-                        .py(px(1.))
+                        .gap(dp(4.))
+                        .pl(dp(9.))
+                        .pr(dp(3.))
+                        .py(dp(1.))
                         .rounded_full()
                         .bg(t.hover)
                         .border_1()
                         .border_color(t.border_strong)
-                        .text_size(px(13.))
+                        .text_size(dp(13.))
                         .child(short(address, 34))
                         .child(
                             div()
@@ -2083,7 +2084,7 @@ impl Nimbra {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .size(px(16.))
+                                .size(dp(16.))
                                 .rounded_full()
                                 .cursor_pointer()
                                 .text_color(t.text3)
@@ -2132,8 +2133,8 @@ impl Nimbra {
                 move |bounds, window, cx| {
                     let at = crate::blur::screen_point(
                         window,
-                        f32::from(bounds.origin.x),
-                        f32::from(bounds.origin.y),
+                        from_screen(bounds.origin.x),
+                        from_screen(bounds.origin.y),
                     );
                     let composer_window = window.window_handle();
                     if let Some(at) = at {
@@ -2148,14 +2149,14 @@ impl Nimbra {
                 },
                 |_, _, _, _| {},
             )
-            .w(px(suggest_popup::SUGGEST_WIDTH))
-            .h(px(1.));
+            .w(dp(suggest_popup::SUGGEST_WIDTH))
+            .h(dp(1.));
             // Takes no room: the fields below stay where they are.
             let strip = div()
-                .h(px(0.))
+                .h(dp(0.))
                 .flex()
                 .justify_center()
-                .child(column(div()).pl(px(84.)).pr(px(20.)).child(anchor));
+                .child(column(div()).pl(dp(84.)).pr(dp(20.)).child(anchor));
             (s.field, strip.into_any_element())
         });
         let mut drop_for = |f: Field| -> Option<AnyElement> {
@@ -2171,11 +2172,11 @@ impl Nimbra {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .pl(px(10.))
-                .pr(px(4.))
-                .py(px(4.))
-                .rounded(px(8.))
+                .gap(dp(6.))
+                .pl(dp(10.))
+                .pr(dp(4.))
+                .py(dp(4.))
+                .rounded(dp(8.))
                 .bg(t.hover)
                 .border_1()
                 .border_color(t.border)
@@ -2188,8 +2189,8 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(18.))
-                        .rounded(px(5.))
+                        .size(dp(18.))
+                        .rounded(dp(5.))
                         .cursor_pointer()
                         .text_color(t.text3)
                         .hover(move |s| s.bg(hover))
@@ -2242,10 +2243,10 @@ impl Nimbra {
         let controls = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(dp(8.))
             // What it is (a draft being edited, or a reply), as a pill before
             // the buttons. A new message has none.
-            .children(title.map(|title| pill(t, title, accent).mr(px(4.))))
+            .children(title.map(|title| pill(t, title, accent).mr(dp(4.))))
             .when(!self.compose_detached, |d| {
                 d.child(
                     icon_button(t, "detach")
@@ -2330,11 +2331,11 @@ impl Nimbra {
             .when(full, |d| d.relative().size_full().bg(t.surface))
             .when(!full, |d| {
                 d.absolute()
-                    .left(px(left))
-                    .top(px(top))
-                    .w(px(width))
-                    .h(px(height))
-                    .rounded(px(18.))
+                    .left(dp(left))
+                    .top(dp(top))
+                    .w(dp(width))
+                    .h(dp(height))
+                    .rounded(dp(18.))
                     .border_1()
                     .border_color(t.border_strong)
                     // A plain shadow: no coloured glow spilling over the mail behind.
@@ -2352,7 +2353,7 @@ impl Nimbra {
                     // In full page the header also clears the traffic lights and is the
                     // strip you drag or double-click.
                     .when(full, |d| {
-                        d.pt(px(36.)).on_mouse_down(MouseButton::Left, drag_or_zoom)
+                        d.pt(dp(36.)).on_mouse_down(MouseButton::Left, drag_or_zoom)
                     })
                     .when(!full, |d| {
                         d.cursor(gpui::CursorStyle::OpenHand).on_mouse_down(
@@ -2368,11 +2369,11 @@ impl Nimbra {
                         column(div())
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .px(px(20.))
+                            .gap(dp(8.))
+                            .px(dp(20.))
                             // The same above and below, so the buttons sit in the middle,
                             // level with From.
-                            .py(px(8.))
+                            .py(dp(8.))
                             // A new message: who it is from, and a menu to change it.
                             .when(self.shows_from(), |d| {
                                 // The account it is changing to shows at once, with what
@@ -2403,7 +2404,7 @@ impl Nimbra {
                                 // so the photo starts where the fields' values do.
                                 d.child(
                                     div()
-                                        .w(px(56.))
+                                        .w(dp(56.))
                                         .flex_none()
                                         .text_color(t.text3)
                                         .child("From"),
@@ -2414,12 +2415,12 @@ impl Nimbra {
                                         .flex()
                                         .items_center()
                                         .relative()
-                                        .gap(px(8.))
-                                        .min_w(px(0.))
-                                        .pl(px(menus::FROM_PHOTO_INSET))
-                                        .pr(px(8.))
-                                        .py(px(3.))
-                                        .rounded(px(7.))
+                                        .gap(dp(8.))
+                                        .min_w(dp(0.))
+                                        .pl(dp(menus::FROM_PHOTO_INSET))
+                                        .pr(dp(8.))
+                                        .py(dp(3.))
+                                        .rounded(dp(7.))
                                         .cursor_pointer()
                                         .hover(move |s| s.bg(hover))
                                         .when(self.menu == Some(Menu::From), |d| d.bg(t.selected))
@@ -2427,9 +2428,9 @@ impl Nimbra {
                                         .child(face)
                                         .child(
                                             div()
-                                                .min_w(px(0.))
+                                                .min_w(dp(0.))
                                                 .truncate()
-                                                .text_size(px(14.))
+                                                .text_size(dp(14.))
                                                 .text_color(t.text2)
                                                 .child(email),
                                         )
@@ -2439,8 +2440,8 @@ impl Nimbra {
                                             gpui::canvas(
                                                 move |bounds, _, _| {
                                                     anchor.set((
-                                                        f32::from(bounds.origin.x),
-                                                        f32::from(
+                                                        from_screen(bounds.origin.x),
+                                                        from_screen(
                                                             bounds.origin.y + bounds.size.height,
                                                         ),
                                                     ));
@@ -2481,7 +2482,7 @@ impl Nimbra {
                             .child(div().flex_1())
                             // Their icons end where the fields' text does (Cc Bcc): an icon
                             // button's box reaches 7 past its icon (30 around 16).
-                            .children(inline_controls.map(|c| c.mr(px(-7.)))),
+                            .children(inline_controls.map(|c| c.mr(dp(-7.)))),
                     ),
             )
             .child(field(
@@ -2516,9 +2517,9 @@ impl Nimbra {
                             column(div())
                                 .flex()
                                 .flex_wrap()
-                                .gap(px(8.))
-                                .px(px(20.))
-                                .py(px(10.))
+                                .gap(dp(8.))
+                                .px(dp(20.))
+                                .py(dp(10.))
                                 .children(chips),
                         ),
                 )
@@ -2540,8 +2541,8 @@ impl Nimbra {
                         .flex_none()
                         .items_center()
                         .justify_center()
-                        .size(px(28.))
-                        .rounded(px(7.))
+                        .size(dp(28.))
+                        .rounded(dp(7.))
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover))
                         .when(active, |d| d.bg(t.hover).border_1().border_color(t.border))
@@ -2563,7 +2564,7 @@ impl Nimbra {
                         }))
                 };
                 let f = composer.format;
-                let gap = || div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(t.border);
+                let gap = || div().w(dp(1.)).h(dp(16.)).mx(dp(4.)).bg(t.border);
                 d.child(
                     div()
                         .flex()
@@ -2574,9 +2575,9 @@ impl Nimbra {
                             column(div())
                                 .flex()
                                 .items_center()
-                                .gap(px(2.))
-                                .px(px(14.))
-                                .py(px(5.))
+                                .gap(dp(2.))
+                                .px(dp(14.))
+                                .py(dp(5.))
                                 .child(tool(0, "bold", "Bold", "⌘B", "bold", f[0]))
                                 .child(tool(1, "italic", "Italic", "⌘I", "italic", f[1]))
                                 .child(tool(2, "underline", "Underline", "⌘U", "underline", f[2]))
@@ -2615,8 +2616,8 @@ impl Nimbra {
                                         div()
                                             .flex()
                                             .items_center()
-                                            .gap(px(8.))
-                                            .text_size(px(12.))
+                                            .gap(dp(8.))
+                                            .text_size(dp(12.))
                                             .text_color(t.text2)
                                             .child(label)
                                             .when(!key.is_empty(), |d| d.child(kbd(t, key))),
@@ -2630,7 +2631,7 @@ impl Nimbra {
                     div()
                         .id("compose-body")
                         .flex_1()
-                        .min_h(px(0.))
+                        .min_h(dp(0.))
                         .key_context("Editor")
                         .track_focus(&self.editor_focus)
                         .child(
@@ -2665,24 +2666,24 @@ impl Nimbra {
                         .flex()
                         .justify_center()
                         .flex_1()
-                        .min_h(px(0.))
+                        .min_h(dp(0.))
                         .overflow_y_scroll()
                         .child(
                             column(div())
                                 .flex()
                                 .flex_col()
-                                .px(px(20.))
-                                .py(px(if full { 24. } else { 14. }))
-                                .text_size(px(15.))
+                                .px(dp(20.))
+                                .py(dp(if full { 24. } else { 14. }))
+                                .text_size(dp(15.))
                                 .children(composer.lines.iter().cloned())
                                 // The quoted earlier message stays folded behind "…".
                                 .when_some(composer.quoted.clone(), |d, quoted| {
                                     d.child(
-                                        div().flex().pt(px(10.)).child(
+                                        div().flex().pt(dp(10.)).child(
                                             div()
                                                 .id("toggle-quoted")
-                                                .px(px(8.))
-                                                .rounded(px(6.))
+                                                .px(dp(8.))
+                                                .rounded(dp(6.))
                                                 .bg(t.hover)
                                                 .border_1()
                                                 .border_color(t.border)
@@ -2703,12 +2704,12 @@ impl Nimbra {
                                         |d| {
                                             d.child(
                                                 div()
-                                                    .mt(px(10.))
-                                                    .pl(px(14.))
+                                                    .mt(dp(10.))
+                                                    .pl(dp(14.))
                                                     .border_l_2()
                                                     .border_color(t.border_strong)
-                                                    .text_size(px(14.))
-                                                    .line_height(px(22.))
+                                                    .text_size(dp(14.))
+                                                    .line_height(dp(22.))
                                                     .text_color(t.text3)
                                                     .child(short(&quoted, 6000)),
                                             )
@@ -2728,9 +2729,9 @@ impl Nimbra {
                         column(div())
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .px(px(14.))
-                            .py(px(12.))
+                            .gap(dp(8.))
+                            .px(dp(14.))
+                            .py(dp(12.))
                             .child(
                                 icon_button(t, "clip")
                                     .id("attach")
@@ -2741,8 +2742,8 @@ impl Nimbra {
                             .child(
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
-                                    .pl(px(4.))
+                                    .min_w(dp(0.))
+                                    .pl(dp(4.))
                                     .text_color(if composer.error.is_some() {
                                         t.rose
                                     } else {
@@ -2796,7 +2797,7 @@ impl Nimbra {
             // lights' middle is 25 pt down (18 to their top, 14 tall); the 30 pt buttons are
             // centred on it.
             .children(
-                corner_controls.map(|controls| controls.absolute().top(px(10.)).right(px(16.))),
+                corner_controls.map(|controls| controls.absolute().top(dp(10.)).right(dp(16.))),
             )
             // Every edge and corner resizes the floating card (no visible grip).
             .when(!full, |d| {
@@ -2821,21 +2822,21 @@ impl Nimbra {
                     let corner = hx != 0 && hy != 0;
                     let mut h = div().absolute().cursor(cursor);
                     h = match hx {
-                        -1 => h.left(px(-OUT)),
-                        1 => h.right(px(-OUT)),
-                        _ => h.left(px(CORNER)).right(px(CORNER)),
+                        -1 => h.left(dp(-OUT)),
+                        1 => h.right(dp(-OUT)),
+                        _ => h.left(dp(CORNER)).right(dp(CORNER)),
                     };
                     h = match hy {
-                        -1 => h.top(px(-OUT)),
-                        1 => h.bottom(px(-OUT)),
-                        _ => h.top(px(CORNER)).bottom(px(CORNER)),
+                        -1 => h.top(dp(-OUT)),
+                        1 => h.bottom(dp(-OUT)),
+                        _ => h.top(dp(CORNER)).bottom(dp(CORNER)),
                     };
                     if corner {
-                        h = h.size(px(CORNER + OUT));
+                        h = h.size(dp(CORNER + OUT));
                     } else if hx == 0 {
-                        h = h.h(px(EDGE + OUT));
+                        h = h.h(dp(EDGE + OUT));
                     } else {
-                        h = h.w(px(EDGE + OUT));
+                        h = h.w(dp(EDGE + OUT));
                     }
                     h.on_mouse_down(
                         MouseButton::Left,
@@ -2856,17 +2857,17 @@ impl Nimbra {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .when(!full, |d| d.rounded(px(18.)))
+                        .when(!full, |d| d.rounded(dp(18.)))
                         .bg(t.scrim)
                         .occlude()
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(14.))
-                                .w(px(340.))
-                                .p(px(22.))
-                                .rounded(px(16.))
+                                .gap(dp(14.))
+                                .w(dp(340.))
+                                .p(dp(22.))
+                                .rounded(dp(16.))
                                 .bg(t.raised)
                                 .border_1()
                                 .border_color(t.border_strong)
@@ -2880,8 +2881,8 @@ impl Nimbra {
                                     div()
                                         .flex()
                                         .items_center()
-                                        .gap(px(8.))
-                                        .pt(px(4.))
+                                        .gap(dp(8.))
+                                        .pt(dp(4.))
                                         .child(
                                             button(t, ButtonKind::Ghost, "Discard", None)
                                                 .id("ask-discard")
@@ -2953,6 +2954,8 @@ pub(super) struct ComposeWindow {
 
 impl Render for ComposeWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         let owner = self.owner.clone();
         let content = owner.update(cx, |n, cx| n.hosted_compose(window, cx));
         let t = owner.read(cx).theme();
@@ -2975,8 +2978,8 @@ impl Render for ComposeWindow {
             .size_full()
             .bg(t.surface)
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text)
             // ⌘W: asks about the draft (the window closes with the composer).
             .on_action(cx.listener(|this, _: &HideWindow, window, cx| {

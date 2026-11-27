@@ -154,17 +154,17 @@ impl Nimbra {
                 .press_soft()
                 .child(icon(name, 14., t.text2))
         };
-        let row_of_actions = || div().flex().flex_wrap().justify_center().gap(px(8.));
+        let row_of_actions = || div().flex().flex_wrap().justify_center().gap(dp(8.));
         let inbox_like = inbox_like(self.mailbox);
         div()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(dp(0.))
             .h_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(18.))
+            .gap(dp(18.))
             .bg(t.surface)
             .child(serif(
                 &format!("{count} conversations, selected"),
@@ -177,7 +177,7 @@ impl Nimbra {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(dp(8.))
                     .child(
                         row_of_actions()
                             .when(
@@ -291,7 +291,7 @@ impl Nimbra {
         if !self.pull_armed {
             return;
         }
-        let dy = f32::from(event.delta.pixel_delta(px(18.)).y);
+        let dy = f32::from(event.delta.pixel_delta(to_screen(18.)).y);
         if (dy > 0. && at_top) || (dy < 0. && self.pull > 0.) {
             self.pull = (self.pull + dy).max(0.);
             self.pull_anim = None;
@@ -311,8 +311,8 @@ impl Nimbra {
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .gap(px(8.))
-                .h(px(height.max(0.)))
+                .gap(dp(8.))
+                .h(dp(height.max(0.)))
                 .overflow_hidden()
                 .child(if spin {
                     arrow
@@ -364,7 +364,7 @@ impl Nimbra {
                     ("pull-settle", self.pull_gen),
                     // The animation only keeps frames coming; the height follows the spring.
                     Animation::new(Duration::from_secs_f32(SETTLE_SECONDS + 0.1)),
-                    move |strip, _| strip.h(px(settle(from, to, start))),
+                    move |strip, _| strip.h(dp(settle(from, to, start))),
                 )
                 .into_any_element(),
         )
@@ -395,19 +395,19 @@ impl Nimbra {
             .child(
                 div()
                     .flex_none()
-                    .w(px(width))
+                    .w(dp(width))
                     .h_full()
                     .child(self.list(t, window, cx)),
             );
         if !moving {
-            return Some(slot.w(px(width)).into_any_element());
+            return Some(slot.w(dp(width)).into_any_element());
         }
         let (from, to) = if self.list_open { (0., 1.) } else { (1., 0.) };
         Some(
             slot.with_animation(
                 ("list-width", self.list_gen),
                 Animation::new(SLIDE).with_easing(panel_ease),
-                move |slot, delta| slot.w(px(width * (from + (to - from) * delta))),
+                move |slot, delta| slot.w(dp(width * (from + (to - from) * delta))),
             )
             .into_any_element(),
         )
@@ -445,7 +445,7 @@ impl Nimbra {
             div()
                 .absolute()
                 .inset_0()
-                .rounded(px(radius))
+                .rounded(dp(radius))
                 .border_1()
                 .border_color(t.mint),
         );
@@ -515,13 +515,13 @@ impl Nimbra {
             .relative()
             .flex()
             .flex_none()
-            .h(px(text.height()))
-            .text_size(px(text.size))
-            .line_height(px(text.line))
-            .gap(px(ROW_PAD))
-            .px(px(ROW_PAD))
-            .py(px(12.))
-            .rounded(px(12.))
+            .h(dp(text.height()))
+            .text_size(dp(text.size))
+            .line_height(dp(text.line))
+            .gap(dp(ROW_PAD))
+            .px(dp(ROW_PAD))
+            .py(dp(12.))
+            .rounded(dp(12.))
             .cursor_pointer()
             .when(selected || picked, |d| d.bg(t.selected))
             // Drawn over the row rather than as its border, which would take up space and
@@ -531,7 +531,7 @@ impl Nimbra {
                     div()
                         .absolute()
                         .inset_0()
-                        .rounded(px(12.))
+                        .rounded(dp(12.))
                         .border_1()
                         .border_color(t.violet.opacity(0.5)),
                 )
@@ -551,11 +551,11 @@ impl Nimbra {
                 d.child(
                     div()
                         .absolute()
-                        .left(px((ROW_PAD - 6.) / 2.))
+                        .left(dp((ROW_PAD - 6.) / 2.))
                         // Level with the avatar's middle: the row's padding (12), then half
                         // of its two lines and their gap.
-                        .top(px(12. + (text.first + LINE_GAP + text.second) / 2. - 3.))
-                        .size(px(6.))
+                        .top(dp(12. + (text.first + LINE_GAP + text.second) / 2. - 3.))
+                        .size(dp(6.))
                         .rounded_full()
                         .bg(t.violet),
                 )
@@ -573,18 +573,18 @@ impl Nimbra {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .min_w(px(0.))
-                    .gap(px(LINE_GAP))
+                    .min_w(dp(0.))
+                    .gap(dp(LINE_GAP))
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .h(px(text.first))
+                            .gap(dp(8.))
+                            .h(dp(text.first))
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .min_w(px(0.))
+                                    .min_w(dp(0.))
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .child(short(&m.sender, sender_max)),
@@ -594,7 +594,7 @@ impl Nimbra {
                             // Half a point up: measured, its box and letters sat a third of a
                             // point below the name's middle, and its lowercase looked lower.
                             .children(tag.map(|(label, a)| {
-                                pill(t, &label, t.accent(a)).relative().top(px(-0.5))
+                                pill(t, &label, t.accent(a)).relative().top(dp(-0.5))
                             }))
                             .child(div().flex_1())
                             // Snoozed: when it comes back, in place of when it came. On the
@@ -623,8 +623,8 @@ impl Nimbra {
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .size(px(24.))
-                                        .rounded(px(6.))
+                                        .size(dp(24.))
+                                        .rounded(dp(6.))
                                         .cursor_pointer()
                                         .hover(move |s| s.bg(hover))
                                         .press(t)
@@ -640,9 +640,9 @@ impl Nimbra {
                                     div()
                                         .absolute()
                                         .right_0()
-                                        .top(px(-1.))
+                                        .top(dp(-1.))
                                         .flex()
-                                        .gap(px(2.))
+                                        .gap(dp(2.))
                                         .invisible()
                                         .group_hover("row", |s| s.visible())
                                         .when(archivable, |d| {
@@ -721,13 +721,13 @@ impl Nimbra {
                     .child(
                         div()
                             .flex()
-                            .h(px(text.second))
-                            .gap(px(6.))
+                            .h(dp(text.second))
+                            .gap(dp(6.))
                             .child(
                                 // Long subjects shrink with an ellipsis instead of
                                 // spilling out of the row; the snippet takes what is left.
                                 div()
-                                    .min_w(px(0.))
+                                    .min_w(dp(0.))
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .font_weight(FontWeight::MEDIUM)
@@ -737,7 +737,7 @@ impl Nimbra {
                             .child(
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
+                                    .min_w(dp(0.))
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .text_color(t.text3)
@@ -779,10 +779,10 @@ impl Nimbra {
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .gap(px(6.))
-                .w(px(width))
-                .h(px(SEGMENT_H))
-                .rounded(px(7.))
+                .gap(dp(6.))
+                .w(dp(width))
+                .h(dp(SEGMENT_H))
+                .rounded(dp(7.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(if active { t.text } else { t.text3 })
                 .child(label.to_string())
@@ -800,9 +800,9 @@ impl Nimbra {
         let (from_x, from_w) = spot(!self.unread_only);
         let pill = div()
             .absolute()
-            .top(px(3.))
-            .h(px(SEGMENT_H))
-            .rounded(px(7.))
+            .top(dp(3.))
+            .h(dp(SEGMENT_H))
+            .rounded(dp(7.))
             .bg(t.raised)
             .border_1()
             .border_color(t.border)
@@ -818,14 +818,14 @@ impl Nimbra {
             .is_some_and(|at| at.elapsed() < Duration::from_millis(260))
             && !crate::system::reduces_motion();
         let pill = if self.filter_gen == 0 || !switching {
-            pill.left(px(3. + to_x)).w(px(to_w)).into_any_element()
+            pill.left(dp(3. + to_x)).w(dp(to_w)).into_any_element()
         } else {
             pill.with_animation(
                 ("filter-pill", self.filter_gen),
                 Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
                 move |d, delta| {
-                    d.left(px(3. + from_x + (to_x - from_x) * delta))
-                        .w(px(from_w + (to_w - from_w) * delta))
+                    d.left(dp(3. + from_x + (to_x - from_x) * delta))
+                        .w(dp(from_w + (to_w - from_w) * delta))
                 },
             )
             .into_any_element()
@@ -836,7 +836,7 @@ impl Nimbra {
             .flex_col()
             .flex_none()
             .relative()
-            .w(px(self.list_width))
+            .w(dp(self.list_width))
             .h_full()
             .bg(t.surface)
             .border_r_1()
@@ -848,8 +848,8 @@ impl Nimbra {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .right(px(-3.))
-                    .w(px(7.))
+                    .right(dp(-3.))
+                    .w(dp(7.))
                     .cursor(gpui::CursorStyle::ResizeLeftRight)
                     .hover(|s| s.bg(gpui::white().opacity(0.06)))
                     .on_mouse_down(
@@ -859,7 +859,7 @@ impl Nimbra {
                                 this.toggle_list(cx);
                             } else {
                                 this.list_grab =
-                                    Some((f32::from(event.position.x), this.list_width));
+                                    Some((from_screen(event.position.x), this.list_width));
                             }
                         }),
                     ),
@@ -870,22 +870,22 @@ impl Nimbra {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(HEADER_GAP))
+                    .gap(dp(HEADER_GAP))
                     // With a line along its bottom, level with the reading toolbar's.
-                    .h(px(TOP_BAR))
+                    .h(dp(crate::ui::top_bar()))
                     .border_b_1()
                     .border_color(t.border)
-                    .pl(px(LIST_LEFT))
-                    .pr(px(LIST_RIGHT))
+                    .pl(dp(LIST_LEFT))
+                    .pr(dp(LIST_RIGHT))
                     .on_mouse_down(MouseButton::Left, drag_or_zoom)
                     .child(
                         div()
                             .relative()
                             .flex()
                             .flex_none()
-                            .gap(px(2.))
-                            .p(px(3.))
-                            .rounded(px(10.))
+                            .gap(dp(2.))
+                            .p(dp(3.))
+                            .rounded(dp(10.))
                             .bg(t.hover)
                             .border_1()
                             .border_color(t.border)
@@ -915,7 +915,7 @@ impl Nimbra {
                                 d.child(segment("Needs reply", Some(("2", t.rose)), false, 112.))
                             }),
                     )
-                    .child(div().flex_1().min_w(px(0.)).mx(px(-HEADER_GAP / 2.)))
+                    .child(div().flex_1().min_w(dp(0.)).mx(dp(-HEADER_GAP / 2.)))
                     .when(self.offline, |d| d.child(self.offline_pill(t, fit.words)))
                     // Compose as the reading toolbar's actions are: its icon and word (just
                     // the icon where the list is narrow). The word ends as far from the line
@@ -924,7 +924,7 @@ impl Nimbra {
                         let worded = fit.compose != ComposeLook::Icon;
                         super::reading::action_button(t, "draft", "Compose", worded)
                             .id("compose")
-                            .mr(px(if worded { -9. } else { -7. }))
+                            .mr(dp(if worded { -9. } else { -7. }))
                             .press(t)
                             .tooltip(tip(t.dark, "New message", "C"))
                             .on_click(
@@ -940,8 +940,8 @@ impl Nimbra {
                 div()
                     .relative()
                     .flex_none()
-                    .h(px(2.))
-                    .mx(px(18.))
+                    .h(dp(2.))
+                    .mx(dp(18.))
                     .rounded_full()
                     .overflow_hidden()
                     .when(self.bar_shown || self.bar_fade.is_some(), |d| {
@@ -996,36 +996,37 @@ impl Nimbra {
         let pull = self.pull_indicator(t);
         let row_h = RowText::of(self.settings.reader_text).height();
         let lead = self.pull_height().map_or(0., |h| h + SLOT_GAP);
-        let view_h = f32::from(self.list_scroll.bounds().size.height);
+        let view_h = from_screen(self.list_scroll.bounds().size.height);
         let target = self.pick_end.unwrap_or(self.selected);
         if view_h > 0.
             && self.reveal_row.replace(false)
             && let Some(k) = slots.iter().position(|s| *s == Slot::Row(target))
         {
             let top = lead + slot_top(slots, k, row_h);
-            let scroll = -f32::from(self.list_scroll.offset().y);
+            let scroll = -from_screen(self.list_scroll.offset().y);
             if let Some(to) = reveal_scroll(top, top + row_h, scroll, view_h) {
-                self.list_scroll.set_offset(gpui::point(px(0.), px(-to)));
+                self.list_scroll
+                    .set_offset(gpui::point(px(0.), to_screen(-to)));
             }
         }
         // As GPUI will clamp it once laid out, so rows removed at the end of a scrolled
         // list never leave a frame with nothing drawn.
         let total = slot_top(slots, slots.len(), row_h);
-        let scroll = (-f32::from(self.list_scroll.offset().y))
+        let scroll = (-from_screen(self.list_scroll.offset().y))
             .min((lead + total + 10. - view_h).max(0.))
             - lead;
         // The window bounds the list's height, so this holds even before the first layout
         // or right after a resize, when the list's own bounds are a frame old.
-        let tallest = f32::from(window.viewport_size().height);
+        let tallest = from_screen(window.viewport_size().height);
         let (range, above, below) =
             window_of(slots, scroll - OVERDRAW, scroll + tallest + OVERDRAW, row_h);
         let group = |label: &'static str| {
             div()
                 .flex_none()
-                .h(px(HEADER_H))
-                .pl(px(14.))
-                .pt(px(14.))
-                .pb(px(6.))
+                .h(dp(HEADER_H))
+                .pl(dp(14.))
+                .pt(dp(14.))
+                .pb(dp(6.))
                 .child(overline(label, t.faint))
         };
         let first = range.start;
@@ -1036,14 +1037,14 @@ impl Nimbra {
             .flex_1()
             // The rows (a picked one's highlight) start and end where the header's switch
             // and Compose do.
-            .pl(px(LIST_LEFT))
-            .pr(px(LIST_RIGHT))
-            .pb(px(10.))
+            .pl(dp(LIST_LEFT))
+            .pr(dp(LIST_RIGHT))
+            .pb(dp(10.))
             .overflow_y_scroll()
             .track_scroll(&self.list_scroll)
             .on_scroll_wheel(cx.listener(|this, event, _, cx| this.pull_list(event, cx)))
-            .children(pull.map(|strip| div().flex_none().mb(px(SLOT_GAP)).child(strip)))
-            .child(div().flex_none().h(px(above)))
+            .children(pull.map(|strip| div().flex_none().mb(dp(SLOT_GAP)).child(strip)))
+            .child(div().flex_none().h(dp(above)))
             .children(slots[range].iter().enumerate().map(|(n, slot)| {
                 let el = match *slot {
                     Slot::Header(false) => group("TODAY").into_any_element(),
@@ -1055,10 +1056,10 @@ impl Nimbra {
                 };
                 div()
                     .flex_none()
-                    .when(first + n > 0, |d| d.pt(px(SLOT_GAP)))
+                    .when(first + n > 0, |d| d.pt(dp(SLOT_GAP)))
                     .child(el)
             }))
-            .child(div().flex_none().h(px(below)))
+            .child(div().flex_none().h(dp(below)))
     }
 
     /// The pull-to-refresh strip's height now, when it is drawn.
@@ -1109,19 +1110,19 @@ impl Nimbra {
         };
         div()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(dp(0.))
             .h_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(14.))
+            .gap(dp(14.))
             .bg(t.surface)
             .child(serif(&title, 56., t.text))
             .child(
                 div()
-                    .text_size(px(15.))
-                    .line_height(px(24.))
+                    .text_size(dp(15.))
+                    .line_height(dp(24.))
                     .text_color(t.text2)
                     .child(line),
             )
@@ -1186,7 +1187,7 @@ impl Nimbra {
         let ink = c(0xf5f3ef, 1.);
         let soft = c(0xffffff, 0.7);
         let arrival = self.arrival.unwrap_or(Arrival::SETTLED);
-        let settle = |d: Div, shown: f32| d.relative().top(px(drop_for(shown))).opacity(shown);
+        let settle = |d: Div, shown: f32| d.relative().top(dp(drop_for(shown))).opacity(shown);
         // Deterministic star field.
         let mut seed = 7u32;
         let mut rnd = move || {
@@ -1201,7 +1202,7 @@ impl Nimbra {
                     .absolute()
                     .left(relative(x))
                     .top(relative(y))
-                    .size(px(size))
+                    .size(dp(size))
                     .rounded_full()
                     .bg(c(0xffffff, a * arrival.star(i)))
             })
@@ -1218,9 +1219,9 @@ impl Nimbra {
                     .children(dots.into_iter().map(|dot| {
                         div()
                             .absolute()
-                            .left(px(dot.x - dot.size / 2.))
-                            .top(px(dot.y - dot.size / 2.))
-                            .size(px(dot.size))
+                            .left(dp(dot.x - dot.size / 2.))
+                            .top(dp(dot.y - dot.size / 2.))
+                            .size(dp(dot.size))
                             .rounded_full()
                             .bg(c(0xfffaf0, dot.alpha))
                     }))
@@ -1248,7 +1249,7 @@ impl Nimbra {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(dp(6.))
                 .child(meta("Press", c(0xffffff, 0.5)))
                 .child(kbd(&Theme::dark(), "Z"))
                 .child(meta("to undo", c(0xffffff, 0.5)))
@@ -1259,26 +1260,26 @@ impl Nimbra {
             ));
             div()
                 .w_full()
-                .px(px(32.))
+                .px(dp(32.))
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(12.))
+                .gap(dp(12.))
                 .child(
                     div()
-                        .max_w(px(620.))
+                        .max_w(dp(620.))
                         .text_center()
                         .font_family(SERIF)
                         .italic()
-                        .text_size(px(28.))
-                        .line_height(px(34.))
+                        .text_size(dp(28.))
+                        .line_height(dp(34.))
                         .text_color(soft)
                         .child(line),
                 )
                 .children(author.map(|author| overline(author.to_uppercase(), c(0xffffff, 0.55))))
         };
 
-        div().flex_1().min_w(px(0.)).h_full().bg(t.surface).child(
+        div().flex_1().min_w(dp(0.)).h_full().bg(t.surface).child(
             div()
                 .relative()
                 .flex()
@@ -1305,9 +1306,9 @@ impl Nimbra {
                         .w_full()
                         .h(relative(HORIZON))
                         .child(settle(overline(today, c(0xffffff, 0.55)), arrival.date()))
-                        .child(div().h(px(18.)).flex_none())
+                        .child(div().h(dp(18.)).flex_none())
                         .child(settle(serif("Inbox zero.", 120., ink), arrival.headline()))
-                        .child(div().h(px(14.)).flex_none())
+                        .child(div().h(dp(14.)).flex_none())
                         // As a real account shows it: the date and the headline; the day's
                         // thought is below the horizon.
                         .child(settle(div(), arrival.line())),
@@ -1318,7 +1319,7 @@ impl Nimbra {
                         .flex()
                         .flex_none()
                         .w(relative(arrival.horizon()))
-                        .h(px(1.))
+                        .h(dp(1.))
                         .child(div().flex_1().h_full().bg(gradient(
                             90.,
                             c(0xffffff, 0.),
@@ -1338,7 +1339,7 @@ impl Nimbra {
                         .items_center()
                         .justify_center()
                         .w_full()
-                        .gap(px(18.))
+                        .gap(dp(18.))
                         .child(settle(below, arrival.below())),
                 ),
         )
@@ -1590,21 +1591,21 @@ fn row_id(mail: &Mail, account: &str) -> usize {
 
 /// A placeholder row while the next page loads.
 fn waiting_row(t: &Theme, n: usize) -> AnyElement {
-    let bar = |w: f32| div().h(px(9.)).w(px(w)).rounded_full().bg(t.hover);
+    let bar = |w: f32| div().h(dp(9.)).w(dp(w)).rounded_full().bg(t.hover);
     div()
         .flex()
         .flex_none()
-        .h(px(WAITING_H))
-        .gap(px(ROW_PAD))
-        .px(px(ROW_PAD))
-        .py(px(14.))
-        .child(div().size(px(28.)).flex_none().rounded_full().bg(t.hover))
+        .h(dp(WAITING_H))
+        .gap(dp(ROW_PAD))
+        .px(dp(ROW_PAD))
+        .py(dp(14.))
+        .child(div().size(dp(28.)).flex_none().rounded_full().bg(t.hover))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
-                .pt(px(3.))
+                .gap(dp(8.))
+                .pt(dp(3.))
                 .child(bar(if n == 0 { 120. } else { 96. }))
                 .child(bar(if n == 0 { 220. } else { 180. })),
         )

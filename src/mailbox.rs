@@ -1927,8 +1927,8 @@ impl Nimbra {
     }
 
     pub(super) fn near_list_end(&self) -> bool {
-        let left = f32::from(self.list_scroll.max_offset().height)
-            + f32::from(self.list_scroll.offset().y);
+        let left = from_screen(self.list_scroll.max_offset().height)
+            + from_screen(self.list_scroll.offset().y);
         left < 700.
     }
 

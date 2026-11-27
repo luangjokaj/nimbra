@@ -360,9 +360,9 @@ impl SettingsWindow {
             .flex()
             .flex_none()
             .items_center()
-            .px(px(14.))
-            .py(px(6.))
-            .rounded(px(9.))
+            .px(dp(14.))
+            .py(dp(6.))
+            .rounded(dp(9.))
             .bg(t.rose)
             .text_color(gpui::white())
             .font_weight(FontWeight::SEMIBOLD)
@@ -395,12 +395,12 @@ impl SettingsWindow {
                 .child(
                     div()
                         .id("remove-dialog")
-                        .w(px(400.))
+                        .w(dp(400.))
                         .flex()
                         .flex_col()
-                        .gap(px(10.))
-                        .p(px(24.))
-                        .rounded(px(16.))
+                        .gap(dp(10.))
+                        .p(dp(24.))
+                        .rounded(dp(16.))
                         .bg(t.raised)
                         .border_1()
                         .border_color(t.border_strong)
@@ -413,8 +413,8 @@ impl SettingsWindow {
                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
                             div()
-                                .text_size(px(15.))
-                                .line_height(px(20.))
+                                .text_size(dp(15.))
+                                .line_height(dp(20.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(format!("Sign out of {email}?")),
                         )
@@ -428,8 +428,8 @@ impl SettingsWindow {
                             div()
                                 .flex()
                                 .justify_end()
-                                .gap(px(8.))
-                                .pt(px(10.))
+                                .gap(dp(8.))
+                                .pt(dp(10.))
                                 .child(
                                     button(t, ButtonKind::Secondary, "Cancel", None)
                                         .id("cancel-remove")
@@ -458,6 +458,8 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         if self._activation.is_none() {
             self.read_mail_app(cx);
             self._activation = Some(cx.observe_window_activation(window, |this, window, cx| {
@@ -499,8 +501,8 @@ impl Render for SettingsWindow {
             .size_full()
             .bg(t.surface)
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
-            .line_height(px(18.))
+            .text_size(dp(13.))
+            .line_height(dp(18.))
             .text_color(t.text)
             // The sections.
             .child(
@@ -508,11 +510,11 @@ impl Render for SettingsWindow {
                     .flex()
                     .flex_col()
                     .flex_none()
-                    .w(px(210.))
+                    .w(dp(210.))
                     .h_full()
-                    .px(px(12.))
-                    .pt(px(52.))
-                    .gap(px(2.))
+                    .px(dp(12.))
+                    .pt(dp(52.))
+                    .gap(dp(2.))
                     .bg(t.sidebar)
                     .border_r_1()
                     .border_color(t.border)
@@ -523,10 +525,10 @@ impl Render for SettingsWindow {
                             .id(("settings-tab", i))
                             .flex()
                             .items_center()
-                            .gap(px(10.))
-                            .px(px(10.))
-                            .h(px(32.))
-                            .rounded(px(8.))
+                            .gap(dp(10.))
+                            .px(dp(10.))
+                            .h(dp(32.))
+                            .rounded(dp(8.))
                             .cursor_pointer()
                             .when(on, |d| d.bg(t.selected).font_weight(FontWeight::MEDIUM))
                             .when(!on, |d| d.hover(move |s| s.bg(hover)))
@@ -549,17 +551,17 @@ impl Render for SettingsWindow {
                 div()
                     .id("settings-content")
                     .flex_1()
-                    .min_w(px(0.))
+                    .min_w(dp(0.))
                     .h_full()
                     .overflow_y_scroll()
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(18.))
+                            .gap(dp(18.))
                             // A definite width, so wrapped text is measured at its real width.
                             .w_full()
-                            .px(px(40.))
+                            .px(dp(40.))
                             .map(|d| match tab {
                                 // In the middle of the pane, whatever the window's size
                                 // (and scrolling when it is too short).
@@ -567,8 +569,8 @@ impl Render for SettingsWindow {
                                 Tab::About => d
                                     .min_h(window.viewport_size().height)
                                     .justify_center()
-                                    .py(px(40.)),
-                                _ => d.max_w(px(680.)).pt(px(44.)).pb(px(40.)),
+                                    .py(dp(40.)),
+                                _ => d.max_w(dp(680.)).pt(dp(44.)).pb(dp(40.)),
                             })
                             .when(tab != Tab::About, |d| {
                                 d.child(serif(tab.label(), 34., t.text))
@@ -588,17 +590,17 @@ fn group(t: &Theme, title: Option<&str>, rows: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(8.))
+        .gap(dp(8.))
         .children(title.map(|title| {
             div()
-                .pl(px(4.))
+                .pl(dp(4.))
                 .child(overline(title.to_uppercase(), t.text3))
         }))
         .child(
             div()
                 .flex()
                 .flex_col()
-                .rounded(px(14.))
+                .rounded(dp(14.))
                 .bg(t.raised)
                 .border_1()
                 .border_color(t.border)
@@ -629,18 +631,18 @@ fn row_with(t: &Theme, label: AnyElement, detail: &str, control: impl IntoElemen
     div()
         .flex()
         .items_center()
-        .gap(px(16.))
+        .gap(dp(16.))
         // One height for every row of a card, whatever its control.
-        .min_h(px(48.))
-        .px(px(16.))
-        .py(px(10.))
+        .min_h(dp(48.))
+        .px(dp(16.))
+        .py(dp(10.))
         .child(
             div()
                 .flex_1()
-                .min_w(px(0.))
+                .min_w(dp(0.))
                 .flex()
                 .flex_col()
-                .gap(px(2.))
+                .gap(dp(2.))
                 .child(label)
                 .when(!detail.is_empty(), |d| {
                     d.child(meta(detail.to_string(), t.text3))
@@ -655,10 +657,10 @@ fn switch(t: &Theme, on: bool) -> Div {
     div()
         .flex()
         .flex_none()
-        .w(px(36.))
-        .h(px(21.))
+        .w(dp(36.))
+        .h(dp(21.))
         // A border either way, so the knob keeps the same inset on and off.
-        .p(px(1.))
+        .p(dp(1.))
         .border_1()
         .rounded_full()
         .cursor_pointer()
@@ -670,7 +672,7 @@ fn switch(t: &Theme, on: bool) -> Div {
         .when(!on, |d| d.bg(t.hover).border_color(t.border_strong))
         .child(
             div()
-                .size(px(17.))
+                .size(dp(17.))
                 .rounded_full()
                 .bg(gpui::white())
                 .shadow(vec![shadow(c(0x000000, 0.25), 1., 2., 0.)]),
@@ -744,9 +746,9 @@ impl SettingsWindow {
         let (to_x, to_w) = spot(selected.min(options.len() - 1));
         let pill = div()
             .absolute()
-            .top(px(2.))
-            .h(px(H))
-            .rounded(px(6.))
+            .top(dp(2.))
+            .h(dp(H))
+            .rounded(dp(6.))
             .bg(t.raised)
             .border_1()
             .border_color(t.border_strong)
@@ -765,22 +767,22 @@ impl SettingsWindow {
                     (id, n),
                     Animation::new(SLIDE).with_easing(ease_out_quint()),
                     move |d, delta| {
-                        d.left(px(2. + from_x + (to_x - from_x) * delta))
-                            .w(px(from_w + (to_w - from_w) * delta))
+                        d.left(dp(2. + from_x + (to_x - from_x) * delta))
+                            .w(dp(from_w + (to_w - from_w) * delta))
                     },
                 )
                 .into_any_element()
             }
-            _ => pill.left(px(2. + to_x)).w(px(to_w)).into_any_element(),
+            _ => pill.left(dp(2. + to_x)).w(dp(to_w)).into_any_element(),
         };
         let hover = t.hover;
         div()
             .relative()
             .flex()
             .flex_none()
-            .gap(px(GAP))
-            .p(px(2.))
-            .rounded(px(8.))
+            .gap(dp(GAP))
+            .p(dp(2.))
+            .rounded(dp(8.))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
@@ -794,11 +796,11 @@ impl SettingsWindow {
                     .flex_none()
                     .items_center()
                     .justify_center()
-                    .w(px(widths[i]))
-                    .h(px(H))
-                    .rounded(px(6.))
+                    .w(dp(widths[i]))
+                    .h(dp(H))
+                    .rounded(dp(6.))
                     .cursor_pointer()
-                    .text_size(px(SIZE))
+                    .text_size(dp(SIZE))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if on { t.text } else { t.text2 })
                     .when(!on, |d| d.hover(move |s| s.bg(hover)))
@@ -883,10 +885,10 @@ impl SettingsWindow {
             Some(app) if app.ours => div()
                 .flex()
                 .items_center()
-                .gap(px(7.))
-                .h(px(28.))
-                .pl(px(5.))
-                .pr(px(12.))
+                .gap(dp(7.))
+                .h(dp(28.))
+                .pl(dp(5.))
+                .pr(dp(12.))
                 .rounded_full()
                 .bg(t.mint.opacity(0.1))
                 .border_1()
@@ -896,14 +898,14 @@ impl SettingsWindow {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .size(px(18.))
+                        .size(dp(18.))
                         .rounded_full()
                         .bg(t.mint)
                         .child(icon("done", 11., t.surface)),
                 )
                 .child(
                     div()
-                        .text_size(px(13.))
+                        .text_size(dp(13.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(t.text)
                         .child("Nimbra"),
@@ -911,14 +913,14 @@ impl SettingsWindow {
             Some(app) => div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(dp(12.))
                 .when(!app.name.is_empty(), |d| {
                     d.child(meta(app.name.clone(), t.text3))
                 })
                 .child(
                     button(t, ButtonKind::Secondary, "Make default", None)
                         .id("default-mail-app")
-                        .h(px(MAIL_APP_CONTROL))
+                        .h(dp(MAIL_APP_CONTROL))
                         .press_soft()
                         .when(self.making_default, |b| b.opacity(0.5))
                         .on_click(cx.listener(|this, _, _, cx| this.make_default_mail_app(cx))),
@@ -928,7 +930,7 @@ impl SettingsWindow {
         let control = div()
             .flex()
             .items_center()
-            .h(px(MAIL_APP_CONTROL))
+            .h(dp(MAIL_APP_CONTROL))
             .child(control);
         row(t, "Default mail app", "", control)
     }
@@ -987,7 +989,7 @@ impl SettingsWindow {
                 let photo = div()
                     .relative()
                     .flex_none()
-                    .size(px(36.))
+                    .size(dp(36.))
                     .child(if let Some(photo) = photos.get(&account.id) {
                         me_avatar(Some(photo), &initials, 36.)
                     } else if shown {
@@ -1000,12 +1002,12 @@ impl SettingsWindow {
                         div()
                             .id(("account-provider", i))
                             .absolute()
-                            .right(px(-4.))
-                            .bottom(px(-4.))
+                            .right(dp(-4.))
+                            .bottom(dp(-4.))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .size(px(18.))
+                            .size(dp(18.))
                             .rounded_full()
                             .bg(t.raised)
                             .border_1()
@@ -1020,11 +1022,11 @@ impl SettingsWindow {
                     div()
                         .flex()
                         .items_center()
-                        .h(px(24.))
-                        .px(px(8.))
-                        .rounded(px(6.))
+                        .h(dp(24.))
+                        .px(dp(8.))
+                        .rounded(dp(6.))
                         .cursor_pointer()
-                        .text_size(px(12.5))
+                        .text_size(dp(12.5))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(t.text2)
                         .hover(move |s| s.bg(hover).text_color(text))
@@ -1034,9 +1036,9 @@ impl SettingsWindow {
                     .flex()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(2.))
+                    .gap(dp(2.))
                     // The provider in words, then what can be done with it.
-                    .child(div().mr(px(6.)).child(meta(provider, t.text3)))
+                    .child(div().mr(dp(6.)).child(meta(provider, t.text3)))
                     .when(!shown, |d| {
                         d.child(
                             quiet("Switch to")
@@ -1066,19 +1068,19 @@ impl SettingsWindow {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .min_w(px(0.))
-                    .gap(px(4.))
+                    .min_w(dp(0.))
+                    .gap(dp(4.))
                     // The address, with Default and Shown now as pills by it.
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .h(px(22.))
-                            .gap(px(8.))
-                            .min_w(px(0.))
+                            .h(dp(22.))
+                            .gap(dp(8.))
+                            .min_w(dp(0.))
                             .child(
                                 div()
-                                    .min_w(px(0.))
+                                    .min_w(dp(0.))
                                     .truncate()
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(account.email.clone()),
@@ -1092,7 +1094,7 @@ impl SettingsWindow {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(dp(4.))
                     // Sign out asks first, in a dialog.
                     .child(
                         div()
@@ -1100,8 +1102,8 @@ impl SettingsWindow {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .size(px(30.))
-                            .rounded(px(8.))
+                            .size(dp(30.))
+                            .rounded(dp(8.))
                             .cursor_pointer()
                             .hover(move |s| s.bg(rose.opacity(0.12)))
                             .tooltip(tip(t.dark, "Sign out", ""))
@@ -1121,8 +1123,8 @@ impl SettingsWindow {
                             div()
                                 .id(("account-grip", i))
                                 .flex_none()
-                                .p(px(6.))
-                                .rounded(px(6.))
+                                .p(dp(6.))
+                                .rounded(dp(6.))
                                 .cursor(gpui::CursorStyle::OpenHand)
                                 .tooltip(tip(t.dark, "Drag to reorder", ""))
                                 .child(icon("grip", 16., t.text3)),
@@ -1133,15 +1135,15 @@ impl SettingsWindow {
                     .id(("account-row", i))
                     .flex()
                     .items_center()
-                    .gap(px(14.))
-                    .px(px(16.))
-                    .py(px(14.))
+                    .gap(dp(14.))
+                    .px(dp(16.))
+                    .py(dp(14.))
                     // Highlighted while another is dragged over it: square where it meets the
                     // rows around it, and rounded like the card (14, inside its border) where
                     // it is the card's own top or bottom.
-                    .when(i == 0, |d| d.rounded_t(px(13.)))
+                    .when(i == 0, |d| d.rounded_t(dp(13.)))
                     .when(i + 1 == accounts.len() && !photo_row, |d| {
-                        d.rounded_b(px(13.))
+                        d.rounded_b(dp(13.))
                     })
                     .child(photo)
                     .child(text)
@@ -1173,7 +1175,7 @@ impl SettingsWindow {
         if rows.is_empty() {
             rows.push(row(t, "No account yet", "", div()));
         }
-        let actions = div().flex().gap(px(8.)).when(can_add, |d| {
+        let actions = div().flex().gap(dp(8.)).when(can_add, |d| {
             d.child(
                 button(t, ButtonKind::Secondary, "Add account", None)
                     .id("add-account")
@@ -1224,7 +1226,7 @@ impl SettingsWindow {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(dp(8.))
                 .child(actions)
                 // The consequence, at the moment it matters.
                 .into_any_element(),
@@ -1233,7 +1235,11 @@ impl SettingsWindow {
 
     fn appearance(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let n = self.owner.read(cx);
-        let (theme, size) = (n.settings.theme, n.settings.reader_text);
+        let (theme, size, zoom) = (
+            n.settings.theme,
+            n.settings.reader_text,
+            (n.settings.zoom() * 100.).round() as u16,
+        );
         // Small previews of each look.
         let tile =
             |id: usize, label: &'static str, choice: ThemeChoice, light: bool, dark: bool| {
@@ -1246,43 +1252,43 @@ impl SettingsWindow {
                         .flex_1()
                         // Its share of the tile, whatever it holds: wider, its rounded
                         // corner would fall outside the tile and the square middle show.
-                        .min_w(px(0.))
+                        .min_w(dp(0.))
                         .overflow_hidden()
                         .h_full()
                         .flex()
                         .bg(th.surface)
-                        .when(left, |d| d.rounded_l(px(INNER)))
-                        .when(right, |d| d.rounded_r(px(INNER)))
+                        .when(left, |d| d.rounded_l(dp(INNER)))
+                        .when(right, |d| d.rounded_r(dp(INNER)))
                         .child(
                             div()
                                 .flex_none()
-                                .w(px(22.))
+                                .w(dp(22.))
                                 .h_full()
                                 .bg(th.sidebar)
-                                .when(left, |d| d.rounded_l(px(INNER)))
+                                .when(left, |d| d.rounded_l(dp(INNER)))
                                 .border_r_1()
                                 .border_color(th.border),
                         )
                         .child(
                             div()
                                 .flex_1()
-                                .min_w(px(0.))
+                                .min_w(dp(0.))
                                 .flex()
                                 .flex_col()
-                                .gap(px(5.))
-                                .p(px(8.))
-                                .child(div().h(px(5.)).w(px(40.)).rounded_full().bg(th.text2))
+                                .gap(dp(5.))
+                                .p(dp(8.))
+                                .child(div().h(dp(5.)).w(dp(40.)).rounded_full().bg(th.text2))
                                 .child(
                                     div()
-                                        .h(px(4.))
-                                        .w(px(56.))
+                                        .h(dp(4.))
+                                        .w(dp(56.))
                                         .rounded_full()
                                         .bg(th.border_strong),
                                 )
                                 .child(
                                     div()
-                                        .h(px(4.))
-                                        .w(px(48.))
+                                        .h(dp(4.))
+                                        .w(dp(48.))
                                         .rounded_full()
                                         .bg(th.border_strong),
                                 ),
@@ -1295,16 +1301,16 @@ impl SettingsWindow {
                 div()
                     .id(("theme-tile", id))
                     .flex_1()
-                    .min_w(px(0.))
+                    .min_w(dp(0.))
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
+                    .gap(dp(8.))
                     .cursor_pointer()
                     .child(
                         preview
                             .flex()
                             .w_full()
-                            .rounded(px(10.))
+                            .rounded(dp(10.))
                             .overflow_hidden()
                             .border_2()
                             .border_color(if on { t.violet } else { t.border })
@@ -1325,8 +1331,8 @@ impl SettingsWindow {
             };
         let tiles = div()
             .flex()
-            .gap(px(16.))
-            .p(px(16.))
+            .gap(dp(16.))
+            .p(dp(16.))
             .child(tile(0, "System", ThemeChoice::System, true, true))
             .child(tile(1, "Light", ThemeChoice::Light, true, false))
             .child(tile(2, "Dark", ThemeChoice::Dark, false, true))
@@ -1356,9 +1362,30 @@ impl SettingsWindow {
                 },
             ),
         );
+        let steps = crate::settings::ZOOM_STEPS;
+        let zoom_row = row(
+            t,
+            "Interface size",
+            "Everything in Nimbra's windows (⌘+ and ⌘-)",
+            self.choice_with(
+                t,
+                "interface-size",
+                &steps
+                    .map(|s| format!("{s}%"))
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                steps.iter().position(|s| *s == zoom).unwrap_or(1),
+                cx,
+                move |this, i, cx| {
+                    this.owner
+                        .update(cx, |n, cx| n.set_interface_zoom(steps[i], cx));
+                },
+            ),
+        );
         vec![
             group(t, Some("Theme"), vec![tiles]),
-            group(t, None, vec![size_row]),
+            group(t, None, vec![zoom_row, size_row]),
         ]
     }
 
@@ -1637,13 +1664,13 @@ impl SettingsWindow {
             .relative()
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(dp(10.))
             // As wide as the address, up to a limit (a longer one ends in "…").
-            .max_w(px(320.))
-            .h(px(36.))
-            .pl(px(6.))
-            .pr(px(10.))
-            .rounded(px(9.))
+            .max_w(dp(320.))
+            .h(dp(36.))
+            .pl(dp(6.))
+            .pr(dp(10.))
+            .rounded(dp(9.))
             .bg(t.hover)
             .border_1()
             .border_color(t.border)
@@ -1651,7 +1678,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .flex_initial()
-                    .min_w(px(0.))
+                    .min_w(dp(0.))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
@@ -1666,9 +1693,9 @@ impl SettingsWindow {
                         gpui::canvas(
                             move |bounds, _, _| {
                                 anchor.set((
-                                    f32::from(bounds.origin.x),
-                                    f32::from(bounds.origin.y + bounds.size.height),
-                                    f32::from(bounds.size.width),
+                                    from_screen(bounds.origin.x),
+                                    from_screen(bounds.origin.y + bounds.size.height),
+                                    from_screen(bounds.size.width),
                                 ));
                             },
                             |_, _, _, _| {},
@@ -1698,13 +1725,13 @@ impl SettingsWindow {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(6.))
-                .h(px(28.))
-                .px(px(11.))
+                .gap(dp(6.))
+                .h(dp(28.))
+                .px(dp(11.))
                 .rounded_full()
                 .border_1()
                 .cursor_pointer()
-                .text_size(px(12.5))
+                .text_size(dp(12.5))
                 .font_weight(FontWeight::MEDIUM)
                 .when(on, |d| {
                     d.bg(t.selected)
@@ -1719,7 +1746,7 @@ impl SettingsWindow {
                 })
                 .press(t)
                 .when(default, |d| {
-                    d.child(div().size(px(6.)).rounded_full().bg(t.violet))
+                    d.child(div().size(dp(6.)).rounded_full().bg(t.violet))
                 })
                 .child(label)
                 .when(default, |d| d.child(meta("Default", t.text3)))
@@ -1758,11 +1785,11 @@ impl SettingsWindow {
                 .flex()
                 .flex_none()
                 .items_center()
-                .h(px(28.))
-                .px(px(11.))
+                .h(dp(28.))
+                .px(dp(11.))
                 .rounded_full()
                 .cursor_pointer()
-                .text_size(px(12.5))
+                .text_size(dp(12.5))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(t.violet)
                 .hover(move |s| s.bg(hover))
@@ -1774,9 +1801,9 @@ impl SettingsWindow {
         let chips_row = div()
             .flex()
             .flex_wrap()
-            .gap(px(8.))
-            .px(px(16.))
-            .py(px(12.))
+            .gap(dp(8.))
+            .px(dp(16.))
+            .py(dp(12.))
             .children(chips)
             .into_any_element();
 
@@ -1823,9 +1850,9 @@ impl SettingsWindow {
         div()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .px(px(16.))
-            .py(px(10.))
+            .gap(dp(8.))
+            .px(dp(16.))
+            .py(dp(10.))
             .child(
                 div()
                     .flex_none()
@@ -1835,11 +1862,11 @@ impl SettingsWindow {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(0.))
-                    .max_w(px(260.))
-                    .px(px(10.))
-                    .py(px(5.))
-                    .rounded(px(8.))
+                    .min_w(dp(0.))
+                    .max_w(dp(260.))
+                    .px(dp(10.))
+                    .py(dp(5.))
+                    .rounded(dp(8.))
                     .bg(t.hover)
                     .border_1()
                     .border_color(t.border)
@@ -1864,8 +1891,8 @@ impl SettingsWindow {
                     .flex_none()
                     .items_center()
                     .justify_center()
-                    .size(px(32.))
-                    .rounded(px(8.))
+                    .size(dp(32.))
+                    .rounded(dp(8.))
                     .border_1()
                     .border_color(t.border)
                     .cursor_pointer()
@@ -1942,7 +1969,7 @@ impl SettingsWindow {
                     .id("sig-editor")
                     .key_context("Editor")
                     .track_focus(&self.sig_editor_focus)
-                    .h(px(SIG_EDITOR_HEIGHT))
+                    .h(dp(SIG_EDITOR_HEIGHT))
                     .child(
                         gpui::canvas(
                             move |bounds, _, _| {
@@ -1967,9 +1994,9 @@ impl SettingsWindow {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(px(12.))
-                .h(px(SIG_EDITOR_HEIGHT))
-                .px(px(24.))
+                .gap(dp(12.))
+                .h(dp(SIG_EDITOR_HEIGHT))
+                .px(dp(24.))
                 .text_color(t.text2)
                 .child("This signature has HTML the text editor can't keep. Edit it in HTML.")
                 .child(
@@ -1987,22 +2014,22 @@ impl SettingsWindow {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
-            .px(px(16.))
-            .pt(px(10.))
-            .pb(px(16.))
+            .gap(dp(10.))
+            .px(dp(16.))
+            .pt(dp(10.))
+            .pb(dp(16.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(dp(12.))
                     .child(switch)
                     .child(div().flex_1())
                     .children(refresh),
             )
             .child(
                 div()
-                    .rounded(px(10.))
+                    .rounded(dp(10.))
                     .border_1()
                     .border_color(t.border)
                     .bg(t.raised)
@@ -2010,7 +2037,7 @@ impl SettingsWindow {
                     .child(body),
             )
             // As far from the box as from the bottom of the group (16).
-            .child(meta(hint, t.text3).mt(px(6.)))
+            .child(meta(hint, t.text3).mt(dp(6.)))
             .into_any_element()
     }
 
@@ -2020,12 +2047,12 @@ impl SettingsWindow {
         let blocks = crate::rich::from_html(html);
         div()
             .id("sig-preview")
-            .h(px(SIG_EDITOR_HEIGHT))
+            .h(dp(SIG_EDITOR_HEIGHT))
             .overflow_y_scroll()
-            .px(px(20.))
-            .py(px(14.))
-            .text_size(px(14.))
-            .line_height(px(22.))
+            .px(dp(20.))
+            .py(dp(14.))
+            .text_size(dp(14.))
+            .line_height(dp(22.))
             .when(blocks.is_empty(), |d| {
                 d.child(div().text_color(t.text3).child("This signature is empty."))
             })
@@ -2225,10 +2252,13 @@ impl SettingsWindow {
         let origin = window.bounds().origin;
         let bounds = gpui::Bounds::new(
             gpui::point(
-                origin.x + px(left - margin),
-                origin.y + px(bottom + 4. - margin),
+                origin.x + to_screen(left - margin),
+                origin.y + to_screen(bottom + 4. - margin),
             ),
-            gpui::size(px(width + 2. * margin), px(height + 2. * margin)),
+            gpui::size(
+                to_screen(width + 2. * margin),
+                to_screen(height + 2. * margin),
+            ),
         );
         let owner = cx.weak_entity();
         let opened = cx.open_window(
@@ -2293,9 +2323,9 @@ impl SettingsWindow {
             .flex()
             .flex_none()
             .items_center()
-            .px(px(14.))
-            .py(px(6.))
-            .rounded(px(9.))
+            .px(dp(14.))
+            .py(dp(6.))
+            .rounded(dp(9.))
             .bg(t.rose)
             .text_color(gpui::white())
             .font_weight(FontWeight::SEMIBOLD)
@@ -2328,12 +2358,12 @@ impl SettingsWindow {
                 .child(
                     div()
                         .id("delete-signature")
-                        .w(px(400.))
+                        .w(dp(400.))
                         .flex()
                         .flex_col()
-                        .gap(px(10.))
-                        .p(px(24.))
-                        .rounded(px(16.))
+                        .gap(dp(10.))
+                        .p(dp(24.))
+                        .rounded(dp(16.))
                         .bg(t.raised)
                         .border_1()
                         .border_color(t.border_strong)
@@ -2346,8 +2376,8 @@ impl SettingsWindow {
                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
                             div()
-                                .text_size(px(15.))
-                                .line_height(px(20.))
+                                .text_size(dp(15.))
+                                .line_height(dp(20.))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(format!("Delete “{}”?", signature_name(name))),
                         )
@@ -2359,8 +2389,8 @@ impl SettingsWindow {
                             div()
                                 .flex()
                                 .justify_end()
-                                .gap(px(8.))
-                                .pt(px(10.))
+                                .gap(dp(8.))
+                                .pt(dp(10.))
                                 .child(
                                     button(t, ButtonKind::Secondary, "Cancel", None)
                                         .id("cancel-delete-signature")
@@ -2403,7 +2433,7 @@ impl SettingsWindow {
         let label = div()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(dp(6.))
             .child(div().font_weight(FontWeight::MEDIUM).child("Play a sound"))
             .child(
                 div()
@@ -2411,8 +2441,8 @@ impl SettingsWindow {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .size(px(24.))
-                    .rounded(px(6.))
+                    .size(dp(24.))
+                    .rounded(dp(6.))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .tooltip(tip(t.dark, "Hear it", ""))
@@ -2481,18 +2511,18 @@ impl SettingsWindow {
         let fact = |name: &'static str, title: &'static str, text: &'static str| {
             div()
                 .flex()
-                .gap(px(12.))
-                .px(px(16.))
-                .py(px(12.))
+                .gap(dp(12.))
+                .px(dp(16.))
+                .py(dp(12.))
                 // Level with the title's 18pt line.
-                .child(div().pt(px(1.)).child(icon(name, 16., t.violet)))
+                .child(div().pt(dp(1.)).child(icon(name, 16., t.violet)))
                 .child(
                     div()
                         .flex_1()
-                        .min_w(px(0.))
+                        .min_w(dp(0.))
                         .flex()
                         .flex_col()
-                        .gap(px(2.))
+                        .gap(dp(2.))
                         .child(div().font_weight(FontWeight::MEDIUM).child(title))
                         .child(meta(text, t.text3)),
                 )
@@ -2618,8 +2648,8 @@ impl SettingsWindow {
                             div()
                                 .flex()
                                 .items_center()
-                                .px(px(16.))
-                                .py(px(9.))
+                                .px(dp(16.))
+                                .py(dp(9.))
                                 .child(div().flex_1().text_color(t.text2).child(*what))
                                 .child(kbd(t, key))
                                 .into_any_element()
@@ -2642,12 +2672,12 @@ impl SettingsWindow {
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(14.))
+                .gap(dp(14.))
                 .child(
                     div()
-                        .size(px(ABOUT_ICON))
+                        .size(dp(ABOUT_ICON))
                         // The glow follows the icon's own shape, which the image brings.
-                        .rounded(px(ABOUT_ICON / 4.))
+                        .rounded(dp(ABOUT_ICON / 4.))
                         .shadow(vec![shadow(c(0x8b7cff, 0.45), 14., 40., -6.)])
                         // The icon as macOS shows it in the same appearance.
                         .child(
@@ -2673,8 +2703,8 @@ impl SettingsWindow {
                 .child(
                     div()
                         .flex()
-                        .gap(px(8.))
-                        .pt(px(4.))
+                        .gap(dp(8.))
+                        .pt(dp(4.))
                         // Check for a new version now, or restart into the one that is ready.
                         .child(match &update_ready {
                             Some(_) => crate::ui::glow(
@@ -2718,8 +2748,8 @@ impl SettingsWindow {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .text_size(px(12.))
+                        .gap(dp(8.))
+                        .text_size(dp(12.))
                         .text_color(t.text3)
                         .child(about_link(t, "about-privacy", "Privacy", PRIVACY))
                         .child("·")
@@ -2798,16 +2828,16 @@ impl Render for DraggedAccount {
         div()
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(12.))
-            .py(px(8.))
-            .rounded(px(10.))
+            .gap(dp(10.))
+            .px(dp(12.))
+            .py(dp(8.))
+            .rounded(dp(10.))
             .bg(t.raised)
             .border_1()
             .border_color(t.border_strong)
             .shadow(vec![shadow(t.shadow, 8., 24., -6.)])
             .font_family(crate::theme::SANS)
-            .text_size(px(13.))
+            .text_size(dp(13.))
             .text_color(t.text)
             .cursor(gpui::CursorStyle::ClosedHand)
             .child(avatar(
@@ -2860,28 +2890,28 @@ static GMAIL_LOGO: std::sync::LazyLock<std::sync::Arc<gpui::Image>> =
 fn provider_logo(t: &Theme, kind: Provider, size: f32) -> AnyElement {
     match kind {
         Provider::Gmail => gpui::img(GMAIL_LOGO.clone())
-            .w(px(size))
-            .h(px(size * 0.75))
+            .w(dp(size))
+            .h(dp(size * 0.75))
             .into_any_element(),
         // Microsoft's four squares.
         Provider::Microsoft => {
             let side = (size - 1.) / 2.;
-            let square = |hex: u32| div().size(px(side)).bg(c(hex, 1.));
+            let square = |hex: u32| div().size(dp(side)).bg(c(hex, 1.));
             div()
                 .flex()
                 .flex_col()
-                .gap(px(1.))
+                .gap(dp(1.))
                 .child(
                     div()
                         .flex()
-                        .gap(px(1.))
+                        .gap(dp(1.))
                         .child(square(0xf25022))
                         .child(square(0x7fba00)),
                 )
                 .child(
                     div()
                         .flex()
-                        .gap(px(1.))
+                        .gap(dp(1.))
                         .child(square(0x00a4ef))
                         .child(square(0xffb900)),
                 )
@@ -2910,7 +2940,9 @@ impl AccountPicker {
 }
 
 impl Render for AccountPicker {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         let t = if self.dark {
             Theme::dark()
         } else {
@@ -2964,42 +2996,42 @@ fn preview_block(t: &Theme, block: &Block) -> AnyElement {
                 _ => 15.,
             };
             div()
-                .text_size(px(size))
-                .line_height(px(size * 1.35))
+                .text_size(dp(size))
+                .line_height(dp(size * 1.35))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(text())
         }
         Kind::Item { marker, depth } => div()
             .flex()
-            .gap(px(10.))
-            .pl(px(4. + 20. * *depth as f32))
+            .gap(dp(10.))
+            .pl(dp(4. + 20. * *depth as f32))
             .child(
                 div()
                     .flex_none()
-                    .min_w(px(14.))
+                    .min_w(dp(14.))
                     .text_color(t.text3)
                     .child(marker.clone()),
             )
-            .child(div().flex_1().min_w(px(0.)).child(text())),
+            .child(div().flex_1().min_w(dp(0.)).child(text())),
         Kind::Code => div()
             .font_family(crate::theme::MONO)
-            .text_size(px(12.5))
+            .text_size(dp(12.5))
             .child(text()),
-        Kind::Rule => div().h(px(1.)).my(px(6.)).bg(t.border),
+        Kind::Rule => div().h(dp(1.)).my(dp(6.)).bg(t.border),
         Kind::Image { src, .. } if let Some(image) = crate::signature_images::image(src) => {
-            div().py(px(2.)).child(
+            div().py(dp(2.)).child(
                 gpui::img(image)
                     .max_w_full()
-                    .max_h(px(160.))
+                    .max_h(dp(160.))
                     .object_fit(gpui::ObjectFit::ScaleDown),
             )
         }
         Kind::Image { alt, .. } => div()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .py(px(2.))
-            .text_size(px(12.))
+            .gap(dp(8.))
+            .py(dp(2.))
+            .text_size(dp(12.))
             .text_color(t.text3)
             .child(icon("image", 14., t.text3))
             .child(if alt.is_empty() {
@@ -3010,7 +3042,7 @@ fn preview_block(t: &Theme, block: &Block) -> AnyElement {
     };
     if block.quote > 0 {
         div()
-            .pl(px(12.))
+            .pl(dp(12.))
             .border_l_2()
             .border_color(t.border_strong)
             .text_color(t.text3)

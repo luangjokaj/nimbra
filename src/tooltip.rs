@@ -17,7 +17,7 @@ use gpui::{
 };
 
 use crate::theme::Theme;
-use crate::ui::{kbd, shadow};
+use crate::ui::{dp, from_screen, kbd, shadow, to_screen};
 
 /// See-through room around the bubble, for its shadow.
 const MARGIN: f32 = 28.;
@@ -106,16 +106,16 @@ impl Tip {
             (8. + (key + 12.).max(18.) + 6., 32.)
         };
         let view = owner.viewport_size();
-        let (view_w, view_h) = (f32::from(view.width), f32::from(view.height));
+        let (view_w, view_h) = (from_screen(view.width), from_screen(view.height));
         let width = (10. + label + tail + 2.).min(view_w);
 
         // Below and right of the pointer, flipped where that leaves the window.
-        let (mut x, mut y) = (f32::from(at.x) + 1., f32::from(at.y) + GAP);
+        let (mut x, mut y) = (from_screen(at.x) + 1., from_screen(at.y) + GAP);
         if x + width > view_w {
-            x = (f32::from(at.x) - width - 1.).max(0.);
+            x = (from_screen(at.x) - width - 1.).max(0.);
         }
         if y + height > view_h {
-            y = (f32::from(at.y) - height - GAP).max(0.);
+            y = (from_screen(at.y) - height - GAP).max(0.);
         }
         let Some(corner) = crate::blur::screen_point(owner, x - MARGIN, y - MARGIN) else {
             return;
@@ -128,7 +128,10 @@ impl Tip {
             WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(
                     point(px(0.), px(0.)),
-                    size(px(width + 2. * MARGIN), px(height + 2. * MARGIN)),
+                    size(
+                        to_screen(width + 2. * MARGIN),
+                        to_screen(height + 2. * MARGIN),
+                    ),
                 ))),
                 titlebar: None,
                 kind: WindowKind::PopUp,
@@ -185,14 +188,16 @@ impl Tip {
 }
 
 impl Render for Tip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         self.drawn.set(true);
         if cfg!(target_os = "macos") {
             div() // the window shows it
         } else {
             // The outer padding keeps the tooltip off the pointer.
             div()
-                .pt(px(6.))
+                .pt(dp(6.))
                 .child(bubble(self.dark, &self.label, self.key))
         }
     }
@@ -205,10 +210,12 @@ struct Popup {
 }
 
 impl Render for Popup {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // Every window draws at the interface zoom.
+        crate::ui::apply_zoom(window);
         div()
             .size_full()
-            .p(px(MARGIN))
+            .p(dp(MARGIN))
             .child(bubble(self.dark, &self.label, self.key).size_full())
     }
 }
@@ -218,18 +225,18 @@ fn bubble(dark: bool, label: &SharedString, key: &'static str) -> Div {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
-        .pl(px(10.))
-        .pr(px(if key.is_empty() { 10. } else { 6. }))
-        .py(px(5.))
-        .rounded(px(8.))
+        .gap(dp(8.))
+        .pl(dp(10.))
+        .pr(dp(if key.is_empty() { 10. } else { 6. }))
+        .py(dp(5.))
+        .rounded(dp(8.))
         .bg(t.raised)
         .border_1()
         .border_color(t.border_strong)
         .shadow(vec![shadow(t.shadow, 8., 20., -4.)])
         .font_family(crate::theme::SANS)
-        .text_size(px(12.))
-        .line_height(px(16.))
+        .text_size(dp(12.))
+        .line_height(dp(16.))
         .text_color(t.text)
         .child(div().whitespace_nowrap().child(label.clone()))
         .when(!key.is_empty(), |d| d.child(kbd(&t, key)))
