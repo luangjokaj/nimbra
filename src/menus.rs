@@ -1392,7 +1392,7 @@ impl Nimbra {
         // Room for the bar under the label and the button.
         let size = (width, if countdown.is_some() { 62. } else { 44. });
         self.close_undo(cx);
-        let Some(frame) = self.frame else {
+        let Some(frame) = self.frame.map(|f| self.popup_frame(f)) else {
             return;
         };
         let lift = self.update_lift();
@@ -1476,7 +1476,7 @@ impl Nimbra {
         if let Some(handle) = self.notice_window.take() {
             remove_popup(handle, cx);
         }
-        let (Some(toast), Some(frame)) = (toast, self.frame) else {
+        let (Some(toast), Some(frame)) = (toast, self.frame.map(|f| self.popup_frame(f))) else {
             return;
         };
         let (width, height) = (toast.width, toast.height);
@@ -1537,6 +1537,22 @@ impl Nimbra {
             .ok();
         })
         .detach();
+    }
+
+    /// The part of the main window (`frame`) the bottom popups centre in: the mail, right
+    /// of the sidebar while it is fixed; the whole window while it hides.
+    pub(super) fn popup_frame(
+        &self,
+        frame: gpui::Bounds<gpui::Pixels>,
+    ) -> gpui::Bounds<gpui::Pixels> {
+        if !self.sidebar_open {
+            return frame;
+        }
+        let side = to_screen(self.side_w());
+        gpui::Bounds::new(
+            gpui::point(frame.origin.x + side, frame.origin.y),
+            gpui::size(frame.size.width - side, frame.size.height),
+        )
     }
 
     /// Shows `progress` in its window at the bottom of the main window (`placed`: its frame
