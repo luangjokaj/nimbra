@@ -9,12 +9,23 @@
 //! windows at its level, so they move with it and stay behind other apps' windows when
 //! Nimbra is not in front, rather than floating over everything as pop-ups do.
 
-/// How long a pop-up takes to come or go (seconds).
-pub const FADE: f64 = 0.2;
+/// How long a pop-up takes to go (seconds): it is closed after.
+pub const FADE: f64 = 0.22;
+
+/// How long a pop-up takes to come in (seconds): a little longer, so a notice is seen to
+/// rise and settle.
+const ENTER: f64 = 0.34;
 
 /// How far a notice at the bottom of the window rises as it comes in, and sinks as it goes
-/// (points). Within the margin its window keeps around it, so it is never cut off.
-const RISE: f64 = 10.;
+/// (points). Within the margin its window keeps around it (28), so it is never cut off.
+const RISE: f64 = 20.;
+
+/// Easing curves, as CSS writes them (cubic-bezier control points).
+type Curve = [f32; 4];
+/// Quick, then settling gently into place.
+const SETTLE: Curve = [0.16, 1., 0.3, 1.];
+/// Slow at first, then away.
+const AWAY: Curve = [0.4, 0., 1., 1.];
 
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)] // emitted by the objc crate's macros
@@ -47,23 +58,48 @@ mod platform {
         }
     }
 
-    /// Runs `animate` (on the window's animator proxy) over `FADE`, easing.
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_msgSend();
+    }
+
+    /// A CAMediaTimingFunction for `curve`.
+    ///
+    /// # Safety
+    /// Main thread only.
+    unsafe fn timing(curve: super::Curve) -> *mut Object {
+        // `functionWithControlPoints::::` has unnamed parts, which `msg_send!` cannot spell.
+        type Send = unsafe extern "C" fn(
+            *const objc::runtime::Class,
+            objc::runtime::Sel,
+            f32,
+            f32,
+            f32,
+            f32,
+        ) -> *mut Object;
+        unsafe {
+            let send: Send = std::mem::transmute(objc_msgSend as *const ());
+            let select = objc::runtime::Sel::register("functionWithControlPoints::::");
+            let [a, b, c, d] = curve;
+            send(class!(CAMediaTimingFunction), select, a, b, c, d)
+        }
+    }
+
+    /// Runs `animate` (on the window's animator proxy) over `seconds`, along `curve`.
     ///
     /// # Safety
     /// Main thread only, with a live NSWindow.
     unsafe fn animated(
         ns_window: *mut Object,
-        ease: &std::ffi::CStr,
+        seconds: f64,
+        curve: super::Curve,
         animate: impl FnOnce(*mut Object),
     ) {
         unsafe {
             let _: () = msg_send![class!(NSAnimationContext), beginGrouping];
             let context: *mut Object = msg_send![class!(NSAnimationContext), currentContext];
-            let _: () = msg_send![context, setDuration: super::FADE];
-            let name: *mut Object =
-                msg_send![class!(NSString), stringWithUTF8String: ease.as_ptr()];
-            let timing: *mut Object =
-                msg_send![class!(CAMediaTimingFunction), functionWithName: name];
+            let _: () = msg_send![context, setDuration: seconds];
+            let timing = timing(curve);
             if !timing.is_null() {
                 let _: () = msg_send![context, setTimingFunction: timing];
             }
@@ -79,7 +115,14 @@ mod platform {
     ///
     /// # Safety
     /// Main thread only, with a live NSWindow.
-    unsafe fn slide(ns_window: *mut Object, from: f64, to: f64, ease: &std::ffi::CStr, hold: bool) {
+    unsafe fn slide(
+        ns_window: *mut Object,
+        from: f64,
+        to: f64,
+        seconds: f64,
+        curve: super::Curve,
+        hold: bool,
+    ) {
         unsafe {
             let view: *mut Object = msg_send![ns_window, contentView];
             if view.is_null() {
@@ -97,11 +140,8 @@ mod platform {
             let to: *mut Object = msg_send![class!(NSNumber), numberWithDouble: to];
             let _: () = msg_send![animation, setFromValue: from];
             let _: () = msg_send![animation, setToValue: to];
-            let _: () = msg_send![animation, setDuration: super::FADE];
-            let name: *mut Object =
-                msg_send![class!(NSString), stringWithUTF8String: ease.as_ptr()];
-            let timing: *mut Object =
-                msg_send![class!(CAMediaTimingFunction), functionWithName: name];
+            let _: () = msg_send![animation, setDuration: seconds];
+            let timing = timing(curve);
             if !timing.is_null() {
                 let _: () = msg_send![animation, setTimingFunction: timing];
             }
@@ -141,12 +181,19 @@ mod platform {
             };
             // SAFETY: main thread, a live NSWindow.
             unsafe {
-                animated(ns_window, c"easeOut", |animator| {
+                animated(ns_window, super::ENTER, super::SETTLE, |animator| {
                     let _: () = msg_send![animator, setAlphaValue: 1f64];
                 });
-                // A notice rises into place from just below it.
+                // A notice rises into place from below.
                 if attach {
-                    slide(ns_window, -super::RISE, 0., c"easeOut", false);
+                    slide(
+                        ns_window,
+                        -super::RISE,
+                        0.,
+                        super::ENTER,
+                        super::SETTLE,
+                        false,
+                    );
                 }
             }
         });
@@ -158,13 +205,13 @@ mod platform {
         };
         // SAFETY: main thread, a live NSWindow.
         unsafe {
-            animated(ns_window, c"easeIn", |animator| {
+            animated(ns_window, super::FADE, super::AWAY, |animator| {
                 let _: () = msg_send![animator, setAlphaValue: 0f64];
             });
             // A notice (a child of the main window, `enter`) sinks back the way it came.
             let parent: *mut Object = msg_send![ns_window, parentWindow];
             if !parent.is_null() {
-                slide(ns_window, 0., -super::RISE, c"easeIn", true);
+                slide(ns_window, 0., -super::RISE, super::FADE, super::AWAY, true);
             }
         }
     }
