@@ -969,9 +969,10 @@ impl Nimbra {
         } else {
             pane_w
         };
-        // A narrow pane keeps every action but drops their words, and the previous and
-        // next arrows (the list, J and K do that too). Reply all and Show original are in
-        // More actions (and A and V).
+        // Reply is the one answer with its word (a narrow pane keeps every action but drops
+        // their words); Reply all and Forward are icons beside it. A narrow pane also drops
+        // the previous and next arrows (the list, J and K do that too). Show original is in
+        // More actions (and V).
         let narrow = pane_w < 600.;
         let visible = self.visible();
         let pos = visible
@@ -1147,7 +1148,19 @@ impl Nimbra {
                             })),
                     )
                     .child(
-                        action_button(t, "forward", "Forward", !narrow)
+                        action_button(t, "reply-all", "Reply all", false)
+                            .id("reply-all")
+                            .press(t)
+                            .tooltip(tip(t.dark, "Reply all", "A"))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                this.set_hint(*hovered, "Reply all", "A", cx)
+                            }))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_compose(ComposeKind::ReplyAll, cx)
+                            })),
+                    )
+                    .child(
+                        action_button(t, "forward", "Forward", false)
                             .id("forward")
                             .press(t)
                             .tooltip(tip(t.dark, "Forward", "F"))

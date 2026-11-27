@@ -6,7 +6,6 @@ use super::*;
 /// What the reading pane's ⋯ menu can do (what the toolbar leaves out).
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum MoreAction {
-    ReplyAll,
     ToggleOriginal,
     MarkUnread,
     OpenInGmail,
@@ -1018,7 +1017,6 @@ impl Nimbra {
             };
             items.push((MoreAction::ToggleOriginal, "eye", label.into()));
         }
-        items.push((MoreAction::ReplyAll, "reply-all", "Reply all".into()));
         items.push((MoreAction::MarkUnread, "inbox", "Mark as unread".into()));
         if !demo {
             if !self.own_servers() {
@@ -1092,7 +1090,6 @@ impl Nimbra {
                 }
             }
             (Menu::More, index) => match self.more_actions.get(index).copied() {
-                Some(MoreAction::ReplyAll) => self.open_compose(ComposeKind::ReplyAll, cx),
                 Some(MoreAction::ToggleOriginal) => self.toggle_original(cx),
                 Some(MoreAction::MarkUnread) => self.mark_unread(cx),
                 Some(MoreAction::OpenInGmail) => self.open_in_gmail(cx),
