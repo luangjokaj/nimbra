@@ -4,6 +4,9 @@
 
 use super::*;
 
+/// A point or a size, in window points.
+type Xy = (f32, f32);
+
 /// The open composer: two single-line fields and a body made of one field per line.
 pub(super) struct Composer {
     /// Tells composers apart while one is still finishing in the background.
@@ -78,7 +81,7 @@ pub(super) struct Composer {
     pub(super) size: (f32, f32),
     /// An in-progress move or resize: what, where the mouse started, and the card's
     /// position and size at that moment.
-    pub(super) grab: Option<(Grab, (f32, f32), (f32, f32), (f32, f32))>,
+    pub(super) grab: Option<(Grab, Xy, Xy, Xy)>,
     pub(super) sending: bool,
     pub(super) error: Option<SharedString>,
     pub(super) _subscriptions: Vec<gpui::Subscription>,
@@ -336,7 +339,7 @@ impl Nimbra {
             .mails
             .get(self.selected)
             .filter(|_| !self.visible().is_empty())
-            .map(|mail| Source::latest(mail));
+            .map(Source::latest);
         self.open_compose_from(kind, source, cx);
     }
 

@@ -146,15 +146,18 @@ mod platform {
     use wry::dpi::{LogicalPosition, LogicalSize};
     use wry::{Rect, WebView, WebViewBuilder};
 
+    /// x, y, width and height, in window points.
+    type Bounds = (f32, f32, f32, f32);
+
     pub struct HtmlView {
         view: WebView,
         /// Documents handed over that have not started loading (see `navigation`).
         #[cfg(target_os = "windows")]
         loads: std::rc::Rc<std::cell::Cell<u32>>,
         /// Where the view is (window points), and the hole cut in it, as last applied.
-        frame: std::cell::Cell<(f32, f32, f32, f32)>,
-        hole: std::cell::Cell<Option<(f32, f32, f32, f32)>>,
-        applied: std::cell::Cell<Option<((f32, f32, f32, f32), Option<(f32, f32, f32, f32)>)>>,
+        frame: std::cell::Cell<Bounds>,
+        hole: std::cell::Cell<Option<Bounds>>,
+        applied: std::cell::Cell<Option<(Bounds, Option<Bounds>)>>,
         /// Whether the view is on screen (`set_visible`), so ⌘C goes to it only then.
         shown: std::cell::Cell<bool>,
         /// The zoom last applied (`set_zoom`).
