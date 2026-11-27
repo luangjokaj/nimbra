@@ -7,6 +7,8 @@
 - **Interface size.** Settings › Appearance › Interface size draws everything in Nimbra's windows at 90%, 100%, 110% or 125%: text, icons, rows and spacing. ⌘+ and ⌘- step through the sizes and ⌘0 goes back to 100%; they're in the View menu too.
 
 ### Changed
+- **Sending, in one place.** The Sending pill shows a bar filling for as long as Undo can still stop the message, stays until it's sent, then says "Sent" and goes by itself, instead of a second notice.
+- **Checking for mail.** The bar under the list's header runs from edge to edge.
 - **Mail text size reaches all your mail.** Settings › Appearance › Mail text size now sizes the message list and folded messages too, and emails shown in their original formatting, not only the reader's text. There's a new Extra large step.
 - **Settings at the bottom of the sidebar.** The whole row (your profile, its name and a gear) opens Settings. The light and dark switch that was there moved to Settings › Appearance, and ⌘⇧L still switches.
 

@@ -427,6 +427,12 @@ pub(super) struct UndoToast {
     pub(super) owner: gpui::WeakEntity<Nimbra>,
     pub(super) label: SharedString,
     pub(super) dark: bool,
+    /// How long it can still be undone, shown as a bar filling up (`offer_undo_for`).
+    pub(super) countdown: Option<Duration>,
+    /// Undo still stops it (a message is on its way once its delay is over).
+    pub(super) can_undo: bool,
+    /// What happened, in place of `label`, with the bar full (`show_sent`).
+    pub(super) sent: Option<SharedString>,
 }
 
 impl Render for UndoToast {
@@ -449,11 +455,10 @@ impl Render for UndoToast {
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap(dp(12.))
+                    .flex_col()
+                    .justify_center()
+                    .gap(dp(8.))
                     .size_full()
-                    .pl(dp(16.))
-                    .pr(dp(6.))
                     .rounded(dp(12.))
                     .bg(t.raised)
                     .border_1()
@@ -461,20 +466,55 @@ impl Render for UndoToast {
                     .shadow(vec![popup_shadow(&t)])
                     .child(
                         div()
-                            .flex_1()
-                            .min_w(dp(0.))
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .child(self.label.clone()),
+                            .flex()
+                            .items_center()
+                            .gap(dp(12.))
+                            .pl(dp(16.))
+                            .pr(dp(6.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(dp(0.))
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .child(self.sent.clone().unwrap_or_else(|| self.label.clone())),
+                            )
+                            // Kept in place but hidden once Undo can't stop it, so the words don't move.
+                            .child({
+                                let can_undo = self.can_undo;
+                                button(&t, ButtonKind::Ghost, "Undo", Some("⌘Z"))
+                                    .id("undo")
+                                    .press_soft()
+                                    .when(!can_undo, |b| b.invisible())
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        if can_undo {
+                                            owner.update(cx, |owner, cx| owner.undo(cx)).ok();
+                                        }
+                                    }))
+                            }),
                     )
-                    .child(
-                        button(&t, ButtonKind::Ghost, "Undo", Some("⌘Z"))
-                            .id("undo")
-                            .press_soft()
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                owner.update(cx, |owner, cx| owner.undo(cx)).ok();
-                            })),
-                    ),
+                    // The update's bar: a track, and the time gone by filling it.
+                    .children(self.countdown.map(|countdown| {
+                        let fill = div()
+                            .h_full()
+                            .rounded_full()
+                            .bg(crate::ui::primary_fill(0.));
+                        div()
+                            .mx(dp(16.))
+                            .h(dp(4.))
+                            .rounded_full()
+                            .bg(t.hover)
+                            .child(if self.sent.is_some() {
+                                fill.w_full().into_any_element()
+                            } else {
+                                fill.with_animation(
+                                    "undo-countdown",
+                                    Animation::new(countdown),
+                                    |fill, done| fill.w(gpui::relative(done)),
+                                )
+                                .into_any_element()
+                            })
+                    })),
             )
     }
 }
@@ -1177,13 +1217,28 @@ impl Nimbra {
 
     /// Shows the "Undo" pill at the bottom centre of the window for a few seconds.
     pub(super) fn offer_undo(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
-        const SHOWN: Duration = Duration::from_secs(6);
+        self.offer_undo_for(label, None, cx);
+    }
+
+    /// `offer_undo`, with a bar that fills for `countdown` (and the pill shown as long), as
+    /// the update's progress bar does: for a message being sent, the time left to take it
+    /// back.
+    pub(super) fn offer_undo_for(
+        &mut self,
+        label: impl Into<SharedString>,
+        countdown: Option<Duration>,
+        cx: &mut Context<Self>,
+    ) {
+        // A message being sent stays until it is sent (`show_sent`); this is in case it
+        // never says.
+        let shown = countdown.map_or(Duration::from_secs(6), |c| c + Duration::from_secs(60));
         let label: SharedString = label.into();
         // Wide enough for the label, the Undo button and the padding; 300 at least.
         let width = (text_width(&label, 13., crate::theme::SANS, cx) + 150.)
             .clamp(300., 460.)
             .ceil();
-        let size = (width, 44.);
+        // Room for the bar under the label and the button.
+        let size = (width, if countdown.is_some() { 62. } else { 44. });
         self.close_undo(cx);
         let Some(frame) = self.frame else {
             return;
@@ -1221,11 +1276,18 @@ impl Nimbra {
                 cx.new(|cx| {
                     // It goes away by itself too, so it can never be left behind.
                     cx.spawn_in(window, async move |_, cx| {
-                        cx.background_executor().timer(SHOWN).await;
+                        cx.background_executor().timer(shown).await;
                         cx.update(|window, _| window.remove_window()).ok();
                     })
                     .detach();
-                    UndoToast { owner, label, dark }
+                    UndoToast {
+                        owner,
+                        label,
+                        dark,
+                        countdown,
+                        can_undo: true,
+                        sent: None,
+                    }
                 })
             },
         );
@@ -1233,10 +1295,11 @@ impl Nimbra {
             return;
         };
         self.undo_window = Some(handle);
+        self.undo_sending = countdown.is_some();
         self.undo_gen += 1;
         let shown_gen = self.undo_gen;
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SHOWN).await;
+            cx.background_executor().timer(shown).await;
             this.update(cx, |this, cx| {
                 if this.undo_gen == shown_gen {
                     this.close_undo(cx);
@@ -1397,9 +1460,55 @@ impl Nimbra {
     }
 
     pub(super) fn close_undo(&mut self, cx: &mut Context<Self>) {
+        self.undo_sending = false;
         if let Some(handle) = self.undo_window.take() {
             remove_popup(handle, cx);
         }
+    }
+
+    /// Changes the pill of a message being sent, if it is on screen.
+    pub(super) fn update_sending_toast(
+        &mut self,
+        change: impl FnOnce(&mut UndoToast),
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(handle) = self.undo_window.filter(|_| self.undo_sending) else {
+            return false;
+        };
+        handle
+            .update(cx, |toast, _, cx| {
+                change(toast);
+                cx.notify();
+            })
+            .is_ok()
+    }
+
+    /// The message went: its pill says "Sent" in place of a notice of its own, then goes
+    /// by itself. False when there is no pill to say it (the caller says it another way).
+    pub(super) fn show_sent(&mut self, cx: &mut Context<Self>) -> bool {
+        const SHOWN: Duration = Duration::from_millis(2800);
+        let said = self.update_sending_toast(
+            |toast| {
+                toast.can_undo = false;
+                toast.sent = Some("Sent".into());
+            },
+            cx,
+        );
+        if !said {
+            return false;
+        }
+        let shown_gen = self.undo_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SHOWN).await;
+            this.update(cx, |this, cx| {
+                if this.undo_gen == shown_gen {
+                    this.close_undo(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+        true
     }
 
     /// The Labels or More menu, dropped under its toolbar button.

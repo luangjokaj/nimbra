@@ -644,6 +644,8 @@ pub struct Nimbra {
     /// The "Undo" pill shown after a thread is removed, in a window of its own so it
     /// floats above the email's web view; `undo_gen` restarts its timer.
     undo_window: Option<gpui::WindowHandle<UndoToast>>,
+    /// The pill in `undo_window` is a message's being sent: it turns into "Sent".
+    undo_sending: bool,
     undo_gen: usize,
     /// The main window's frame, kept from the last draw, to place pop-ups without a window.
     frame: Option<gpui::Bounds<gpui::Pixels>>,
@@ -1033,6 +1035,7 @@ impl Nimbra {
                 _ => None,
             },
             undo_window: None,
+            undo_sending: false,
             undo_gen: 0,
             frame: None,
             menu: None,
