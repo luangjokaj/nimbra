@@ -25,14 +25,15 @@ jobs:
         with:
           path: desktop
       # A Cargo.lock made with scripts/local-core.sh on points nimbra-core at ../core;
-      # it must name the GitHub release instead.
+      # it must name a GitHub release, or a merged core commit pinned by rev.
       - name: Check the mail engine's source
         run: |
           source=$(awk '/^name = "nimbra-core"$/ { found = 1; next }
                         found && /^source = / { print; exit }
                         found && /^$/ { exit }' Cargo.lock)
           case "$source" in
-            'source = "git+https://github.com/nimbra-mail/core?tag='*) echo "$source" ;;
+            # A release tag, or a merged commit pinned by rev between core releases.
+            'source = "git+https://github.com/nimbra-mail/core?tag='*|'source = "git+https://github.com/nimbra-mail/core?rev='*) echo "$source" ;;
             *)
               echo "::error file=Cargo.lock::nimbra-core is not from github.com/nimbra-mail/core (${source:-a local path}). Run scripts/local-core.sh off and commit Cargo.lock again."
               exit 1
