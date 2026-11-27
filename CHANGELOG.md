@@ -4,6 +4,7 @@
 
 ### Fixed
 - **Block a sender from All inboxes.** Blocking a conversation from another account no longer asks you to open that account first: the sender is blocked in the conversation's own account, the conversation goes to that account's Blocked label (made if it has none), and Undo unblocks them there again.
+- **An email no longer flashes in the window's corner.** A message's email could show as a small square at the top left, over the sidebar, while its conversation was still loading; it now shows only once it is in its place in the reader.
 
 ## [0.1.9] - 2026-11-28
 
