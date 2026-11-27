@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.8] - 2026-11-27
 
 ### Changed
 - **The list keeps its width.** Dragged wider or narrower, it opens at that width next time, and double-clicking its edge puts it back to its first width (as the sidebar's edge does), rather than closing the list.
