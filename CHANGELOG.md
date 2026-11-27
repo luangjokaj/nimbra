@@ -4,6 +4,8 @@
 
 ### Changed
 - **Pop-ups centre on the mail.** With the sidebar fixed, the Undo and sending pill, notices and the update's card sit in the middle of the mail, right of the sidebar; with the sidebar hiding, in the middle of the window as before.
+- **New mail is there when it is announced.** A thread that arrives goes into the Inbox and All inboxes, with its message, before its notification shows, so clicking the notification opens it at once.
+- **Every account's mailboxes open at once.** All inboxes, and every account's Sent, Trash, Drafts and the rest, open from what each account keeps on this Mac and are brought up to date behind it, rather than waiting on every account. Switching accounts no longer forgets them either.
 
 ## [0.1.8] - 2026-11-27
 

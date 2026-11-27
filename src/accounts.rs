@@ -592,23 +592,29 @@ impl Nimbra {
                 .unwrap_or_else(|| self.account_id.clone());
             composer.account = (from != id).then_some(from);
         }
-        // All inboxes is the same whichever account is shown: it outlives a switch, so that
-        // it does not load again each time. Not for an account being added (its mail is not
-        // in it), and without the mail of one signed out.
+        // Every account's mailboxes (All inboxes, and every account's Sent, Trash…) are the
+        // same whichever account is shown: they outlive a switch, so that they do not load
+        // again each time. Not for an account being added (its mail is not in them), and
+        // without the mail of one signed out.
         self.remember_mailbox();
         let listed = |account: &str| self.settings.accounts.iter().any(|a| a.id == account);
-        let all_inboxes = self
-            .cache
-            .get(&View::ALL_INBOXES)
-            .filter(|_| listed(&id))
-            .map(|mails| {
-                let kept: Vec<Mail> = mails
-                    .iter()
-                    .filter(|mail| mail.account.as_deref().is_some_and(listed))
-                    .cloned()
-                    .collect();
-                (kept, self.all_inboxes_whole)
-            });
+        let every: Vec<(View, Vec<Mail>)> = if listed(&id) {
+            self.cache
+                .iter()
+                .filter(|(view, _)| view.is_every())
+                .map(|(view, mails)| {
+                    let kept = mails
+                        .iter()
+                        .filter(|mail| mail.account.as_deref().is_some_and(listed))
+                        .cloned()
+                        .collect();
+                    (*view, kept)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let all_inboxes_whole = self.all_inboxes_whole;
         // While it was shown its count was kept in `counts`: hand that on, or the sidebar
         // and the Dock go back to the number from before it was shown.
         if listed(&self.account_id) && self.counts.contains_key("INBOX") {
@@ -713,9 +719,11 @@ impl Nimbra {
         self.print_view = None;
         self.account = "".into();
         self.me_initials = "".into();
-        if let Some((mails, whole)) = all_inboxes {
-            self.cache.insert(View::ALL_INBOXES, mails);
-            self.all_inboxes_whole = whole;
+        for (view, mails) in every {
+            if view == View::ALL_INBOXES {
+                self.all_inboxes_whole = all_inboxes_whole;
+            }
+            self.cache.insert(view, mails);
         }
         // Left before its store had opened.
         if !self.other_stores.contains_key(&left) {
