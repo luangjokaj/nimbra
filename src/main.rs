@@ -9,6 +9,7 @@ mod checking;
 mod data;
 mod editor;
 mod erase;
+mod help;
 mod input;
 mod inspiration;
 mod integration;
@@ -52,12 +53,13 @@ use app::{
     DockInbox, DockSent, DockSnoozed, DockStarred, First, FocusSearch, FocusSidebar, Forward,
     ForwardMessage, GoAllMail, GoDrafts, GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp,
     HideOthers, HideWindow, Last, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone,
-    MenuMarkUnread, MenuReply, MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal,
-    MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenInWindow, OpenSettings,
-    OpenSidebarRow, PageDown, PageUp, PickDown, PickThread, PickUp, Prev, Print, Quit, Reload,
-    Reply, ReplyAll, SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList,
-    ToggleOriginal, TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash,
-    Undo, UseDarkAppearance, UseLightAppearance, UseSystemAppearance, ZoomIn, ZoomOut,
+    MenuMarkUnread, MenuReply, MenuReplyAll, MenuSearch, MenuShortcuts, MenuSnooze, MenuStar,
+    MenuToggleOriginal, MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra,
+    OpenInWindow, OpenSettings, OpenSidebarRow, PageDown, PageUp, PickDown, PickThread, PickUp,
+    Prev, Print, Quit, ReleaseNotes, Reload, Reply, ReplyAll, ReportProblem, SaveDraft,
+    SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList, ToggleOriginal,
+    TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
+    UseDarkAppearance, UseLightAppearance, UseSystemAppearance, ZoomIn, ZoomOut,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -243,6 +245,8 @@ fn main() {
         // Arrows and the like go to a web view that has the keyboard, not through GPUI.
         webkeys::install();
         cx.on_action(|_: &AboutNimbra, _| about::show());
+        cx.on_action(|_: &ReportProblem, cx| help::report_problem(cx));
+        cx.on_action(|_: &ReleaseNotes, cx| help::release_notes(cx));
         cx.on_action(|_: &HideApp, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -323,6 +327,7 @@ fn main() {
             KeyBinding::new("alt-cmd-h", HideOthers, None),
             KeyBinding::new("cmd-m", Minimize, None),
             KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("alt-shift-cmd-i", ReportProblem, None),
             KeyBinding::new("cmd-n", Compose, None),
             KeyBinding::new("cmd-p", Print, None),
             // Walking the window: ← to the sidebar, → back with what is under the cursor.
@@ -470,6 +475,14 @@ fn main() {
                 items: vec![
                     MenuItem::action("Minimize", Minimize),
                     MenuItem::action("Close Window", HideWindow),
+                ],
+            },
+            Menu {
+                name: "Help".into(),
+                items: vec![
+                    MenuItem::action("Report a Problem…", ReportProblem),
+                    MenuItem::action("Keyboard Shortcuts  (?)", MenuShortcuts),
+                    MenuItem::action("Release Notes", ReleaseNotes),
                 ],
             },
         ]);
