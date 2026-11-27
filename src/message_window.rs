@@ -283,16 +283,18 @@ impl Render for MessageWindow {
                     |this, _, window, cx| this.act(window, cx, |n, row, cx| n.done_thread(row, cx)),
                 )),
             )
+            // Reply with its word, Reply all and Forward as icons beside it, as in the main
+            // window.
             .child(action("reply", "Reply", "Reply", 0).on_click(
                 cx.listener(|this, _, window, cx| this.reply(ComposeKind::Reply, window, cx)),
             ))
-            .child(action("forward", "Forward", "Forward", 2).on_click(
-                cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx)),
-            ))
-            .child(div().flex_1())
             .child(tool("reply-all", "Reply all", 1).on_click(
                 cx.listener(|this, _, window, cx| this.reply(ComposeKind::ReplyAll, window, cx)),
             ))
+            .child(tool("forward", "Forward", 2).on_click(
+                cx.listener(|this, _, window, cx| this.reply(ComposeKind::Forward, window, cx)),
+            ))
+            .child(div().flex_1())
             .child(tool("trash", "Move to trash", 4).on_click(cx.listener(
                 |this, _, window, cx| this.act(window, cx, |n, row, cx| n.trash_thread(row, cx)),
             )))
