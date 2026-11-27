@@ -501,6 +501,9 @@ pub struct Nimbra {
     update_ready: Option<String>,
     /// Quitting to restart into it: the new version opens once it is in place.
     restart_for_update: bool,
+    /// This run is the first of a new version: the sidebar links to its release notes
+    /// until dismissed.
+    just_updated: Option<String>,
     /// A check for a new version is running (from the menu, Settings or the timer).
     update_checking: bool,
     /// How far the new version has got while it downloads and is checked (`update.rs`).
@@ -950,6 +953,7 @@ impl Nimbra {
             contacts_scans: HashSet::new(),
             update_ready: crate::update::staged(),
             restart_for_update: false,
+            just_updated: None,
             update_checking: false,
             update_progress: None,
             update_window: None,
@@ -1265,6 +1269,11 @@ impl Nimbra {
         if screen == "update" {
             this.update_ready = Some("0.1.4".into());
             this.show_update_ready("0.1.4", cx);
+        }
+        // NIMBRA_SCREEN=updated: the first run after an update, with the sidebar's link to
+        // the release notes (screenshots).
+        if screen == "updated" {
+            this.just_updated = Some(env!("CARGO_PKG_VERSION").into());
         }
         // NIMBRA_SCREEN=update-download: a new version downloads, is checked, and is ready,
         // with nothing fetched (screenshots).

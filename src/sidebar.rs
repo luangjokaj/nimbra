@@ -1230,6 +1230,65 @@ impl Nimbra {
                         .child("Restart"),
                 )
         });
+        // The first run after an update: one click reads what is new, or the X dismisses it.
+        let updated = self.just_updated.clone().map(|version| {
+            let (hover, close_hover) = (t.selected, t.hover);
+            div()
+                .id("just-updated")
+                .flex()
+                .items_center()
+                .gap(dp(8.))
+                .mb(dp(6.))
+                .pl(dp(10.))
+                // The X lines up with the Settings row's gear below (centred 21pt in).
+                .pr(dp(9.))
+                .py(dp(7.))
+                .rounded(dp(10.))
+                .bg(t.hover)
+                .border_1()
+                .border_color(t.border)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .tooltip(tip(t.dark, "Open the release notes", ""))
+                .on_click(cx.listener(|this, _, _, cx| this.read_release_notes(cx)))
+                .child(div().flex_none().size(dp(7.)).rounded_full().bg(t.violet))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(dp(0.))
+                        .child(
+                            div()
+                                .truncate()
+                                .child(meta(format!("Nimbra {version} just updated"), t.text2)),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(dp(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(t.text)
+                                .child("Read the changelog"),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("just-updated-dismiss")
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(dp(22.))
+                        .rounded(dp(6.))
+                        .hover(move |s| s.bg(close_hover))
+                        .press(t)
+                        .child(icon("x", 13., t.text3))
+                        .tooltip(tip(t.dark, "Dismiss", ""))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.dismiss_release_notes(cx);
+                        })),
+                )
+        });
         // Settings stays at the bottom, whatever is scrolled above it.
         let footer = div()
             .flex_none()
@@ -1238,6 +1297,7 @@ impl Nimbra {
             .border_t_1()
             .border_color(t.border_strong)
             .children(update)
+            .children(updated)
             // The whole row opens Settings: the profile, its name and the gear. Light and
             // dark live in Settings › Appearance (and ⌘⇧L), not here.
             .child({
