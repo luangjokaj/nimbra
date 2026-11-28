@@ -911,6 +911,8 @@ impl Nimbra {
             .apply(self.mailbox, &shown, &mut fresh, true, false, |m| {
                 m.account.clone().unwrap_or_else(|| shown.clone())
             });
+        // Rows made up for new drafts give way to Gmail's own once it lists them.
+        self.drop_made_up_listed(&mut fresh);
         // For the chips of other accounts' snoozed threads (All inboxes), and Snoozed.
         self.read_snoozed_elsewhere();
         // Snoozed lists Gmail's own snoozed threads and the ones snoozed here; Reminders,
@@ -944,6 +946,23 @@ impl Nimbra {
         self.done = vec![false; self.mails.len()];
         for i in &self.history {
             self.done[*i] = true;
+        }
+        // Discarded drafts stay hidden while their delete is on its way, and until the
+        // listing no longer has them.
+        if !self.hidden_drafts.is_empty() {
+            let mut listed = std::collections::HashSet::new();
+            for (i, mail) in self.mails.iter().enumerate() {
+                let Some(id) = mail.id.clone() else {
+                    continue;
+                };
+                let key = (id, self.account_of(mail).to_string());
+                if self.hidden_drafts.contains_key(&key) {
+                    self.done[i] = true;
+                    listed.insert(key);
+                }
+            }
+            self.hidden_drafts
+                .retain(|key, deleted| !*deleted || listed.contains(key));
         }
         self.picked = self.picked.iter().filter_map(|&row| now(row)).collect();
         self.selected = now(self.selected).unwrap_or(0);

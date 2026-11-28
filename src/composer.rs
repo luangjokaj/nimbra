@@ -128,6 +128,20 @@ pub(super) enum After {
 /// provider's thread id.
 const MADE_UP: &str = "nimbra-draft-";
 
+/// Whether two subjects are the same as shown: no subject at all and Gmail's
+/// "(no subject)" are one.
+fn same_subject(a: &str, b: &str) -> bool {
+    let plain = |s: &str| {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("(no subject)") {
+            String::new()
+        } else {
+            s.to_string()
+        }
+    };
+    plain(a) == plain(b)
+}
+
 /// Whether a row's thread id is one made up for a new draft: never sent to the provider.
 pub(super) fn made_up(id: &str) -> bool {
     id.starts_with(MADE_UP)
@@ -1034,6 +1048,72 @@ impl Nimbra {
         self.finish_parked_later(serial, Duration::ZERO, cx);
     }
 
+    /// Takes out of a fresh listing the rows made up for new drafts that Gmail lists now
+    /// (same account, subject and first recipient, saved about then), and points what
+    /// stood for them (their composer, a closed one kept for Edit draft, a hidden discard)
+    /// at Gmail's row.
+    pub(super) fn drop_made_up_listed(&mut self, fresh: &mut Vec<Mail>) {
+        if self.mailbox.base() != View::Drafts {
+            return;
+        }
+        let shown = self.account_id.clone();
+        let account_of = |m: &Mail| m.account.clone().unwrap_or_else(|| shown.clone());
+        let mut replaced: Vec<(String, String, String)> = Vec::new();
+        for made in fresh
+            .iter()
+            .filter(|m| m.id.as_deref().is_some_and(made_up))
+        {
+            let account = account_of(made);
+            let real = fresh
+                .iter()
+                .filter(|m| m.id.as_deref().is_some_and(|id| !made_up(id)))
+                .filter(|m| account_of(m) == account)
+                .filter(|m| same_subject(&m.subject, &made.subject))
+                .filter(|m| {
+                    m.sender_address
+                        .trim()
+                        .eq_ignore_ascii_case(made.sender_address.trim())
+                })
+                .filter(|m| m.timestamp_ms >= made.timestamp_ms - 120_000)
+                .max_by_key(|m| m.timestamp_ms);
+            if let (Some(real), Some(id)) = (real.and_then(|m| m.id.clone()), made.id.clone()) {
+                replaced.push((id, real, account));
+            }
+        }
+        if replaced.is_empty() {
+            return;
+        }
+        fresh.retain(|m| {
+            !m.id
+                .as_deref()
+                .is_some_and(|id| replaced.iter().any(|(made, _, _)| made == id))
+        });
+        for (made, real, account) in replaced {
+            self.pending.forget(View::Drafts, &account, &made);
+            let point = |c: &mut Composer| {
+                if c.listed_as.as_deref() == Some(made.as_str()) {
+                    c.listed_as = Some(real.clone());
+                    c.listed_new = false;
+                }
+            };
+            if let Some(c) = &mut self.compose {
+                point(c);
+            }
+            for (_, c) in &mut self.parked {
+                point(c);
+            }
+            for (id, c) in &mut self.closed_drafts {
+                point(c);
+                if *id == made {
+                    *id = real.clone();
+                }
+            }
+            if let Some(deleted) = self.hidden_drafts.remove(&(made.clone(), account.clone())) {
+                self.hidden_drafts.insert((real.clone(), account), deleted);
+            }
+        }
+    }
+
     /// Edit draft on a made-up row: its composer, still saving or closed since.
     fn reopen_made_up(&mut self, id: &str, in_window: bool, cx: &mut Context<Self>) {
         let parked = self
@@ -1138,6 +1218,33 @@ impl Nimbra {
         .detach();
     }
 
+    /// The row in Drafts most like a draft written as `out` from `account`: same subject and
+    /// first recipient, the newest. Only to hide it at once; Gmail's listing after the
+    /// delete settles what is there.
+    fn draft_row_like(&self, account: &str, out: &mail::Outgoing) -> Option<String> {
+        if self.mailbox.base() != View::Drafts {
+            return None;
+        }
+        let first = out.to.split(',').next().unwrap_or_default().trim();
+        let address = first
+            .split_once('<')
+            .map_or(first, |(_, rest)| rest.trim_end_matches('>'))
+            .trim()
+            .to_lowercase();
+        let subject = out.subject.trim();
+        self.mails
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.done.get(*i) != Some(&true))
+            .map(|(_, m)| m)
+            .filter(|m| self.account_of(m) == account)
+            .filter(|m| m.id.as_deref().is_some_and(|id| !made_up(id)))
+            .filter(|m| same_subject(&m.subject, subject))
+            .filter(|m| m.sender_address.trim().to_lowercase() == address)
+            .max_by_key(|m| m.timestamp_ms)
+            .and_then(|m| m.id.clone())
+    }
+
     /// Hides (or shows again) a discarded draft's row in Drafts while its delete waits out
     /// the undo delay; the listing after the delete has it gone for good.
     fn show_draft_row(
@@ -1149,6 +1256,12 @@ impl Nimbra {
     ) {
         let shown = self.account_id.clone();
         let account = account.unwrap_or_else(|| shown.clone());
+        let key = (id.to_string(), account.clone());
+        if show {
+            self.hidden_drafts.remove(&key);
+        } else {
+            self.hidden_drafts.insert(key, false);
+        }
         let mut changed = false;
         for index in 0..self.mails.len() {
             let mail = &self.mails[index];
@@ -1189,6 +1302,20 @@ impl Nimbra {
         // asked for below has the real one.
         let confirmed = composer.draft_id.is_some() && !composer.dirty() && !composer.saving;
         let out = composer.outgoing(cx);
+        // Saved before and listed by Gmail since: that row is the one to bring up to date.
+        if composer.listed_as.is_none()
+            && composer.draft_id.is_some()
+            && let Some(id) = self.draft_row_like(&account, &out)
+        {
+            let Some(composer) = self.composer_mut(serial) else {
+                return;
+            };
+            composer.listed_as = Some(id);
+            composer.listed_new = false;
+        }
+        let Some(composer) = self.composer_mut(serial) else {
+            return;
+        };
         let id = match composer.listed_as.clone() {
             Some(id) => id,
             None => {
@@ -1820,6 +1947,24 @@ impl Nimbra {
             return;
         }
         let serial = composer.serial;
+        // Its row, when it is not the one the composer knows (a made-up row replaced by
+        // Gmail's own since, or a draft saved as typing paused and listed after).
+        let account = composer
+            .account
+            .clone()
+            .unwrap_or_else(|| self.account_id.clone());
+        let known = composer.listed_as.as_deref().is_some_and(|id| {
+            self.mails
+                .iter()
+                .any(|m| m.id.as_deref() == Some(id) && self.account_of(m) == account)
+        });
+        if !known && composer.draft_id.is_some() {
+            let out = composer.outgoing(cx);
+            if let Some(id) = self.draft_row_like(&account, &out) {
+                composer.listed_new = false;
+                composer.listed_as = Some(id);
+            }
+        }
         // Out of Drafts now; Undo puts it back.
         if let Some(id) = composer.listed_as.clone() {
             let account = composer.account.clone();
@@ -1898,6 +2043,17 @@ impl Nimbra {
                                     }
                                 }
                                 Ok(()) => {
+                                    // Gone from Gmail: hidden until a listing agrees.
+                                    if let Some(id) = &listed {
+                                        let account = account
+                                            .clone()
+                                            .unwrap_or_else(|| this.account_id.clone());
+                                        if let Some(deleted) =
+                                            this.hidden_drafts.get_mut(&(id.clone(), account))
+                                        {
+                                            *deleted = true;
+                                        }
+                                    }
                                     if let Some(id) = &listed {
                                         for list in this.cache.values_mut() {
                                             list.retain(|m| m.id.as_deref() != Some(id.as_str()));

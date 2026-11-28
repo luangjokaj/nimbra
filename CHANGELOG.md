@@ -42,6 +42,9 @@
 - **The whole composer dims.** "Save this draft?" dims the composer's border too, rather than leaving it bright around the dimmed composer.
 - **No suggestions over "Save this draft?".** Address suggestions close as the sheet opens and stay hidden while it is up.
 - **Fast scrolling at the top.** Scrolling up quickly at the top of the list no longer leaves rows (or the whole list) blank while the scroll settles.
+- **A discarded draft leaves Drafts, whatever its composer knew.** Discarding from "Save this draft?" hides the draft's row at once, even when the composer had lost track of which row it was.
+- **A discarded draft stays gone.** Its row stays hidden while Drafts is listed again during the undo delay, and until Gmail no longer lists it.
+- **A saved draft shows once.** The row shown for a new draft as it is saved gives way to Gmail's own when Drafts lists it, and a draft Gmail already lists is brought up to date rather than shown twice.
 
 ## [0.1.9] - 2026-11-28
 
