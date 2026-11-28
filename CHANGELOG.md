@@ -6,6 +6,7 @@
 - **Nimbra opens where you left it.** The account and mailbox you were in when you quit (All inboxes, Sent, a label, any of them) are open again when you come back, rather than the account's Inbox. A notification you click still opens its message, and a search is not kept.
 
 ### Fixed
+- **No more stray "…" in previews.** A newsletter that pads its preview with invisible characters no longer leaves a long blank gap ending in "…" in the list and in a conversation's folded messages. Each mailbox loads its first page again once, so previews already on this Mac are cleaned too.
 - **Labels and folders in All inboxes.** A conversation from any account can be labelled, moved to a label or folder, or have a label taken off, without opening its account first. The Label and Move to menus list the labels of the conversation's own account, and New label… makes it there. Conversations picked from several accounts at once are asked to be from one, as a label is one account's.
 - **Open in Gmail from All inboxes.** It is offered for a conversation from a Gmail account, whichever account is shown, and no longer for one from another provider. From a row's menu it opens in that account's Gmail too, rather than the browser's first one.
 - **Undo takes the label off at once.** Undoing a block, or a move to a label or folder, no longer shows the conversation back in its mailbox with that label still on it for a while.
