@@ -495,7 +495,11 @@ impl Nimbra {
                     .press(t)
                     // Highlighted while the sidebar is hidden, like the list button.
                     .when(!self.sidebar_open, |d| d.bg(t.selected))
-                    .tooltip(tip(t.dark, "Show or hide sidebar", "⌘B"))
+                    .tooltip(tip(
+                        t.dark,
+                        "Show or hide sidebar",
+                        crate::shortcuts::label("toggle-sidebar"),
+                    ))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
             .child(div().w(dp(6.)))
@@ -503,14 +507,14 @@ impl Nimbra {
                 control("back", self.can_go_back())
                     .id("go-back")
                     .press(t)
-                    .tooltip(tip(t.dark, "Back", "⌘["))
+                    .tooltip(tip(t.dark, "Back", crate::shortcuts::label("back")))
                     .on_click(cx.listener(|this, _, _, cx| this.go_back(cx))),
             )
             .child(
                 control("next", self.can_go_forward())
                     .id("go-forward")
                     .press(t)
-                    .tooltip(tip(t.dark, "Forward", "⌘]"))
+                    .tooltip(tip(t.dark, "Forward", crate::shortcuts::label("forward")))
                     .on_click(cx.listener(|this, _, _, cx| this.go_forward(cx))),
             )
             .child(div().w(dp(6.)))
@@ -524,7 +528,7 @@ impl Nimbra {
                         } else {
                             SharedString::from("Check for mail")
                         },
-                        "⌘R",
+                        crate::shortcuts::label("reload"),
                     ))
                     .relative()
                     .flex()
@@ -986,7 +990,10 @@ impl Nimbra {
                     )
                     // A search is on: ✕ ends it (back to where it started), in place of /.
                     .child(if self.query.is_empty() {
-                        kbd(t, "/").into_any_element()
+                        let key = crate::shortcuts::label("focus-search");
+                        div()
+                            .when(!key.is_empty(), |d| d.child(kbd(t, &key)))
+                            .into_any_element()
                     } else {
                         let hover = t.hover;
                         div()

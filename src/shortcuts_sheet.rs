@@ -1,7 +1,7 @@
 //! The shortcuts window (?, Help › Keyboard Shortcuts): every key, in tabs. A window of its
 //! own, as Settings is: it stays open beside the mail until it is closed.
 
-use crate::keyboard::{Cap, SHORTCUT_TABS};
+use crate::keyboard::{Piece, SHORTCUT_TABS, pieces};
 
 use super::*;
 
@@ -61,6 +61,11 @@ impl ShortcutsSheet {
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let typed = event.keystroke.key_char.as_deref();
+        // The key that opened it closes it too, as changed in Settings.
+        let pressed = event.keystroke.unparse();
+        if crate::shortcuts::keys("shortcuts").contains(&pressed) {
+            return self.close(window, cx);
+        }
         match (key, typed) {
             ("escape", _) | (_, Some("?")) => self.close(window, cx),
             ("left", _) => self.show_tab(self.tab.saturating_sub(1), cx),
@@ -190,9 +195,9 @@ impl ShortcutsSheet {
                     .border_t_1()
                     .border_color(t.border)
                     .child(div().flex_1().flex().items_center().gap(dp(6.)).children(
-                        caps.iter().map(|cap| match cap {
-                            Cap::Key(key) => kbd(t, key),
-                            Cap::Word(word) => meta(word.to_string(), t.text3),
+                        pieces(caps).into_iter().map(|piece| match piece {
+                            Piece::Key(key) => kbd(t, &key),
+                            Piece::Word(word) => meta(word, t.text3),
                         }),
                     ))
                     .child(div().flex_1().text_color(t.text2).child(action.to_string()))
@@ -251,9 +256,16 @@ impl Render for ShortcutsSheet {
                             .gap(dp(6.))
                             .text_size(dp(13.))
                             .text_color(t.text3)
-                            .child("Press")
-                            .child(kbd(&t, "?"))
-                            .child("anytime to open this window."),
+                            .map(|d| {
+                                let key = crate::shortcuts::label("shortcuts");
+                                if key.is_empty() {
+                                    d.child("Open this window from Help › Keyboard Shortcuts.")
+                                } else {
+                                    d.child("Press")
+                                        .child(kbd(&t, &key))
+                                        .child("anytime to open this window.")
+                                }
+                            }),
                     ),
             )
             // In a row of its own, so the tab bar is only as wide as its tabs.

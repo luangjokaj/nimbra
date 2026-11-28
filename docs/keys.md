@@ -3,6 +3,10 @@
 Everything in Nimbra has a key. In the app, `?` shows them all on one sheet, and a key hint appears next to a button
 only while that key would do something.
 
+These are the keys out of the box. Any of them can be changed in **Settings › Shortcuts**: click an action's keys and
+type the new one. A key another action has asks before it moves, so no key ever does two things. Quit (`⌘Q`), copy,
+zoom, `esc` and switching account (`⌘1` to `⌘9`) stay as they are.
+
 | Key | Action |
 | --- | --- |
 | `J` / `K` or arrows | Next / previous thread |

@@ -72,6 +72,9 @@ pub fn install(cx: &mut App) {
     cx.on_action(|_: &Compose, cx| {
         on_main(cx, |n, cx| n.open_compose_from(ComposeKind::New, None, cx))
     });
+    cx.on_action(|_: &MenuCompose, cx| {
+        on_main(cx, |n, cx| n.open_compose_from(ComposeKind::New, None, cx))
+    });
     cx.on_action(|_: &DockInbox, cx| on_main(cx, |n, cx| n.go_to(View::Inbox, cx)));
     cx.on_action(|_: &DockStarred, cx| on_main(cx, |n, cx| n.go_to(View::Starred, cx)));
     cx.on_action(|_: &DockSnoozed, cx| on_main(cx, |n, cx| n.go_to(View::Snoozed, cx)));
@@ -83,6 +86,7 @@ pub fn install(cx: &mut App) {
         }
     };
     cx.on_action(move |_: &ToggleTheme, cx| with_main(cx, Nimbra::toggle_theme));
+    cx.on_action(move |_: &MenuToggleTheme, cx| with_main(cx, Nimbra::toggle_theme));
     cx.on_action(move |_: &ZoomIn, cx| with_main(cx, |n, cx| n.step_zoom(1, cx)));
     cx.on_action(move |_: &ZoomOut, cx| with_main(cx, |n, cx| n.step_zoom(-1, cx)));
     cx.on_action(move |_: &ActualSize, cx| with_main(cx, |n, cx| n.set_interface_zoom(100, cx)));

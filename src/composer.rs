@@ -2906,7 +2906,7 @@ impl Nimbra {
                     icon_button(t, if full { "shrink" } else { "expand" })
                         .id("compose-size")
                         .press(t)
-                        .tooltip(tip(t.dark, "Full page or floating", "⌘⇧F"))
+                        .tooltip(tip(t.dark, "Full page or floating", "⇧⌘F"))
                         // On press, as the close button (see there).
                         .on_mouse_down(
                             MouseButton::Left,
@@ -3228,7 +3228,7 @@ impl Nimbra {
                                     4,
                                     "bullets",
                                     "Bulleted list",
-                                    "⌘⇧8",
+                                    "⇧⌘8",
                                     "insertUnorderedList",
                                     f[3],
                                 ))
@@ -3236,7 +3236,7 @@ impl Nimbra {
                                     5,
                                     "numbers",
                                     "Numbered list",
-                                    "⌘⇧7",
+                                    "⇧⌘7",
                                     "insertOrderedList",
                                     f[4],
                                 ))

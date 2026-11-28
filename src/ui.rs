@@ -343,10 +343,10 @@ pub fn glow(button: Stateful<Div>, key: &'static str, listen: bool) -> Stateful<
 pub fn tip(
     dark: bool,
     label: impl Into<SharedString>,
-    key: &'static str,
+    key: impl Into<SharedString>,
 ) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView + 'static {
-    let label = label.into();
-    move |window, cx| crate::tooltip::build(dark, label.clone(), key, window, cx)
+    let (label, key) = (label.into(), key.into());
+    move |window, cx| crate::tooltip::build(dark, label.clone(), key.clone(), window, cx)
 }
 
 // ------------------------------------------------------------------ loading line

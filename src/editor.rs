@@ -226,6 +226,8 @@ mod platform {
 
         /// Shows composer `session`'s content and the quoted message below it.
         pub fn load(&self, session: u64, html: &str, quoted: &str, focus: bool) {
+            // The shortcuts in effect, which Settings may have changed since the last load.
+            self.call("keys", &[crate::shortcuts::editor_keys()]);
             self.call(
                 "load",
                 &[session.into(), html.into(), quoted.into(), focus.into()],

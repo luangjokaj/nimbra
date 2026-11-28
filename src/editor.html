@@ -66,6 +66,37 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
 
   const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 
+  // The app's shortcuts the page runs itself, as the app writes keys ("cmd-shift-f"); the
+  // app sends the ones in effect (Settings › Shortcuts) with every load.
+  let keys = {
+    send: ['cmd-enter', 'ctrl-enter'], save: ['cmd-s', 'ctrl-s'],
+    full: ['cmd-shift-f', 'ctrl-shift-f'], bold: ['cmd-b', 'ctrl-b'],
+    italic: ['cmd-i', 'ctrl-i'], underline: ['cmd-u', 'ctrl-u'], link: ['cmd-k', 'ctrl-k'],
+  };
+  const NAMES = {
+    enter: 'enter', backspace: 'backspace', delete: 'delete', tab: 'tab', ' ': 'space',
+    arrowup: 'up', arrowdown: 'down', arrowleft: 'left', arrowright: 'right',
+    home: 'home', end: 'end', pageup: 'pageup', pagedown: 'pagedown',
+  };
+  // The key pressed, as the app names it: a letter or digit by its place on the keyboard
+  // (so ⇧7 is "7", not "&"), anything else by what it types.
+  const pressed = (event) => {
+    const code = event.code || '';
+    if (code.startsWith('Key')) return code.slice(3).toLowerCase();
+    if (code.startsWith('Digit')) return code.slice(5);
+    const key = event.key.toLowerCase();
+    return NAMES[key] || key;
+  };
+  const is = (event, name) => (keys[name] || []).some((spelled) => {
+    const parts = spelled.split('-');
+    let key = parts.pop();
+    if (key === '' && parts[parts.length - 1] === '') { parts.pop(); key = '-'; }
+    const has = (m) => parts.includes(m);
+    return event.metaKey === has('cmd') && event.ctrlKey === has('ctrl')
+      && event.altKey === has('alt') && event.shiftKey === has('shift')
+      && pressed(event) === key;
+  });
+
   // Only plain formatting survives, whatever is loaded or pasted: no styles, classes,
   // images, scripts, frames or forms. Links keep http, https and mailto targets only.
   const KEEP = new Set(['P', 'DIV', 'BR', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'A', 'UL', 'OL', 'LI',
@@ -264,6 +295,9 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
   });
 
   window.nimbra = {
+    keys(given) {
+      if (given && typeof given === 'object') keys = given;
+    },
     load(id, html, quoted, focus) {
       session = id;
       saved = null;
@@ -367,13 +401,13 @@ body { font: 15px/1.6 Geist, -apple-system, BlinkMacSystemFont, sans-serif; -web
     const key = event.key.toLowerCase();
     const run = (command) => { event.preventDefault(); window.nimbra.exec(command); };
     // The app's own shortcuts, while typing here.
-    if (mod && key === 'enter') { event.preventDefault(); post({ t: 'key', k: 'send' }); }
-    else if (mod && !event.shiftKey && key === 's') { event.preventDefault(); post({ t: 'key', k: 'save' }); }
-    else if (mod && event.shiftKey && key === 'f') { event.preventDefault(); post({ t: 'key', k: 'full' }); }
-    else if (mod && !event.shiftKey && key === 'b') run('bold');
-    else if (mod && !event.shiftKey && key === 'i') run('italic');
-    else if (mod && !event.shiftKey && key === 'u') run('underline');
-    else if (mod && !event.shiftKey && key === 'k') run('link');
+    if (is(event, 'send')) { event.preventDefault(); post({ t: 'key', k: 'send' }); }
+    else if (is(event, 'save')) { event.preventDefault(); post({ t: 'key', k: 'save' }); }
+    else if (is(event, 'full')) { event.preventDefault(); post({ t: 'key', k: 'full' }); }
+    else if (is(event, 'bold')) run('bold');
+    else if (is(event, 'italic')) run('italic');
+    else if (is(event, 'underline')) run('underline');
+    else if (is(event, 'link')) run('link');
     else if (mod && event.shiftKey && key === '7') run('insertOrderedList');
     else if (mod && event.shiftKey && key === '8') run('insertUnorderedList');
     else if (mod && key === 'z') {

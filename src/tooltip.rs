@@ -32,7 +32,7 @@ const REACH: (f32, f32) = (260., 60.);
 pub struct Tip {
     dark: bool,
     label: SharedString,
-    key: &'static str,
+    key: SharedString,
     popup: Option<AnyWindowHandle>,
     /// Set each time GPUI draws this.
     drawn: Rc<Cell<bool>>,
@@ -42,7 +42,7 @@ pub struct Tip {
 pub fn build(
     dark: bool,
     label: SharedString,
-    key: &'static str,
+    key: SharedString,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyView {
@@ -101,7 +101,7 @@ impl Tip {
         let (tail, height) = if self.key.is_empty() {
             (10., 28.)
         } else {
-            let key = measure(self.key.into(), crate::theme::MONO, 11.).ceil() + 1.;
+            let key = measure(self.key.clone(), crate::theme::MONO, 11.).ceil() + 1.;
             // The key is mono 11 at medium, in 5pt of padding and a border, at least 18 wide.
             (8. + (key + 12.).max(18.) + 6., 32.)
         };
@@ -122,7 +122,7 @@ impl Tip {
         };
 
         let (parent, dark) = (owner.window_handle(), self.dark);
-        let (label, key) = (self.label.clone(), self.key);
+        let (label, key) = (self.label.clone(), self.key.clone());
         let drawn = self.drawn.clone();
         // On its window's display, so it is drawn at that display's scale where it is moved.
         let display_id = crate::popup::display_of(owner, cx);
@@ -201,7 +201,7 @@ impl Render for Tip {
             // The outer padding keeps the tooltip off the pointer.
             div()
                 .pt(dp(6.))
-                .child(bubble(self.dark, &self.label, self.key))
+                .child(bubble(self.dark, &self.label, &self.key))
         }
     }
 }
@@ -209,7 +209,7 @@ impl Render for Tip {
 struct Popup {
     dark: bool,
     label: SharedString,
-    key: &'static str,
+    key: SharedString,
 }
 
 impl Render for Popup {
@@ -219,11 +219,11 @@ impl Render for Popup {
         div()
             .size_full()
             .p(dp(MARGIN))
-            .child(bubble(self.dark, &self.label, self.key).size_full())
+            .child(bubble(self.dark, &self.label, &self.key).size_full())
     }
 }
 
-fn bubble(dark: bool, label: &SharedString, key: &'static str) -> Div {
+fn bubble(dark: bool, label: &SharedString, key: &SharedString) -> Div {
     let t = if dark { Theme::dark() } else { Theme::light() };
     div()
         .flex()

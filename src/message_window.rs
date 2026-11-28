@@ -305,13 +305,13 @@ impl Render for MessageWindow {
         // As the main window's toolbar (`reading.rs`): the actions as words, then icons.
         let worded = width >= 560.;
         let tool = |name: &'static str, label: &'static str, id: usize| {
-            let key = match id {
-                0 => "R",
-                1 => "A",
-                2 => "F",
-                3 => "E",
-                _ => "⌫",
-            };
+            let key = crate::shortcuts::label(match id {
+                0 => "reply",
+                1 => "reply-all",
+                2 => "forward-message",
+                3 => "mark-done",
+                _ => "trash",
+            });
             icon_button(&t, name)
                 .id(("message-window-tool", id))
                 .press(&t)
@@ -324,11 +324,11 @@ impl Render for MessageWindow {
                 .tooltip(tip(
                     t.dark,
                     label,
-                    match id {
-                        0 => "R",
-                        2 => "F",
-                        _ => "E",
-                    },
+                    crate::shortcuts::label(match id {
+                        0 => "reply",
+                        2 => "forward-message",
+                        _ => "mark-done",
+                    }),
                 ))
         };
         let toolbar = div()
