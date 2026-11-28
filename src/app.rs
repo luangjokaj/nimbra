@@ -1700,6 +1700,7 @@ impl Nimbra {
                     // Not seen until its emails are drawn (`MessageWindow::reveal`), so it
                     // opens whole, as the main window shows an email.
                     crate::blur::set_alpha(window, 0.);
+                    crate::blur::track_pointer_always(window);
                     let guard = owner.clone();
                     window.on_window_should_close(cx, move |window, cx| {
                         let handle = window.window_handle();

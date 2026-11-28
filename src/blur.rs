@@ -73,6 +73,67 @@ pub fn no_window_shadow(window: &gpui::Window) {
 #[cfg(not(target_os = "macos"))]
 pub fn no_window_shadow(_window: &gpui::Window) {}
 
+/// Lets the window follow the pointer when Nimbra is not the app in front: hovers and the
+/// pointer's shape change at once, as in other apps, rather than after a first click.
+/// macOS sends a window's pointer moves only while it is the key window of the active app;
+/// a tracking area that is active always sends them whatever is in front (as GPUI does for
+/// its pop-ups).
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)] // emitted by the objc crate's macros
+pub fn track_pointer_always(window: &gpui::Window) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Rect {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+    unsafe impl objc::Encode for Rect {
+        fn encode() -> objc::Encoding {
+            // SAFETY: the encoding of NSRect on 64-bit macOS.
+            unsafe { objc::Encoding::from_str("{CGRect={CGPoint=dd}{CGSize=dd}}") }
+        }
+    }
+    // NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways |
+    // NSTrackingInVisibleRect: the whole view, whatever app is active.
+    const OPTIONS: usize = 0x01 | 0x02 | 0x80 | 0x200;
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: main thread; `ns_view` is this window's live content view (GPUI's, which
+    // handles `mouseMoved:` and `mouseExited:`), and it retains the area it is given.
+    unsafe {
+        let view = handle.ns_view.as_ptr() as *mut Object;
+        let area: *mut Object = msg_send![class!(NSTrackingArea), alloc];
+        let none = Rect {
+            x: 0.,
+            y: 0.,
+            width: 0.,
+            height: 0.,
+        };
+        let nil: *mut Object = std::ptr::null_mut();
+        let area: *mut Object = msg_send![area,
+            initWithRect: none options: OPTIONS owner: view userInfo: nil];
+        if area.is_null() {
+            return;
+        }
+        let _: () = msg_send![view, addTrackingArea: area];
+        let _: () = msg_send![area, release];
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn track_pointer_always(_window: &gpui::Window) {}
+
 /// True while a mouse button is held down somewhere outside this window's content, leaving
 /// out a `margin` of transparent edge. The menu pop-up polls this to close on any outside
 /// click, including clicks that land on the email's native web view or on another app,
