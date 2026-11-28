@@ -484,6 +484,8 @@ impl Nimbra {
                     this.read_snoozed_elsewhere();
                     this.scan_contacts(account.clone(), cx);
                     this.load_photo(account, cx);
+                    // Every account's mailbox to open again may have waited for this one.
+                    this.go_back_to_place(false, cx);
                 }
             })
             .ok();

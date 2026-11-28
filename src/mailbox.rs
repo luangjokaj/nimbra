@@ -842,7 +842,7 @@ impl Nimbra {
                 }
                 // Bring it up to date: only what changed, when the store knows from where.
                 this.refresh(cx);
-                this.go_back_to_place(cx);
+                this.go_back_to_place(false, cx);
                 cx.notify();
             })
             .ok();
@@ -852,13 +852,40 @@ impl Nimbra {
 
     /// Once the account's store is open at launch: the mailbox it was left in, if it was
     /// this account and nothing else was asked for meanwhile (a notification's message).
-    fn go_back_to_place(&mut self, cx: &mut Context<Self>) {
+    /// Every account's mailbox waits for every account's store (what each kept, to show at
+    /// once), up to `PLACE_WAIT`; `now` is that wait running out.
+    pub(super) fn go_back_to_place(&mut self, now: bool, cx: &mut Context<Self>) {
+        const PLACE_WAIT: Duration = Duration::from_secs(5);
+        let Some(place) = self.restore_place.as_ref() else {
+            return;
+        };
+        if self.store.is_none() {
+            return;
+        }
+        if place.account != self.account_id || self.open_when_listed.is_some() {
+            self.restore_place = None;
+            return;
+        }
+        let every = place.every_label.is_some() || place.plain_view().is_some_and(View::is_every);
+        let others_open = self
+            .settings
+            .accounts
+            .iter()
+            .all(|a| a.id == self.account_id || self.other_stores.contains_key(&a.id));
+        if every && !others_open && !now {
+            if !std::mem::replace(&mut self.place_waiting, true) {
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(PLACE_WAIT).await;
+                    this.update(cx, |this, cx| this.go_back_to_place(true, cx))
+                        .ok();
+                })
+                .detach();
+            }
+            return;
+        }
         let Some(place) = self.restore_place.take() else {
             return;
         };
-        if place.account != self.account_id || self.open_when_listed.is_some() {
-            return;
-        }
         let view = if let Some(view) = place.plain_view() {
             Some(view)
         } else if let Some(id) = &place.label {
