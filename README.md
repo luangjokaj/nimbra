@@ -17,7 +17,7 @@
     <img src="https://img.shields.io/badge/macOS-26%2B-black?style=flat&logo=apple" alt="macOS 26 or newer" />
     <img src="https://img.shields.io/badge/Rust-2024-b7410e?style=flat&logo=rust" alt="Rust" />
     <img src="https://img.shields.io/badge/UI-GPUI-8b7cff?style=flat" alt="GPUI" />
-    <img src="https://img.shields.io/badge/mail-Gmail%20%C2%B7%20IMAP-555?style=flat" alt="Gmail and IMAP" />
+    <img src="https://img.shields.io/badge/mail-Gmail%20%C2%B7%20Microsoft%20%C2%B7%20IMAP-555?style=flat" alt="Gmail, Microsoft and IMAP" />
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3da639?style=flat" alt="MIT license" /></a>
   </p>
 
@@ -47,11 +47,13 @@
 - **Split inbox.** Gmail's Primary, Updates, Promotions and Social, each with its unread count, plus Starred, Important, Snoozed, Reminders, Drafts, Sent, Done, All Mail, Spam, Trash and your labels. IMAP accounts keep one inbox.
 - **Snooze and reminders.** Quick times, or any day and time from the calendar; “Only if nobody replies” turns a snooze into a reminder. Works for Gmail and IMAP.
 - **Block senders.** Their mail goes straight to a Blocked label and never notifies. It uses the same label as Spark, so a list kept there carries on.
-- **Every account in one place.** Several Gmail and IMAP accounts, All inboxes merged newest first, and replies that go out from the right address.
+- **Every account in one place.** Several Gmail, Microsoft and IMAP accounts, All inboxes merged newest first, and replies that go out from the right address. Nimbra opens again on the account and mailbox you left.
+- **Conversations that read well.** Every message folds to one line, the latest included, and can show newest first. Emails you have read, and the ones next to the open conversation, open at once. Brands that pass DMARC show their own logo (BIMI) instead of initials.
 - **Writing that gets out of the way.** A formatted editor, address suggestions, attachments by drag and drop, drafts that save themselves, undo send and send later.
 - **Works offline.** Archive, star, read and send while offline; Nimbra sends it all once it can.
 - **At home on the Mac.** Nimbra can be the default mail app for email links, notifications can be archived or marked read where they appear, the Dock icon has a menu and the unread count, and mail is checked the moment the Mac wakes or the network returns.
-- **Light and dark,** with emails darkened to match in dark mode, and an app icon with every macOS appearance (light, dark, clear and tinted).
+- **Light and dark,** with emails darkened to match in dark mode, a sidebar of glass over your desktop picture, and an app icon with every macOS appearance (light, dark, clear and tinted).
+- **Made to fit you.** Four mail text sizes up to Extra large, an interface zoom, a list row with the subject on its own line or beside the sender, and a list as wide as you drag it.
 
 ## Get started
 
@@ -184,6 +186,10 @@ Clicking a mailbox shows what is kept at once and asks Gmail only if something c
 
 HTML mail opens in its original formatting by default; `V` switches to the native reader view and back. In dark theme, light emails get a dark page and light text, with pictures and brand colours kept; Nimbra's own script does this in an isolated WebKit world, and **Settings › Reading › Darken emails in dark theme** turns it off. Printing is always light.
 
+A conversation opens on its latest message. Every message folds to its line and opens again from its header or that line, and **Settings › Appearance › Newest message first** puts the latest at the top. The emails of the last few conversations you left stay ready, and the ones above and below the open one are prepared ahead, so going back or pressing `J` and `K` shows them at once.
+
+A sender whose mail passed DMARC, from a domain with an enforced policy and a BIMI record, shows the brand's logo instead of initials; the sender's address stays beside it. Logos are looked up once per domain and kept for a week, in a store all accounts share.
+
 Each message shows its sender and recipients; click the recipients line for From, To, Cc, Reply-To and the full date. Earlier messages in a thread have their own Reply, Reply all and Forward. Attachments can be previewed with Quick Look or saved to Downloads. Mailing lists get an Unsubscribe button beside the subject; spam is flagged with a Not spam button. Double-click a thread to open it in a window of its own; Return reads it in full view.
 
 </details>
@@ -246,7 +252,7 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 
 ### Screenshot states
 
-`NIMBRA_SCREEN=welcome`, `palette`, `finder` (the search panel, holding `NIMBRA_SEARCH` if set), `zero`, `loading`, `compose`, `compose-full`, `compose-suggest`, `window`, `more`, `offline`, `snooze`, `snooze-time`, `shortcuts`, `settings-accounts`, `settings-remove`, `settings-appearance`, `settings-reading`, `settings-composing` (also `settings-composing-html` and `settings-composing-preview`, on the sample's HTML signature), `settings-notifications`, `settings-privacy`, `settings-shortcuts`, `settings-about` or `about` opens that screen directly on the sample data. `NIMBRA_SHORTCUTS_TAB=<n>` switches the shortcuts sheet to tab n a second after it opens. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways.
+`NIMBRA_SCREEN=welcome`, `palette`, `finder` (the search panel, holding `NIMBRA_SEARCH` if set), `zero`, `loading`, `compose`, `compose-full`, `compose-suggest`, `draft`, `bulk` (three threads picked), `window`, `more`, `offline`, `snooze`, `snooze-time`, `shortcuts`, `account` (and `account-servers`), `update`, `update-download`, `updated`, `up-to-date`, `settings`, `settings-accounts`, `settings-remove`, `settings-appearance`, `settings-reading`, `settings-composing` (also `settings-composing-html` and `settings-composing-preview`, on the sample's HTML signature), `settings-notifications`, `settings-privacy`, `settings-shortcuts`, `settings-about` or `about` opens that screen directly on the sample data. `NIMBRA_SHORTCUTS_TAB=<n>` switches the shortcuts sheet to tab n a second after it opens. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked, and `NIMBRA_LIST=closed` with the list hidden. `NIMBRA_LIST_WIDTH=<px>` sets the list's width. `NIMBRA_MAILBOX=sent` (or `starred`, `snoozed`, `drafts`, `done`, `all`, `important`, `spam`, `trash`) opens that mailbox first. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways. `NIMBRA_NOTIFY_TEST=1` posts one sample notification, to check the setup.
 
 ### Working on the engine
 
@@ -269,9 +275,9 @@ scripts/local-core.sh off     # back to the release tag
 
 The IMAP and SMTP code, in [nimbra-core](https://github.com/nimbra-mail/core), has live tests against local Dovecot and Mailpit servers (OrbStack or Docker); its `docs/testing.md` has the setup.
 
-### Sidebar blur
+### Sidebar glass
 
-The sidebar is translucent and blurs whatever is behind the window. GPUI's own blurred window mode did not blur on macOS 27, so `src/blur.rs` asks the macOS window server directly through a private API. That is fine for now but is a risk for App Store review. Windows and Linux fall back to GPUI's built-in behaviour.
+The sidebar is glass over the desktop picture. `src/wallpaper.rs` puts a native layer with the desktop picture, blurred, under the app's drawing, placed where the picture is on screen, so the glass shows the desktop and never another app's window; macOS moves it with the window, so it never lags. Under it, `src/blur.rs` still asks the window server for a backdrop blur, because GPUI's own blurred window mode did not blur on macOS 27. That call is a private API: fine for now, but a risk for App Store review. Windows and Linux fall back to GPUI's built-in behaviour.
 
 ### Layout
 
@@ -284,13 +290,17 @@ modules, brought in by name in `src/main.rs`. Changes to how mail is fetched, ke
 
 - `src/theme.rs`: colours for dark and light, fonts, gradients
 - `src/usage.rs`: the anonymous usage count
-- `src/checking.rs`, `src/arrival.rs`, `src/quitting.rs`, `src/leaving.rs`: checks for mail, Inbox Zero at launch, and what quitting has to finish
+- `src/update.rs`: the app's own updates (the feed, the download and its checks)
+- `src/checking.rs`, `src/arrival.rs`, `src/quitting.rs`: checks for mail, Inbox Zero at launch, and what quitting has to finish
 - `src/signature_images.rs`: signature images drawn natively, from the core's downloaded copies
-- `src/webview.rs`: the locked-down web view behind Show original
+- `src/webview.rs`, `src/mail_views.rs`: the locked-down web view, and the emails in their own formatting inside a conversation
+- `src/editor.rs`, `src/editor.html`: the formatted message editor, a system web view running Nimbra's own page
 - `src/app.rs`: the app's state, key actions and the window's layout; the rest of the `Nimbra` type continues in `accounts.rs`, `mailbox.rs`, `threads.rs`, `labels.rs`, `finder.rs`, `composer.rs`, `outgoing.rs` and `menus.rs`
 - `src/sidebar.rs`, `src/list.rs`, `src/reading.rs`, `src/snooze_menu.rs`, `src/palette.rs`: the sidebar, the thread list (with Inbox Zero), the reading pane, the Snooze menu and the command palette
 - `src/integration.rs`, `src/system_events.rs`, `src/notify.rs`, `src/system.rs`: what macOS tells the app (links, notification answers, wake, network, appearance, display options) and what the app does with it; notifications, the Dock badge and opening at login
-- `src/window_frame.rs`: the main window's place across launches
+- `src/settings_window.rs`, `src/message_window.rs`, `src/add_account.rs`: the Settings window, a conversation in a window of its own, and the sheet that adds an IMAP account
+- `src/window_frame.rs`, `src/place.rs`: the main window's frame, and the account and mailbox it shows, across launches
+- `src/wallpaper.rs`, `src/blur.rs`: the sidebar's glass (see [Sidebar glass](#sidebar-glass))
 - `src/ui.rs`, `src/input.rs`: shared building blocks and the text field
 - `assets/`: the app icon, bundled Geist and Instrument Serif fonts (OFL) and Lucide-style icons
 
