@@ -416,7 +416,7 @@ impl Render for MessageWindow {
                 0.
             };
             let content = self.owner.update(cx, |n, cx| {
-                let mut d = div()
+                let d = div()
                     .flex()
                     .flex_col()
                     .gap(dp(16.))
@@ -438,9 +438,14 @@ impl Render for MessageWindow {
                         super::reading::ORIGINAL_SIDE
                     }))
                     .child(header(n, cx, (column - 72.).max(0.)));
-                // Every message, oldest first, the latest last.
+                // Every message, oldest first and the latest last, or the latest first
+                // (Settings › Appearance). `earlier` is newest first.
+                let newest_first = n.settings.newest_first;
+                let mut earlier: Vec<Div> = Vec::with_capacity(m.earlier.len());
                 for (k, e) in m.earlier.iter().enumerate() {
-                    d = d.child(
+                    // The message at the bottom has the column's padding under it instead.
+                    let bottom = newest_first && k + 1 == m.earlier.len();
+                    earlier.push(
                         div()
                             .flex()
                             .flex_col()
@@ -460,10 +465,12 @@ impl Render for MessageWindow {
                                 // attachments, or the column's to the next message.
                                 (
                                     12.,
-                                    if e.header.attachments.is_empty() {
-                                        16.
-                                    } else {
+                                    if !e.header.attachments.is_empty() {
                                         12. - super::reading::ORIGINAL_SIDE
+                                    } else if bottom {
+                                        0.
+                                    } else {
+                                        16.
                                     },
                                 ),
                                 &e.blocks,
@@ -485,45 +492,50 @@ impl Render for MessageWindow {
                             }),
                     );
                 }
-                d.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(dp(12.))
-                        .pt(dp(14.))
-                        .mx(dp(-across))
-                        .px(dp(across))
-                        .border_t_1()
-                        .border_color(t.border)
-                        .child(n.message_header(&t, &m, 0, false, cx))
-                        .child(body_of(
-                            n,
-                            cx,
-                            0,
-                            (
-                                12.,
-                                if m.header.attachments.is_empty() {
-                                    0.
-                                } else {
-                                    12. - super::reading::ORIGINAL_SIDE
-                                },
-                            ),
-                            &m.body,
-                            &selectable,
-                        ))
-                        .when(!m.header.attachments.is_empty(), |d| {
-                            d.child(
-                                n.attachment_row(
-                                    &t,
-                                    &m.header.attachments,
-                                    0,
-                                    m.account.as_deref(),
-                                    cx,
-                                )
-                                .pl(dp(super::reading::attachments_indent(emails[0].is_some()))),
+                let latest = div()
+                    .flex()
+                    .flex_col()
+                    .gap(dp(12.))
+                    .pt(dp(14.))
+                    .mx(dp(-across))
+                    .px(dp(across))
+                    .border_t_1()
+                    .border_color(t.border)
+                    .child(n.message_header(&t, &m, 0, false, cx))
+                    .child(body_of(
+                        n,
+                        cx,
+                        0,
+                        (
+                            12.,
+                            if !m.header.attachments.is_empty() {
+                                12. - super::reading::ORIGINAL_SIDE
+                            } else if newest_first {
+                                16.
+                            } else {
+                                0.
+                            },
+                        ),
+                        &m.body,
+                        &selectable,
+                    ))
+                    .when(!m.header.attachments.is_empty(), |d| {
+                        d.child(
+                            n.attachment_row(
+                                &t,
+                                &m.header.attachments,
+                                0,
+                                m.account.as_deref(),
+                                cx,
                             )
-                        }),
-                )
+                            .pl(dp(super::reading::attachments_indent(emails[0].is_some()))),
+                        )
+                    });
+                if newest_first {
+                    d.child(latest).children(earlier)
+                } else {
+                    d.children(earlier.into_iter().rev()).child(latest)
+                }
             });
             div()
                 .id("message-window-scroll")

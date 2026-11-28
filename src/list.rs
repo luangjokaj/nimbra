@@ -475,7 +475,8 @@ impl Nimbra {
         let hover = t.hover;
         // How many characters fit on a row at the list's current width (the text is cut
         // with an ellipsis by character count, so this follows the resize handle).
-        let text = RowText::of(self.settings.reader_text);
+        let text =
+            RowText::of(self.settings.reader_text).with_own_lines(self.settings.subject_own_line);
         let line = ((self.list_width - 120.) / text.char_w()).max(8.) as usize;
         // On a narrow list the tag gives way so the sender's name stays readable.
         let tag = m
@@ -505,7 +506,13 @@ impl Nimbra {
         let extras = (extras as f32 * 7.4 / text.char_w()).ceil() as usize;
         let sender_max = line.saturating_sub(extras).max(6);
         let subject = short(m.subject.split(',').next().unwrap_or(&m.subject), line);
-        let snippet_max = line.saturating_sub(subject.chars().count() + 2);
+        // On a line of its own the start of the email has the whole line; beside the
+        // subject, what the subject leaves.
+        let snippet_max = if text.own_lines {
+            line
+        } else {
+            line.saturating_sub(subject.chars().count() + 2)
+        };
         let snippet = if snippet_max >= 8 {
             short(&m.snippet, snippet_max)
         } else {
@@ -557,19 +564,21 @@ impl Nimbra {
                         .absolute()
                         .left(dp((ROW_PAD - 6.) / 2.))
                         // Level with the avatar's middle: the row's padding (12), then half
-                        // of its two lines and their gap.
+                        // of the sender's and the subject's lines and their gap.
                         .top(dp(12. + (text.first + LINE_GAP + text.second) / 2. - 3.))
                         .size(dp(6.))
                         .rounded_full()
                         .bg(t.violet),
                 )
             })
-            // Centred on the two lines of text beside it.
+            // In the middle of the sender's line and the subject's beside it, also when the
+            // start of the email has a line of its own under them.
             .child(
                 div()
                     .flex()
                     .flex_none()
                     .items_center()
+                    .h(dp(text.first + LINE_GAP + text.second))
                     .child(self.sender_avatar(m, 28.)),
             )
             .child(
@@ -722,32 +731,37 @@ impl Nimbra {
                                 )
                             }),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .h(dp(text.second))
-                            .gap(dp(6.))
-                            .child(
-                                // Long subjects shrink with an ellipsis instead of
-                                // spilling out of the row; the snippet takes what is left.
+                    .map(|d| {
+                        // Long subjects shrink with an ellipsis instead of spilling out of
+                        // the row; the snippet takes what is left, or a line of its own.
+                        let subject = div()
+                            .min_w(dp(0.))
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(if selected { t.text } else { t.text2 })
+                            .child(subject);
+                        let snippet = div()
+                            .flex_1()
+                            .min_w(dp(0.))
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_color(t.text3)
+                            .child(snippet);
+                        if text.own_lines {
+                            d.child(div().flex().h(dp(text.second)).child(subject))
+                                .child(div().flex().h(dp(text.second)).child(snippet))
+                        } else {
+                            d.child(
                                 div()
-                                    .min_w(dp(0.))
-                                    .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(if selected { t.text } else { t.text2 })
-                                    .child(subject),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(dp(0.))
-                                    .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .text_color(t.text3)
+                                    .flex()
+                                    .h(dp(text.second))
+                                    .gap(dp(6.))
+                                    .child(subject)
                                     .child(snippet),
-                            ),
-                    ),
+                            )
+                        }
+                    }),
             )
     }
 
@@ -958,7 +972,9 @@ impl Nimbra {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let pull = self.pull_indicator(t);
-        let row_h = RowText::of(self.settings.reader_text).height();
+        let row_h = RowText::of(self.settings.reader_text)
+            .with_own_lines(self.settings.subject_own_line)
+            .height();
         let lead = self.pull_height().map_or(0., |h| h + SLOT_GAP);
         let view_h = from_screen(self.list_scroll.bounds().size.height);
         let target = self.pick_end.unwrap_or(self.selected);
@@ -1410,6 +1426,9 @@ pub(super) struct RowText {
     pub(super) line: f32,
     pub(super) first: f32,
     pub(super) second: f32,
+    /// The subject and the start of the email on lines of their own (Settings ›
+    /// Appearance): a third line, as tall as the second.
+    pub(super) own_lines: bool,
 }
 
 impl RowText {
@@ -1426,12 +1445,23 @@ impl RowText {
             line,
             first,
             second,
+            own_lines: false,
         }
     }
 
-    /// The row's height: its padding, its two lines and the gap between them.
+    /// The same with the subject and the start of the email on lines of their own.
+    pub(super) fn with_own_lines(self, own_lines: bool) -> Self {
+        RowText { own_lines, ..self }
+    }
+
+    /// The row's height: its padding, its lines and the gaps between them.
     pub(super) fn height(self) -> f32 {
-        12. + self.first + LINE_GAP + self.second + 12.
+        let third = if self.own_lines {
+            LINE_GAP + self.second
+        } else {
+            0.
+        };
+        12. + self.first + LINE_GAP + self.second + third + 12.
     }
 
     /// An average character's width, for cutting text to fit by count.
@@ -1647,6 +1677,9 @@ mod tests {
     fn rows_grow_with_the_mail_text_size_and_default_is_row_h() {
         use crate::settings::TextSize;
         assert_eq!(RowText::of(TextSize::Default).height(), ROW_H);
+        // The subject and the start of the email on lines of their own: one line more.
+        let own = RowText::of(TextSize::Default).with_own_lines(true);
+        assert_eq!(own.height(), ROW_H + LINE_GAP + own.second);
         let sizes = [
             TextSize::Small,
             TextSize::Default,
