@@ -70,6 +70,25 @@ impl From<Row> for Mail {
 }
 
 impl Mail {
+    /// The subject to show: "Untitled" when it has none (a draft just begun, say).
+    pub fn shown_subject(&self) -> SharedString {
+        if self.subject.trim().is_empty() {
+            "Untitled".into()
+        } else {
+            self.subject.clone().into()
+        }
+    }
+
+    /// The name a row and the reader show: in Drafts, "Draft" for one with no recipients
+    /// yet; elsewhere "Unknown sender" when there is no name or address.
+    pub fn shown_sender(&self, drafts: bool) -> SharedString {
+        match self.sender.trim() {
+            "" if drafts => "Draft".into(),
+            "" => "Unknown sender".into(),
+            name => name.to_string().into(),
+        }
+    }
+
     /// A list row for a real thread. The messages are filled in by [`Row::fill`].
     pub fn from_summary(summary: mail::Summary) -> Self {
         Row::from_summary(summary).into()
@@ -558,6 +577,20 @@ pub const COMMANDS: &[(&str, &str, &str, &str, Option<&str>)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_draft_shows_placeholders() {
+        let mut m = inbox().remove(0);
+        m.row.subject = "  ".into();
+        m.row.sender = String::new();
+        assert_eq!(m.shown_subject(), "Untitled");
+        assert_eq!(m.shown_sender(true), "Draft");
+        assert_eq!(m.shown_sender(false), "Unknown sender");
+        m.row.subject = "Plan".into();
+        m.row.sender = "Ana".into();
+        assert_eq!(m.shown_subject(), "Plan");
+        assert_eq!(m.shown_sender(true), "Ana");
+    }
 
     #[test]
     fn a_thread_has_an_original_when_any_message_has_html() {

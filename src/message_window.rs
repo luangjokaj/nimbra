@@ -216,7 +216,7 @@ impl Render for MessageWindow {
             )
         };
         let t = if dark { Theme::dark() } else { Theme::light() };
-        window.set_window_title(&m.subject);
+        window.set_window_title(&m.shown_subject());
         // A reply written here covers the message (and its web view, which is native).
         let compose = self.owner.update(cx, |n, cx| n.hosted_compose(window, cx));
         // A reply floating here: the email's web view (native, so above everything the app

@@ -505,7 +505,9 @@ impl Nimbra {
             13 + tag_chars + if m.thread.is_some() { 3 } else { 0 } + if m.starred { 3 } else { 0 };
         let extras = (extras as f32 * 7.4 / text.char_w()).ceil() as usize;
         let sender_max = line.saturating_sub(extras).max(6);
-        let subject = short(m.subject.split(',').next().unwrap_or(&m.subject), line);
+        let subject = m.shown_subject();
+        let subject = short(subject.split(',').next().unwrap_or(&subject), line);
+        let sender = m.shown_sender(self.mailbox.base() == View::Drafts);
         // On a line of its own the start of the email has the whole line; beside the
         // subject, what the subject leaves.
         let snippet_max = if text.own_lines {
@@ -600,7 +602,7 @@ impl Nimbra {
                                     .min_w(dp(0.))
                                     .whitespace_nowrap()
                                     .overflow_hidden()
-                                    .child(short(&m.sender, sender_max)),
+                                    .child(short(&sender, sender_max)),
                             )
                             .children(m.thread.clone().map(|n| mono(n, t.text3)))
                             .when(m.starred, |d| d.child(icon("star", 13., t.amber)))

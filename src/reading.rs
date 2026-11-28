@@ -1053,7 +1053,7 @@ impl Nimbra {
                 column,
                 m.tone,
                 &m.initials,
-                &m.sender,
+                &m.shown_sender(self.mailbox.base() == View::Drafts),
                 &m.snippet,
                 &m.time,
                 self.fold_turn(&(self.thread_key(m), LATEST), !latest_folded),
@@ -1813,7 +1813,7 @@ impl Nimbra {
         let (header, sender, tone, initials, time) = match index {
             0 => (
                 &mail.header,
-                SharedString::from(mail.sender.clone()),
+                mail.shown_sender(self.mailbox.base() == View::Drafts),
                 mail.tone,
                 mail.initials.clone(),
                 mail.time.clone(),
@@ -2744,7 +2744,7 @@ impl Nimbra {
         const GAP: f32 = 16.;
         let link = mail.header.unsubscribe.clone();
         let taken = if link.is_some() { BUTTON_W + GAP } else { 0. };
-        let title = balance_title(&mail.subject, size, (width - taken).max(0.), cx);
+        let title = balance_title(&mail.shown_subject(), size, (width - taken).max(0.), cx);
         let account = mail.account.clone();
         div()
             .flex()
