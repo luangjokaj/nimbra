@@ -1549,12 +1549,6 @@ impl Nimbra {
     /// their stores last kept them. An open label of every account's stays open by name
     /// when the list moves under it. Disk, small.
     pub(super) fn refresh_every_labels(&mut self) {
-        let open = match self.mailbox.base() {
-            View::Label(index) if self.mailbox.is_every() => {
-                self.every_labels.get(index).map(|l| l.name.to_lowercase())
-            }
-            _ => None,
-        };
         self.account_labels = self
             .settings
             .accounts
@@ -1570,6 +1564,18 @@ impl Nimbra {
                 (account.id.clone(), labels)
             })
             .collect();
+        self.merge_every_labels();
+    }
+
+    /// Every account's labels by name again, from the lists in memory (the account shown's
+    /// and `account_labels`), keeping a label of every account's open if it still exists.
+    pub(super) fn merge_every_labels(&mut self) {
+        let open = match self.mailbox.base() {
+            View::Label(index) if self.mailbox.is_every() => {
+                self.every_labels.get(index).map(|l| l.name.to_lowercase())
+            }
+            _ => None,
+        };
         self.every_labels = listing::labels_by_name(
             self.settings
                 .accounts

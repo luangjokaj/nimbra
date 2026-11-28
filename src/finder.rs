@@ -766,6 +766,10 @@ impl Nimbra {
                                 .child(label),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            // Let go after dragging the row: that picked nothing.
+                            if this.scope_dragged {
+                                return;
+                            }
                             this.set_scope(scope.clone(), cx);
                             this.pending_focus = Some(this.finder.read(cx).focus_handle(cx));
                             cx.notify();
@@ -806,8 +810,62 @@ impl Nimbra {
                             .px(dp(16.))
                             .overflow_x_scroll()
                             .track_scroll(scroll)
-                            // The edges follow the scrolling.
-                            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+                            // Click and drag scrolls it too (a mouse has no sideways wheel).
+                            .when(self.scope_drag.as_ref().is_some_and(|d| d.moved), |d| {
+                                d.cursor(gpui::CursorStyle::ClosedHand)
+                            })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &gpui::MouseDownEvent, _, _| {
+                                    this.scope_dragged = false;
+                                    this.scope_drag = Some(crate::drag_scroll::DragScroll::start(
+                                        event.position.x,
+                                        &this.finder_scope_scroll,
+                                    ));
+                                }),
+                            )
+                            .on_mouse_move(cx.listener(
+                                |this, event: &gpui::MouseMoveEvent, _, cx| {
+                                    if event.pressed_button != Some(MouseButton::Left) {
+                                        this.scope_drag = None;
+                                        return;
+                                    }
+                                    let handle = this.finder_scope_scroll.clone();
+                                    if let Some(drag) = &mut this.scope_drag {
+                                        let moved = drag.follow(event.position.x, &handle);
+                                        this.scope_dragged |= drag.moved;
+                                        if moved || drag.moved {
+                                            cx.notify();
+                                        }
+                                    }
+                                },
+                            ))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.scope_drag = None;
+                                    cx.notify();
+                                }),
+                            )
+                            .on_mouse_up_out(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.scope_drag = None;
+                                    cx.notify();
+                                }),
+                            )
+                            // The edges follow the scrolling. A sideways swipe is the row's
+                            // alone (GPUI scrolls the row first): nothing under it takes the
+                            // swipe's small vertical part.
+                            .on_scroll_wheel(cx.listener(
+                                |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                                    let delta = event.delta.pixel_delta(window.line_height());
+                                    if delta.x.abs() > delta.y.abs() {
+                                        cx.stop_propagation();
+                                    }
+                                    cx.notify();
+                                },
+                            ))
                             .child(chip(0, Scope::All, all, "All accounts".into()))
                             .children(self.settings.accounts.iter().enumerate().map(
                                 |(i, account)| {

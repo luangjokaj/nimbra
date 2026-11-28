@@ -176,6 +176,14 @@ pub(super) struct SettingsWindow {
     sig_keys: bool,
     /// The account field's place in the window (left, bottom, width), where its list opens.
     sig_anchor: std::rc::Rc<std::cell::Cell<(f32, f32, f32)>>,
+    /// The signature chips' row, scrolled sideways when they do not fit, and whether it has
+    /// been drawn once since Composing opened (its width is known from the second frame).
+    sig_chips_scroll: gpui::ScrollHandle,
+    sig_chips_measured: bool,
+    /// A press on the chips that may drag them sideways, and whether the last press did
+    /// (then letting go picks nothing).
+    sig_drag: Option<crate::drag_scroll::DragScroll>,
+    sig_dragged: bool,
     sig_picker: Option<gpui::WindowHandle<AccountPicker>>,
     /// A first click on a destructive button arms it; a second within 4 s does it.
     armed: Option<(&'static str, Instant)>,
@@ -287,6 +295,10 @@ impl SettingsWindow {
             sig_editor_focus: cx.focus_handle(),
             sig_keys: false,
             sig_anchor: Default::default(),
+            sig_chips_scroll: gpui::ScrollHandle::new(),
+            sig_chips_measured: false,
+            sig_drag: None,
+            sig_dragged: false,
             sig_picker: None,
             armed: None,
             confirm_remove: asking,
@@ -339,6 +351,7 @@ impl SettingsWindow {
     pub(super) fn show(&mut self, tab: Tab, account: Option<String>, cx: &mut Context<Self>) {
         if tab != self.tab {
             self.end_record(cx);
+            self.sig_chips_measured = false;
         }
         self.tab = tab;
         self.armed = None;
@@ -562,6 +575,10 @@ impl Render for SettingsWindow {
             window.focus(focus);
         }
         self.sync_signature_editor(window, cx);
+        if self.tab == Tab::Composing && !self.sig_chips_measured {
+            self.sig_chips_measured = true;
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
+        }
         let dark = self.owner.read(cx).dark;
         let t = if dark { Theme::dark() } else { Theme::light() };
         let tab = self.tab;
@@ -1878,14 +1895,44 @@ impl SettingsWindow {
                 .when(default, |d| d.child(meta("Default", t.text3)))
         };
         let none_is_default = default_id.is_none();
+        // New signature first, in the accent: a frame and a soft fill of it.
+        let violet = t.violet;
         let mut chips: Vec<AnyElement> = vec![
+            div()
+                .id("sig-new")
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(dp(28.))
+                .px(dp(11.))
+                .rounded_full()
+                .border_1()
+                .border_color(violet.opacity(0.55))
+                .bg(violet.opacity(0.12))
+                .cursor_pointer()
+                .text_size(dp(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(violet)
+                .hover(move |s| s.bg(violet.opacity(0.2)).border_color(violet.opacity(0.75)))
+                .press_soft()
+                .child("New signature")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if !this.sig_dragged {
+                        this.new_signature(cx)
+                    }
+                }))
+                .into_any_element(),
             chip(
                 "sig-none".into(),
                 "No signature".into(),
                 pick == SigPick::Nothing,
                 none_is_default,
             )
-            .on_click(cx.listener(|this, _, _, cx| this.pick_signature(SigPick::Nothing, cx)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                if !this.sig_dragged {
+                    this.pick_signature(SigPick::Nothing, cx)
+                }
+            }))
             .into_any_element(),
         ];
         for (id, name) in &list {
@@ -1900,37 +1947,98 @@ impl SettingsWindow {
                     default,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.pick_signature(SigPick::Signature(picked.clone()), cx)
+                    if !this.sig_dragged {
+                        this.pick_signature(SigPick::Signature(picked.clone()), cx)
+                    }
                 }))
                 .into_any_element(),
             );
         }
-        chips.push(
+        // One line, scrolled sideways; the chips fade out under an edge that has more past
+        // it (in the card's colour), as the search panel's accounts do.
+        let scroll = &self.sig_chips_scroll;
+        let offset = from_screen(-scroll.offset().x);
+        let max = from_screen(scroll.max_offset().width);
+        let edge = |left: bool| {
+            let clear = Hsla { a: 0., ..t.raised };
             div()
-                .id("sig-new")
-                .flex()
-                .flex_none()
-                .items_center()
-                .h(dp(28.))
-                .px(dp(11.))
-                .rounded_full()
-                .cursor_pointer()
-                .text_size(dp(12.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(t.violet)
-                .hover(move |s| s.bg(hover))
-                .press(t)
-                .child("New signature")
-                .on_click(cx.listener(|this, _, _, cx| this.new_signature(cx)))
-                .into_any_element(),
-        );
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .w(dp(40.))
+                .when(left, |d| d.left_0().bg(gradient(90., t.raised, clear)))
+                .when(!left, |d| d.right_0().bg(gradient(270., t.raised, clear)))
+        };
         let chips_row = div()
-            .flex()
-            .flex_wrap()
-            .gap(dp(8.))
-            .px(dp(16.))
-            .py(dp(12.))
-            .children(chips)
+            .relative()
+            .child(
+                div()
+                    .id("sig-chips")
+                    .flex()
+                    .items_center()
+                    .gap(dp(8.))
+                    .px(dp(16.))
+                    .py(dp(12.))
+                    .overflow_x_scroll()
+                    .track_scroll(scroll)
+                    // Click and drag scrolls it too (a mouse has no sideways wheel).
+                    .when(self.sig_drag.as_ref().is_some_and(|d| d.moved), |d| {
+                        d.cursor(gpui::CursorStyle::ClosedHand)
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, event: &gpui::MouseDownEvent, _, _| {
+                            this.sig_dragged = false;
+                            this.sig_drag = Some(crate::drag_scroll::DragScroll::start(
+                                event.position.x,
+                                &this.sig_chips_scroll,
+                            ));
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                        if event.pressed_button != Some(gpui::MouseButton::Left) {
+                            this.sig_drag = None;
+                            return;
+                        }
+                        let handle = this.sig_chips_scroll.clone();
+                        if let Some(drag) = &mut this.sig_drag {
+                            let moved = drag.follow(event.position.x, &handle);
+                            this.sig_dragged |= drag.moved;
+                            if moved || drag.moved {
+                                cx.notify();
+                            }
+                        }
+                    }))
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.sig_drag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.sig_drag = None;
+                            cx.notify();
+                        }),
+                    )
+                    .on_scroll_wheel(cx.listener(
+                        |_, event: &gpui::ScrollWheelEvent, window, cx| {
+                            // A sideways swipe is the row's alone: the row has scrolled by now
+                            // (GPUI runs its own scrolling first), and the page under it must not
+                            // take the swipe's small vertical part and bob up and down.
+                            let delta = event.delta.pixel_delta(window.line_height());
+                            if delta.x.abs() > delta.y.abs() {
+                                cx.stop_propagation();
+                            }
+                            cx.notify();
+                        },
+                    ))
+                    .children(chips),
+            )
+            .when(offset > 0.5, |d| d.child(edge(true)))
+            .when(max - offset > 0.5, |d| d.child(edge(false)))
             .into_any_element();
 
         let mut rows = vec![account_row, chips_row];
@@ -1955,50 +2063,55 @@ impl SettingsWindow {
                 rows.push(row(t, "No signature", detail, control));
             }
             Some(signature) => {
-                rows.push(self.signature_header(t, signature, default_id.as_ref(), cx));
-                rows.push(self.signature_editor(t, signature, cx));
+                rows.push(self.signature_header(t));
+                rows.push(self.signature_editor(t, signature, default_id.as_ref(), cx));
             }
         }
         rows
     }
 
-    /// The picked signature's name, Make default and Delete.
-    fn signature_header(
-        &mut self,
+    /// The picked signature's name: a small label, the field under it, full width.
+    fn signature_header(&mut self, t: &Theme) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(dp(8.))
+            .px(dp(16.))
+            .py(dp(12.))
+            .child(div().pl(dp(4.)).child(overline("NAME", t.text3)))
+            .child(
+                // The size of every text field (Add account's).
+                div()
+                    .flex()
+                    .items_center()
+                    .h(dp(40.))
+                    .px(dp(12.))
+                    .rounded(dp(10.))
+                    .bg(t.hover)
+                    .border_1()
+                    .border_color(t.border)
+                    .text_size(dp(14.))
+                    .child(div().w_full().child(self.sig_name.clone())),
+            )
+            .into_any_element()
+    }
+
+    /// Make default (or the Default badge) and Delete, for the picked signature.
+    fn signature_actions(
+        &self,
         t: &Theme,
         signature: &crate::settings::Signature,
         default_id: Option<&String>,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Div {
         let is_default = default_id == Some(&signature.id);
         let id = signature.id.clone();
         let delete = (signature.id.clone(), signature.name.clone());
         div()
             .flex()
+            .flex_none()
             .items_center()
             .gap(dp(8.))
-            .px(dp(16.))
-            .py(dp(10.))
-            .child(
-                div()
-                    .flex_none()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Name"),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(dp(0.))
-                    .max_w(dp(260.))
-                    .px(dp(10.))
-                    .py(dp(5.))
-                    .rounded(dp(8.))
-                    .bg(t.hover)
-                    .border_1()
-                    .border_color(t.border)
-                    .child(self.sig_name.clone()),
-            )
-            .child(div().flex_1())
             .child(if is_default {
                 pill(t, "Default", t.violet).into_any_element()
             } else {
@@ -2035,7 +2148,6 @@ impl SettingsWindow {
                         cx.notify();
                     })),
             )
-            .into_any_element()
     }
 
     /// Text · HTML · Preview, and the signature in that form.
@@ -2043,8 +2155,10 @@ impl SettingsWindow {
         &mut self,
         t: &Theme,
         signature: &crate::settings::Signature,
+        default_id: Option<&String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let actions = self.signature_actions(t, signature, default_id, cx);
         let mode = self.sig_mode;
         let switch = self.choice_with(
             t,
@@ -2151,7 +2265,9 @@ impl SettingsWindow {
                     .gap(dp(12.))
                     .child(switch)
                     .child(div().flex_1())
-                    .children(refresh),
+                    .children(refresh)
+                    // Make default and Delete, on the switch's line.
+                    .child(actions),
             )
             .child(
                 div()

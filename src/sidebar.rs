@@ -1164,18 +1164,22 @@ impl Nimbra {
                     )
                     .id(("mailbox", view_key(view)))
                     .on_click(cx.listener(move |this, _, _, cx| this.select_mailbox(view, cx)))
-                    // Right-click: rename or delete the label.
-                    .when(own, |row| {
-                        row.on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                                this.menu_at =
-                                    (from_screen(event.position.x), from_screen(event.position.y));
-                                this.menu_dismissed = None;
-                                this.toggle_menu(Menu::Label(index), window, cx);
-                            }),
-                        )
-                    })
+                    // Right-click: rename or delete the label; under All inboxes, delete it
+                    // from the accounts picked.
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                            this.menu_at =
+                                (from_screen(event.position.x), from_screen(event.position.y));
+                            this.menu_dismissed = None;
+                            let menu = if own {
+                                Menu::Label(index)
+                            } else {
+                                Menu::EveryLabel(index)
+                            };
+                            this.toggle_menu(menu, window, cx);
+                        }),
+                    )
                     .press(t);
                     let row = draggable(
                         row,

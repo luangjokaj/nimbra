@@ -221,6 +221,9 @@ enum Ask {
     GrantFullAccess(Vec<(String, String)>),
     /// Delete a label (id, name); the mail stays.
     DeleteLabel(String, String),
+    /// Delete a label of every account's (under All inboxes) from the accounts picked:
+    /// its name, and by account its id and whether it is picked.
+    DeleteEveryLabel(String, Vec<(String, String, bool)>),
 }
 
 // Changes and messages made while offline, sent once the server can be reached again.
@@ -832,8 +835,11 @@ pub struct Nimbra {
     paged: HashSet<View>,
     /// The search panel's results, kept scrolled to the highlighted one.
     finder_scroll: gpui::ScrollHandle,
-    /// The search panel's row of accounts, scrolled sideways when they do not fit.
+    /// The search panel's row of accounts, scrolled sideways when they do not fit, a press
+    /// on it that may drag it, and whether the last press did (then letting go picks nothing).
     finder_scope_scroll: gpui::ScrollHandle,
+    scope_drag: Option<crate::drag_scroll::DragScroll>,
+    scope_dragged: bool,
     pull: f32,
     pull_armed: bool,
     /// The indicator settling after release: (from height, to height). `pull_gen` restarts it.
@@ -1191,6 +1197,8 @@ impl Nimbra {
             paged: HashSet::new(),
             finder_scroll: gpui::ScrollHandle::new(),
             finder_scope_scroll: gpui::ScrollHandle::new(),
+            scope_drag: None,
+            scope_dragged: false,
             pull: 0.,
             pull_armed: false,
             pull_anim: None,
@@ -1372,6 +1380,16 @@ impl Nimbra {
                 .ok();
             })
             .detach();
+        }
+        // NIMBRA_SCREEN=delete-label: deleting a label two accounts have, one picked.
+        if screen == "delete-label" {
+            this.confirm = Some(Ask::DeleteEveryLabel(
+                "Design".into(),
+                vec![
+                    ("mira@northwind.studio".into(), "Label_1".into(), true),
+                    ("mira.kovac@gmail.com".into(), "Label_2".into(), false),
+                ],
+            ));
         }
         // NIMBRA_SCREEN=loading holds the loading skeleton on screen (screenshots).
         if screen == "loading" {
@@ -1557,11 +1575,38 @@ impl Nimbra {
             ),
             Some(Ask::DeleteLabel(_, name)) => (
                 format!("Delete “{}”?", short(name, 30)),
-                "The label is removed from Gmail. The mail it was on stays where it is.".into(),
+                if self.folders_hold_mail(&self.account_id) {
+                    "It is a folder on this account's server: it is deleted with the mail in it."
+                        .into()
+                } else {
+                    "The label is removed from Gmail. The mail it was on stays where it is.".into()
+                },
+                "Delete label",
+            ),
+            Some(Ask::DeleteEveryLabel(name, accounts)) => (
+                format!("Delete “{}”?", short(name, 30)),
+                if accounts.len() == 1 {
+                    "It is removed from this account:".into()
+                } else {
+                    format!(
+                        "{} accounts have it. Pick the ones to remove it from:",
+                        accounts.len()
+                    )
+                },
                 "Delete label",
             ),
             None => (String::new(), String::new(), ""),
         };
+        // The accounts to delete a label of every account's from, each picked or not, and
+        // what deleting it there does to the mail.
+        let picker = match &self.confirm {
+            Some(Ask::DeleteEveryLabel(_, accounts)) => Some(self.label_accounts(t, accounts, cx)),
+            _ => None,
+        };
+        let none_picked = matches!(
+            &self.confirm,
+            Some(Ask::DeleteEveryLabel(_, accounts)) if !accounts.iter().any(|(_, _, on)| *on)
+        );
         div()
             .id("confirm-scrim")
             .absolute()
@@ -1599,6 +1644,7 @@ impl Nimbra {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(serif(&title, 28., t.text))
                     .child(div().text_color(t.text2).child(body))
+                    .children(picker)
                     .child(
                         div()
                             .flex()
@@ -1619,7 +1665,12 @@ impl Nimbra {
                                     .id("confirm-yes")
                                     .press_soft()
                                     .text_color(t.rose)
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                    // Nothing picked: nothing to delete.
+                                    .when(none_picked, |d| d.opacity(0.4).cursor_default())
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if none_picked {
+                                            return;
+                                        }
                                         match this.confirm.take() {
                                             Some(Ask::DeleteForever(ids)) => {
                                                 this.delete_forever(ids, cx)
@@ -1629,6 +1680,13 @@ impl Nimbra {
                                             }
                                             Some(Ask::DeleteLabel(id, _)) => {
                                                 this.delete_label(id, cx)
+                                            }
+                                            Some(Ask::DeleteEveryLabel(_, accounts)) => {
+                                                for (account, id, on) in accounts {
+                                                    if on {
+                                                        this.delete_label_in(account, id, cx);
+                                                    }
+                                                }
                                             }
                                             None => {}
                                         }
