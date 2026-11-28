@@ -20,9 +20,9 @@ use crate::app::{
     Back, Compose, Confirm, First, FocusSearch, FocusSidebar, Forward, ForwardMessage, GoAllMail,
     GoDrafts, GoInbox, GoSent, GoSnoozed, GoStarred, HideApp, HideWindow, Last, MarkDone,
     MarkUnread, Minimize, Next, OpenInWindow, OpenSettings, PageDown, PageUp, PickDown, PickThread,
-    PickUp, Prev, Print, Reload, Reply, ReplyAll, SaveDraft, SelectAllThreads, SendMail,
-    ToggleFullCompose, ToggleList, ToggleOriginal, TogglePalette, ToggleShortcuts, ToggleSidebar,
-    ToggleStar, ToggleTheme, Trash, Undo,
+    PickUp, Prev, Print, PrintMessage, Reload, Reply, ReplyAll, SaveDraft, SelectAllThreads,
+    SendMail, ToggleFullCompose, ToggleList, ToggleOriginal, TogglePalette, ToggleShortcuts,
+    ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
 };
 
 /// The mail view, while no text field has the keyboard.
@@ -458,7 +458,22 @@ pub static TABLE: &[Shortcut] = {
             None,
             boxed::<OpenSettings>,
         ),
-        s("print", "Print", App, &["cmd-p"], None, boxed::<Print>),
+        s(
+            "print",
+            "Print conversation",
+            App,
+            &["cmd-p"],
+            None,
+            boxed::<Print>,
+        ),
+        s(
+            "print-message",
+            "Print this message",
+            App,
+            &["cmd-shift-p"],
+            None,
+            boxed::<PrintMessage>,
+        ),
         s(
             "close-window",
             "Close window",
@@ -976,6 +991,7 @@ mod tests {
         ("ctrl-z", Some("Mail"), "Undo"),
         ("cmd-,", None, "OpenSettings"),
         ("cmd-p", None, "Print"),
+        ("cmd-shift-p", None, "PrintMessage"),
         ("cmd-w", None, "HideWindow"),
         ("cmd-h", None, "HideApp"),
         ("cmd-m", None, "Minimize"),

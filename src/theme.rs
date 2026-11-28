@@ -145,15 +145,20 @@ pub enum Tone {
 
 impl Tone {
     pub fn gradient(self) -> Background {
-        let (a, b) = match self {
+        let (a, b) = self.stops();
+        gradient(135., c(a, 1.), c(b, 1.))
+    }
+
+    /// The gradient's two colours, as `0xRRGGBB`: top left, then bottom right.
+    pub fn stops(self) -> (u32, u32) {
+        match self {
             Tone::Violet => (0x9b8cff, 0x5b47e0),
             Tone::Rose => (0xff9cc8, 0xe0457f),
             Tone::Amber => (0xffd08a, 0xf07d2e),
             Tone::Mint => (0x8bf0c7, 0x16a979),
             Tone::Sky => (0x9dd8ff, 0x2f7fe0),
             Tone::Graphite => (0x6d6c78, 0x2a2a33),
-        };
-        gradient(135., c(a, 1.), c(b, 1.))
+        }
     }
 }
 

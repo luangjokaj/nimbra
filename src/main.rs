@@ -21,6 +21,7 @@ mod notify;
 mod pending;
 mod place;
 mod popup;
+mod print;
 mod quitting;
 mod shortcuts;
 mod signature_images;
@@ -59,8 +60,9 @@ use app::{
     MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReload, MenuReply, MenuReplyAll,
     MenuSearch, MenuShortcuts, MenuSnooze, MenuStar, MenuToggleList, MenuToggleOriginal,
     MenuToggleSidebar, MenuToggleTheme, MenuTrash, MenuUndo, Minimize, Nimbra, OpenSettings,
-    OpenSidebarRow, Print, Quit, ReleaseNotes, Reload, ReportProblem, ShowAll, ToggleList,
-    ToggleTheme, UseDarkAppearance, UseLightAppearance, UseSystemAppearance, ZoomIn, ZoomOut,
+    OpenSidebarRow, Print, PrintMessage, Quit, ReleaseNotes, Reload, ReportProblem, ShowAll,
+    ToggleList, ToggleTheme, UseDarkAppearance, UseLightAppearance, UseSystemAppearance, ZoomIn,
+    ZoomOut,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -132,6 +134,7 @@ static ICONS: &[(&str, &[u8])] = icons![
     "eye",
     "lock",
     "key",
+    "printer",
 ];
 
 struct Assets;
@@ -289,7 +292,8 @@ fn fixed_name(action: &str) -> &'static str {
         "Minimize" => "Minimise",
         "OpenSettings" => "Settings",
         "ReportProblem" => "Report a problem",
-        "Print" => "Print",
+        "Print" => "Print conversation",
+        "PrintMessage" => "Print this message",
         "OpenSidebarRow" => "Open the sidebar row",
         "GoNumber" => "Switch account",
         "HideWindow" => "Close window",
@@ -356,7 +360,8 @@ fn app_menus() -> Vec<gpui::Menu> {
                 shortcut_item("New Message", "compose", Compose, MenuCompose),
                 shortcut_item("Check for Mail", "reload", Reload, MenuReload),
                 MenuItem::separator(),
-                MenuItem::action("Print…", Print),
+                MenuItem::action("Print Conversation…", Print),
+                MenuItem::action("Print This Message…", PrintMessage),
                 MenuItem::separator(),
                 MenuItem::action("Close Window", HideWindow),
             ],

@@ -2,6 +2,7 @@
 //! HTML view beside the native one, printing and unsubscribing.
 
 use super::*;
+use crate::print;
 
 /// "Fri, Nov 21, 2026 at 9:41 PM", as the Mac shows dates (`when`); empty when unknown.
 pub(super) fn long_date(timestamp_ms: i64) -> String {
@@ -229,15 +230,16 @@ pub(super) fn attachment_button(t: &Theme, name: &str, busy: bool, done: bool) -
 }
 
 /// Text made safe to put in HTML.
-pub(super) fn esc(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+/// What the hidden print view tells the app.
+pub(super) enum PrintEvent {
+    /// A page has loaded.
+    Loaded,
+    /// The page's answer to `print::READY`.
+    Ready(String),
 }
 
 /// "1.2 MB", "340 KB".
-pub(super) fn file_size(bytes: u64) -> String {
+pub(crate) fn file_size(bytes: u64) -> String {
     match bytes {
         0 => String::new(),
         b if b < 1024 => format!("{b} B"),
@@ -305,13 +307,16 @@ impl Nimbra {
         // is light whatever the theme.
         if let Some(doc) = self.print_pending.take() {
             if self.print_view.is_none() {
-                self.print_view = HtmlView::new(window);
+                let events = self.print_events.clone();
+                self.print_view = HtmlView::with_loaded(window, move || {
+                    let _ = events.unbounded_send(PrintEvent::Loaded);
+                });
             }
             if let Some(view) = &self.print_view {
                 view.set_dark(false, false);
                 // Never shown, but it needs a page's size to lay the document out.
                 view.set_bounds(0., 0., 800., 1000.);
-                view.show(&doc, self.original_images, None);
+                view.show_page(&doc);
             }
         }
         let Some(mail) = self.mails.get(self.selected).filter(|_| self.original_on()) else {
@@ -396,8 +401,11 @@ impl Nimbra {
         self.mail_views.take_snapshots(moving);
     }
 
-    /// ⌘P: prints the open message with its sender, recipients and date.
-    pub(super) fn print_selected(&mut self, cx: &mut Context<Self>) {
+    /// ⌘P, ⇧⌘P and the More menu: prints the open conversation, or the message being read,
+    /// on Nimbra's page (`print.rs`). Each email prints as it is shown: its own HTML in the
+    /// original view, the reader's text otherwise. A thread of one message prints it with
+    /// its full headers either way.
+    pub(super) fn print_selected(&mut self, scope: print::Scope, cx: &mut Context<Self>) {
         let Some(mail) = self
             .mails
             .get(self.selected)
@@ -410,61 +418,174 @@ impl Nimbra {
             cx.notify();
             return;
         }
-        let h = &mail.header;
-        let person = |p: &mail::Person| {
-            if p.name.is_empty() {
-                p.address.clone()
-            } else {
-                format!("{} <{}>", p.name, p.address)
-            }
+        // Messages by their place in the reader: 0 is the latest, k + 1 is `earlier[k]`.
+        let count = mail.earlier.len() + 1;
+        let chosen: Vec<usize> = match scope {
+            // Oldest first: `earlier` is newest first, and the latest ends it.
+            print::Scope::Conversation if count > 1 => (1..count).rev().chain([0]).collect(),
+            _ => vec![self.message_read(mail)],
         };
-        let list =
-            |people: &[mail::Person]| people.iter().map(person).collect::<Vec<_>>().join(", ");
-        let mut doc = format!(
-            "<div style=\"font:13px/1.5 -apple-system,sans-serif;border-bottom:1px solid #ccc;padding-bottom:10px;margin-bottom:16px\"><div style=\"font-size:18px;font-weight:600;margin-bottom:6px\">{}</div>",
-            esc(&mail.subject)
-        );
-        let from = if h.from.address.is_empty() {
-            mail.sender.to_string()
+        let scope = if chosen.len() > 1 {
+            print::Scope::Conversation
         } else {
-            person(&h.from)
+            print::Scope::Message
         };
-        let mut row = |name: &str, value: String| {
-            if !value.is_empty() {
-                doc.push_str(&format!("<div><b>{name}:</b> {}</div>", esc(&value)));
-            }
+        let original = self.original_on();
+        let messages: Vec<print::Message> = chosen
+            .iter()
+            .map(|&index| self.print_message(mail, index, original))
+            .collect();
+        // Remote images as the reading view has them: the original view's setting, or in
+        // the reader only when every one printed has been loaded already.
+        let images = if original {
+            self.original_images
+        } else {
+            let mut remote = messages
+                .iter()
+                .filter_map(|m| match m.body {
+                    print::Body::Blocks(blocks) => Some(blocks),
+                    print::Body::Html(_) => None,
+                })
+                .flatten()
+                .filter_map(|block| match &block.kind {
+                    Kind::Image { src, .. } if src.starts_with("https:") => Some(src),
+                    _ => None,
+                })
+                .peekable();
+            remote.peek().is_some() && remote.all(|src| self.images.contains_key(src))
         };
-        row("From", from);
-        row("To", list(&h.to));
-        row("Cc", list(&h.cc));
-        row("Date", long_date(h.date_ms));
-        doc.push_str("</div>");
-        match &mail.html {
-            Some(html) => doc.push_str(html),
-            None => {
-                for block in &mail.body {
-                    doc.push_str(&format!(
-                        "<p>{}</p>",
-                        esc(&block.text).replace('\n', "<br>")
-                    ));
-                }
-            }
-        }
-        self.print_pending = Some(doc);
+        self.print_job += 1;
+        let job = self.print_job;
+        let subject = mail.shown_subject();
+        let page = print::Page {
+            job,
+            subject: &subject,
+            scope,
+            place: (count - chosen[0], count),
+            messages,
+            printed: format!(
+                "Printed from Nimbra on {}",
+                crate::when::local(chrono::Local::now(), crate::when::LONG)
+            ),
+            images,
+        };
+        self.print_pending = Some(print::document(&page));
+        self.print_waiting = Some(job);
         cx.notify();
-        // The document is loaded on the next frame; give it a moment, then print.
+        // The page says when it has loaded (`print_event`). One that never does (an image
+        // that never arrives) is printed as it is after a while.
         cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(700))
-                .await;
+            cx.background_executor().timer(Duration::from_secs(8)).await;
             this.update(cx, |this, _| {
-                if let Some(view) = &this.print_view {
-                    view.print();
+                if this.print_waiting == Some(job) {
+                    this.print_waiting = None;
+                    if let Some(view) = &this.print_view {
+                        view.print();
+                    }
                 }
             })
             .ok();
         })
         .detach();
+    }
+
+    /// The message being read in the open thread: the latest, or when it is folded the
+    /// newest one opened.
+    fn message_read(&self, mail: &Mail) -> usize {
+        if !self.latest_folded(mail) {
+            return 0;
+        }
+        mail.earlier
+            .iter()
+            .position(|e| e.expanded)
+            .map_or(0, |k| k + 1)
+    }
+
+    /// One message of `mail` for the printed page (`index` as in `print_selected`).
+    fn print_message<'a>(
+        &self,
+        mail: &'a Mail,
+        index: usize,
+        original: bool,
+    ) -> print::Message<'a> {
+        let (header, blocks, html, sender, tone, initials, time) = match index {
+            0 => (
+                &mail.header,
+                &mail.body[..],
+                mail.html.as_deref(),
+                self.latest_from(mail).to_string(),
+                mail.tone,
+                mail.initials.to_string(),
+                mail.time.to_string(),
+            ),
+            k => {
+                let e = &mail.earlier[k - 1];
+                let (tone, initials, when) = mail.earlier_look(k - 1);
+                (
+                    &e.header,
+                    &e.blocks[..],
+                    e.html.as_deref(),
+                    e.sender.clone(),
+                    tone,
+                    initials.to_string(),
+                    when.to_string(),
+                )
+            }
+        };
+        let body = match html.filter(|_| original) {
+            Some(html) => print::Body::Html(html),
+            None => print::Body::Blocks(blocks),
+        };
+        let date = long_date(header.date_ms);
+        print::Message {
+            header,
+            sender,
+            initials,
+            tone: tone.stops(),
+            date: if date.is_empty() { time } else { date },
+            body,
+        }
+    }
+
+    /// What the print view says. Once the page of the job waiting has loaded and given its
+    /// emails their shadow roots, the print panel opens.
+    pub(super) fn print_event(&mut self, event: PrintEvent, cx: &mut Context<Self>) {
+        let (Some(job), Some(view)) = (self.print_waiting, &self.print_view) else {
+            return;
+        };
+        match event {
+            PrintEvent::Loaded => {
+                let events = self.print_events.clone();
+                view.when_ready(move |answer| {
+                    let _ = events.unbounded_send(PrintEvent::Ready(answer));
+                });
+            }
+            PrintEvent::Ready(answer) => {
+                // Another page (the empty one a new view starts with, or an earlier job).
+                if print::ready(&answer).map(|(ready, _)| ready) != Some(job) {
+                    return;
+                }
+                self.print_waiting = None;
+                let attached = print::ready(&answer).is_some_and(|(_, attached)| attached);
+                if !attached {
+                    view.print();
+                    return;
+                }
+                // Emails given their shadow roots just now still load their images.
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(600))
+                        .await;
+                    this.update(cx, |this, _| {
+                        if let Some(view) = &this.print_view {
+                            view.print();
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+        }
     }
 
     /// Downloads an attachment, then either previews it with Quick Look (from a private

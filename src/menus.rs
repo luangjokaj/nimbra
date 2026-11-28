@@ -8,6 +8,9 @@ use super::*;
 pub(super) enum MoreAction {
     ToggleOriginal,
     MarkUnread,
+    /// The whole conversation (a single message with its full headers).
+    Print,
+    PrintMessage,
     OpenInGmail,
     Spam,
     Block,
@@ -1238,6 +1241,22 @@ impl Nimbra {
             items.push((MoreAction::ToggleOriginal, "eye", label.into()));
         }
         items.push((MoreAction::MarkUnread, "inbox", "Mark as unread".into()));
+        // A conversation prints whole or only the message being read; a lone message just
+        // prints.
+        let conversation = self
+            .mails
+            .get(self.selected)
+            .is_some_and(|m| !m.earlier.is_empty());
+        if conversation {
+            items.push((MoreAction::Print, "printer", "Print conversation…".into()));
+            items.push((
+                MoreAction::PrintMessage,
+                "file",
+                "Print this message…".into(),
+            ));
+        } else {
+            items.push((MoreAction::Print, "printer", "Print…".into()));
+        }
         if !demo {
             if self.gmail_at(self.selected) {
                 items.push((MoreAction::OpenInGmail, "link", "Open in Gmail".into()));
@@ -1320,6 +1339,12 @@ impl Nimbra {
             (Menu::More, index) => match self.more_actions.get(index).copied() {
                 Some(MoreAction::ToggleOriginal) => self.toggle_original(cx),
                 Some(MoreAction::MarkUnread) => self.mark_unread(cx),
+                Some(MoreAction::Print) => {
+                    self.print_selected(crate::print::Scope::Conversation, cx)
+                }
+                Some(MoreAction::PrintMessage) => {
+                    self.print_selected(crate::print::Scope::Message, cx)
+                }
                 Some(MoreAction::OpenInGmail) => self.open_in_gmail(cx),
                 Some(MoreAction::Spam) => self.remove_selected(mail::Change::Spam, cx),
                 Some(MoreAction::Block) => self.toggle_block(cx),
