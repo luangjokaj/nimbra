@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.12] - 2026-11-28
 
 ### New
 - **Print a conversation or one message.** The ⋯ menu and the File menu have Print conversation (⌘P), every message oldest first, and Print this message (⇧⌘P), the one you are reading with its full headers; a thread of one message just has Print. The page is new too: the subject in Instrument Serif, a compact header for each message with its sender, recipients and date, attachments by name and size, always light. Emails in their original formatting keep their own design, and their styles no longer spill over the headers or the other emails. The print panel opens once the page has loaded, instead of after a fixed wait, and the paper gets proper margins.
