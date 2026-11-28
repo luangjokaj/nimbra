@@ -1053,7 +1053,7 @@ impl Nimbra {
                 column,
                 m.tone,
                 &m.initials,
-                &m.shown_sender(self.mailbox.base() == View::Drafts),
+                &self.latest_from(m),
                 &m.snippet,
                 &m.time,
                 self.fold_turn(&(self.thread_key(m), LATEST), !latest_folded),
@@ -1813,7 +1813,7 @@ impl Nimbra {
         let (header, sender, tone, initials, time) = match index {
             0 => (
                 &mail.header,
-                mail.shown_sender(self.mailbox.base() == View::Drafts),
+                self.latest_from(mail),
                 mail.tone,
                 mail.initials.clone(),
                 mail.time.clone(),
@@ -2902,6 +2902,27 @@ impl Nimbra {
             self.latest_folded.remove(&latest);
         } else {
             self.latest_folded.insert(latest);
+        }
+    }
+
+    /// Who the latest message is from, as its header says: the row names the recipient in
+    /// Drafts and Sent. "Me" for one of the user's own accounts sent without a name.
+    pub(super) fn latest_from(&self, mail: &Mail) -> SharedString {
+        let from = &mail.header.from;
+        if !from.name.trim().is_empty() {
+            return from.name.trim().to_string().into();
+        }
+        let own = self
+            .settings
+            .accounts
+            .iter()
+            .any(|account| account.email.eq_ignore_ascii_case(from.address.trim()));
+        if own {
+            "Me".into()
+        } else if !from.address.trim().is_empty() {
+            from.address.trim().to_string().into()
+        } else {
+            mail.shown_sender(self.mailbox.base() == View::Drafts)
         }
     }
 

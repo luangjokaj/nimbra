@@ -3128,7 +3128,14 @@ impl Nimbra {
                 .border_color(c(0xffffff, 0.18))
                 .child(gpui::img(logo).size_full().rounded_full())
                 .into_any_element(),
-            None => avatar(m.tone, &m.initials, size).into_any_element(),
+            // No one named (a draft with no recipients yet): no initials made from a
+            // stand-in such as "Unknown sender".
+            None => avatar(
+                m.tone,
+                if m.names_someone() { &m.initials } else { "" },
+                size,
+            )
+            .into_any_element(),
         }
     }
 
