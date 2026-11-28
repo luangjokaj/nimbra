@@ -116,7 +116,11 @@ section with `### New` and `### Fixed`.
 - One line per change, in user words: what a person notices, not what the code does.
   "Snoozed threads show when they come back", not "add snooze_chip to list.rs".
 - Lead with the change in bold when it matters most: `- **Block senders.** Their mail goes straight to Blocked.`
-- Add the issue or pull request number and thank contributors: `(#42, thanks @someone)`.
+- Add the issue or pull request number where it helps: `(#42)`.
+- Credit contributors. When a merged pull request's author is anyone other than the owner (`luangjokaj`), its line
+  ends with a thanks linking their GitHub profile, by their login: `Thanks, [slukedev](https://github.com/slukedev).`
+  `gh pr view <number> --json author` shows the author. The credit stays when the release turns Unreleased into a
+  version.
 - Leave out internal changes (refactors, CI, docs) and fixes for bugs that never shipped.
 
 The draft from commits is a starting point. Rewrite its lines the way you'd tell a friend what changed.
