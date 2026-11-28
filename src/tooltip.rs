@@ -16,7 +16,7 @@ use gpui::{
     SharedString, TextRun, Window, WindowKind, WindowOptions, div, point, prelude::*, px, size,
 };
 
-use crate::theme::Theme;
+use crate::theme::{Theme, c};
 use crate::ui::{dp, from_screen, kbd, shadow, to_screen};
 
 /// See-through room around the bubble, for its shadow.
@@ -236,7 +236,14 @@ fn bubble(dark: bool, label: &SharedString, key: &'static str) -> Div {
         .bg(t.raised)
         .border_1()
         .border_color(t.border_strong)
-        .shadow(vec![shadow(t.shadow, 8., 20., -4.)])
+        // Close and faint: a tooltip is small, and a wide soft shadow under it read as a
+        // smudge on the dark theme.
+        .shadow(vec![shadow(
+            c(0x000000, if dark { 0.3 } else { 0.1 }),
+            1.,
+            4.,
+            0.,
+        )])
         .font_family(crate::theme::SANS)
         .text_size(dp(12.))
         .line_height(dp(16.))
