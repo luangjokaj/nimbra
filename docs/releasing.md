@@ -28,7 +28,7 @@ You need, on the Mac you release from:
 4. **`~/.config/nimbra/build.env`** (mode 600, never in the repo):
 
    ```sh
-   NIMBRA_POSTHOG_KEY=phc_…        # the PostHog project key; release builds carry it (see the README's Telemetry)
+   NIMBRA_POSTHOG_KEY=phc_…        # the PostHog project key; release builds carry it (see Telemetry in docs/privacy.md)
    NIMBRA_NOTARY_PROFILE=nimbra    # the notarytool profile above (default: nimbra)
    ```
 
