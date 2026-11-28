@@ -2,6 +2,16 @@
 //! listed), and running the search in Gmail.
 
 use super::*;
+use nimbra_core::listing;
+
+/// The accounts a search looks in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Scope {
+    /// Every account.
+    All,
+    /// One account, by id.
+    Account(String),
+}
 
 /// One result in the search panel.
 #[derive(Clone)]
@@ -93,6 +103,65 @@ pub(super) fn matching(index: &[Searchable], words: &[String], limit: usize) -> 
 }
 
 impl Nimbra {
+    /// Whether there is more than one account to search.
+    pub(super) fn several_accounts(&self) -> bool {
+        !self.is_demo() && self.settings.accounts.len() >= 2
+    }
+
+    /// The accounts a search started here looks in: the search's own, every account's
+    /// from All inboxes (and every account's other mailboxes), or the account shown.
+    fn search_scope_here(&self) -> Scope {
+        if !self.several_accounts() {
+            Scope::Account(self.account_id.clone())
+        } else if self.mailbox.base() == View::Search {
+            self.search_scope.clone()
+        } else if self.mailbox.is_every() {
+            Scope::All
+        } else {
+            Scope::Account(self.account_id.clone())
+        }
+    }
+
+    /// The accounts the search panel searches: as picked, or as where the window is.
+    pub(super) fn scope(&self) -> Scope {
+        self.finder_scope
+            .clone()
+            .unwrap_or_else(|| self.search_scope_here())
+    }
+
+    /// Whether a thread is in the accounts searched.
+    fn in_scope(&self, scope: &Scope, mail: &Mail) -> bool {
+        match scope {
+            Scope::All => true,
+            Scope::Account(id) => self.account_of(mail) == id,
+        }
+    }
+
+    /// Picks the accounts the search panel searches, and searches them.
+    pub(super) fn set_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
+        if self.scope() == scope {
+            return;
+        }
+        self.finder_scope = Some(scope);
+        self.finder_changed(cx);
+    }
+
+    /// Tab and Shift-Tab: the next or previous of All accounts and each account.
+    pub(super) fn step_scope(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let scopes: Vec<Scope> = std::iter::once(Scope::All)
+            .chain(
+                self.settings
+                    .accounts
+                    .iter()
+                    .map(|account| Scope::Account(account.id.clone())),
+            )
+            .collect();
+        let now = scopes.iter().position(|s| *s == self.scope()).unwrap_or(0) as isize;
+        let next = (now + delta).rem_euclid(scopes.len() as isize) as usize;
+        self.finder_scope_scroll.scroll_to_item(next);
+        self.set_scope(scopes[next].clone(), cx);
+    }
+
     /// / or ⌘F: the search panel.
     pub(super) fn focus_search(&mut self, cx: &mut Context<Self>) {
         if self.compose.is_some() || matches!(self.status, Status::SignedOut | Status::SigningIn) {
@@ -102,14 +171,26 @@ impl Nimbra {
         self.palette = false;
         self.finder_open = true;
         self.finder_index = None;
+        self.finder_scope = None;
         let query = self.query.clone();
         self.finder
             .update(cx, |input, cx| input.set(query, usize::MAX, cx));
         self.finder_changed(cx);
         self.pending_focus = Some(self.finder.read(cx).focus_handle(cx));
+        // The row of accounts is measured as it is first drawn: drawn once more, its edges
+        // know whether there is more to scroll to.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(16))
+                .await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
         cx.notify();
     }
 
+    /// Closes the search panel. The accounts picked there stay for the search it runs
+    /// (`run_search` lets go of them) and are let go when it opens again.
     pub(super) fn close_finder(&mut self, cx: &mut Context<Self>) {
         self.finder_open = false;
         self.finder_index = None;
@@ -130,12 +211,28 @@ impl Nimbra {
         self.finder_sel = if self.finder_hits.is_empty() { 0 } else { 1 };
         self.finder_loading = false;
         cx.notify();
-        let Some(client) = self
-            .connection
-            .clone()
-            .filter(|_| query.chars().count() >= 2)
-        else {
+        if query.chars().count() < 2 || self.connection.is_none() {
             return;
+        }
+        // The accounts searched: each one, or the one picked. `None` for the account shown,
+        // whose rows carry no account.
+        let asked: Vec<(Option<String>, Arc<mail::Client>)> = match self.scope() {
+            Scope::All if self.several_accounts() => self
+                .every_accounts(View::ALL_INBOXES)
+                .into_iter()
+                .map(|(id, client, _)| (Some(id), client))
+                .collect(),
+            Scope::Account(id) if id != self.account_id => self
+                .client_for(Some(&id))
+                .map(|client| (Some(id), client))
+                .into_iter()
+                .collect(),
+            _ => self
+                .connection
+                .clone()
+                .map(|c| (None, c))
+                .into_iter()
+                .collect(),
         };
         self.finder_loading = true;
         cx.spawn(async move |this, cx| {
@@ -148,31 +245,45 @@ impl Nimbra {
             {
                 return;
             }
-            let q = query.clone();
-            let found = within(cx.background_executor(), async move {
-                client.threads_page(View::Search, Some(&q), 10, None)
-            })
+            // A deadline each, so that one account cannot hold up the others.
+            let executor = cx.background_executor();
+            let found = futures::future::join_all(asked.into_iter().map(|(account, client)| {
+                let q = query.clone();
+                let search = within(executor, async move {
+                    client.threads_page(View::Search, Some(&q), 10, None)
+                });
+                async move { (account, search.await) }
+            }))
             .await;
+            // Every account's answers together, newest first; an account that failed is left
+            // out.
+            let mut mails: Vec<Mail> = found
+                .into_iter()
+                .filter_map(|(account, result)| Some((account, result.ok()?.0)))
+                .flat_map(|(account, summaries)| {
+                    summaries.into_iter().map(move |summary| match &account {
+                        Some(id) => listing::of_account::<Mail>(summary, id),
+                        None => Mail::from_summary(summary),
+                    })
+                })
+                .collect();
+            mails.sort_by_key(|mail| std::cmp::Reverse(mail.timestamp_ms));
             this.update(cx, |this, cx| {
                 if this.finder_gen != generation {
                     return;
                 }
                 this.finder_loading = false;
-                if let Ok((summaries, _)) = found {
-                    for summary in summaries {
-                        if this.finder_hits.len() >= 12 {
-                            break;
-                        }
-                        if this
-                            .finder_hits
-                            .iter()
-                            .any(|h| h.id.as_deref() == Some(summary.id.as_str()))
-                        {
-                            continue;
-                        }
-                        let mail = Mail::from_summary(summary);
-                        this.finder_hits.push(Hit::from_mail(&mail));
+                for mail in mails {
+                    if this.finder_hits.len() >= 12 {
+                        break;
                     }
+                    // Already found on this Mac: the same thread of the same account.
+                    if this.finder_hits.iter().any(|h| {
+                        h.id == mail.id && this.account_of(&h.mail) == this.account_of(&mail)
+                    }) {
+                        continue;
+                    }
+                    this.finder_hits.push(Hit::from_mail(&mail));
                 }
                 cx.notify();
             })
@@ -258,6 +369,7 @@ impl Nimbra {
 
     /// The hits for these entries, leaving out any whose mail has moved since.
     fn hits_at(&self, index: &[Searchable], found: &[usize]) -> Vec<Hit> {
+        let scope = self.scope();
         found
             .iter()
             .filter_map(|&k| {
@@ -266,7 +378,8 @@ impl Nimbra {
                     None => self.mails.get(entry.row),
                     Some(view) => self.cache.get(&view)?.get(entry.row),
                 }?;
-                (identity(mail) == entry.identity).then(|| Hit::from_mail(mail))
+                (identity(mail) == entry.identity && self.in_scope(&scope, mail))
+                    .then(|| Hit::from_mail(mail))
             })
             .collect()
     }
@@ -364,7 +477,7 @@ impl Nimbra {
             .update(cx, |input, cx| input.set(text, usize::MAX, cx));
         // Already in the list on screen: just open it.
         if let Some(id) = &open
-            && self.mailbox == View::Search
+            && self.mailbox.base() == View::Search
             && self.query == query
             && let Some(index) = self.mails.iter().position(|m| m.id.as_ref() == Some(id))
         {
@@ -620,6 +733,100 @@ impl Nimbra {
                 );
             }
         }
+        // With several accounts: which ones are searched, All accounts or one, as chips.
+        let several = self.several_accounts();
+        let scope_row =
+            several.then(|| {
+                let picked = self.scope();
+                let chip = |id: usize, scope: Scope, face: AnyElement, label: SharedString| {
+                    let on = picked == scope;
+                    div()
+                        .id(("finder-scope", id))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(dp(6.))
+                        .h(dp(26.))
+                        .pl(dp(4.))
+                        .pr(dp(10.))
+                        .rounded_full()
+                        .border_1()
+                        .cursor_pointer()
+                        .when(on, |d| d.bg(t.selected).border_color(t.selected))
+                        .when(!on, |d| {
+                            d.border_color(t.border).hover(move |s| s.bg(hover))
+                        })
+                        .press(t)
+                        .child(face)
+                        .child(
+                            div()
+                                .text_size(dp(12.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(if on { t.text } else { t.text2 })
+                                .child(label),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_scope(scope.clone(), cx);
+                            this.pending_focus = Some(this.finder.read(cx).focus_handle(cx));
+                            cx.notify();
+                        }))
+                };
+                let all = div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .size(dp(18.))
+                    .child(icon("mail", 13., t.text2))
+                    .into_any_element();
+                // One line, scrolled sideways; the chips fade out under an edge that has more
+                // past it, rather than being cut off there.
+                let scroll = &self.finder_scope_scroll;
+                let offset = from_screen(-scroll.offset().x);
+                let max = from_screen(scroll.max_offset().width);
+                let edge = |left: bool| {
+                    let clear = Hsla { a: 0., ..t.raised };
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom(dp(12.))
+                        .w(dp(40.))
+                        .when(left, |d| d.left_0().bg(gradient(90., t.raised, clear)))
+                        .when(!left, |d| d.right_0().bg(gradient(270., t.raised, clear)))
+                };
+                div()
+                    .relative()
+                    .pb(dp(12.))
+                    .child(
+                        div()
+                            .id("finder-scopes")
+                            .flex()
+                            .items_center()
+                            .gap(dp(6.))
+                            .px(dp(16.))
+                            .overflow_x_scroll()
+                            .track_scroll(scroll)
+                            // The edges follow the scrolling.
+                            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+                            .child(chip(0, Scope::All, all, "All accounts".into()))
+                            .children(self.settings.accounts.iter().enumerate().map(
+                                |(i, account)| {
+                                    chip(
+                                        i + 1,
+                                        Scope::Account(account.id.clone()),
+                                        account_face(
+                                            &account.email,
+                                            self.photos.get(&account.id),
+                                            18.,
+                                        ),
+                                        short(&account.email, 32),
+                                    )
+                                },
+                            )),
+                    )
+                    .when(offset > 0.5, |d| d.child(edge(true)))
+                    .when(max - offset > 0.5, |d| d.child(edge(false)))
+            });
         let hint = |keys: &[&str], label: &str| {
             div()
                 .flex()
@@ -719,6 +926,7 @@ impl Nimbra {
                                 )
                             }),
                     )
+                    .children(scope_row)
                     .child(div().h(dp(1.)).bg(t.border))
                     .child(
                         div()
@@ -746,6 +954,7 @@ impl Nimbra {
                             .rounded_b(dp(17.))
                             .child(hint(&["↑", "↓"], "Navigate"))
                             .child(hint(&["↵"], "Open"))
+                            .when(several, |d| d.child(hint(&["tab"], "Account")))
                             .child(hint(&["esc"], "Close"))
                             .child(div().flex_1())
                             .child(serif("Nimbra", 18., t.text2)),
@@ -764,14 +973,27 @@ impl Nimbra {
         if matches!(self.status, Status::SignedOut | Status::SigningIn) {
             return;
         }
+        // The account shown is searched as its own mailbox; every account, or another one,
+        // as every account's mailbox, whose rows carry their account.
+        let scope = self.scope();
+        let view = match &scope {
+            Scope::Account(id) if *id == self.account_id => View::Search,
+            _ if self.several_accounts() => View::every(View::Search),
+            _ => View::Search,
+        };
+        self.search_scope = scope;
+        self.finder_scope = None;
         self.remember_mailbox();
         self.picked.clear();
         // Results are never cached: every search is fetched fresh.
-        self.cache.remove(&View::Search);
-        self.next_pages.remove(&View::Search);
-        self.more_failed.remove(&View::Search);
+        for search in [View::Search, View::every(View::Search)] {
+            self.cache.remove(&search);
+            self.next_pages.remove(&search);
+            self.all_next.remove(&search);
+            self.more_failed.remove(&search);
+        }
         self.query = query;
-        self.mailbox = View::Search;
+        self.mailbox = view;
         self.back.clear();
         self.forward.clear();
         self.palette = false;
@@ -796,14 +1018,17 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Empties the search field and goes back to the inbox.
+    /// Empties the search field and goes back to the inbox (All inboxes, from a search of
+    /// every account).
     pub(super) fn clear_search(&mut self, cx: &mut Context<Self>) {
         self.search
             .update(cx, |input, cx| input.set(String::new(), 0, cx));
         self.query.clear();
         self.pending_focus = Some(self.focus.clone());
-        if self.mailbox == View::Search {
-            self.select_mailbox(View::Inbox, cx);
+        match self.mailbox {
+            View::Search => self.select_mailbox(View::Inbox, cx),
+            view if view.base() == View::Search => self.select_mailbox(View::ALL_INBOXES, cx),
+            _ => {}
         }
         cx.notify();
     }

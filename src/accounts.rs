@@ -987,7 +987,7 @@ impl Nimbra {
         let opened = self.search_opened.take();
         if let Some(id) = self.open_when_listed.take()
             && !self.open_listed(&id, cx)
-            && self.mailbox == View::Search
+            && self.mailbox.base() == View::Search
             && let Some(mail) = opened
             && mail.id.as_deref() == Some(id.as_str())
         {

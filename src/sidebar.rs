@@ -956,7 +956,9 @@ impl Nimbra {
                     .id("jump")
                     .cursor(gpui::CursorStyle::IBeam)
                     .on_click(cx.listener(|this, _, _, cx| this.focus_search(cx)))
-                    .when(self.mailbox == View::Search, |d| d.border_color(t.mint))
+                    .when(self.mailbox.base() == View::Search, |d| {
+                        d.border_color(t.mint)
+                    })
                     .when(cursor == Some(SidebarRow::Search), |d| {
                         d.border_color(t.mint).relative().child(reveal(
                             self.sidebar_scroll.clone(),

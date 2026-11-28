@@ -1065,7 +1065,7 @@ impl Nimbra {
 
     /// An empty mailbox other than the inbox (which gets the Inbox Zero screen).
     pub(super) fn empty_mailbox(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let search = self.mailbox == View::Search;
+        let search = self.mailbox.base() == View::Search;
         // Not empty at all: filtered, or the rest could not be had.
         let filtered = self.unread_only && !self.all_cleared();
         let unlisted = match self.mailbox {

@@ -1,5 +1,11 @@
 # Nimbra changelog
 
+## [Unreleased]
+
+### New
+- **Pick the accounts to search.** With several accounts, the search panel has a chip for All accounts and one for each account, under the field: click one, or press Tab and Shift-Tab, to search there. It starts on All accounts in All inboxes and on the account shown elsewhere, and a search kept open remembers its own.
+- **Search every account.** A search from All inboxes, or any of every account's mailboxes, looks in every account at once and lists what it finds newest first, loading more from each as you scroll; the search panel's suggestions come from every account too. A search from one account's mailbox stays in that account, and Esc from a search of every account goes back to All inboxes. On IMAP accounts, Gmail's own words like `label:` and `category:` are left out of the search rather than finding nothing.
+
 ## [0.1.10] - 2026-11-28
 
 ### New
