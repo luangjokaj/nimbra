@@ -741,6 +741,9 @@ pub struct Nimbra {
     menu_dismissed: Option<(Menu, std::time::Instant)>,
     /// Where the composer's From button is, in its window: left and bottom, for its menu.
     from_anchor: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    /// Where the Label, Move to and ⋯ buttons are in each window (left, bottom, right), as
+    /// last drawn, so their menus open under them wherever the toolbar puts them.
+    menu_anchors: menus::Anchors,
     /// "Show original": the message's own HTML in a web view instead of the native reader.
     original: bool,
     /// Remote images allowed in the web view for the open thread. On by default; the
@@ -1141,6 +1144,7 @@ impl Nimbra {
             menu: None,
             menu_dismissed: None,
             from_anchor: Default::default(),
+            menu_anchors: Default::default(),
             original: false,
             original_images: true,
             mail_views,

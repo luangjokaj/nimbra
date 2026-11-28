@@ -220,15 +220,21 @@ impl Nimbra {
                     )
                     .child(
                         row_of_actions()
-                            .child(action("bulk-label", "tag", "Label").on_click(cx.listener(
-                                |this, _, window, cx| this.toggle_menu(Menu::Labels, window, cx),
-                            )))
                             .child(
-                                action("bulk-move", "folder", "Move to").on_click(cx.listener(
-                                    |this, _, window, cx| {
+                                action("bulk-label", "tag", "Label")
+                                    .relative()
+                                    .child(menus::anchor_for(&self.menu_anchors, Menu::Labels))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_menu(Menu::Labels, window, cx)
+                                    })),
+                            )
+                            .child(
+                                action("bulk-move", "folder", "Move to")
+                                    .relative()
+                                    .child(menus::anchor_for(&self.menu_anchors, Menu::MoveTo))
+                                    .on_click(cx.listener(|this, _, window, cx| {
                                         this.toggle_menu(Menu::MoveTo, window, cx)
-                                    },
-                                )),
+                                    })),
                             )
                             .when(inbox_like && !self.is_demo(), |d| {
                                 d.child(action("bulk-snooze", "clock", "Snooze").on_click(

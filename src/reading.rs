@@ -1305,6 +1305,8 @@ impl Nimbra {
                     .child(
                         icon_button(t, "tag")
                             .id("label")
+                            .relative()
+                            .child(menus::anchor_for(&self.menu_anchors, Menu::Labels))
                             .press(t)
                             .tooltip(tip(t.dark, "Add a label", ""))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
@@ -1318,6 +1320,8 @@ impl Nimbra {
                     .child(
                         icon_button(t, "folder")
                             .id("move-to")
+                            .relative()
+                            .child(menus::anchor_for(&self.menu_anchors, Menu::MoveTo))
                             .press(t)
                             .tooltip(tip(t.dark, "Move to", ""))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
@@ -1349,6 +1353,8 @@ impl Nimbra {
                     .child(
                         icon_button(t, "more")
                             .id("more")
+                            .relative()
+                            .child(menus::anchor_for(&self.menu_anchors, Menu::More))
                             .press(t)
                             .tooltip(tip(t.dark, "More actions", ""))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
