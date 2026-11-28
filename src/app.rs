@@ -399,6 +399,9 @@ pub struct Nimbra {
     /// until Drafts is listed again, by row id: Edit draft on such a row brings its
     /// composer back, as Gmail does not know the row's id.
     closed_drafts: Vec<(String, Composer)>,
+    /// Rows of discarded drafts, hidden through every listing (`install`) until a listing
+    /// after their delete (`true` once it went through) no longer has them.
+    hidden_drafts: HashMap<ThreadKey, bool>,
     /// The latest messages folded in their conversations: thread, account, Message-ID.
     latest_folded: std::collections::HashSet<(String, String, String)>,
     /// The height of an open earlier message as last laid out, by thread and place.
@@ -1068,6 +1071,7 @@ impl Nimbra {
             drafts_fetching: Default::default(),
             draft_wanted: None,
             closed_drafts: Vec::new(),
+            hidden_drafts: HashMap::new(),
             latest_folded: Default::default(),
             fold_heights: Default::default(),
             fold_line: std::rc::Rc::new(std::cell::Cell::new(53.)),
