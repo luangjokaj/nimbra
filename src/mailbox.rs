@@ -881,9 +881,10 @@ impl Nimbra {
     }
 
     /// Keeps where the window is (`place.rs`) when it changed, in the background. Not
-    /// while last time's place is still to be opened, which it would overwrite.
+    /// while last time's place is still to be opened, which it would overwrite. (The first
+    /// account's id is empty, so an empty one is an account too.)
     pub(super) fn save_place(&mut self, cx: &mut Context<Self>) {
-        if self.restore_place.is_some() || self.account_id.is_empty() {
+        if self.restore_place.is_some() || self.status == Status::SignedOut {
             return;
         }
         let label = match self.mailbox {
