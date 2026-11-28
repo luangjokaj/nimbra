@@ -564,14 +564,6 @@ impl Nimbra {
         }
     }
 
-    /// The thread in row `index` belongs to an account other than the one shown.
-    pub(super) fn is_foreign(&self, index: usize) -> bool {
-        self.mails
-            .get(index)
-            .and_then(|m| m.account.as_deref())
-            .is_some_and(|a| a != self.account_id)
-    }
-
     /// The connection for the thread in row `index` (its own account in All inboxes).
     pub(super) fn client_at(&self, index: usize) -> Option<Arc<mail::Client>> {
         let account = self.mails.get(index).and_then(|m| m.account.clone());

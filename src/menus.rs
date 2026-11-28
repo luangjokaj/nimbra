@@ -786,8 +786,15 @@ impl Nimbra {
             Menu::Labels | Menu::MoveTo | Menu::More => Some(self.meant_for(&self.targets())),
             _ => None,
         };
+        // The labels of the threads' own account (in every account's mailboxes, maybe not
+        // the one shown), or none when they are from several.
+        let targets_account = self.targets_account();
+        let account_labels: Vec<mail::Label> = targets_account
+            .as_deref()
+            .map(|account| self.labels_of(account).iter().take(12).cloned().collect())
+            .unwrap_or_default();
         self.menu_labels = match menu {
-            Menu::Labels => self.labels.iter().take(12).cloned().collect(),
+            Menu::Labels => account_labels.clone(),
             Menu::Label(index) => self.labels.get(index).cloned().into_iter().collect(),
             _ => Vec::new(),
         };
@@ -797,11 +804,16 @@ impl Nimbra {
             Menu::Labels if self.is_demo() => {
                 vec![("tag", "Labels need a connected account.".into(), t.text3)]
             }
-            Menu::Labels => self
-                .labels
+            Menu::Labels if targets_account.is_none() => {
+                vec![(
+                    "tag",
+                    "Pick conversations from one account.".into(),
+                    t.text3,
+                )]
+            }
+            Menu::Labels => account_labels
                 .iter()
                 .enumerate()
-                .take(12)
                 .map(|(index, label)| ("tag", short(&label.name, 28), tints[index % tints.len()]))
                 .chain(std::iter::once(("tag", "New label…".into(), t.text2)))
                 .collect(),
@@ -821,9 +833,8 @@ impl Nimbra {
                     targets.push(MoveTarget::Inbox);
                 }
                 targets.extend(
-                    self.labels
+                    account_labels
                         .iter()
-                        .take(12)
                         .map(|l| MoveTarget::Label(l.id.clone())),
                 );
                 if self.mailbox.base() != View::Spam && !self.is_demo() {
@@ -835,9 +846,9 @@ impl Nimbra {
                         MoveTarget::Inbox => ("inbox", "Inbox".into(), t.text2),
                         MoveTarget::Spam => ("ban", "Spam".into(), t.text2),
                         MoveTarget::Label(id) => {
-                            let index = self.labels.iter().position(|l| &l.id == id).unwrap_or(0);
-                            let name = self
-                                .labels
+                            let index =
+                                account_labels.iter().position(|l| &l.id == id).unwrap_or(0);
+                            let name = account_labels
                                 .get(index)
                                 .map(|l| l.name.clone())
                                 .unwrap_or_default();
@@ -968,7 +979,7 @@ impl Nimbra {
                 if !self.is_demo() && !matches!(self.mailbox.base(), View::Spam | View::Trash) {
                     actions.push(RowAction::ReportSpam);
                 }
-                if !self.is_demo() && !self.own_servers() {
+                if !self.is_demo() && self.gmail_at(index) {
                     actions.push(RowAction::OpenInGmail);
                 }
                 let items = actions
@@ -1177,7 +1188,7 @@ impl Nimbra {
         }
         items.push((MoreAction::MarkUnread, "inbox", "Mark as unread".into()));
         if !demo {
-            if !self.own_servers() {
+            if self.gmail_at(self.selected) {
                 items.push((MoreAction::OpenInGmail, "link", "Open in Gmail".into()));
             }
             items.push((MoreAction::Spam, "bell", "Report spam".into()));
@@ -1202,11 +1213,14 @@ impl Nimbra {
             return;
         }
         match (menu, index) {
+            // From several accounts, the menu only said to pick from one.
+            (Menu::Labels, _) if self.targets_account().is_none() => {}
             (Menu::Labels, index) if index == self.menu_labels.len() => self.open_new_label(cx),
             (Menu::Labels, index) => {
                 let id = self.menu_labels.get(index).map(|l| l.id.clone());
-                match self.labels.iter().position(|l| Some(&l.id) == id.as_ref()) {
-                    Some(now) => self.apply_label(now, cx),
+                let account = self.targets_account().unwrap_or_default();
+                match id.filter(|id| self.labels_of(&account).iter().any(|l| &l.id == id)) {
+                    Some(id) => self.apply_label(id, cx),
                     None => self.list_changed(cx),
                 }
             }
@@ -1356,13 +1370,7 @@ impl Nimbra {
                     self.open_selected(cx);
                 }
             }
-            RowAction::OpenInGmail => {
-                if let Some(id) = self.mails[row].id.as_ref()
-                    && id.chars().all(|c| c.is_ascii_alphanumeric())
-                {
-                    cx.open_url(&format!("https://mail.google.com/mail/u/0/#all/{id}"));
-                }
-            }
+            RowAction::OpenInGmail => self.open_in_gmail_at(row, cx),
         }
         cx.notify();
     }

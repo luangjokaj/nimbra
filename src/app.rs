@@ -344,6 +344,9 @@ pub struct Nimbra {
     all_next: HashMap<View, HashMap<String, String>>,
     /// Every account's labels, one per name: what every account's `View::Label(i)` is.
     every_labels: Vec<nimbra_core::listing::NamedLabel>,
+    /// The other accounts' labels, as their stores last kept them (`refresh_every_labels`),
+    /// for their threads in every account's mailboxes (`labels_of`).
+    account_labels: HashMap<String, Vec<mail::Label>>,
     /// The other accounts' sidebar counts by label id, as the last listing of every
     /// account's mailboxes found them (the account shown has `counts`).
     account_counts: HashMap<String, HashMap<String, (u32, u32)>>,
@@ -1015,6 +1018,7 @@ impl Nimbra {
             others: HashMap::new(),
             account_unread: HashMap::new(),
             every_labels: Vec::new(),
+            account_labels: HashMap::new(),
             account_counts: HashMap::new(),
             compose_host: None,
             format_hint: None,

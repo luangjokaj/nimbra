@@ -146,17 +146,23 @@ mod platform {
     use wry::dpi::{LogicalPosition, LogicalSize};
     use wry::{Rect, WebView, WebViewBuilder};
 
+    /// x, y, width and height, in window points.
+    type Bounds = (f32, f32, f32, f32);
+
     pub struct HtmlView {
         view: WebView,
         /// Documents handed over that have not started loading (see `navigation`).
         #[cfg(target_os = "windows")]
         loads: std::rc::Rc<std::cell::Cell<u32>>,
         /// Where the view is (window points), and the hole cut in it, as last applied.
-        frame: std::cell::Cell<(f32, f32, f32, f32)>,
-        hole: std::cell::Cell<Option<(f32, f32, f32, f32)>>,
-        applied: std::cell::Cell<Option<((f32, f32, f32, f32), Option<(f32, f32, f32, f32)>)>>,
+        frame: std::cell::Cell<Bounds>,
+        hole: std::cell::Cell<Option<Bounds>>,
+        applied: std::cell::Cell<Option<(Bounds, Option<Bounds>)>>,
         /// Whether the view is on screen (`set_visible`), so ⌘C goes to it only then.
         shown: std::cell::Cell<bool>,
+        /// Whether its column has put it in place (`place`). Until then it sits where wry
+        /// made it, at the window's top-left corner, so it is not put on screen.
+        placed: std::cell::Cell<bool>,
         /// The zoom last applied (`set_zoom`).
         zoom: std::cell::Cell<f32>,
         /// The account of the mail shown, for the `mailto:` links in it.
@@ -247,6 +253,7 @@ mod platform {
                 loads,
                 frame: std::cell::Cell::new((0., 0., 0., 0.)),
                 shown: std::cell::Cell::new(false),
+                placed: std::cell::Cell::new(false),
                 zoom: std::cell::Cell::new(1.),
                 hole: std::cell::Cell::new(None),
                 applied: std::cell::Cell::new(None),
@@ -347,6 +354,7 @@ mod platform {
                 clip::place(container, webview, full, seen);
                 clip::show(container, self.shown.get() && seen.2 > 0. && seen.3 > 0.);
             }
+            self.now_placed();
             if self.hole.get().is_some() || self.applied.get().is_some_and(|(_, h)| h.is_some()) {
                 self.apply_hole();
             }
@@ -359,6 +367,14 @@ mod platform {
             let top = y.max(clip.1);
             let bottom = (y + h).min(clip.1 + clip.3);
             self.set_bounds(x, top, w, (bottom - top).max(0.));
+            self.now_placed();
+        }
+
+        /// The first time it is in place: shown now if it was asked to be meanwhile.
+        fn now_placed(&self) {
+            if !self.placed.replace(true) && self.shown.get() {
+                let _ = self.view.set_visible(true);
+            }
         }
 
         /// Asks how tall the email is (points, at the current zoom); `answer` gets it once
@@ -417,7 +433,7 @@ mod platform {
 
         pub fn set_visible(&self, visible: bool) {
             self.shown.set(visible);
-            let _ = self.view.set_visible(visible);
+            let _ = self.view.set_visible(visible && self.placed.get());
             #[cfg(target_os = "macos")]
             if let Some(container) = self.clip.get() {
                 // SAFETY: main thread, the live container `place` made.

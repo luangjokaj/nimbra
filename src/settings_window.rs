@@ -681,6 +681,7 @@ fn switch(t: &Theme, on: bool) -> Div {
 
 impl SettingsWindow {
     /// A switch row that flips a preference.
+    #[allow(clippy::too_many_arguments)]
     fn toggle(
         &self,
         t: &Theme,

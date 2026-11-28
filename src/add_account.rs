@@ -1092,39 +1092,6 @@ fn save_credential(
     }
 }
 
-/// Against the local test servers (see `imap_mail::live`): `cargo test -- --ignored live`.
-#[cfg(test)]
-mod live {
-    use super::*;
-
-    fn local() -> Servers {
-        Servers {
-            username: "sheet@example.org".into(),
-            imap: Server::new("localhost", 10993, Security::Tls),
-            smtp: Server::new("localhost", 10587, Security::StartTls),
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn live_the_sheet_checks_both_servers() {
-        assert!(matches!(
-            find_and_check("sheet@example.org", "pass", Some(local())),
-            Checked::Works(_)
-        ));
-        match find_and_check("sheet@example.org", "wrong", Some(local())) {
-            Checked::Failed(_, why) => assert!(why.contains("did not take that password"), "{why}"),
-            _ => panic!("a wrong password must not be kept"),
-        }
-        let mut closed = local();
-        closed.imap.port = 1;
-        match find_and_check("sheet@example.org", "pass", Some(closed)) {
-            Checked::Failed(_, why) => assert!(why.contains("could not be reached"), "{why}"),
-            _ => panic!("an unreachable server must not be kept"),
-        }
-    }
-}
-
 /// What went wrong, in a soft rose box with an alert icon. It opens over a moment (its height
 /// and opacity) so the sheet, which is centred, grows smoothly instead of jumping.
 fn error_callout(t: &Theme, error: &SharedString) -> AnyElement {
@@ -1168,4 +1135,37 @@ fn error_callout(t: &Theme, error: &SharedString) -> AnyElement {
             |d, delta| d.max_h(dp(160. * delta)).opacity(delta),
         )
         .into_any_element()
+}
+
+/// Against the local test servers (see `imap_mail::live`): `cargo test -- --ignored live`.
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    fn local() -> Servers {
+        Servers {
+            username: "sheet@example.org".into(),
+            imap: Server::new("localhost", 10993, Security::Tls),
+            smtp: Server::new("localhost", 10587, Security::StartTls),
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_the_sheet_checks_both_servers() {
+        assert!(matches!(
+            find_and_check("sheet@example.org", "pass", Some(local())),
+            Checked::Works(_)
+        ));
+        match find_and_check("sheet@example.org", "wrong", Some(local())) {
+            Checked::Failed(_, why) => assert!(why.contains("did not take that password"), "{why}"),
+            _ => panic!("a wrong password must not be kept"),
+        }
+        let mut closed = local();
+        closed.imap.port = 1;
+        match find_and_check("sheet@example.org", "pass", Some(closed)) {
+            Checked::Failed(_, why) => assert!(why.contains("could not be reached"), "{why}"),
+            _ => panic!("an unreachable server must not be kept"),
+        }
+    }
 }
