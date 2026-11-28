@@ -8,6 +8,7 @@
 - **Search every account.** A search from All inboxes, or any of every account's mailboxes, looks in every account at once and lists what it finds newest first, loading more from each as you scroll; the search panel's suggestions come from every account too. A search from one account's mailbox stays in that account, and Esc from a search of every account goes back to All inboxes. On IMAP accounts, Gmail's own words like `label:` and `category:` are left out of the search rather than finding nothing; a Gmail account added with an app password keeps them, as Gmail searches it.
 
 ### Fixed
+- **A blinking cursor.** The cursor in every text field (search, the composer's To and Subject, signature names, Settings › Accounts and the rest) blinks as it does across macOS, holding still while you type or move it.
 - **Adding an address twice.** Adding an address that's already in Nimbra is refused, instead of replacing that account's sign-in.
 - **The Add account form and the keyboard.** Escape closes the form in Settings too, typing while it checks starts over, and after a refused password the keyboard is back in the password field, ready to type over it.
 
