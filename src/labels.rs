@@ -205,15 +205,28 @@ impl Nimbra {
             .collect()
     }
 
-    /// The account shown's labels on a thread of its own. Another account's thread (in
-    /// every account's mailboxes) has none of them: label ids are each account's own, and
-    /// the same id there would be another label.
+    /// The labels on a thread, of its own account: label ids are each account's own, and
+    /// the same id in another account would be another label.
     fn labels_on<'a>(&'a self, mail: &'a Mail) -> impl Iterator<Item = (usize, &'a mail::Label)> {
-        let own = self.account_of(mail) == self.account_id;
-        self.labels
+        self.labels_of(self.account_of(mail))
             .iter()
             .enumerate()
-            .filter(move |(_, label)| own && mail.labels.contains(&label.id))
+            .filter(move |(_, label)| mail.labels.contains(&label.id))
+    }
+
+    /// The one account the open or picked threads are from (the one shown when there are
+    /// none); `None` when they are from several, in every account's mailboxes, as a label
+    /// is only ever one account's.
+    pub(super) fn targets_account(&self) -> Option<String> {
+        let mut accounts = self
+            .targets()
+            .into_iter()
+            .filter_map(|row| self.mails.get(row))
+            .map(|mail| self.account_of(mail).to_string());
+        let Some(first) = accounts.next() else {
+            return Some(self.account_id.clone());
+        };
+        accounts.all(|a| a == first).then_some(first)
     }
 
     /// The first of them, which a row shows as its tag.
@@ -221,17 +234,8 @@ impl Nimbra {
         self.labels_on(mail).next()
     }
 
-    /// Takes a label off the thread in that row.
+    /// Takes a label (of the thread's own account) off the thread in that row.
     pub(super) fn remove_label(&mut self, index: usize, label_id: String, cx: &mut Context<Self>) {
-        if self.is_foreign(index) {
-            return;
-        }
-        self.unlabel_row(index, label_id, cx);
-    }
-
-    /// Takes the label with this id (of the thread's own account) off the thread in that
-    /// row, in its account.
-    fn unlabel_row(&mut self, index: usize, label_id: String, cx: &mut Context<Self>) {
         let client = self.client_at(index);
         let Some(mail) = self.mails.get_mut(index) else {
             return;
@@ -305,7 +309,7 @@ impl Nimbra {
 
     /// Creates the label typed in the sheet and puts it on the open thread.
     fn create_label(&mut self, cx: &mut Context<Self>) {
-        let (Some(input), Some(client)) = (self.new_label.clone(), self.connection.clone()) else {
+        let Some(input) = self.new_label.clone() else {
             return;
         };
         let name = input.read(cx).text().trim().to_string();
@@ -320,8 +324,26 @@ impl Nimbra {
             }
             LabelSheet::New { apply } => apply,
         };
-        if let Some(existing) = nimbra_core::listing::label_named(&self.labels, &name)
-            .and_then(|found| self.labels.iter().position(|l| l.id == found.id))
+        // Made in the account of the threads it goes on (in every account's mailboxes, maybe
+        // not the one shown); from the sidebar, in the one shown.
+        let account = if apply {
+            match self.targets_account() {
+                Some(account) => account,
+                None => {
+                    self.close_new_label(cx);
+                    self.notice = Some(ONE_ACCOUNT.into());
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            self.account_id.clone()
+        };
+        let Some(client) = self.client_for(Some(&account)) else {
+            return;
+        };
+        if let Some(existing) = nimbra_core::listing::label_named(self.labels_of(&account), &name)
+            .map(|found| found.id.clone())
         {
             self.close_new_label(cx);
             let meant = self.label_for.clone();
@@ -347,10 +369,14 @@ impl Nimbra {
                 Ok(label) => {
                     let id = label.id.clone();
                     let name = label.name.clone();
-                    this.change_labels(|labels| labels.push(label), cx);
-                    if apply && let Some(index) = this.labels.iter().position(|l| l.id == id) {
+                    if account == this.account_id {
+                        this.change_labels(|labels| labels.push(label), cx);
+                    } else {
+                        this.learn_label(&account, label);
+                    }
+                    if apply {
                         if this.still_meant(&meant, cx) {
-                            this.apply_label(index, cx);
+                            this.apply_label(id, cx);
                         }
                     } else {
                         this.notice = Some(format!("Created “{}”.", short(&name, 30)).into());
@@ -463,24 +489,21 @@ impl Nimbra {
                 self.remove_selected(nimbra_core::listing::to_inbox(self.mailbox), cx)
             }
             MoveTarget::Label(label_id) => {
-                let Some(index) = self.labels.iter().position(|l| l.id == label_id) else {
-                    return;
-                };
-                let rows = self.targets();
                 // Labels are each account's own: without this it would be archived unlabelled.
-                if rows.iter().any(|&row| self.is_foreign(row)) {
-                    self.notice = Some(
-                        "Labels belong to each account: open this conversation's account to move it to one."
-                            .into(),
-                    );
+                let Some(account) = self.targets_account() else {
+                    self.notice = Some(ONE_ACCOUNT.into());
                     cx.notify();
                     return;
+                };
+                if !self.labels_of(&account).iter().any(|l| l.id == label_id) {
+                    return;
                 }
-                let threads: Vec<String> = rows
+                let threads: Vec<String> = self
+                    .targets()
                     .iter()
                     .filter_map(|&row| self.mails[row].id.clone())
                     .collect();
-                self.apply_label(index, cx);
+                self.apply_label(label_id.clone(), cx);
                 if leaves {
                     for thread in threads {
                         self.moved.insert(thread, label_id.clone());
@@ -495,9 +518,9 @@ impl Nimbra {
     fn blocked_label(&self, index: usize) -> Option<String> {
         let account = self.account_of(self.mails.get(index)?);
         self.labels_of(account)
-            .into_iter()
+            .iter()
             .find(|l| crate::blocking::is_label(&l.name))
-            .map(|l| l.id)
+            .map(|l| l.id.clone())
     }
 
     /// Whether the thread in row `index` is in its account's Blocked label.
@@ -540,7 +563,7 @@ impl Nimbra {
         let unblock = self.sender_blocked(index);
         if unblock {
             if let Some(label) = label.clone() {
-                self.unlabel_row(index, label, cx);
+                self.remove_label(index, label, cx);
             }
             self.move_selected(MoveTarget::Inbox, cx);
             self.notice = Some(format!("Unblocked {name}").into());
@@ -611,7 +634,7 @@ impl Nimbra {
         let Some(thread) = self.mails.get(index).and_then(|m| m.id.clone()) else {
             return;
         };
-        self.label_row(index, label.clone(), cx);
+        self.label_row(index, label.clone(), None, cx);
         if leaves {
             self.moved.insert(thread, label);
             self.remove_selected(mail::Change::Archive, cx);
@@ -622,8 +645,15 @@ impl Nimbra {
     }
 
     /// Puts the label with this id (of the thread's own account) on the thread in that
-    /// row, in its account. Shows in the shown account's label mailbox at once.
-    fn label_row(&mut self, index: usize, label_id: String, cx: &mut Context<Self>) {
+    /// row, in its account. Shows in the shown account's label mailbox at once. With the
+    /// label's name, says "Labelled" once it is done.
+    fn label_row(
+        &mut self,
+        index: usize,
+        label_id: String,
+        labelled: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let client = self.client_at(index);
         let Some(mail) = self.mails.get_mut(index) else {
             return;
@@ -652,9 +682,16 @@ impl Nimbra {
                     client.add_label(&id, &label_id)
                 })
                 .await;
-            if let Err(error) = result {
-                this.update(cx, |this, cx| this.fail(error, cx)).ok();
-            }
+            this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    if let Some(name) = labelled {
+                        this.notice = Some(format!("Labelled “{}”.", short(&name, 30)).into());
+                        cx.notify();
+                    }
+                }
+                Err(error) => this.fail(error, cx),
+            })
+            .ok();
         })
         .detach();
     }
@@ -665,7 +702,7 @@ impl Nimbra {
             return;
         };
         let account = self.account_of(mail);
-        let blocked = match self.labels_of(account).into_iter().find(|l| l.id == label) {
+        let blocked = match self.labels_of(account).iter().find(|l| l.id == label) {
             Some(listed) => crate::blocking::is_label(&listed.name),
             // Not listed yet: the Blocked label that blocking just made in another account
             // (only the shown account's list learns it at once).
@@ -719,8 +756,8 @@ impl Nimbra {
         .detach();
     }
 
-    /// Adds one of the user's labels to the open thread.
-    pub(super) fn apply_label(&mut self, label: usize, cx: &mut Context<Self>) {
+    /// Adds a label of the open thread's own account to it (to each picked one).
+    pub(super) fn apply_label(&mut self, label_id: String, cx: &mut Context<Self>) {
         self.menu = None;
         if self.picked.len() >= 2 {
             let selected = self.selected;
@@ -728,65 +765,28 @@ impl Nimbra {
             let picked = std::mem::take(&mut self.picked);
             for index in targets {
                 self.selected = index;
-                self.apply_label(label, cx);
+                self.apply_label(label_id.clone(), cx);
             }
             self.selected = selected;
             self.picked = picked;
             return;
         }
-        if let (Some(label), Some(mail)) =
-            (self.labels.get(label), self.mails.get_mut(self.selected))
-            && !mail.labels.contains(&label.id)
-        {
-            mail.labels.push(label.id.clone());
-        }
-        let (Some(label), Some(mail)) = (
-            self.labels.get(label).cloned(),
-            self.mails.get(self.selected),
-        ) else {
+        let index = self.selected;
+        let Some(name) = self.mails.get(index).and_then(|mail| {
+            self.labels_of(self.account_of(mail))
+                .iter()
+                .find(|l| l.id == label_id)
+                .map(|l| l.name.clone())
+        }) else {
             return;
         };
-        if self.is_foreign(self.selected) {
-            if let Some(mail) = self.mails.get_mut(self.selected) {
-                mail.labels.retain(|id| *id != label.id);
-            }
-            self.notice = Some(
-                "Labels belong to each account: open this conversation's account to label it."
-                    .into(),
-            );
-            cx.notify();
-            return;
-        }
-        let (Some(client), Some(id)) = (self.connection.clone(), mail.id.clone()) else {
-            return;
-        };
-        // In the label's mailbox at once, before it is listed there again (`pending`).
-        let (account, now) = (self.account_of(mail).to_string(), mail.clone());
-        if let Some(position) = self.labels.iter().position(|l| l.id == label.id) {
-            self.pending.add(View::Label(position), &account, &now);
-        }
-        let name = label.name.clone();
-        let working = self.writes.begin();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    let _working = working;
-                    client.add_label(&id, &label.id)
-                })
-                .await;
-            this.update(cx, |this, cx| match result {
-                Ok(()) => {
-                    this.notice = Some(format!("Labelled “{}”.", short(&name, 30)).into());
-                    cx.notify();
-                }
-                Err(error) => this.fail(error, cx),
-            })
-            .ok();
-        })
-        .detach();
+        self.label_row(index, label_id, Some(name), cx);
         cx.notify();
     }
 }
+
+/// Labels are each account's own, so one goes on one account's threads at a time.
+pub(super) const ONE_ACCOUNT: &str =
+    "A label belongs to one account: pick conversations from one account to label them.";
 
 use nimbra_core::listing::same_labels;

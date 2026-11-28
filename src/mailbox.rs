@@ -1434,17 +1434,22 @@ impl Nimbra {
         .detach();
     }
 
-    /// An account's labels: the one shown's, and another's as its store last kept them.
-    /// Disk, small.
-    pub(super) fn labels_of(&self, account: &str) -> Vec<mail::Label> {
+    /// An account's labels: the one shown's, and another's as its store last kept them
+    /// (`account_labels`, read when every account's mailboxes are).
+    pub(super) fn labels_of(&self, account: &str) -> &[mail::Label] {
         if account == self.account_id {
-            return self.labels.clone();
+            return &self.labels;
         }
-        self.other_stores
-            .get(account)
-            .and_then(|store| store.load::<Saved>("meta"))
-            .map(|saved| saved.labels)
-            .unwrap_or_default()
+        self.account_labels.get(account).map_or(&[], Vec::as_slice)
+    }
+
+    /// Adds a label just made in another account to what is known of its labels.
+    pub(super) fn learn_label(&mut self, account: &str, label: mail::Label) {
+        let labels = self.account_labels.entry(account.to_string()).or_default();
+        if !labels.iter().any(|l| l.id == label.id) {
+            labels.push(label);
+            nimbra_core::listing::sort_labels(labels);
+        }
     }
 
     /// Every account's labels by name (`every_labels`): the one shown's, and the others' as
@@ -1457,16 +1462,26 @@ impl Nimbra {
             }
             _ => None,
         };
-        let labels: Vec<(String, Vec<mail::Label>)> = self
+        self.account_labels = self
             .settings
             .accounts
             .iter()
-            .map(|account| (account.id.clone(), self.labels_of(&account.id)))
+            .filter(|account| account.id != self.account_id)
+            .map(|account| {
+                let labels = self
+                    .other_stores
+                    .get(&account.id)
+                    .and_then(|store| store.load::<Saved>("meta"))
+                    .map(|saved| saved.labels)
+                    .unwrap_or_default();
+                (account.id.clone(), labels)
+            })
             .collect();
         self.every_labels = listing::labels_by_name(
-            labels
+            self.settings
+                .accounts
                 .iter()
-                .map(|(account, labels)| (account.as_str(), labels.as_slice())),
+                .map(|account| (account.id.as_str(), self.labels_of(&account.id))),
         );
         if let Some(name) = open {
             match self
