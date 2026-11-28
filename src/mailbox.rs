@@ -2088,6 +2088,18 @@ impl Nimbra {
                 if kept && error.is::<mail::Offline>() {
                     return;
                 }
+                // Taken out of a list but no longer there at all (deleted elsewhere): it stays
+                // out here too, and out of the lists kept for a return.
+                if removed && mail::is_gone(&error) {
+                    for list in this.cache.values_mut() {
+                        list.retain(|m| {
+                            m.id.as_deref() != Some(id.as_str())
+                                || m.account.as_deref().unwrap_or(&this.account_id) != account
+                        });
+                    }
+                    this.persist(cx);
+                    return;
+                }
                 // Put back wherever the thread is by now.
                 if removed && let Some(row) = this.row_of(&id, &account) {
                     this.done[row] = false;

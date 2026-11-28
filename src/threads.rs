@@ -89,8 +89,12 @@ impl Nimbra {
                     let mut deleted = 0;
                     for (account, client, list) in &by_account {
                         for id in list {
-                            if let Err(error) = client.delete_thread(id) {
-                                return Err((deleted, account.clone(), error));
+                            match client.delete_thread(id) {
+                                // Already gone from the server: deleted all the same.
+                                Err(error) if !mail::is_gone(&error) => {
+                                    return Err((deleted, account.clone(), error));
+                                }
+                                _ => {}
                             }
                             deleted += 1;
                         }
