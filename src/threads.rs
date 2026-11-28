@@ -663,8 +663,24 @@ impl Nimbra {
 
     pub(super) fn open_in_gmail(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
+        self.open_in_gmail_at(self.selected, cx);
+    }
+
+    /// Whether the thread in that row is a Gmail account's (so Gmail can open it), whichever
+    /// account is shown: in All inboxes, threads are from every account.
+    pub(super) fn gmail_at(&self, row: usize) -> bool {
+        self.mails
+            .get(row)
+            .is_some_and(|mail| self.servers_of(self.account_of(mail)).is_none())
+    }
+
+    /// The thread in that row in Gmail, in the browser.
+    pub(super) fn open_in_gmail_at(&mut self, row: usize, cx: &mut Context<Self>) {
+        if !self.gmail_at(row) {
+            return;
+        }
         // Thread ids are validated as plain alphanumerics before they get here.
-        if let Some(mail) = self.mails.get(self.selected)
+        if let Some(mail) = self.mails.get(row)
             && let Some(id) = mail.id.as_ref()
             && id.chars().all(|c| c.is_ascii_alphanumeric())
         {

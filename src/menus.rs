@@ -979,7 +979,7 @@ impl Nimbra {
                 if !self.is_demo() && !matches!(self.mailbox.base(), View::Spam | View::Trash) {
                     actions.push(RowAction::ReportSpam);
                 }
-                if !self.is_demo() && !self.own_servers() {
+                if !self.is_demo() && self.gmail_at(index) {
                     actions.push(RowAction::OpenInGmail);
                 }
                 let items = actions
@@ -1188,7 +1188,7 @@ impl Nimbra {
         }
         items.push((MoreAction::MarkUnread, "inbox", "Mark as unread".into()));
         if !demo {
-            if !self.own_servers() {
+            if self.gmail_at(self.selected) {
                 items.push((MoreAction::OpenInGmail, "link", "Open in Gmail".into()));
             }
             items.push((MoreAction::Spam, "bell", "Report spam".into()));
@@ -1370,13 +1370,7 @@ impl Nimbra {
                     self.open_selected(cx);
                 }
             }
-            RowAction::OpenInGmail => {
-                if let Some(id) = self.mails[row].id.as_ref()
-                    && id.chars().all(|c| c.is_ascii_alphanumeric())
-                {
-                    cx.open_url(&format!("https://mail.google.com/mail/u/0/#all/{id}"));
-                }
-            }
+            RowAction::OpenInGmail => self.open_in_gmail_at(row, cx),
         }
         cx.notify();
     }

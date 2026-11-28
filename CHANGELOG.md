@@ -4,6 +4,7 @@
 
 ### Fixed
 - **Labels and folders in All inboxes.** A conversation from any account can be labelled, moved to a label or folder, or have a label taken off, without opening its account first. The Label and Move to menus list the labels of the conversation's own account, and New label… makes it there. Conversations picked from several accounts at once are asked to be from one, as a label is one account's.
+- **Open in Gmail from All inboxes.** It is offered for a conversation from a Gmail account, whichever account is shown, and no longer for one from another provider. From a row's menu it opens in that account's Gmail too, rather than the browser's first one.
 - **Block a sender from All inboxes.** Blocking a conversation from another account no longer asks you to open that account first: the sender is blocked in the conversation's own account, the conversation goes to that account's Blocked label (made if it has none), and Undo unblocks them there again.
 - **An email no longer flashes in the window's corner.** A message's email could show as a small square at the top left, over the sidebar, while its conversation was still loading; it now shows only once it is in its place in the reader.
 
