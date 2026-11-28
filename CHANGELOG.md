@@ -9,6 +9,8 @@
 - **Fold the latest message too.** In a conversation, the latest message folds to its line and opens again like the earlier ones, with the same animation, from its header or its line. Each foldable message has an arrow after its time that turns as it opens and folds. A conversation always opens on its latest message, and a single email does not fold.
 - **Emails you have read open at once.** The emails of the last few conversations you left stay ready, and the ones just above and below the open conversation are prepared ahead, so going back or pressing J and K shows them straight away. An email shows as soon as its text is laid out, without waiting for its images.
 - **Nimbra opens where you left it.** The account and mailbox you were in when you quit (All inboxes, Sent, a label, any of them) are open again when you come back, rather than the account's Inbox. A notification you click still opens its message, and a search is not kept.
+- **Drafts in Drafts at once.** A draft saved with ⌘S, or kept as its composer closes, shows in Drafts straight away: an existing draft's row is brought up to date, and a new one gets a row of its own, made from the composer, until Drafts is listed again. Edit draft on that row brings its composer back.
+- **Edit draft opens at once.** A draft is fetched as its row is opened in Drafts, so Edit draft opens the composer straight away; pressed while it is still on its way, it waits for it, with the loading line under the toolbar, rather than fetching it again.
 
 ### Fixed
 - **Hover with another app in front.** Rows, buttons and the pointer follow the mouse over Nimbra's windows when another app is in front, rather than only after a first click.
@@ -31,6 +33,14 @@
 - **Undo takes the label off at once.** Undoing a block, or a move to a label or folder, no longer shows the conversation back in its mailbox with that label still on it for a while.
 - **Block a sender from All inboxes.** Blocking a conversation from another account no longer asks you to open that account first: the sender is blocked in the conversation's own account, the conversation goes to that account's Blocked label (made if it has none), and Undo unblocks them there again.
 - **An email no longer flashes in the window's corner.** A message's email could show as a small square at the top left, over the sidebar, while its conversation was still loading; it now shows only once it is in its place in the reader.
+- **Primary buttons take the first click.** Edit draft, Send and the other primary buttons no longer miss a click made as the pointer arrives on them.
+- **A new message from the account shown.** Compose writes from the account on screen; the default account is only for All inboxes and the other views of every account.
+- **A quieter composer edge.** The composer and its "Save this draft?" sheet have the app's usual border rather than the strong one.
+- **"No content" for an empty message.** A message with nothing in it says so in the reader rather than showing a blank.
+- **Gone is gone.** A message trashed, deleted forever or discarded here that the server has already removed stays removed, rather than coming back with an error.
+- **A discarded draft leaves Drafts at once.** Its row goes as it is discarded, and Undo puts it back. Trashing the row of a draft just written here deletes that draft.
+- **The whole composer dims.** "Save this draft?" dims the composer's border too, rather than leaving it bright around the dimmed composer.
+- **No suggestions over "Save this draft?".** Address suggestions close as the sheet opens and stay hidden while it is up.
 
 ## [0.1.9] - 2026-11-28
 

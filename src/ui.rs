@@ -256,12 +256,26 @@ pub fn primary_fill(level: f32) -> gpui::Background {
     gradient(90., mix(0x8b7cff, 0xa397ff), mix(0xff7ab6, 0xff95c6))
 }
 
-/// Each primary button's glow, by key: (hovered, times it changed, level shown last).
+/// Each primary button's glow, by key: whether the pointer is on it, and the fade toward
+/// that (from `from`, since `since`).
 #[derive(Clone, Copy, Default)]
 struct Glow {
     hovered: bool,
-    turns: usize,
-    level: f32,
+    from: f32,
+    since: Option<std::time::Instant>,
+}
+
+impl Glow {
+    /// The glow's level now, 0 to 1, and whether it is still fading.
+    fn level(&self) -> (f32, bool) {
+        let to = if self.hovered { 1. } else { 0. };
+        let Some(since) = self.since else {
+            return (to, false);
+        };
+        let t = (since.elapsed().as_secs_f32() / GLOW_TIME.as_secs_f32()).min(1.);
+        let eased = 1. - (1. - t).powi(3);
+        (self.from + (to - self.from) * eased, t < 1.)
+    }
 }
 
 thread_local! {
@@ -277,8 +291,11 @@ pub fn glow_hovered(key: &'static str, hovered: bool, window: &mut gpui::Window)
     GLOWS.with_borrow_mut(|glows| {
         let glow = glows.entry(key).or_default();
         if glow.hovered != hovered {
-            glow.hovered = hovered;
-            glow.turns += 1;
+            *glow = Glow {
+                hovered,
+                from: glow.level().0,
+                since: Some(std::time::Instant::now()),
+            };
         }
     });
     window.refresh();
@@ -286,14 +303,13 @@ pub fn glow_hovered(key: &'static str, hovered: bool, window: &mut gpui::Window)
 
 /// A primary button whose glow brightens and fades over a moment instead of jumping, from
 /// wherever it is when the pointer comes or goes. `key` names it for its whole life.
-pub fn glow(
-    button: Stateful<Div>,
-    key: &'static str,
-    listen: bool,
-) -> gpui::AnimationElement<Stateful<Div>> {
+///
+/// The fade is timed by the clock, not by an animation element: one keyed by the hover's
+/// changes would give the button a new identity as the pointer arrives, and a click whose
+/// press and release land on two identities is lost.
+pub fn glow(button: Stateful<Div>, key: &'static str, listen: bool) -> Stateful<Div> {
     let now = GLOWS.with_borrow(|glows| glows.get(key).copied().unwrap_or_default());
-    let to = if now.hovered { 1. } else { 0. };
-    let from = now.level;
+    let (level, fading) = now.level();
     let button = if listen {
         button.on_hover(move |hovered, window, _| glow_hovered(key, *hovered, window))
     } else {
@@ -301,21 +317,18 @@ pub fn glow(
     };
     // A button gone while hovered (Send closes the message) is not hovered when it is back:
     // whenever it is drawn, where the pointer really is wins.
-    let button = button.relative().child(
+    button.relative().bg(primary_fill(level)).child(
         gpui::canvas(
             |_, _, _| (),
             move |bounds, _, window, _| {
-                let hovered = now.hovered;
-                if hovered && !bounds.contains(&window.mouse_position()) {
+                if now.hovered && !bounds.contains(&window.mouse_position()) {
+                    // At rest at once: nobody saw it leave.
                     GLOWS.with_borrow_mut(|glows| {
-                        let glow = glows.entry(key).or_default();
-                        // At rest at once: nobody saw it leave.
-                        *glow = Glow {
-                            turns: glow.turns + 1,
-                            ..Glow::default()
-                        };
+                        glows.insert(key, Glow::default());
                     });
                     window.refresh();
+                } else if fading {
+                    window.request_animation_frame();
                 }
             },
         )
@@ -323,15 +336,6 @@ pub fn glow(
         .top_0()
         .left_0()
         .size_full(),
-    );
-    button.with_animation(
-        (key, now.turns),
-        gpui::Animation::new(GLOW_TIME).with_easing(|t| 1. - (1. - t).powi(3)),
-        move |button, delta| {
-            let level = from + (to - from) * delta;
-            GLOWS.with_borrow_mut(|glows| glows.entry(key).or_default().level = level);
-            button.bg(primary_fill(level))
-        },
     )
 }
 

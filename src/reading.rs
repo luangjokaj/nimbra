@@ -1600,6 +1600,9 @@ impl Nimbra {
                                                                         m,
                                                                         cx.entity(),
                                                                     ))
+                                                                })
+                                                                .when(no_content(m), |d| {
+                                                                    d.child(no_content_line(t))
                                                                 }),
                                                             )
                                                             .when(
@@ -1692,7 +1695,8 @@ impl Nimbra {
                                             )
                                             .when(!m.loaded, |d| {
                                                 d.child(self.loading_line(t, m, cx.entity()))
-                                            }),
+                                            })
+                                            .when(no_content(m), |d| d.child(no_content_line(t))),
                                         )
                                         .when(!m.header.attachments.is_empty(), |d| {
                                             d.child(
@@ -1766,7 +1770,7 @@ impl Nimbra {
         if self.body_failed.contains(&self.thread_key(m)) {
             return false;
         }
-        if !m.loaded {
+        if !m.loaded || self.draft_wanted.is_some() {
             return true;
         }
         self.original_on()
@@ -3357,6 +3361,19 @@ pub(super) fn action_button(t: &Theme, name: &str, label: &str, worded: bool) ->
                     .child(label.to_string()),
             )
         })
+}
+
+/// A message fetched with nothing in it (an empty draft): said so, rather than a blank.
+fn no_content(m: &Mail) -> bool {
+    m.loaded
+        && m.body.is_empty()
+        && m.html
+            .as_deref()
+            .is_none_or(|html| nimbra_core::rich::from_html(html).is_empty())
+}
+
+fn no_content_line(t: &Theme) -> Div {
+    div().text_color(t.text3).child("No content")
 }
 
 #[cfg(test)]
