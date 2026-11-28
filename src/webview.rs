@@ -461,6 +461,12 @@ mod platform {
             }
         }
 
+        /// Gives the keyboard back to the app's own view. A click in the email gives it to
+        /// the web view, and hiding the view (a panel opening over it) does not take it back.
+        pub fn blur(&self) {
+            let _ = self.view.focus_parent();
+        }
+
         pub fn set_visible(&self, visible: bool) {
             self.shown.set(visible);
             let _ = self.view.set_visible(visible && self.placed.get());
@@ -1238,6 +1244,7 @@ mod platform {
         pub fn focused(&self) -> bool {
             false
         }
+        pub fn blur(&self) {}
     }
 }
 

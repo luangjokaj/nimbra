@@ -1444,6 +1444,17 @@ impl Nimbra {
         this
     }
 
+    /// Moves the keyboard to `focus`. GPUI's focus is its own: an email (a web view) that was
+    /// clicked keeps the system's keyboard, and typing would go there, even with the email
+    /// hidden under the search panel. So the email gives it back, unless the message editor
+    /// (a web view too) is what gets it.
+    fn apply_focus(&self, focus: &FocusHandle, window: &mut Window) {
+        window.focus(focus);
+        if *focus != self.editor_focus {
+            self.mail_views.release_keyboard();
+        }
+    }
+
     fn is_demo(&self) -> bool {
         self.status == Status::Demo
     }
@@ -2578,7 +2589,7 @@ impl Render for Nimbra {
         }
         let composing_elsewhere = self.compose.is_some() && self.compose_host.is_some();
         if !composing_elsewhere && let Some(focus) = self.pending_focus.take() {
-            window.focus(&focus);
+            self.apply_focus(&focus, window);
         }
         let t = self.theme();
         let viewport = window.viewport_size();
