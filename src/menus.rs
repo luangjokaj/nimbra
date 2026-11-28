@@ -59,6 +59,8 @@ pub(super) enum Menu {
     MoveTo,
     /// Rename or delete a label (right-click in the sidebar), by index.
     Label(usize),
+    /// Delete a label of every account's (under All inboxes), by index in `every_labels`.
+    EveryLabel(usize),
     /// The right-click menu of a row in the list (by index into the loaded threads).
     Row(usize),
     /// The right-click menu of a mailbox in the sidebar: hide it, or reset its section.
@@ -908,6 +910,7 @@ impl Nimbra {
                 ("tag", "Rename…".into(), t.text2),
                 ("trash", "Delete label…".into(), t.rose),
             ],
+            Menu::EveryLabel(_) => vec![("trash", "Delete label…".into(), t.rose)],
             Menu::SendLater => {
                 let choices = Self::send_later_choices();
                 self.send_later_times = choices.iter().map(|(_, at)| *at).collect();
@@ -1059,7 +1062,11 @@ impl Nimbra {
                 }
             }
             // At the pointer, nudged back inside the window if it would hang over an edge.
-            Menu::Row(_) | Menu::Label(_) | Menu::Mailbox(_) | Menu::Signature => (
+            Menu::Row(_)
+            | Menu::Label(_)
+            | Menu::EveryLabel(_)
+            | Menu::Mailbox(_)
+            | Menu::Signature => (
                 self.menu_at.0.min(from_screen(viewport.width) - width - 8.),
                 self.menu_at
                     .1
@@ -1237,6 +1244,11 @@ impl Nimbra {
                 } else {
                     self.confirm = Some(Ask::DeleteLabel(label.id, label.name));
                     cx.notify();
+                }
+            }
+            (Menu::EveryLabel(index), _) => {
+                if let Some(label) = self.every_labels.get(index).cloned() {
+                    self.ask_delete_every_label(label, cx);
                 }
             }
             (Menu::MoveTo, index) => {
@@ -1740,6 +1752,7 @@ impl Nimbra {
             | Menu::SendLater
             | Menu::MoveTo
             | Menu::Label(_)
+            | Menu::EveryLabel(_)
             | Menu::From
             | Menu::Signature
             | Menu::Mailbox(_) => {

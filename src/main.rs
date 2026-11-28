@@ -7,6 +7,7 @@ mod autohide;
 mod blur;
 mod checking;
 mod data;
+mod drag_scroll;
 mod editor;
 mod erase;
 mod help;

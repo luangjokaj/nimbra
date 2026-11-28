@@ -140,8 +140,16 @@ impl Nimbra {
         .detach();
     }
 
+    /// Deletes the account shown's label `id`.
     pub(super) fn delete_label(&mut self, id: String, cx: &mut Context<Self>) {
-        let Some(client) = self.connection.clone() else {
+        let account = self.account_id.clone();
+        self.delete_label_in(account, id, cx);
+    }
+
+    /// Deletes `account`'s label `id` on its server, and from the lists here: the account
+    /// shown's, or another's as kept (under All inboxes).
+    pub(super) fn delete_label_in(&mut self, account: String, id: String, cx: &mut Context<Self>) {
+        let Some(client) = self.client_for(Some(&account)) else {
             return;
         };
         let working = self.writes.begin();
@@ -154,7 +162,7 @@ impl Nimbra {
                     client.delete_label(&label)
                 })
                 .await;
-            // Already gone from Gmail (deleted elsewhere, or here before this list was
+            // Already gone from the server (deleted elsewhere, or here before this list was
             // brought up to date): that is what was asked for, so it goes from the list too.
             let result = match result {
                 Err(error) if mail::is_gone(&error) => Ok(()),
@@ -162,16 +170,36 @@ impl Nimbra {
             };
             this.update(cx, |this, cx| match result {
                 Ok(()) => {
-                    let was_open = matches!(this.mailbox, View::Label(i) if this.labels.get(i).is_some_and(|l| l.id == id));
-                    this.change_labels(|labels| labels.retain(|l| l.id != id), cx);
-                    for mail in &mut this.mails {
-                        mail.labels.retain(|l| *l != id);
+                    if account == this.account_id {
+                        let was_open = matches!(this.mailbox, View::Label(i) if this.labels.get(i).is_some_and(|l| l.id == id));
+                        this.change_labels(|labels| labels.retain(|l| l.id != id), cx);
+                        for mail in &mut this.mails {
+                            mail.labels.retain(|l| *l != id);
+                        }
+                        if was_open {
+                            this.mailbox = View::Search; // forces the switch below to reload
+                            this.select_mailbox(View::Inbox, cx);
+                        }
+                    } else {
+                        // Another account's: from its list here and the one kept for it,
+                        // so the merged list leaves it out at once and after a restart.
+                        if let Some(labels) = this.account_labels.get_mut(&account) {
+                            labels.retain(|l| l.id != id);
+                        }
+                        if let Some(store) = this.other_stores.get(&account)
+                            && let Some(mut saved) = store.load::<Saved>("meta")
+                        {
+                            saved.labels.retain(|l| l.id != id);
+                            store.save_soon("meta", saved);
+                        }
+                        for mail in &mut this.mails {
+                            if mail.account.as_deref() == Some(account.as_str()) {
+                                mail.labels.retain(|l| *l != id);
+                            }
+                        }
                     }
-                    if was_open {
-                        this.mailbox = View::Search; // forces the switch below to reload
-                        this.select_mailbox(View::Inbox, cx);
-                    }
-                    this.notice = Some("Label deleted. The mail it was on is still there.".into());
+                    this.merge_every_labels();
+                    this.notice = Some("Label deleted.".into());
                     this.persist(cx);
                     cx.notify();
                 }
@@ -180,6 +208,111 @@ impl Nimbra {
             .ok();
         })
         .detach();
+    }
+
+    /// Asks before deleting a label of every account's: from which accounts, all picked.
+    pub(super) fn ask_delete_every_label(
+        &mut self,
+        label: nimbra_core::listing::NamedLabel,
+        cx: &mut Context<Self>,
+    ) {
+        let accounts = label
+            .ids
+            .into_iter()
+            .map(|(account, id)| (account, id, true))
+            .collect();
+        self.confirm = Some(Ask::DeleteEveryLabel(label.name, accounts));
+        cx.notify();
+    }
+
+    /// Whether `account`'s labels are folders holding their mail (a server of its own that
+    /// is not Gmail's): deleting one deletes the mail in it.
+    pub(super) fn folders_hold_mail(&self, account: &str) -> bool {
+        self.settings
+            .accounts
+            .iter()
+            .find(|a| a.id == account)
+            .and_then(|a| a.servers.as_ref())
+            .is_some_and(|servers| !servers.is_gmail())
+    }
+
+    /// The accounts a label of every account's can be deleted from, each a row to pick or
+    /// leave, saying what deleting it there does to the mail.
+    pub(super) fn label_accounts(
+        &self,
+        t: &Theme,
+        accounts: &[(String, String, bool)],
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hover = t.hover;
+        div()
+            .flex()
+            .flex_col()
+            .rounded(dp(12.))
+            .border_1()
+            .border_color(t.border)
+            .children(accounts.iter().enumerate().map(|(i, (account, _, on))| {
+                let on = *on;
+                let email = self
+                    .settings
+                    .accounts
+                    .iter()
+                    .find(|a| a.id == *account)
+                    .map(|a| a.email.clone())
+                    .unwrap_or_else(|| account.clone());
+                let detail = if self.folders_hold_mail(account) {
+                    "A folder: the mail in it is deleted too."
+                } else {
+                    "The mail it was on stays."
+                };
+                div()
+                    .id(("label-account", i))
+                    .flex()
+                    .items_center()
+                    .gap(dp(12.))
+                    .px(dp(12.))
+                    .py(dp(9.))
+                    .cursor_pointer()
+                    .when(i > 0, |d| d.border_t_1().border_color(t.border))
+                    .hover(move |d| d.bg(hover))
+                    .child(menus::account_face(&email, self.photos.get(account), 24.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(dp(0.))
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().text_color(t.text).child(email))
+                            .child(meta(detail.to_string(), t.text3)),
+                    )
+                    // A box ticked in the accent.
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(dp(18.))
+                            .rounded(dp(5.))
+                            .border_1()
+                            .border_color(if on { t.violet } else { t.border_strong })
+                            .bg(if on {
+                                t.violet
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .when(on, |d| d.child(icon("done", 12., gpui::white()))),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(Ask::DeleteEveryLabel(_, accounts)) = &mut this.confirm
+                            && let Some(row) = accounts.get_mut(i)
+                        {
+                            row.2 = !row.2;
+                        }
+                        cx.notify();
+                    }))
+            }))
+            .into_any_element()
     }
 
     /// The rows an action applies to: the picked ones (in list order), or the open one.
