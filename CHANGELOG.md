@@ -3,15 +3,15 @@
 ## [Unreleased]
 
 ### New
-- **Gmail with an app password.** Add account takes a Gmail or Google Workspace address with an app password too, over IMAP and SMTP, from the same form as any other address. Continue with Google is still the way in. When Google wants an app password rather than the account's own password, Nimbra says so, and Sign in again asks for a new one when the old one is revoked.
+- **Gmail with an app password.** Add account takes a Gmail or Google Workspace address with an app password too, over IMAP and SMTP, from the same form as any other address. Continue with Google is still the way in. When Google wants an app password rather than the account's own password, Nimbra says so, and Sign in again asks for a new one when the old one is revoked. Thanks, [slukedev](https://github.com/slukedev).
 - **Pick the accounts to search.** With several accounts, the search panel has a chip for All accounts and one for each account, under the field: click one, or press Tab and Shift-Tab, to search there. It starts on All accounts in All inboxes and on the account shown elsewhere, and a search kept open remembers its own.
 - **Search every account.** A search from All inboxes, or any of every account's mailboxes, looks in every account at once and lists what it finds newest first, loading more from each as you scroll; the search panel's suggestions come from every account too. A search from one account's mailbox stays in that account, and Esc from a search of every account goes back to All inboxes. On IMAP accounts, Gmail's own words like `label:` and `category:` are left out of the search rather than finding nothing; a Gmail account added with an app password keeps them, as Gmail searches it.
 
 ### Fixed
 - **Typing after clicking in an email.** After a click in an email shown in its own formatting, the search panel, the composer's fields and the other text fields took no typing until Nimbra was opened again: the email kept the keyboard. Now the email gives it back as soon as anything else in the window takes it.
 - **A blinking cursor.** The cursor in every text field (search, the composer's To and Subject, signature names, Settings › Accounts and the rest) blinks as it does across macOS, holding still while you type or move it.
-- **Adding an address twice.** Adding an address that's already in Nimbra is refused, instead of replacing that account's sign-in.
-- **The Add account form and the keyboard.** Escape closes the form in Settings too, typing while it checks starts over, and after a refused password the keyboard is back in the password field, ready to type over it.
+- **Adding an address twice.** Adding an address that's already in Nimbra is refused, instead of replacing that account's sign-in. Thanks, [slukedev](https://github.com/slukedev).
+- **The Add account form and the keyboard.** Escape closes the form in Settings too, typing while it checks starts over, and after a refused password the keyboard is back in the password field, ready to type over it. Thanks, [slukedev](https://github.com/slukedev).
 
 ## [0.1.10] - 2026-11-28
 
@@ -202,4 +202,5 @@ Google hasn't finished verifying Nimbra yet, so signing in with Google shows a "
 - **A formatted editor** with address suggestions that float under the field, attachments, drafts that save themselves, undo send and send later.
 - **Works offline:** archive, star, read and send, and Nimbra catches up once it's back online.
 - **Light and dark,** with emails darkened to match, and an app icon in every macOS appearance.
+- **At home on the Mac.** Email links open a new message in Nimbra once it's the default mail app (Settings › General). Notifications can archive or mark as read without bringing Nimbra forward, the Dock menu opens a new message or a mailbox, and its badge counts unread mail. Mail is checked as soon as the Mac wakes or is back online, light and dark follow the Mac as it switches, and the window opens where you left it. The list, mailbox switches and saving run off the main thread, so Nimbra stays quick. Thanks, [slukedev](https://github.com/slukedev).
 - **Private by default:** sign-ins in the Keychain, mail encrypted on disk, email shown with scripts off, and two anonymous usage counts you can turn off.
