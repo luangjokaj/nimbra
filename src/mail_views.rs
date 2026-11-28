@@ -430,6 +430,13 @@ impl MailViews {
         self.left.clear();
     }
 
+    /// Takes the keyboard from the email that has it, for the app's own view.
+    pub fn release_keyboard(&self) {
+        for slot in self.slots.values().filter(|slot| slot.view.focused()) {
+            slot.view.blur();
+        }
+    }
+
     /// ⌘C in the email the keyboard is in. False when it is in none.
     pub fn copy(&self) -> bool {
         self.slots

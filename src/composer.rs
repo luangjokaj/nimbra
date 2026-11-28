@@ -873,7 +873,7 @@ impl Nimbra {
             }
         }
         if let Some(focus) = self.pending_focus.take() {
-            window.focus(&focus);
+            self.apply_focus(&focus, window);
         }
         self.sync_editor(window, cx);
         let t = self.theme();
