@@ -52,6 +52,7 @@ mod mac {
             work: extern "C" fn(*mut c_void),
         );
         static NSWindowDidMoveNotification: *mut Object;
+        static NSWindowWillMoveNotification: *mut Object;
         static NSWindowDidResizeNotification: *mut Object;
         static NSWindowDidChangeScreenNotification: *mut Object;
         static NSWindowDidBecomeKeyNotification: *mut Object;
@@ -61,7 +62,23 @@ mod mac {
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
         fn CGImageRelease(image: *mut c_void);
+        fn CGWindowListCopyWindowInfo(option: u32, window: u32) -> *const c_void;
+        fn CGRectMakeWithDictionaryRepresentation(dict: *const c_void, rect: *mut Rect) -> bool;
+        static kCGWindowBounds: *const c_void;
     }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFArrayGetCount(array: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+        fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+        fn CFRelease(value: *const c_void);
+    }
+
+    /// How often the picture follows a window being moved: about every frame.
+    const FOLLOW_EVERY: f64 = 1. / 120.;
+    /// A window still for this many of those has stopped moving.
+    const STILL_FOR: u32 = 30;
 
     // Core Image (CIImage, CIFilter, CIContext) and Core Animation (CALayer): linked so
     // that their classes are there to look up.
@@ -76,6 +93,12 @@ mod mac {
         picture: *mut Object,
         /// The picture shown (its file), so that a picture is only made once.
         shown: Option<String>,
+        /// While the window moves, the timer that keeps the picture where it is on screen
+        /// (`follow`), with where the window was at its last tick and for how many it has
+        /// not moved.
+        following: Option<*mut Object>,
+        last: Option<Rect>,
+        still: u32,
     }
 
     thread_local! {
@@ -124,6 +147,9 @@ mod mac {
                     window,
                     picture,
                     shown: None,
+                    following: None,
+                    last: None,
+                    still: 0,
                 })
             });
             for name in [
@@ -135,8 +161,160 @@ mod mac {
                 observe(name, window, false);
             }
             observe(NSWorkspaceActiveSpaceDidChangeNotification, window, true);
+            // macOS says where a window is after it has moved, often only once the move is
+            // over: while it moves, the picture follows it frame by frame (`follow`).
+            for name in [NSWindowWillMoveNotification, NSWindowDidMoveNotification] {
+                on(name, window, follow);
+            }
         }
         refresh();
+    }
+
+    /// Calls `act` on `name` of `window`.
+    ///
+    /// # Safety
+    /// Main thread, with a live window.
+    unsafe fn on(name: *mut Object, window: *mut Object, act: fn()) {
+        if name.is_null() {
+            return;
+        }
+        let block = block::ConcreteBlock::new(move |_note: *mut Object| act()).copy();
+        // SAFETY: as `observe`.
+        unsafe {
+            let center: *mut Object = msg_send![class!(NSNotificationCenter), defaultCenter];
+            let main: *mut Object = msg_send![class!(NSOperationQueue), mainQueue];
+            let observer: *mut Object = msg_send![center,
+                addObserverForName: name object: window queue: main usingBlock: &*block];
+            if !observer.is_null() {
+                let _: *mut Object = msg_send![observer, retain];
+            }
+        }
+    }
+
+    /// Starts following the window where it is on screen, about every frame, until it has
+    /// been still a moment. Main thread.
+    fn follow() {
+        WALL.with(|wall| {
+            let mut wall = wall.borrow_mut();
+            let Some(wall) = wall.as_mut() else {
+                return;
+            };
+            wall.still = 0;
+            if wall.following.is_some() {
+                return;
+            }
+            let block = block::ConcreteBlock::new(|_timer: *mut Object| tick()).copy();
+            // SAFETY: main thread; the timer copies the block, the run loop keeps the timer
+            // until it is invalidated (`tick`), and it is retained here until then.
+            unsafe {
+                let timer: *mut Object = msg_send![class!(NSTimer),
+                    timerWithTimeInterval: FOLLOW_EVERY repeats: YES block: &*block];
+                if timer.is_null() {
+                    return;
+                }
+                // Also while the pointer drags the window (an event-tracking run loop mode).
+                let run_loop: *mut Object = msg_send![class!(NSRunLoop), mainRunLoop];
+                let _: () = msg_send![run_loop,
+                    addTimer: timer forMode: ns_string("kCFRunLoopCommonModes")];
+                let _: *mut Object = msg_send![timer, retain];
+                wall.following = Some(timer);
+            }
+        });
+    }
+
+    /// One step of `follow`: the picture where the window is now, as the window server has
+    /// it (AppKit's frame lags while the window is dragged).
+    fn tick() {
+        WALL.with(|wall| {
+            let mut wall = wall.borrow_mut();
+            let Some(wall) = wall.as_mut() else {
+                return;
+            };
+            // SAFETY: main thread; the window, the layer and the timer are alive.
+            unsafe {
+                let frame =
+                    live_frame(wall.window).unwrap_or_else(|| msg_send![wall.window, frame]);
+                if wall.last == Some(frame) {
+                    wall.still += 1;
+                } else {
+                    wall.still = 0;
+                    wall.last = Some(frame);
+                    place(wall, frame);
+                }
+                if wall.still >= STILL_FOR
+                    && let Some(timer) = wall.following.take()
+                {
+                    let _: () = msg_send![timer, invalidate];
+                    let _: () = msg_send![timer, release];
+                }
+            }
+        });
+    }
+
+    /// Where the window is on screen now, as the window server has it, in AppKit's
+    /// coordinates (from the bottom left of the main screen).
+    ///
+    /// # Safety
+    /// Main thread, with a live window.
+    unsafe fn live_frame(window: *mut Object) -> Option<Rect> {
+        // kCGWindowListOptionIncludingWindow: only this window.
+        const ONLY: u32 = 1 << 3;
+        unsafe {
+            let number: isize = msg_send![window, windowNumber];
+            let list = CGWindowListCopyWindowInfo(ONLY, u32::try_from(number).ok()?);
+            if list.is_null() {
+                return None;
+            }
+            let mut bounds = Rect {
+                x: 0.,
+                y: 0.,
+                width: 0.,
+                height: 0.,
+            };
+            let found = CFArrayGetCount(list) > 0 && {
+                let info = CFArrayGetValueAtIndex(list, 0);
+                let dict = CFDictionaryGetValue(info, kCGWindowBounds);
+                !dict.is_null() && CGRectMakeWithDictionaryRepresentation(dict, &mut bounds)
+            };
+            CFRelease(list);
+            if !found {
+                return None;
+            }
+            // The window server measures from the main screen's top left.
+            let screens: *mut Object = msg_send![class!(NSScreen), screens];
+            let main: *mut Object = msg_send![screens, firstObject];
+            if main.is_null() {
+                return None;
+            }
+            let main_frame: Rect = msg_send![main, frame];
+            Some(Rect {
+                y: main_frame.height - bounds.y - bounds.height,
+                ..bounds
+            })
+        }
+    }
+
+    /// The picture where the screen's is, seen from a window at `window_frame`.
+    ///
+    /// # Safety
+    /// Main thread.
+    unsafe fn place(wall: &Wall, window_frame: Rect) {
+        unsafe {
+            let screen: *mut Object = msg_send![wall.window, screen];
+            if screen.is_null() {
+                return;
+            }
+            let screen_frame: Rect = msg_send![screen, frame];
+            let at = Rect {
+                x: screen_frame.x - window_frame.x,
+                y: screen_frame.y - window_frame.y,
+                ..screen_frame
+            };
+            let _: () = msg_send![class!(CATransaction), begin];
+            let _: () = msg_send![class!(CATransaction), setDisableActions: YES];
+            let _: () = msg_send![wall.picture, setFrame: at];
+            let _: () = msg_send![class!(CATransaction), commit];
+        }
     }
 
     /// Calls `refresh` on `name` (of `window`, or of the workspace).
@@ -188,18 +366,9 @@ mod mac {
                 if screen.is_null() {
                     return;
                 }
-                let screen_frame: Rect = msg_send![screen, frame];
-                let window_frame: Rect = msg_send![wall.window, frame];
-                // In the window's coordinates (from its bottom left, as the screen's are).
-                let at = Rect {
-                    x: screen_frame.x - window_frame.x,
-                    y: screen_frame.y - window_frame.y,
-                    ..screen_frame
-                };
-                let _: () = msg_send![class!(CATransaction), begin];
-                let _: () = msg_send![class!(CATransaction), setDisableActions: YES];
-                let _: () = msg_send![wall.picture, setFrame: at];
-                let _: () = msg_send![class!(CATransaction), commit];
+                let window_frame =
+                    live_frame(wall.window).unwrap_or_else(|| msg_send![wall.window, frame]);
+                place(wall, window_frame);
 
                 let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
                 let url: *mut Object = msg_send![workspace, desktopImageURLForScreen: screen];
