@@ -43,11 +43,11 @@
 ## Features
 
 - **Fast by nature.** Native Rust, drawn on the GPU, no Electron. Mailboxes open from an encrypted local store and refresh in the background, so the app opens straight into your mail.
-- **One key for everything.** `E` done, `H` snooze, `R` reply, `S` star, `/` search, `Z` undo. Hints show the key only while it would do something, and `?` lists them all.
+- **One key for everything.** `E` done, `H` snooze, `R` reply, `S` star, `/` search, `Z` undo. Hints show the key only while it would do something, `?` lists them all, and any of them can be changed in Settings › Shortcuts.
 - **Split inbox.** Gmail's Primary, Updates, Promotions and Social, each with its unread count, plus Starred, Important, Snoozed, Reminders, Drafts, Sent, Done, All Mail, Spam, Trash and your labels. IMAP accounts keep one inbox.
 - **Snooze and reminders.** Quick times, or any day and time from the calendar; “Only if nobody replies” turns a snooze into a reminder. Works for Gmail and IMAP.
 - **Block senders.** Their mail goes straight to a Blocked label and never notifies. It uses the same label as Spark, so a list kept there carries on.
-- **Every account in one place.** Several Gmail, Microsoft and IMAP accounts, All inboxes merged newest first, and replies that go out from the right address. Nimbra opens again on the account and mailbox you left.
+- **Every account in one place.** Several Gmail, Microsoft and IMAP accounts, All inboxes merged newest first, one search across every account (or just the ones you pick), and replies that go out from the right address. Nimbra opens again on the account and mailbox you left.
 - **Conversations that read well.** Every message folds to one line, the latest included, and can show newest first. Emails you have read, and the ones next to the open conversation, open at once. Brands that pass DMARC show their own logo (BIMI) instead of initials.
 - **Writing that gets out of the way.** A formatted editor, address suggestions, attachments by drag and drop, drafts that save themselves, undo send and send later.
 - **Works offline.** Archive, star, read and send while offline; Nimbra sends it all once it can.
@@ -100,7 +100,7 @@ Your Google profile photo comes from the People API (turn it on in your Cloud pr
 
 ### Other providers
 
-**Add account** takes Google, or any address with a password (Zoho, iCloud, Fastmail, Yahoo, a company's own server). Nimbra finds the servers from the address (or you type them), checks that both take the password, and keeps the password in the keychain. A custom domain hosted at Google, Microsoft or Zoho is recognised from its mail (MX) records.
+**Add account** takes Google, or any address with a password (Zoho, iCloud, Fastmail, Yahoo, a company's own server). A Gmail or Google Workspace address can also be added this way with an [app password](https://myaccount.google.com/apppasswords), over IMAP and SMTP; Nimbra says so if Google wants one rather than your Google password. Nimbra finds the servers from the address (or you type them), checks that both take the password, and keeps the password in the keychain. A custom domain hosted at Google, Microsoft or Zoho is recognised from its mail (MX) records.
 
 Such an account's folders are its labels and archiving moves to its Archive folder. New mail arrives at once where the server can say so (IMAP IDLE), and only what changed is asked for (CONDSTORE).
 
@@ -197,9 +197,9 @@ Each message shows its sender and recipients; click the recipients line for From
 <details>
 <summary><strong>Organising</strong></summary>
 
-Opening a thread marks it read. `E` archives it (in Done, `E` moves it back to the inbox), `⌫` moves it to the trash, and `Z` undoes either. Threads show their labels (click × to remove one), the tag button adds a label or creates one, and the folder button moves a thread to the inbox, a label or Spam. The + next to Labels creates a label (“Parent/Child” nests it), and right-clicking a label renames or deletes it. ⌘-click and Shift-click pick several threads (⌘A picks all), and one Undo brings a batch back.
+Opening a thread marks it read. `E` archives it (in Done, `E` moves it back to the inbox), `⌫` moves it to the trash, and `Z` undoes either. Threads show their labels (click × to remove one), the tag button adds a label or creates one, and the folder button moves a thread to the inbox, a label or Spam. The + next to Labels creates a label (“Parent/Child” nests it), and right-clicking a label renames or deletes it. Under All inboxes, deleting a label that several accounts have asks which ones to delete it from. On a server of its own (not Gmail's) a label is a folder, and deleting it deletes the mail in it; the question says so. ⌘-click and Shift-click pick several threads (⌘A picks all), and one Undo brings a batch back.
 
-`/` or ⌘F opens search: matches from the mail on this Mac appear as you type, and the server's own results join a moment later. Search uses Gmail's syntax (`from:ana has:attachment newer_than:7d`).
+`/` or ⌘F opens search: matches from the mail on this Mac appear as you type, and the server's own results join a moment later. Search uses Gmail's syntax (`from:ana has:attachment newer_than:7d`). From All inboxes it searches every account at once, newest first; with several accounts, the chips under the field (or Tab) pick All accounts or one of them. IMAP servers understand `from:`, `to:`, `subject:`, `is:unread`, `has:attachment`, `newer_than:` and the like, and leave out what only Gmail has (`label:`, `category:`); a Gmail account added with an app password keeps all of Gmail's syntax.
 
 </details>
 
