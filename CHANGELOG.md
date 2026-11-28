@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.10] - 2026-11-28
 
 ### New
 - **Newest message first.** Settings › Appearance can show a conversation with its latest message at the top and the older ones under it, in the reader and in a message's own window.
