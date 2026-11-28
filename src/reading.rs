@@ -1155,7 +1155,7 @@ impl Nimbra {
                                         )
                                     }))
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_draft(this.selected, cx)
+                                        this.open_draft(this.selected, false, cx)
                                     })),
                                 "edit-draft",
                                 false,
@@ -1354,9 +1354,9 @@ impl Nimbra {
                         })
                         // Clicking a draft's text opens it in the editor.
                         .when(is_draft, |d| {
-                            d.cursor_pointer().on_click(
-                                cx.listener(|this, _, _, cx| this.open_draft(this.selected, cx)),
-                            )
+                            d.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                                this.open_draft(this.selected, false, cx)
+                            }))
                         })
                         .child(
                             div()
