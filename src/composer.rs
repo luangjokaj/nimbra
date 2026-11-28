@@ -2392,7 +2392,8 @@ impl Nimbra {
                     .h(dp(height))
                     .rounded(dp(18.))
                     .border_1()
-                    .border_color(t.border_strong)
+                    // The app's own faint line: its shadow sets it apart from the mail.
+                    .border_color(t.border)
                     // A plain shadow: no coloured glow spilling over the mail behind.
                     .shadow(vec![shadow(
                         c(0x000000, if t.dark { 0.6 } else { 0.2 }),
@@ -2925,7 +2926,7 @@ impl Nimbra {
                                 .rounded(dp(16.))
                                 .bg(t.raised)
                                 .border_1()
-                                .border_color(t.border_strong)
+                                .border_color(t.border)
                                 .shadow(vec![shadow(c(0x000000, 0.35), 18., 50., -8.)])
                                 .child(serif("Save this draft?", 24., t.text))
                                 .child(meta(

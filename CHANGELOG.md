@@ -33,6 +33,7 @@
 - **An email no longer flashes in the window's corner.** A message's email could show as a small square at the top left, over the sidebar, while its conversation was still loading; it now shows only once it is in its place in the reader.
 - **Primary buttons take the first click.** Edit draft, Send and the other primary buttons no longer miss a click made as the pointer arrives on them.
 - **A new message from the account shown.** Compose writes from the account on screen; the default account is only for All inboxes and the other views of every account.
+- **A quieter composer edge.** The composer and its "Save this draft?" sheet have the app's usual border rather than the strong one.
 
 ## [0.1.9] - 2026-11-28
 
