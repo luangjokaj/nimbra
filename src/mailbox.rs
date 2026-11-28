@@ -148,6 +148,8 @@ impl Nimbra {
 
     fn switch_mailbox(&mut self, view: View, now: bool, cx: &mut Context<Self>) {
         self.leave_sidebar(cx);
+        // Chosen now: where the window was last time no longer matters.
+        self.restore_place = None;
         // A mailbox clicked before, whose list is still being read, is not wanted now.
         self.opening = None;
         if self.mailbox == view || matches!(self.status, Status::SignedOut | Status::SigningIn) {
@@ -799,6 +801,7 @@ impl Nimbra {
                 }
                 // Something is already on screen (a sign-in in this session): just refresh.
                 if !this.mails.is_empty() || this.mailbox != view {
+                    this.restore_place = None;
                     this.refresh(cx);
                     return;
                 }
@@ -839,11 +842,67 @@ impl Nimbra {
                 }
                 // Bring it up to date: only what changed, when the store knows from where.
                 this.refresh(cx);
+                this.go_back_to_place(cx);
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Once the account's store is open at launch: the mailbox it was left in, if it was
+    /// this account and nothing else was asked for meanwhile (a notification's message).
+    fn go_back_to_place(&mut self, cx: &mut Context<Self>) {
+        let Some(place) = self.restore_place.take() else {
+            return;
+        };
+        if place.account != self.account_id || self.open_when_listed.is_some() {
+            return;
+        }
+        let view = if let Some(view) = place.plain_view() {
+            Some(view)
+        } else if let Some(id) = &place.label {
+            self.labels
+                .iter()
+                .position(|l| &l.id == id)
+                .map(View::Label)
+        } else if let Some(name) = &place.every_label {
+            self.refresh_every_labels();
+            self.every_labels
+                .iter()
+                .position(|l| l.name.eq_ignore_ascii_case(name))
+                .map(|index| View::every(View::Label(index)))
+        } else {
+            None
+        };
+        if let Some(view) = view.filter(|view| *view != self.mailbox) {
+            self.select_mailbox(view, cx);
+        }
+    }
+
+    /// Keeps where the window is (`place.rs`) when it changed, in the background. Not
+    /// while last time's place is still to be opened, which it would overwrite.
+    pub(super) fn save_place(&mut self, cx: &mut Context<Self>) {
+        if self.restore_place.is_some() || self.account_id.is_empty() {
+            return;
+        }
+        let label = match self.mailbox {
+            View::Label(index) => self.labels.get(index).map(|l| l.id.clone()),
+            View::Every(_) => match self.mailbox.base() {
+                View::Label(index) => self.every_labels.get(index).map(|l| l.name.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(place) = crate::place::Place::of(&self.account_id, self.mailbox, label) else {
+            return;
+        };
+        if self.place_saved.as_ref() == Some(&place) {
+            return;
+        }
+        self.place_saved = Some(place.clone());
+        cx.background_spawn(async move { crate::place::save(place) })
+            .detach();
     }
 
     /// Saves the open mailbox and the sidebar state, in the background. Search results are

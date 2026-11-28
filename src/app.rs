@@ -347,6 +347,11 @@ pub struct Nimbra {
     /// The other accounts' labels, as their stores last kept them (`refresh_every_labels`),
     /// for their threads in every account's mailboxes (`labels_of`).
     account_labels: HashMap<String, Vec<mail::Label>>,
+    /// Where the window was when Nimbra last closed (`place.rs`), until it is opened again
+    /// there once the account's store is open, or another mailbox is chosen first.
+    restore_place: Option<crate::place::Place>,
+    /// Where the window is, as last saved.
+    place_saved: Option<crate::place::Place>,
     /// The other accounts' sidebar counts by label id, as the last listing of every
     /// account's mailboxes found them (the account shown has `counts`).
     account_counts: HashMap<String, HashMap<String, (u32, u32)>>,
@@ -1019,6 +1024,8 @@ impl Nimbra {
             account_unread: HashMap::new(),
             every_labels: Vec::new(),
             account_labels: HashMap::new(),
+            restore_place: crate::place::load(),
+            place_saved: None,
             account_counts: HashMap::new(),
             compose_host: None,
             format_hint: None,
@@ -2482,6 +2489,7 @@ impl Render for Nimbra {
         if std::mem::take(&mut self.shortcuts_on_start) {
             cx.defer_in(window, |this, _, cx| this.open_shortcuts(cx));
         }
+        self.save_place(cx);
         if let Some(hours) = self.snooze_on_start.take() {
             cx.defer_in(window, move |this, window, cx| {
                 let mode = if hours {

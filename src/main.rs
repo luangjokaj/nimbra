@@ -18,6 +18,7 @@ mod listing;
 mod mail_views;
 mod notify;
 mod pending;
+mod place;
 mod popup;
 mod quitting;
 mod signature_images;
