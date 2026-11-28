@@ -1770,7 +1770,7 @@ impl Nimbra {
         if self.body_failed.contains(&self.thread_key(m)) {
             return false;
         }
-        if !m.loaded {
+        if !m.loaded || self.draft_wanted.is_some() {
             return true;
         }
         self.original_on()

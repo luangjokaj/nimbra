@@ -568,8 +568,12 @@ impl Nimbra {
 
     /// The connection for the thread in row `index` (its own account in All inboxes).
     pub(super) fn client_at(&self, index: usize) -> Option<Arc<mail::Client>> {
-        let account = self.mails.get(index).and_then(|m| m.account.clone());
-        self.client_for(account.as_deref())
+        let mail = self.mails.get(index)?;
+        // A row made up for a new draft is not in the provider: nothing to ask it.
+        if mail.id.as_deref().is_some_and(super::composer::made_up) {
+            return None;
+        }
+        self.client_for(mail.account.as_deref())
     }
 
     /// Clears everything that belongs to the account shown, and makes `id` the account shown.

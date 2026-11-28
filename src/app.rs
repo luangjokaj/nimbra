@@ -387,6 +387,18 @@ pub struct Nimbra {
     details: Option<(String, usize)>,
     /// Earlier messages opening or folding, by thread and place (`reading::Fold`).
     folds: std::cell::RefCell<HashMap<(ThreadKey, usize), reading::Fold>>,
+    /// Drafts fetched ahead as their rows are opened in Drafts (`prefetch_draft`), so
+    /// Edit draft opens the composer at once.
+    drafts_ready: HashMap<ThreadKey, mail::Draft>,
+    /// Drafts being fetched now, so a row opened again or Edit draft never fetches twice.
+    drafts_fetching: std::collections::HashSet<ThreadKey>,
+    /// Edit draft was pressed while its draft was still on its way: opened when it is here
+    /// (`true`: in a window of its own).
+    draft_wanted: Option<(ThreadKey, bool)>,
+    /// Closed composers whose new drafts show in Drafts as made-up rows (`show_in_drafts`)
+    /// until Drafts is listed again, by row id: Edit draft on such a row brings its
+    /// composer back, as Gmail does not know the row's id.
+    closed_drafts: Vec<(String, Composer)>,
     /// The latest messages folded in their conversations: thread, account, Message-ID.
     latest_folded: std::collections::HashSet<(String, String, String)>,
     /// The height of an open earlier message as last laid out, by thread and place.
@@ -1052,6 +1064,10 @@ impl Nimbra {
             send_later_times: Vec::new(),
             details: None,
             folds: Default::default(),
+            drafts_ready: HashMap::new(),
+            drafts_fetching: Default::default(),
+            draft_wanted: None,
+            closed_drafts: Vec::new(),
             latest_folded: Default::default(),
             fold_heights: Default::default(),
             fold_line: std::rc::Rc::new(std::cell::Cell::new(53.)),

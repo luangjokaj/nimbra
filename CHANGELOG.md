@@ -9,6 +9,8 @@
 - **Fold the latest message too.** In a conversation, the latest message folds to its line and opens again like the earlier ones, with the same animation, from its header or its line. Each foldable message has an arrow after its time that turns as it opens and folds. A conversation always opens on its latest message, and a single email does not fold.
 - **Emails you have read open at once.** The emails of the last few conversations you left stay ready, and the ones just above and below the open conversation are prepared ahead, so going back or pressing J and K shows them straight away. An email shows as soon as its text is laid out, without waiting for its images.
 - **Nimbra opens where you left it.** The account and mailbox you were in when you quit (All inboxes, Sent, a label, any of them) are open again when you come back, rather than the account's Inbox. A notification you click still opens its message, and a search is not kept.
+- **Drafts in Drafts at once.** A draft saved with ⌘S, or kept as its composer closes, shows in Drafts straight away: an existing draft's row is brought up to date, and a new one gets a row of its own, made from the composer, until Drafts is listed again. Edit draft on that row brings its composer back.
+- **Edit draft opens at once.** A draft is fetched as its row is opened in Drafts, so Edit draft opens the composer straight away; pressed while it is still on its way, it waits for it, with the loading line under the toolbar, rather than fetching it again.
 
 ### Fixed
 - **Hover with another app in front.** Rows, buttons and the pointer follow the mouse over Nimbra's windows when another app is in front, rather than only after a first click.
@@ -36,6 +38,7 @@
 - **A quieter composer edge.** The composer and its "Save this draft?" sheet have the app's usual border rather than the strong one.
 - **"No content" for an empty message.** A message with nothing in it says so in the reader rather than showing a blank.
 - **Gone is gone.** A message trashed, deleted forever or discarded here that the server has already removed stays removed, rather than coming back with an error.
+- **A discarded draft leaves Drafts at once.** Its row goes as it is discarded, and Undo puts it back. Trashing the row of a draft just written here deletes that draft.
 
 ## [0.1.9] - 2026-11-28
 

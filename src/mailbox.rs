@@ -950,6 +950,7 @@ impl Nimbra {
                 .iter()
                 .zip(&self.done)
                 .filter(|(_, done)| !**done)
+                .filter(|(mail, _)| !mail.id.as_deref().is_some_and(super::composer::made_up))
                 .map(|(mail, _)| &mail.row),
         );
         if self.mailbox == View::Inbox {
@@ -1818,6 +1819,17 @@ impl Nimbra {
 
     /// Fetches the content of the thread on show, without marking it read.
     pub(super) fn load_selected(&mut self, cx: &mut Context<Self>) {
+        // Edit draft waits on one row: another row opened, it waits no more.
+        if let Some(((thread, account), _)) = &self.draft_wanted
+            && self.mails.get(self.selected).is_none_or(|m| {
+                message_window::key_of(m) != *thread || self.account_of(m) != account
+            })
+        {
+            self.draft_wanted = None;
+        }
+        if self.mailbox.base() == View::Drafts && !self.is_demo() {
+            self.prefetch_draft(self.selected, cx);
+        }
         let Some(mail) = self.mails.get(self.selected) else {
             return;
         };
@@ -1838,6 +1850,15 @@ impl Nimbra {
     /// Fetches a thread's content.
     pub(super) fn load_body(&mut self, id: String, account: String, cx: &mut Context<Self>) {
         let key: ThreadKey = (id.clone(), account.clone());
+        // A row made up for a new draft has what it shows already (or, kept from an
+        // earlier run, nothing): never asked of the provider.
+        if super::composer::made_up(&id) {
+            if let Some(row) = self.row_of(&id, &account) {
+                self.mails[row].loaded = true;
+            }
+            cx.notify();
+            return;
+        }
         let Some(client) = self.client_for(Some(&account)) else {
             // Another account's, which is not connected: nothing is on its way.
             if self.connection.is_some() {
@@ -1895,6 +1916,14 @@ impl Nimbra {
         removed: bool,
         cx: &mut Context<Self>,
     ) {
+        // Trashing a row made up for a new draft deletes that draft (`trash_made_up`).
+        if change == mail::Change::Trash
+            && let Some(id) = self.mails.get(index).and_then(|m| m.id.clone())
+            && super::composer::made_up(&id)
+        {
+            self.trash_made_up(&id, cx);
+            return;
+        }
         let (Some(client), Some(id)) = (
             self.client_at(index),
             self.mails.get(index).and_then(|m| m.id.clone()),

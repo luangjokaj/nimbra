@@ -57,7 +57,7 @@ impl Pending {
         });
     }
 
-    fn forget(&mut self, view: View, account: &str, thread: &str) {
+    pub fn forget(&mut self, view: View, account: &str, thread: &str) {
         let view = view.base();
         self.entries
             .retain(|e| !(e.view == view && e.account == account && e.thread == thread));

@@ -63,6 +63,10 @@ pub(super) struct Composer {
     pub(super) reply_home: Option<(String, String)>,
     /// The Gmail draft being edited, if this message was saved or opened from Drafts.
     pub(super) draft_id: Option<String>,
+    /// The thread its row has in Drafts, to show its edits there at once when it is saved;
+    /// `listed_new`: a row made up for it until Drafts is listed again (a new draft).
+    pub(super) listed_as: Option<String>,
+    pub(super) listed_new: bool,
     /// The account it is written from, when not the one shown (a reply in All inboxes).
     pub(super) account: Option<String>,
     /// The earlier message a draft quotes or forwards. Kept out of the editor behind a
@@ -118,6 +122,15 @@ pub(super) struct Suggest {
 pub(super) enum After {
     /// Send it at this time (milliseconds since the epoch).
     Schedule(i64),
+}
+
+/// How the ids of rows made up for new drafts start (`show_in_drafts`): never a
+/// provider's thread id.
+const MADE_UP: &str = "nimbra-draft-";
+
+/// Whether a row's thread id is one made up for a new draft: never sent to the provider.
+pub(super) fn made_up(id: &str) -> bool {
+    id.starts_with(MADE_UP)
 }
 
 /// A composer that is off screen but still has work to finish.
@@ -392,7 +405,9 @@ impl Nimbra {
             size: (720., 520.),
             grab: None,
             draft_id: None,
-            // A new message is from the default account; an answer from its message's.
+            listed_as: None,
+            listed_new: false,
+            // A new message is from the account shown; an answer from its message's.
             account: if kind == ComposeKind::New {
                 self.new_message_account()
             } else {
@@ -967,30 +982,348 @@ impl Nimbra {
             return;
         };
         let account = self.account_of(mail).to_string();
-        let (Some(client), Some(thread_id)) = (self.client_at(index), mail.id.clone()) else {
+        let Some(thread_id) = mail.id.clone() else {
             return;
         };
         if self.compose.is_some() {
             return;
         }
+        // A row made up for a draft written here: its own composer comes back.
+        if made_up(&thread_id) {
+            self.reopen_made_up(&thread_id, in_window, cx);
+            return;
+        }
+        if self.client_at(index).is_none() {
+            return;
+        }
         self.notice = None;
+        // Fetched ahead as its row was opened (`prefetch_draft`): the composer opens now.
+        let key = (message_window::key_of(mail), account.clone());
+        if let Some(draft) = self.drafts_ready.remove(&key) {
+            self.draft_wanted = None;
+            self.open_fetched_draft(draft, account, thread_id, in_window, cx);
+            return;
+        }
+        // On its way (or fetched now): opened as soon as it is here, with the loading line
+        // under the toolbar meanwhile. Pressing again changes nothing.
+        self.draft_wanted = Some((key.clone(), in_window));
+        if !self.drafts_fetching.contains(&key) {
+            self.prefetch_draft(index, cx);
+        }
+        cx.notify();
+    }
+
+    /// A made-up row trashed: its draft is deleted through the composer that wrote it,
+    /// once a save running for it is over.
+    pub(super) fn trash_made_up(&mut self, id: &str, cx: &mut Context<Self>) {
+        let composer = match self.closed_drafts.iter().position(|(i, _)| i == id) {
+            Some(pos) => Some(self.closed_drafts.remove(pos).1),
+            None => self
+                .parked
+                .iter()
+                .position(|(kind, c)| {
+                    matches!(kind, Parked::Closing) && c.listed_as.as_deref() == Some(id)
+                })
+                .map(|pos| self.parked.remove(pos).1),
+        };
+        let Some(composer) = composer else {
+            return;
+        };
+        let serial = composer.serial;
+        self.parked.push((Parked::Discarded, composer));
+        self.finish_parked_later(serial, Duration::ZERO, cx);
+    }
+
+    /// Edit draft on a made-up row: its composer, still saving or closed since.
+    fn reopen_made_up(&mut self, id: &str, in_window: bool, cx: &mut Context<Self>) {
+        let parked = self
+            .parked
+            .iter()
+            .find(|(kind, c)| matches!(kind, Parked::Closing) && c.listed_as.as_deref() == Some(id))
+            .map(|(_, c)| c.serial);
+        let serial = match parked {
+            Some(serial) => serial,
+            None => {
+                let Some(pos) = self.closed_drafts.iter().position(|(i, _)| i == id) else {
+                    // Gone with an earlier listing: Drafts shows its real row.
+                    self.refresh(cx);
+                    return;
+                };
+                let (_, composer) = self.closed_drafts.remove(pos);
+                let serial = composer.serial;
+                self.parked.push((Parked::Closing, composer));
+                serial
+            }
+        };
+        self.unpark(serial, cx);
+        if in_window && self.compose.is_some() {
+            self.detach_compose(cx);
+        }
+        cx.notify();
+    }
+
+    /// The composer with a draft fetched for its row in Drafts (thread `thread`).
+    fn open_fetched_draft(
+        &mut self,
+        draft: mail::Draft,
+        account: String,
+        thread: String,
+        in_window: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_draft(draft, Some(account), cx);
+        if let Some(composer) = &mut self.compose {
+            composer.listed_as = Some(thread);
+        }
+        if in_window {
+            self.detach_compose(cx);
+        }
+    }
+
+    /// Fetches the draft behind the row in Drafts at `index` in the background, so Edit
+    /// draft (or a double-click) opens it at once. Each time the row is opened, as the draft
+    /// may have changed elsewhere.
+    pub(super) fn prefetch_draft(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(mail) = self.mails.get(index) else {
+            return;
+        };
+        let key = (
+            message_window::key_of(mail),
+            self.account_of(mail).to_string(),
+        );
+        let (Some(client), Some(thread_id)) = (self.client_at(index), mail.id.clone()) else {
+            return;
+        };
+        if made_up(&thread_id) {
+            return; // its composer is here, not in Gmail
+        }
+        if !self.drafts_fetching.insert(key.clone()) {
+            return; // already on its way
+        }
+        let generation = self.account_gen;
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { client.draft_for_thread(&thread_id) })
                 .await;
-            this.update(cx, |this, cx| match result {
-                Ok(draft) => {
-                    this.edit_draft(draft, Some(account), cx);
-                    if in_window {
-                        this.detach_compose(cx);
-                    }
+            this.update(cx, |this, cx| {
+                this.drafts_fetching.remove(&key);
+                let wanted = this
+                    .draft_wanted
+                    .as_ref()
+                    .filter(|(k, _)| *k == key)
+                    .map(|(_, in_window)| *in_window);
+                if wanted.is_some() {
+                    this.draft_wanted = None;
+                    cx.notify();
                 }
-                Err(error) => this.fail(error, cx),
+                if this.account_gen != generation {
+                    return;
+                }
+                match (result, wanted) {
+                    (Ok(draft), Some(in_window)) if this.compose.is_none() => {
+                        let (thread, account) = key;
+                        this.open_fetched_draft(draft, account, thread, in_window, cx);
+                    }
+                    (Ok(draft), _) => {
+                        this.drafts_ready.insert(key, draft);
+                    }
+                    (Err(error), Some(_)) => this.fail(error, cx),
+                    (Err(_), None) => {}
+                }
+                cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Hides (or shows again) a discarded draft's row in Drafts while its delete waits out
+    /// the undo delay; the listing after the delete has it gone for good.
+    fn show_draft_row(
+        &mut self,
+        account: Option<String>,
+        id: &str,
+        show: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let shown = self.account_id.clone();
+        let account = account.unwrap_or_else(|| shown.clone());
+        let mut changed = false;
+        for index in 0..self.mails.len() {
+            let mail = &self.mails[index];
+            if mail.id.as_deref() == Some(id)
+                && self.account_of(mail) == account
+                && !self.history.contains(&index)
+            {
+                self.done[index] = !show;
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        self.picked.retain(|i| !self.done[*i]);
+        if self.picked.len() < 2 {
+            self.picked.clear();
+        }
+        let visible = self.visible();
+        if !visible.contains(&self.selected) {
+            self.selected = visible.first().copied().unwrap_or(0);
+            self.load_selected(cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows a composer's draft in Drafts as it is being saved, before Gmail lists it: its
+    /// row brought up to date, or for a new draft a row made up from it, until Drafts is
+    /// listed again (`composer_saved`).
+    fn show_in_drafts(&mut self, serial: u64, cx: &mut Context<Self>) {
+        let shown = self.account_id.clone();
+        let Some(composer) = self.composer_mut(serial) else {
+            return;
+        };
+        let account = composer.account.clone().unwrap_or_else(|| shown.clone());
+        // A new draft already saved is in Gmail's Drafts: the listing after the save has it.
+        if composer.listed_as.is_none() && composer.draft_id.is_some() {
+            return;
+        }
+        let out = composer.outgoing(cx);
+        let id = match composer.listed_as.clone() {
+            Some(id) => id,
+            None => {
+                composer.listed_new = true;
+                let id = format!("{MADE_UP}{serial}");
+                composer.listed_as = Some(id.clone());
+                id
+            }
+        };
+        let new = composer.listed_new;
+        let first = out.to.split(',').next().unwrap_or_default().trim();
+        let (name, address) = match first.split_once('<') {
+            Some((name, rest)) => (
+                name.trim().trim_matches('"').trim(),
+                rest.trim_end_matches('>').trim(),
+            ),
+            None => ("", first),
+        };
+        let snippet: String = out.body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let summary = mail::Summary {
+            id: id.clone(),
+            sender: if name.is_empty() { address } else { name }.to_string(),
+            sender_address: address.to_string(),
+            brand_domain: None,
+            subject: out.subject.trim().to_string(),
+            snippet: snippet.chars().take(200).collect(),
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            message_count: 1,
+            unread: false,
+            starred: false,
+            labels: vec!["DRAFT".into()],
+            message_labels: vec![vec!["DRAFT".into()]],
+            senders: Vec::new(),
+            people: Vec::new(),
+        };
+        let mut row: Mail = nimbra_core::listing::Row::from_summary(summary).into();
+        row.account = (account != shown).then(|| account.clone());
+        // Its content as written, so a made-up row opens without asking Gmail.
+        let me = self
+            .signature_accounts()
+            .into_iter()
+            .find(|(a, _)| *a == account)
+            .map(|(_, email)| email)
+            .unwrap_or_else(|| self.account.to_string());
+        let people = |list: &str| -> Vec<mail::Person> {
+            list.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|one| match one.split_once('<') {
+                    Some((name, rest)) => mail::Person {
+                        name: name.trim().trim_matches('"').trim().to_string(),
+                        address: rest.trim_end_matches('>').trim().to_string(),
+                    },
+                    None => mail::Person {
+                        name: String::new(),
+                        address: one.to_string(),
+                    },
+                })
+                .collect()
+        };
+        row.header.from = mail::Person {
+            name: String::new(),
+            address: me,
+        };
+        row.header.to = people(&out.to);
+        row.header.cc = people(&out.cc);
+        row.header.date_ms = row.timestamp_ms;
+        let paragraphs: Vec<String> = out
+            .body
+            .split("\n\n")
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        row.body = nimbra_core::rich::from_text(paragraphs).into();
+        row.html = out.html.clone();
+        row.loaded = new;
+        // Its row where it is listed now (on screen, or kept for a return): brought up to
+        // date in place.
+        let mut found = false;
+        for mail in self
+            .mails
+            .iter_mut()
+            .chain(self.cache.values_mut().flatten())
+            .filter(|m| m.id.as_deref() == Some(id.as_str()))
+            .filter(|m| m.account.as_deref().unwrap_or(&shown) == account)
+        {
+            mail.sender = row.sender.clone();
+            mail.subject = row.subject.clone();
+            mail.snippet = row.snippet.clone();
+            mail.timestamp_ms = row.timestamp_ms;
+            mail.refresh_time();
+            if new {
+                mail.header = row.header.clone();
+                mail.body = row.body.clone();
+                mail.html = row.html.clone();
+                mail.loaded = true;
+            } else {
+                // Gmail's row: its content is fetched again when it is opened.
+                mail.loaded = false;
+            }
+            found = true;
+        }
+        if found && !new {
+            cx.notify();
+            return;
+        }
+        // Not listed yet: in Drafts now, as new mail is in the Inbox (`arrived`).
+        self.pending.add(View::Drafts, &account, &row);
+        for view in [View::Drafts, View::every(View::Drafts)] {
+            if view == self.mailbox {
+                continue;
+            }
+            if let Some(list) = self.cache.get_mut(&view) {
+                self.pending.apply(view, &shown, list, false, true, |m| {
+                    m.account.clone().unwrap_or_else(|| shown.clone())
+                });
+            }
+        }
+        let here = self.mailbox == View::every(View::Drafts)
+            || (self.mailbox == View::Drafts && account == shown);
+        if !here || self.status != Status::Ready || found {
+            cx.notify();
+            return;
+        }
+        let mut fresh = self.listed();
+        self.pending
+            .apply(self.mailbox, &shown, &mut fresh, false, true, |m| {
+                m.account.clone().unwrap_or_else(|| shown.clone())
+            });
+        let pending = std::mem::take(&mut self.pending);
+        let notice = self.notice.clone();
+        self.install(fresh, cx);
+        self.pending = pending;
+        self.notice = notice;
+        cx.notify();
     }
 
     /// Opens `draft` in the composer, from `account` (whose draft it is; `None`: as a new
@@ -1148,6 +1481,14 @@ impl Nimbra {
             }
             return;
         };
+        // Saved on purpose (⌘S, or closed to keep): in Drafts at once.
+        let closing = self
+            .parked
+            .iter()
+            .any(|(kind, c)| c.serial == serial && matches!(kind, Parked::Closing));
+        if (explicit || closing) && self.composer_mut(serial).is_some_and(|c| !c.sending) {
+            self.show_in_drafts(serial, cx);
+        }
         let Some(composer) = self.composer_mut(serial) else {
             return;
         };
@@ -1262,6 +1603,13 @@ impl Nimbra {
                 false
             }
         };
+        // Saved: its made-up row in Drafts goes with the next listing, which has the real
+        // one (it shows until then).
+        let made_up = if ok && composer.listed_new {
+            composer.listed_as.clone().map(|id| (id, now_from.clone()))
+        } else {
+            None
+        };
         let again = ok && (composer.dirty() || std::mem::take(&mut composer.resave));
         let after = if ok && !again {
             composer.after_save.take()
@@ -1289,11 +1637,28 @@ impl Nimbra {
             (Some(Parked::Closing), _) if !ok => self.unpark(serial, cx),
             (Some(Parked::Closing), _) if again => self.save_composer(serial, false, cx),
             (Some(Parked::Closing), _) => {
-                self.parked.retain(|(_, c)| c.serial != serial);
+                if let Some(pos) = self.parked.iter().position(|(_, c)| c.serial == serial) {
+                    let (_, composer) = self.parked.remove(pos);
+                    // Its made-up row stays until Drafts is listed again: Edit draft there
+                    // brings this composer back.
+                    if let Some((id, _)) = &made_up {
+                        self.closed_drafts.retain(|(i, _)| i != id);
+                        self.closed_drafts.push((id.clone(), composer));
+                        let excess = self.closed_drafts.len().saturating_sub(8);
+                        self.closed_drafts.drain(..excess);
+                    }
+                }
                 refresh = true;
             }
             (None, _) if again => self.save_composer(serial, false, cx),
             _ => {}
+        }
+        if let Some((id, account)) = made_up {
+            self.pending.forget(View::Drafts, &account, &id);
+        }
+        // Drafts fetched ahead may be older than what was just saved.
+        if ok {
+            self.drafts_ready.clear();
         }
         if refresh && self.mailbox.base() == View::Drafts {
             self.refresh(cx);
@@ -1306,6 +1671,12 @@ impl Nimbra {
         let Some(pos) = self.parked.iter().position(|(_, c)| c.serial == serial) else {
             return;
         };
+        if self.parked[pos].0 == Parked::Discarded
+            && let Some(id) = self.parked[pos].1.listed_as.clone()
+        {
+            let account = self.parked[pos].1.account.clone();
+            self.show_draft_row(account, &id, true, cx);
+        }
         if self.compose.is_some() {
             let (_, composer) = self.parked.remove(pos);
             let subject = composer.subject.read(cx).text();
@@ -1418,6 +1789,15 @@ impl Nimbra {
             return;
         }
         let serial = composer.serial;
+        // Out of Drafts now; Undo puts it back.
+        if let Some(id) = composer.listed_as.clone() {
+            let account = composer.account.clone();
+            if composer.listed_new {
+                let account = account.clone().unwrap_or_else(|| self.account_id.clone());
+                self.pending.forget(View::Drafts, &account, &id);
+            }
+            self.show_draft_row(account, &id, false, cx);
+        }
         self.parked.push((Parked::Discarded, composer));
         self.offer_undo("Draft discarded", cx);
         self.finish_parked_later(serial, UNDO_DELAY, cx);
@@ -1457,6 +1837,7 @@ impl Nimbra {
             }
             Parked::Discarded => {
                 let (_, composer) = self.parked.remove(pos);
+                let (listed, account) = (composer.listed_as.clone(), composer.account.clone());
                 if let (Some(id), Some(client)) = (
                     composer.draft_id.clone(),
                     self.client_for(composer.account.as_deref()),
@@ -1471,9 +1852,27 @@ impl Nimbra {
                             })
                             .await;
                         this.update(cx, |this, cx| {
-                            if let Err(error) = result {
-                                this.notice =
-                                    Some(format!("The draft was not deleted: {error}").into());
+                            // Already gone from the server: deleted all the same.
+                            let result = match result {
+                                Err(error) if mail::is_gone(&error) => Ok(()),
+                                other => other,
+                            };
+                            match result {
+                                Err(error) => {
+                                    this.notice =
+                                        Some(format!("The draft was not deleted: {error}").into());
+                                    // Back in Drafts.
+                                    if let Some(id) = &listed {
+                                        this.show_draft_row(account.clone(), id, true, cx);
+                                    }
+                                }
+                                Ok(()) => {
+                                    if let Some(id) = &listed {
+                                        for list in this.cache.values_mut() {
+                                            list.retain(|m| m.id.as_deref() != Some(id.as_str()));
+                                        }
+                                    }
+                                }
                             }
                             if this.mailbox.base() == View::Drafts {
                                 this.refresh(cx);
