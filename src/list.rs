@@ -1000,8 +1000,12 @@ impl Nimbra {
         // As GPUI will clamp it once laid out, so rows removed at the end of a scrolled
         // list never leave a frame with nothing drawn.
         let total = slot_top(slots, slots.len(), row_h);
+        // Nor past the top: a fast scroll up at the top hands GPUI an offset above it, which
+        // it clamps only once laid out. Read as is, rows were left out (or all of them, a
+        // blank frame) for as long as the momentum lasted.
         let scroll = (-from_screen(self.list_scroll.offset().y))
             .min((lead + total + 10. - view_h).max(0.))
+            .max(0.)
             - lead;
         // The window bounds the list's height, so this holds even before the first layout
         // or right after a resize, when the list's own bounds are a frame old.

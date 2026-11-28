@@ -41,6 +41,7 @@
 - **A discarded draft leaves Drafts at once.** Its row goes as it is discarded, and Undo puts it back. Trashing the row of a draft just written here deletes that draft.
 - **The whole composer dims.** "Save this draft?" dims the composer's border too, rather than leaving it bright around the dimmed composer.
 - **No suggestions over "Save this draft?".** Address suggestions close as the sheet opens and stay hidden while it is up.
+- **Fast scrolling at the top.** Scrolling up quickly at the top of the list no longer leaves rows (or the whole list) blank while the scroll settles.
 
 ## [0.1.9] - 2026-11-28
 
