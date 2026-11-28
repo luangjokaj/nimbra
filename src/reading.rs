@@ -1131,9 +1131,18 @@ impl Nimbra {
                         icon_button(t, "list")
                             .id("toggle-list")
                             .press(t)
-                            .tooltip(tip(t.dark, "Show or hide message list", "⌘⇧B"))
+                            .tooltip(tip(
+                                t.dark,
+                                "Show or hide message list",
+                                crate::shortcuts::label("toggle-list"),
+                            ))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Show or hide message list", "⌘⇧B", cx)
+                                this.set_hint(
+                                    *hovered,
+                                    "Show or hide message list",
+                                    crate::shortcuts::label("toggle-list"),
+                                    cx,
+                                )
                             }))
                             .when(!self.list_open, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_list(cx))),
@@ -1168,9 +1177,18 @@ impl Nimbra {
                         action_button(t, "done", "Done", !narrow)
                             .id("mark-done")
                             .press(t)
-                            .tooltip(tip(t.dark, "Mark done (archive)", "E"))
+                            .tooltip(tip(
+                                t.dark,
+                                "Mark done (archive)",
+                                crate::shortcuts::label("mark-done"),
+                            ))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Mark done (archive)", "E", cx)
+                                this.set_hint(
+                                    *hovered,
+                                    "Mark done (archive)",
+                                    crate::shortcuts::label("mark-done"),
+                                    cx,
+                                )
                             }))
                             .on_click(cx.listener(|this, _, _, cx| this.mark_done(cx))),
                     )
@@ -1181,9 +1199,14 @@ impl Nimbra {
                             .id("snooze")
                             .relative()
                             .press(t)
-                            .tooltip(tip(t.dark, "Snooze", "H"))
+                            .tooltip(tip(t.dark, "Snooze", crate::shortcuts::label("snooze")))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Snooze", "H", cx)
+                                this.set_hint(
+                                    *hovered,
+                                    "Snooze",
+                                    crate::shortcuts::label("snooze"),
+                                    cx,
+                                )
                             }))
                             .child(
                                 gpui::canvas(
@@ -1206,9 +1229,14 @@ impl Nimbra {
                         action_button(t, "reply", "Reply", !narrow)
                             .id("reply")
                             .press(t)
-                            .tooltip(tip(t.dark, "Reply", "R"))
+                            .tooltip(tip(t.dark, "Reply", crate::shortcuts::label("reply")))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Reply", "R", cx)
+                                this.set_hint(
+                                    *hovered,
+                                    "Reply",
+                                    crate::shortcuts::label("reply"),
+                                    cx,
+                                )
                             }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::Reply, cx)
@@ -1218,9 +1246,18 @@ impl Nimbra {
                         action_button(t, "reply-all", "Reply all", false)
                             .id("reply-all")
                             .press(t)
-                            .tooltip(tip(t.dark, "Reply all", "A"))
+                            .tooltip(tip(
+                                t.dark,
+                                "Reply all",
+                                crate::shortcuts::label("reply-all"),
+                            ))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Reply all", "A", cx)
+                                this.set_hint(
+                                    *hovered,
+                                    "Reply all",
+                                    crate::shortcuts::label("reply-all"),
+                                    cx,
+                                )
                             }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::ReplyAll, cx)
@@ -1230,9 +1267,18 @@ impl Nimbra {
                         action_button(t, "forward", "Forward", false)
                             .id("forward")
                             .press(t)
-                            .tooltip(tip(t.dark, "Forward", "F"))
+                            .tooltip(tip(
+                                t.dark,
+                                "Forward",
+                                crate::shortcuts::label("forward-message"),
+                            ))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Forward", "F", cx)
+                                this.set_hint(
+                                    *hovered,
+                                    "Forward",
+                                    crate::shortcuts::label("forward-message"),
+                                    cx,
+                                )
                             }))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_compose(ComposeKind::Forward, cx)
@@ -1244,9 +1290,14 @@ impl Nimbra {
                         icon_button(t, "star")
                             .id("star")
                             .press(t)
-                            .tooltip(tip(t.dark, "Star", "S"))
+                            .tooltip(tip(t.dark, "Star", crate::shortcuts::label("toggle-star")))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Star", "S", cx)
+                                this.set_hint(
+                                    *hovered,
+                                    "Star",
+                                    crate::shortcuts::label("toggle-star"),
+                                    cx,
+                                )
                             }))
                             .when(m.starred, |d| d.bg(t.selected))
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_star(cx))),
@@ -1280,9 +1331,18 @@ impl Nimbra {
                         icon_button(t, "trash")
                             .id("trash")
                             .press(t)
-                            .tooltip(tip(t.dark, "Move to trash", "⌫"))
+                            .tooltip(tip(
+                                t.dark,
+                                "Move to trash",
+                                crate::shortcuts::label("trash"),
+                            ))
                             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                this.set_hint(*hovered, "Move to trash", "⌫", cx)
+                                this.set_hint(
+                                    *hovered,
+                                    "Move to trash",
+                                    crate::shortcuts::label("trash"),
+                                    cx,
+                                )
                             }))
                             .on_click(cx.listener(|this, _, _, cx| this.trash(cx))),
                     )
@@ -1306,9 +1366,18 @@ impl Nimbra {
                                 icon_button(t, "up")
                                     .id("prev")
                                     .press(t)
-                                    .tooltip(tip(t.dark, "Previous thread", "K"))
+                                    .tooltip(tip(
+                                        t.dark,
+                                        "Previous thread",
+                                        crate::shortcuts::label("prev"),
+                                    ))
                                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        this.set_hint(*hovered, "Previous thread", "K", cx)
+                                        this.set_hint(
+                                            *hovered,
+                                            "Previous thread",
+                                            crate::shortcuts::label("prev"),
+                                            cx,
+                                        )
                                     }))
                                     .when(pos <= 1, |d| d.opacity(0.4))
                                     .on_click(cx.listener(|this, _, _, cx| this.step(-1, cx))),
@@ -1317,9 +1386,18 @@ impl Nimbra {
                                 icon_button(t, "down")
                                     .id("next")
                                     .press(t)
-                                    .tooltip(tip(t.dark, "Next thread", "J"))
+                                    .tooltip(tip(
+                                        t.dark,
+                                        "Next thread",
+                                        crate::shortcuts::label("next"),
+                                    ))
                                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                                        this.set_hint(*hovered, "Next thread", "J", cx)
+                                        this.set_hint(
+                                            *hovered,
+                                            "Next thread",
+                                            crate::shortcuts::label("next"),
+                                            cx,
+                                        )
                                     }))
                                     .when(pos >= visible.len(), |d| d.opacity(0.4))
                                     .on_click(cx.listener(|this, _, _, cx| this.step(1, cx))),

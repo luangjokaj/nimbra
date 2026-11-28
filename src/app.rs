@@ -167,6 +167,12 @@ actions!(
         MenuToggleSidebar,
         MenuSearch,
         MenuShortcuts,
+        // Twins of actions whose keys can be changed, for when none of their keys works
+        // anywhere in the app (see `shortcut_item` in main.rs).
+        MenuCompose,
+        MenuReload,
+        MenuToggleList,
+        MenuToggleTheme,
         Quit,
         // The keyboard (see `keyboard.rs`).
         FocusSidebar,
@@ -670,7 +676,7 @@ pub struct Nimbra {
     /// The toolbar button under the mouse (what it does, its shortcut). Shown in the strip
     /// above an email in the original view, where a floating tooltip would be hidden
     /// behind the native web view.
-    hint: Option<(&'static str, &'static str)>,
+    hint: Option<(&'static str, SharedString)>,
     /// Where a row's right-click menu opens (window coordinates), and what its items do.
     menu_at: (f32, f32),
     row_actions: Vec<RowAction>,
@@ -1504,12 +1510,16 @@ impl Nimbra {
         &mut self,
         hovered: bool,
         label: &'static str,
-        key: &'static str,
+        key: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) {
         if hovered {
-            self.hint = Some((label, key));
-        } else if self.hint.is_some_and(|(current, _)| current == label) {
+            self.hint = Some((label, key.into()));
+        } else if self
+            .hint
+            .as_ref()
+            .is_some_and(|(current, _)| *current == label)
+        {
             // Only clear our own hint: moving straight to the next button sets its hint
             // first, and that one must stay.
             self.hint = None;
@@ -2939,6 +2949,7 @@ impl Render for Nimbra {
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleTheme, _, cx| this.toggle_theme(cx)))
+            .on_action(cx.listener(|this, _: &MenuToggleTheme, _, cx| this.toggle_theme(cx)))
             // Here too, as the theme: the app-wide handlers reach this window only from
             // the others (updating it from inside its own dispatch does nothing).
             .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.step_zoom(1, cx)))
@@ -2950,6 +2961,7 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &Back, _, cx| this.go_back(cx)))
             .on_action(cx.listener(|this, _: &Forward, _, cx| this.go_forward(cx)))
             .on_action(cx.listener(|this, _: &Reload, _, cx| this.reload(cx)))
+            .on_action(cx.listener(|this, _: &MenuReload, _, cx| this.reload(cx)))
             .on_action(|_: &HideWindow, window, _| crate::blur::set_visible(window, false))
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
@@ -2975,6 +2987,7 @@ impl Render for Nimbra {
                 }),
             )
             .on_action(cx.listener(|this, _: &ToggleList, _, cx| this.toggle_list(cx)))
+            .on_action(cx.listener(|this, _: &MenuToggleList, _, cx| this.toggle_list(cx)))
             .relative()
             .flex()
             .size_full()

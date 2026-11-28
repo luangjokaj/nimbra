@@ -677,7 +677,7 @@ impl Nimbra {
                                                         } else {
                                                             "Mark done"
                                                         },
-                                                        "E",
+                                                        crate::shortcuts::label("mark-done"),
                                                     ))
                                                     .on_click(cx.listener(
                                                         move |this, _, _, cx| {
@@ -690,7 +690,7 @@ impl Nimbra {
                                         })
                                         .child(
                                             quick("quick-snooze", "clock")
-                                                .tooltip(tip(t.dark, "Snooze", "H"))
+                                                .tooltip(tip(t.dark, "Snooze", crate::shortcuts::label("snooze")))
                                                 .on_click(cx.listener(
                                                     move |this, event: &gpui::ClickEvent, window, cx| {
                                                         cx.stop_propagation();
@@ -956,7 +956,11 @@ impl Nimbra {
                             .id("compose")
                             .mr(dp(if worded { -9. } else { -7. }))
                             .press(t)
-                            .tooltip(tip(t.dark, "New message", "C"))
+                            .tooltip(tip(
+                                t.dark,
+                                "New message",
+                                crate::shortcuts::label("compose"),
+                            ))
                             .on_click(
                                 cx.listener(|this, _, _, cx| {
                                     this.open_compose(ComposeKind::New, cx)
@@ -1240,7 +1244,11 @@ impl Nimbra {
                 .items_center()
                 .gap(dp(6.))
                 .child(meta("Press", c(0xffffff, 0.5)))
-                .child(kbd(&Theme::dark(), "Z"))
+                .child({
+                    // ⌘Z undoes too, whatever Undo's own key is.
+                    let key = crate::shortcuts::label("undo");
+                    kbd(&Theme::dark(), if key.is_empty() { "⌘Z" } else { &key })
+                })
                 .child(meta("to undo", c(0xffffff, 0.5)))
         } else {
             // The day's line, centred; a quote has its author set apart below it.

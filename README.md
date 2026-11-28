@@ -126,7 +126,7 @@ Everything has a key. The ones you'll use most:
 | `Z` | Undo |
 | `?` | Every shortcut on one sheet |
 
-The full list is in [docs/keys.md](docs/keys.md).
+The full list is in [docs/keys.md](docs/keys.md). Every key can be changed in **Settings › Shortcuts**: a key already in use asks before it moves, and **Reset all shortcuts** brings back the ones above.
 
 ## Privacy and security
 
@@ -252,7 +252,7 @@ Settings › About shows `assets/app-icon.png` in light mode and `assets/app-ico
 
 ### Screenshot states
 
-`NIMBRA_SCREEN=welcome`, `palette`, `finder` (the search panel, holding `NIMBRA_SEARCH` if set), `zero`, `loading`, `compose`, `compose-full`, `compose-suggest`, `draft`, `bulk` (three threads picked), `window`, `more`, `offline`, `snooze`, `snooze-time`, `shortcuts`, `account` (and `account-servers`), `update`, `update-download`, `updated`, `up-to-date`, `settings`, `settings-accounts`, `settings-remove`, `settings-appearance`, `settings-reading`, `settings-composing` (also `settings-composing-html` and `settings-composing-preview`, on the sample's HTML signature), `settings-notifications`, `settings-privacy`, `settings-shortcuts`, `settings-about` or `about` opens that screen directly on the sample data. `NIMBRA_SHORTCUTS_TAB=<n>` switches the shortcuts sheet to tab n a second after it opens. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked, and `NIMBRA_LIST=closed` with the list hidden. `NIMBRA_LIST_WIDTH=<px>` sets the list's width. `NIMBRA_MAILBOX=sent` (or `starred`, `snoozed`, `drafts`, `done`, `all`, `important`, `spam`, `trash`) opens that mailbox first. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways. `NIMBRA_NOTIFY_TEST=1` posts one sample notification, to check the setup.
+`NIMBRA_SCREEN=welcome`, `palette`, `finder` (the search panel, holding `NIMBRA_SEARCH` if set), `zero`, `loading`, `compose`, `compose-full`, `compose-suggest`, `draft`, `bulk` (three threads picked), `window`, `more`, `offline`, `snooze`, `snooze-time`, `shortcuts`, `account` (and `account-servers`), `update`, `update-download`, `updated`, `up-to-date`, `settings`, `settings-accounts`, `settings-remove`, `settings-appearance`, `settings-reading`, `settings-composing` (also `settings-composing-html` and `settings-composing-preview`, on the sample's HTML signature), `settings-notifications`, `settings-privacy`, `settings-shortcuts` (also `settings-shortcuts-record`, `settings-shortcuts-replace`, `settings-shortcuts-search` and `settings-shortcuts-reset`), `settings-about` or `about` opens that screen directly on the sample data. `NIMBRA_SHORTCUTS_TAB=<n>` switches the shortcuts sheet to tab n a second after it opens. `NIMBRA_THEME=light` starts in light mode. `NIMBRA_SIDEBAR=closed` (or `open`) starts with the sidebar hidden or docked, and `NIMBRA_LIST=closed` with the list hidden. `NIMBRA_LIST_WIDTH=<px>` sets the list's width. `NIMBRA_MAILBOX=sent` (or `starred`, `snoozed`, `drafts`, `done`, `all`, `important`, `spam`, `trash`) opens that mailbox first. `NIMBRA_OPEN=<row>` opens that thread first. `NIMBRA_READER=1` starts in the native reader view. `NIMBRA_SEARCH=<query>` starts with a search run. `NIMBRA_SHIFT=<px>` moves the window sideways. `NIMBRA_NOTIFY_TEST=1` posts one sample notification, to check the setup.
 
 ### Working on the engine
 

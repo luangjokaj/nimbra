@@ -47,6 +47,10 @@ const SCREENS: &[(&str, Tab)] = &[
     ("settings-appearance", Tab::Appearance),
     ("settings-privacy", Tab::Privacy),
     ("settings-shortcuts", Tab::Shortcuts),
+    ("settings-shortcuts-record", Tab::Shortcuts),
+    ("settings-shortcuts-replace", Tab::Shortcuts),
+    ("settings-shortcuts-search", Tab::Shortcuts),
+    ("settings-shortcuts-reset", Tab::Shortcuts),
     ("settings-about", Tab::About),
 ];
 
@@ -186,6 +190,20 @@ pub(super) struct SettingsWindow {
     /// brought forward: it is changed in other apps too).
     mail_app: Option<crate::integration::MailApp>,
     making_default: bool,
+    /// Shortcuts: the action whose key is being typed (with a first step typed so far, for
+    /// a two-step key like G then I), the keyboard focus that takes it, a question before a
+    /// key moves from another action, and why a key was refused.
+    record: Option<Record>,
+    /// Shortcuts: the field that finds actions by name.
+    sc_search: Entity<TextInput>,
+    record_focus: FocusHandle,
+    /// Whether the recorder had the keyboard at the last frame.
+    record_held: bool,
+    record_epoch: usize,
+    ask: Option<Ask>,
+    refused: Option<(&'static str, SharedString)>,
+    /// Reset all shortcuts asks first, in a dialog.
+    confirm_reset_shortcuts: bool,
     _activation: Option<gpui::Subscription>,
     _subscriptions: Vec<gpui::Subscription>,
 }
@@ -214,6 +232,28 @@ impl SettingsWindow {
             .map(|s| SigPick::Signature(s.id));
         let sig_name = cx.new(|cx| TextInput::new(cx, "Untitled", t.faint, t.violet));
         let mut subscriptions = subscriptions;
+        let record_focus = cx.focus_handle();
+        let dialog_focus = cx.focus_handle();
+        let sc_search = cx.new(|cx| {
+            let mut input = TextInput::new(cx, "Search shortcuts", t.faint, t.violet);
+            // The screenshot of a search: NIMBRA_SEARCH typed, or "reply".
+            if screen == "settings-shortcuts-search" {
+                let typed = std::env::var("NIMBRA_SEARCH").unwrap_or_else(|_| "reply".into());
+                input.set(typed, usize::MAX, cx);
+            }
+            input
+        });
+        subscriptions.push(cx.subscribe(&sc_search, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Changed) {
+                cx.notify();
+            }
+        }));
+        // Closed while a key was being typed: the app's keys come back.
+        subscriptions.push(cx.on_release(|this: &mut SettingsWindow, cx| {
+            if this.record.is_some() {
+                crate::apply_shortcuts(cx);
+            }
+        }));
         subscriptions.push(cx.subscribe(&sig_name, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Changed) {
                 this.name_changed(cx);
@@ -221,8 +261,14 @@ impl SettingsWindow {
         }));
         SettingsWindow {
             owner,
-            tab: Tab::General,
-            pending_focus: None,
+            // A screenshot state opens on its own section (`SCREENS`); otherwise General.
+            tab: screen_tab(&screen).unwrap_or(Tab::General),
+            // The screenshot of a key being typed holds the keyboard, as a click would.
+            pending_focus: match screen.as_str() {
+                "settings-shortcuts-record" => Some(record_focus.clone()),
+                "settings-shortcuts-reset" => Some(dialog_focus.clone()),
+                _ => None,
+            },
             sig_account: None,
             sig_pick,
             sig_mode,
@@ -244,10 +290,46 @@ impl SettingsWindow {
             sig_picker: None,
             armed: None,
             confirm_remove: asking,
-            dialog_focus: cx.focus_handle(),
+            dialog_focus,
             slides: std::collections::HashMap::new(),
             mail_app: None,
             making_default: false,
+            record: (screen == "settings-shortcuts-record").then_some(Record {
+                id: "next",
+                first: None,
+            }),
+            sc_search,
+            record_focus,
+            record_held: false,
+            record_epoch: 0,
+            // The screenshot of the question: G typed for Next conversation (every Go to has it),
+            // under Previous conversation left with no key (in memory only, never saved).
+            ask: (screen == "settings-shortcuts-replace").then(|| {
+                crate::shortcuts::set_current(crate::shortcuts::clear(
+                    &crate::shortcuts::current(),
+                    "prev",
+                ));
+                Ask {
+                    id: "next",
+                    keys: vec!["g".into()],
+                    losers: vec![
+                        "go-inbox",
+                        "go-starred",
+                        "go-snoozed",
+                        "go-sent",
+                        "go-drafts",
+                        "go-all-mail",
+                    ],
+                    reset: false,
+                }
+            }),
+            refused: None,
+            // The screenshot of Reset all asking, with two shortcuts changed (in memory only).
+            confirm_reset_shortcuts: screen == "settings-shortcuts-reset" && {
+                use crate::shortcuts::{clear, current, replace, set_current};
+                set_current(replace(&clear(&current(), "prev"), "mark-done", "d"));
+                true
+            },
             _activation: None,
             _subscriptions: subscriptions,
         }
@@ -255,6 +337,9 @@ impl SettingsWindow {
 
     /// Moves to a section; for Composing, to `account`'s signatures when one is given.
     pub(super) fn show(&mut self, tab: Tab, account: Option<String>, cx: &mut Context<Self>) {
+        if tab != self.tab {
+            self.end_record(cx);
+        }
         self.tab = tab;
         self.armed = None;
         if let Some(account) = account
@@ -488,14 +573,24 @@ impl Render for SettingsWindow {
             Tab::Composing => self.composing(&t, cx),
             Tab::Notifications => self.notifications(&t, cx),
             Tab::Privacy => self.privacy(&t, cx),
-            Tab::Shortcuts => self.shortcuts(&t),
+            Tab::Shortcuts => self.shortcuts(&t, window, cx),
             Tab::About => self.about(&t, cx),
         };
         let hover = t.hover;
         let dialog = self
             .remove_dialog(&t, cx)
-            .or_else(|| self.delete_dialog(&t, cx));
+            .or_else(|| self.delete_dialog(&t, cx))
+            .or_else(|| self.reset_shortcuts_dialog(&t, cx));
         div()
+            // A key typed for a shortcut (Shortcuts): the app's keys are let go meanwhile,
+            // so every key arrives here, Escape included.
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if this.record.is_some() {
+                    cx.stop_propagation();
+                    this.record_key(&event.keystroke, cx);
+                }
+            }))
+            .child(div().absolute().track_focus(&self.record_focus))
             // Escape leaves the Add account form, as Cancel does.
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
                 this.owner.update(cx, |n, cx| {
@@ -2439,6 +2534,115 @@ impl SettingsWindow {
         )
     }
 
+    /// "Reset all shortcuts?": every key back as Nimbra came, in a dialog like Delete's.
+    fn reset_shortcuts_dialog(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.confirm_reset_shortcuts {
+            return None;
+        }
+        let changed = crate::shortcuts::current().len();
+        let detail = if changed == 1 {
+            "The one shortcut you changed goes back to its own keys.".to_string()
+        } else {
+            format!("The {changed} shortcuts you changed go back to their own keys.")
+        };
+        let danger = div()
+            .id("confirm-reset-shortcuts")
+            .flex()
+            .flex_none()
+            .items_center()
+            .px(dp(14.))
+            .py(dp(6.))
+            .rounded(dp(9.))
+            .bg(t.rose)
+            .text_color(gpui::white())
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .hover(|s| s.opacity(0.9))
+            .child("Reset")
+            .on_click(cx.listener(|this, _, _, cx| this.reset_all_shortcuts(cx)));
+        Some(
+            div()
+                .id("reset-shortcuts-scrim")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(t.scrim)
+                .occlude()
+                .track_focus(&self.dialog_focus)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.cancel_reset_shortcuts(cx),
+                        "enter" => this.reset_all_shortcuts(cx),
+                        _ => {}
+                    }
+                }))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.cancel_reset_shortcuts(cx)),
+                )
+                .child(
+                    div()
+                        .id("reset-shortcuts-dialog")
+                        .w(dp(400.))
+                        .flex()
+                        .flex_col()
+                        .gap(dp(10.))
+                        .p(dp(24.))
+                        .rounded(dp(16.))
+                        .bg(t.raised)
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .shadow(vec![shadow(
+                            c(0x000000, if t.dark { 0.6 } else { 0.2 }),
+                            24.,
+                            60.,
+                            -10.,
+                        )])
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .text_size(dp(15.))
+                                .line_height(dp(20.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Reset all shortcuts?"),
+                        )
+                        .child(div().text_color(t.text2).child(detail))
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(dp(8.))
+                                .pt(dp(10.))
+                                .child(
+                                    button(t, ButtonKind::Secondary, "Cancel", None)
+                                        .id("cancel-reset-shortcuts")
+                                        .press_soft()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.cancel_reset_shortcuts(cx)
+                                        })),
+                                )
+                                .child(danger),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn cancel_reset_shortcuts(&mut self, cx: &mut Context<Self>) {
+        self.confirm_reset_shortcuts = false;
+        cx.notify();
+    }
+
+    /// Every shortcut back as Nimbra came.
+    fn reset_all_shortcuts(&mut self, cx: &mut Context<Self>) {
+        self.confirm_reset_shortcuts = false;
+        self.ask = None;
+        self.refused = None;
+        self.apply_shortcuts(crate::shortcuts::Overrides::new(), cx);
+    }
+
     fn notifications(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let n = self.owner.read(cx);
         let (on, sound, badge) = (
@@ -2619,78 +2823,522 @@ impl SettingsWindow {
         ]
     }
 
-    fn shortcuts(&self, t: &Theme) -> Vec<AnyElement> {
-        let keys: &[(&str, &[(&str, &str)])] = &[
-            (
-                "Reading",
-                &[
-                    ("J / ↓", "Next conversation"),
-                    ("K / ↑", "Previous conversation"),
-                    ("Return", "Full view"),
-                    ("V", "Original formatting or reader"),
-                    ("⌘[ / ⌘]", "Back / forward"),
-                ],
-            ),
-            (
-                "Organising",
-                &[
-                    ("E", "Mark done"),
-                    ("U", "Read or unread"),
-                    ("S", "Star"),
-                    ("H", "Snooze"),
-                    ("⌫", "Move to trash"),
-                    ("Z / ⌘Z", "Undo"),
-                    ("⌘A", "Select all"),
-                ],
-            ),
-            (
-                "Writing",
-                &[
-                    ("C / ⌘N", "New message"),
-                    ("R", "Reply"),
-                    ("A", "Reply all"),
-                    ("F", "Forward"),
-                    ("⌘↵", "Send"),
-                    ("⌘S", "Save draft"),
-                    ("⌘⇧F", "Full page composer"),
-                    ("⌘B ⌘I ⌘U ⌘K", "Bold, italic, underline, link"),
-                ],
-            ),
-            (
-                "App",
-                &[
-                    ("/ or ⌘F", "Search"),
-                    ("⌘K", "Snooze"),
-                    ("⌘R", "Check for mail"),
-                    ("⌘B / ⌘⇧B", "Sidebar (auto-hide) / message list"),
-                    ("⌘⇧L", "Switch light and dark"),
-                    ("⌘,", "Settings"),
-                    ("⌘P", "Print"),
-                    ("⌘H / ⌘M / ⌘W", "Hide / minimise / close window"),
-                ],
-            ),
-        ];
-        keys.iter()
-            .map(|(title, items)| {
-                group(
-                    t,
-                    Some(title),
-                    items
-                        .iter()
-                        .map(|(key, what)| {
+    fn shortcuts(
+        &mut self,
+        t: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        use crate::shortcuts::{self, Section, TABLE};
+        // The keyboard went elsewhere (a click outside the row): typing a key is over. Only
+        // once it had arrived: a focus asked for while drawing comes a frame later.
+        let focused = self.record_focus.is_focused(window);
+        if self.record.is_some() && self.record_held && !focused {
+            self.end_record(cx);
+        }
+        self.record_held = self.record.is_some() && focused;
+        let now = shortcuts::current();
+        // Typed in the search field: actions whose name has every word, in any order.
+        let query = self.sc_search.read(cx).text().trim().to_lowercase();
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let found = |s: &crate::shortcuts::Shortcut| {
+            let name = s.name.to_lowercase();
+            words.iter().all(|w| name.contains(w))
+        };
+        let mut out: Vec<AnyElement> = Section::ALL
+            .iter()
+            .filter_map(|section| {
+                let rows: Vec<_> = TABLE
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.section == *section && found(s))
+                    .collect();
+                if rows.is_empty() {
+                    return None;
+                }
+                let count = rows.len();
+                let rows = rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, (i, s))| self.shortcut_row(t, i, s, &now, n + 1 == count, cx))
+                    .collect();
+                Some(group(t, Some(section.title()), rows))
+            })
+            .collect();
+        // Nothing by that name: said in a card like the lists, so the page keeps its shape.
+        if out.is_empty() {
+            out.push(group(
+                t,
+                None,
+                vec![
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(dp(6.))
+                        .px(dp(16.))
+                        .py(dp(28.))
+                        .child(icon("search", 20., t.text3))
+                        .child(
                             div()
-                                .flex()
-                                .items_center()
-                                .px(dp(16.))
-                                .py(dp(9.))
-                                .child(div().flex_1().text_color(t.text2).child(*what))
-                                .child(kbd(t, key))
-                                .into_any_element()
-                        })
-                        .collect(),
+                                .mt(dp(4.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(t.text)
+                                .child("No matching shortcuts"),
+                        )
+                        .child(meta(
+                            format!("Nothing is called “{query}”. Try another word."),
+                            t.text3,
+                        ))
+                        .into_any_element(),
+                ],
+            ));
+        }
+        let changed_count = shortcuts::current().len();
+        let searching = !words.is_empty();
+        out.insert(
+            0,
+            div()
+                .flex()
+                .items_center()
+                .gap(dp(12.))
+                // Finds actions by name, framed as Settings' other fields are.
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(dp(0.))
+                        .flex()
+                        .items_center()
+                        .gap(dp(8.))
+                        // The size of every text field (Add account's).
+                        .h(dp(40.))
+                        .px(dp(12.))
+                        .rounded(dp(10.))
+                        .bg(t.hover)
+                        .border_1()
+                        .border_color(t.border)
+                        .text_size(dp(14.))
+                        .child(icon("search", 15., t.text3))
+                        .child(div().flex_1().min_w(dp(0.)).child(self.sc_search.clone()))
+                        .when(searching, |d| {
+                            d.child(
+                                div()
+                                    .id("sc-search-clear")
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(dp(20.))
+                                    .rounded(dp(5.))
+                                    .cursor_pointer()
+                                    .hover({
+                                        let hover = t.selected;
+                                        move |d| d.bg(hover)
+                                    })
+                                    .tooltip(tip(t.dark, "Clear", ""))
+                                    .child(icon("x", 12., t.text3))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sc_search.update(cx, |input, cx| {
+                                            input.set(String::new(), 0, cx)
+                                        });
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
+                )
+                .into_any_element(),
+        );
+        out.insert(
+            1,
+            div()
+                .px(dp(4.))
+                .mt(dp(-8.))
+                .child(meta(
+                    "Click a shortcut to change it. Esc cancels.".to_string(),
+                    t.text3,
+                ))
+                .into_any_element(),
+        );
+        // At the end of the page: every shortcut back as it came.
+        out.push(
+            div()
+                .flex()
+                .child(
+                    // Asks first; with nothing changed there is nothing to reset.
+                    button(t, ButtonKind::Secondary, "Reset all shortcuts", None)
+                        .id("reset-shortcuts")
+                        .press(t)
+                        .when(changed_count == 0, |d| d.opacity(0.5).cursor_default())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if changed_count > 0 {
+                                this.confirm_reset_shortcuts = true;
+                                this.pending_focus = Some(this.dialog_focus.clone());
+                                cx.notify();
+                            }
+                        })),
+                )
+                .into_any_element(),
+        );
+        out
+    }
+
+    /// One action's row: its name, its keys (click to type new ones), a reset when they
+    /// are not its own, and under it the question or refusal about a key typed for it.
+    fn shortcut_row(
+        &self,
+        t: &Theme,
+        i: usize,
+        s: &'static crate::shortcuts::Shortcut,
+        now: &crate::shortcuts::Overrides,
+        last: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::shortcuts;
+        let id = s.id;
+        let recording = self.record.as_ref().filter(|r| r.id == id);
+        let keys = shortcuts::keys_in(now, s);
+        let caps = shortcuts::compact(&keys);
+        // The keys sit in a field of their own, one shape whatever it holds: the keys, "No
+        // key", or the key being typed (violet). Same border in every state, so nothing jumps.
+        let field = |border: Hsla| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(dp(6.))
+                .min_h(dp(28.))
+                .px(dp(6.))
+                .rounded(dp(8.))
+                .border_1()
+                .border_color(border)
+                .bg(t.hover)
+        };
+        let keys_area: AnyElement = match recording {
+            // The key typed so far shows as it will be kept (a second letter in a moment
+            // makes it two steps, G then I).
+            Some(record) => match &record.first {
+                Some(first) => field(t.violet)
+                    .bg(t.selected)
+                    .child(kbd(t, &shortcuts::glyph(first)))
+                    .into_any_element(),
+                None => field(t.violet)
+                    .bg(t.selected)
+                    .px(dp(10.))
+                    .child(meta("Type a shortcut".to_string(), t.text))
+                    .into_any_element(),
+            },
+            None => {
+                let strong = t.border_strong;
+                field(t.border)
+                    .id(("sc-keys", i))
+                    .cursor_pointer()
+                    .hover(move |d| d.border_color(strong))
+                    .press(t)
+                    .when(caps.is_empty(), |d| {
+                        d.px(dp(10.)).child(meta("No key".to_string(), t.faint))
+                    })
+                    .children(caps.iter().enumerate().flat_map(|(n, cap)| {
+                        let slash =
+                            (n > 0).then(|| meta("/".to_string(), t.text3).into_any_element());
+                        slash
+                            .into_iter()
+                            .chain(std::iter::once(kbd(t, cap).into_any_element()))
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.start_record(id, window, cx);
+                    }))
+                    .into_any_element()
+            }
+        };
+        let changed = shortcuts::changed(now, id) && recording.is_none();
+        let line = div()
+            .flex()
+            .items_center()
+            .gap(dp(8.))
+            .min_h(dp(48.))
+            .px(dp(16.))
+            .py(dp(8.))
+            .child(div().flex_1().text_color(t.text2).child(s.name))
+            .when(changed, |d| {
+                let back = shortcuts::compact(&shortcuts::defaults(id)).join(" / ");
+                d.child(
+                    icon_button(t, "reload")
+                        .size(dp(28.))
+                        .id(("sc-reset", i))
+                        .press(t)
+                        .tooltip(tip(t.dark, "Reset", back))
+                        .on_click(cx.listener(move |this, _, _, cx| this.reset_one(id, cx))),
                 )
             })
-            .collect()
+            .child(keys_area);
+        let ask = self.ask.as_ref().filter(|a| a.id == id).map(|ask| {
+            let key = ask
+                .keys
+                .iter()
+                .map(|k| shortcuts::glyph(k))
+                .collect::<Vec<_>>()
+                .join(" / ");
+            let all: Vec<&str> = ask
+                .losers
+                .iter()
+                .filter_map(|l| shortcuts::find(l))
+                .map(|l| l.name)
+                .collect();
+            // Two names at most, then how many more: G alone is the start of every Go to.
+            let names = match all.as_slice() {
+                [one] => one.to_string(),
+                [one, two] => format!("{one} and {two}"),
+                [one, two, rest @ ..] => format!("{one}, {two} and {} more", rest.len()),
+                [] => String::new(),
+            };
+            let question = if ask.reset {
+                format!("Its keys ({key}) are used by {names} now. Take them back?")
+            } else {
+                format!("{key} is used by {names}. Replace it?")
+            };
+            // A band across the card, its words in line with the row's name; under the
+            // card's last row it follows the card's rounded corners.
+            div()
+                .flex()
+                .items_center()
+                .gap(dp(10.))
+                .px(dp(16.))
+                .py(dp(10.))
+                .when(last, |d| d.rounded_b(dp(13.)))
+                .bg(t.selected)
+                // The words wrap within the row; the buttons keep their size.
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(dp(0.))
+                        .text_color(t.text)
+                        .child(question),
+                )
+                // Cancel (✕) and Replace (✓), as icons, each named by its tooltip.
+                .child(
+                    // Framed as the secondary buttons are.
+                    div()
+                        .id(("sc-cancel", i))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(dp(30.))
+                        .rounded(dp(8.))
+                        .cursor_pointer()
+                        .bg(t.hover)
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .hover({
+                            let (selected, strong) = (t.selected, t.border_strong);
+                            move |d| d.bg(selected).border_color(strong)
+                        })
+                        .press(t)
+                        .child(icon("x", 15., t.text))
+                        .tooltip(tip(t.dark, "Cancel", ""))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.ask = None;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .id(("sc-replace", i))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(dp(30.))
+                        .rounded(dp(8.))
+                        .cursor_pointer()
+                        .bg(crate::ui::primary_fill(0.))
+                        .hover(|d| d.bg(crate::ui::primary_fill(1.)))
+                        .press_soft()
+                        .child(icon("done", 16., gpui::white()))
+                        .tooltip(tip(t.dark, "Replace", ""))
+                        .on_click(cx.listener(|this, _, _, cx| this.confirm_ask(cx))),
+                )
+        });
+        let refused = self
+            .refused
+            .as_ref()
+            .filter(|(r, _)| *r == id)
+            .map(|(_, why)| {
+                div()
+                    .mx(dp(16.))
+                    .mb(dp(10.))
+                    .child(meta(why.to_string(), t.rose))
+            });
+        div()
+            .flex()
+            .flex_col()
+            .child(line)
+            .children(ask)
+            .children(refused)
+            .into_any_element()
+    }
+
+    /// Starts typing a key for `id`: the app's keys are let go meanwhile, so ⌘R or E is
+    /// taken as the new key rather than done.
+    fn start_record(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        self.ask = None;
+        self.refused = None;
+        self.record = Some(Record { id, first: None });
+        self.record_epoch += 1;
+        cx.clear_key_bindings();
+        window.focus(&self.record_focus);
+        cx.notify();
+    }
+
+    /// Stops typing a key, if one is being typed, and binds the app's keys again.
+    fn end_record(&mut self, cx: &mut Context<Self>) {
+        if self.record.take().is_some() {
+            self.record_epoch += 1;
+            crate::apply_shortcuts(cx);
+            cx.notify();
+        }
+    }
+
+    /// A key pressed while one is being typed.
+    fn record_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        use crate::shortcuts;
+        let Some(record) = self.record.clone() else {
+            return;
+        };
+        let m = keystroke.modifiers;
+        let plain = !m.platform && !m.control && !m.alt && !m.function;
+        if plain && !m.shift && keystroke.key == "escape" {
+            self.end_record(cx);
+            return;
+        }
+        let Some(step) = shortcuts::normalize(&keystroke.unparse()) else {
+            return;
+        };
+        let needs_chord = shortcuts::find(record.id).is_some_and(shortcuts::needs_chord);
+        match record.first {
+            // G, then I: the second step of a two-step key.
+            Some(first) if plain => self.commit_key(record.id, format!("{first} {step}"), cx),
+            // A plain letter may start a two-step key: it waits a moment for a second.
+            None if plain && !needs_chord => {
+                self.record = Some(Record {
+                    id: record.id,
+                    first: Some(step),
+                });
+                self.record_epoch += 1;
+                let epoch = self.record_epoch;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(800))
+                        .await;
+                    this.update(cx, |this, cx| {
+                        if this.record_epoch == epoch
+                            && let Some(Record {
+                                id,
+                                first: Some(first),
+                            }) = this.record.clone()
+                        {
+                            this.commit_key(id, first, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+                cx.notify();
+            }
+            _ => self.commit_key(record.id, step, cx),
+        }
+    }
+
+    /// The key typed for `id`: given at once, asked about when another action has it, or
+    /// refused when it cannot be one.
+    fn commit_key(&mut self, id: &'static str, key: String, cx: &mut Context<Self>) {
+        use crate::shortcuts::{self, Taken};
+        self.end_record(cx);
+        let Some(shortcut) = shortcuts::find(id) else {
+            return;
+        };
+        if !shortcuts::fits(shortcut, &key) {
+            self.refused = Some((
+                id,
+                "Use a key with ⌘ or ⌃ here, so it never types into your message.".into(),
+            ));
+            cx.notify();
+            return;
+        }
+        let now = shortcuts::current();
+        match shortcuts::taken(&now, id, &key, &crate::fixed_keys()) {
+            Taken::Fixed(name) => {
+                self.refused = Some((
+                    id,
+                    format!(
+                        "{} is {name}, which can't be changed.",
+                        shortcuts::glyph(&key)
+                    )
+                    .into(),
+                ));
+                cx.notify();
+            }
+            Taken::Used(losers) => {
+                self.ask = Some(Ask {
+                    id,
+                    keys: vec![key],
+                    losers,
+                    reset: false,
+                });
+                cx.notify();
+            }
+            Taken::Free | Taken::Own => {
+                let next = shortcuts::replace(&now, id, &key);
+                self.apply_shortcuts(next, cx);
+            }
+        }
+    }
+
+    /// Reset on a row: its own keys again, asking first when another action has one now.
+    fn reset_one(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        use crate::shortcuts;
+        self.refused = None;
+        let now = shortcuts::current();
+        let keys = shortcuts::defaults(id);
+        let losers = shortcuts::losers(&now, id, &keys);
+        if losers.is_empty() {
+            self.ask = None;
+            self.apply_shortcuts(shortcuts::reset_taking(&now, id), cx);
+        } else {
+            self.ask = Some(Ask {
+                id,
+                keys,
+                losers,
+                reset: true,
+            });
+            cx.notify();
+        }
+    }
+
+    /// Replace (or take back) in the question: the key moves, and the other actions lose it.
+    fn confirm_ask(&mut self, cx: &mut Context<Self>) {
+        use crate::shortcuts;
+        let Some(ask) = self.ask.take() else {
+            return;
+        };
+        let now = shortcuts::current();
+        let next = if ask.reset {
+            shortcuts::reset_taking(&now, ask.id)
+        } else {
+            shortcuts::replace(&now, ask.id, &ask.keys[0])
+        };
+        self.apply_shortcuts(next, cx);
+    }
+
+    /// Puts `next` in effect: kept on this Mac, bound, in the menu bar, and shown in the
+    /// main window (the ? sheet, tooltips).
+    fn apply_shortcuts(&mut self, next: crate::shortcuts::Overrides, cx: &mut Context<Self>) {
+        crate::shortcuts::set_current(next);
+        cx.background_spawn(async { crate::shortcuts::save() })
+            .detach();
+        crate::apply_shortcuts(cx);
+        self.owner.update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     fn about(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -3123,4 +3771,21 @@ mod provider_tests {
         let zoho = provider_of(&account(Some("imap.zoho.com"), None));
         assert_eq!(zoho, (Provider::Other, "IMAP · imap.zoho.com".to_string()));
     }
+}
+
+/// A key being typed in Settings › Shortcuts, for `id`: `first` is the step typed so far
+/// of a two-step key (G, then I).
+#[derive(Clone)]
+struct Record {
+    id: &'static str,
+    first: Option<String>,
+}
+
+/// A question before keys move to `id` from `losers`: a new key, or its own keys back
+/// (`reset`).
+struct Ask {
+    id: &'static str,
+    keys: Vec<String>,
+    losers: Vec<&'static str>,
+    reset: bool,
 }

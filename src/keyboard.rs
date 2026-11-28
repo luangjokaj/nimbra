@@ -257,11 +257,16 @@ pub fn extend(open: usize, end: usize, delta: isize, len: usize) -> (usize, Vec<
     (end, (open.min(end)..=open.max(end)).collect())
 }
 
-/// A piece of a shortcut on the sheet: a key cap, or a word between caps ("/", "then").
+/// A piece of a shortcut on the sheet: a key cap, a word between caps ("/", "then"), or
+/// the keys of an action that can be changed (`shortcuts::TABLE`), as they are now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cap {
     Key(&'static str),
     Word(&'static str),
+    /// The action's keys, by its id.
+    Action(&'static str),
+    /// The Go to shortcuts (G, then a letter), together.
+    GoTo,
 }
 
 const fn k(key: &'static str) -> Cap {
@@ -272,105 +277,143 @@ const fn w(word: &'static str) -> Cap {
     Cap::Word(word)
 }
 
+const fn a(id: &'static str) -> Cap {
+    Cap::Action(id)
+}
+
 /// One row of the shortcuts sheet: the keys, and what they do.
 pub type Shortcut = (&'static [Cap], &'static str);
+
+/// What the sheet draws of a row's caps.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Piece {
+    Key(String),
+    Word(String),
+}
+
+/// The Go to actions, in the sheet's order.
+const GO_TO: [&str; 6] = [
+    "go-inbox",
+    "go-starred",
+    "go-snoozed",
+    "go-sent",
+    "go-drafts",
+    "go-all-mail",
+];
+
+/// A row's caps as drawn, with the keys in effect now.
+pub fn pieces(caps: &[Cap]) -> Vec<Piece> {
+    pieces_with(caps, crate::shortcuts::keys)
+}
+
+/// A row's caps as drawn, with `keys` giving each action's keys.
+pub fn pieces_with(caps: &[Cap], keys: impl Fn(&str) -> Vec<String>) -> Vec<Piece> {
+    use crate::shortcuts::{compact, glyph};
+    let mut out = Vec::new();
+    for cap in caps {
+        match cap {
+            Cap::Key(key) => out.push(Piece::Key(key.to_string())),
+            Cap::Word(word) => out.push(Piece::Word(word.to_string())),
+            Cap::Action(id) => {
+                let shown = compact(&keys(id));
+                if shown.is_empty() {
+                    out.push(Piece::Word("no key".into()));
+                }
+                out.extend(shown.into_iter().map(Piece::Key));
+            }
+            Cap::GoTo => {
+                let firsts: Vec<String> = GO_TO
+                    .iter()
+                    .filter_map(|id| keys(id).into_iter().next())
+                    .collect();
+                let steps: Vec<Vec<&str>> = firsts
+                    .iter()
+                    .map(|key| key.split_whitespace().collect())
+                    .collect();
+                // G, then I S B T D A: every one is G and a letter.
+                let shared = steps
+                    .first()
+                    .filter(|first| first.len() == 2)
+                    .map(|first| first[0])
+                    .filter(|lead| steps.iter().all(|s| s.len() == 2 && s[0] == *lead));
+                match shared {
+                    Some(lead) if firsts.len() == GO_TO.len() => {
+                        out.push(Piece::Key(glyph(lead)));
+                        out.push(Piece::Word("then".into()));
+                        out.extend(steps.iter().map(|s| Piece::Key(glyph(s[1]))));
+                    }
+                    _ if firsts.is_empty() => out.push(Piece::Word("no key".into())),
+                    _ => out.extend(firsts.iter().map(|key| Piece::Key(glyph(key)))),
+                }
+            }
+        }
+    }
+    out
+}
 
 /// The shortcuts sheet (?), one tab each.
 pub const SHORTCUT_TABS: &[(&str, &[Shortcut])] = &[
     (
         "Move",
         &[
-            (
-                &[k("J"), w("/"), k("K"), w("or arrows")],
-                "Next / previous thread",
-            ),
-            (&[k("←")], "Move to the sidebar"),
-            (
-                &[
-                    k("Home"),
-                    w("/"),
-                    k("End"),
-                    w("(or"),
-                    k("⌘↑"),
-                    w("/"),
-                    k("⌘↓"),
-                    w(")"),
-                ],
-                "First / last thread",
-            ),
-            (&[k("X")], "Pick the open thread"),
-            (
-                &[
-                    k("⇧↑"),
-                    w("/"),
-                    k("⇧↓"),
-                    w("(or"),
-                    k("⇧K"),
-                    w("/"),
-                    k("⇧J"),
-                    w(")"),
-                ],
-                "Pick more threads",
-            ),
-            (&[k("O")], "Open in its own window"),
-            (&[k("Space"), w("/"), k("⇧Space")], "Page down / up"),
-            (
-                &[
-                    k("G"),
-                    w("then"),
-                    k("I"),
-                    k("S"),
-                    k("B"),
-                    k("T"),
-                    k("D"),
-                    k("A"),
-                ],
-                "Go to a mailbox",
-            ),
+            (&[a("next"), w("/"), a("prev")], "Next / previous thread"),
+            (&[a("focus-sidebar")], "Move to the sidebar"),
+            (&[a("first"), w("/"), a("last")], "First / last thread"),
+            (&[a("pick-thread")], "Pick the open thread"),
+            (&[a("pick-up"), w("/"), a("pick-down")], "Pick more threads"),
+            (&[a("open-in-window")], "Open in its own window"),
+            (&[a("page-down"), w("/"), a("page-up")], "Page down / up"),
+            (&[Cap::GoTo], "Go to a mailbox"),
             (&[k("⌘1"), w("…"), k("⌘9")], "Switch account"),
-            (&[k("⌘["), w("/"), k("⌘]")], "Back / forward"),
+            (&[a("back"), w("/"), a("forward")], "Back / forward"),
         ],
     ),
     (
         "Triage",
         &[
-            (&[k("E")], "Mark done"),
-            (&[k("H"), w("or"), k("⌘K")], "Snooze"),
-            (&[k("S")], "Star or unstar"),
-            (&[k("U")], "Mark unread or read"),
-            (&[k("⌫"), w("or"), k("⌘⌫")], "Move to trash"),
-            (&[k("Z")], "Undo"),
-            (&[k("/"), w("or"), k("⌘F")], "Search"),
-            (&[k("V")], "Original formatting or reader"),
-            (&[k("↩")], "Read in full view"),
+            (&[a("mark-done")], "Mark done"),
+            (&[a("snooze")], "Snooze"),
+            (&[a("toggle-star")], "Star or unstar"),
+            (&[a("mark-unread")], "Mark unread or read"),
+            (&[a("trash")], "Move to trash"),
+            (&[a("undo")], "Undo"),
+            (&[a("focus-search")], "Search"),
+            (&[a("toggle-original")], "Original formatting or reader"),
+            (&[a("full-view")], "Read in full view"),
             (&[k("esc")], "Back to the list"),
         ],
     ),
     (
         "Write",
         &[
-            (&[k("C"), w("or"), k("⌘N")], "New message"),
-            (&[k("R")], "Reply"),
-            (&[k("A")], "Reply all"),
-            (&[k("F")], "Forward"),
-            (&[k("⌘↩")], "Send"),
-            (&[k("⌘⇧F")], "Full-page composer"),
-            (&[k("⌘B"), k("⌘I"), k("⌘U")], "Bold, italic, underline"),
-            (&[k("⌘K")], "Add a link (in a message)"),
-            (&[k("⌘Z")], "Undo send"),
+            (&[a("compose")], "New message"),
+            (&[a("reply")], "Reply"),
+            (&[a("reply-all")], "Reply all"),
+            (&[a("forward-message")], "Forward"),
+            (&[a("send")], "Send"),
+            (&[a("full-compose")], "Full-page composer"),
+            (
+                &[a("bold"), a("italic"), a("underline")],
+                "Bold, italic, underline",
+            ),
+            (&[a("link")], "Add a link (in a message)"),
+            (&[a("undo")], "Undo send"),
         ],
     ),
     (
         "Window",
         &[
-            (&[k("⌘B")], "Show or hide the sidebar"),
-            (&[k("⌘⇧B")], "Show or hide the message list"),
-            (&[k("⌘R")], "Check for mail"),
-            (&[k("⌘⇧L")], "Light or dark"),
-            (&[k("⌘,")], "Settings"),
-            (&[k("⌘W")], "Close the window (Nimbra keeps checking mail)"),
+            (&[a("toggle-sidebar")], "Show or hide the sidebar"),
+            (&[a("toggle-list")], "Show or hide the message list"),
+            (&[a("reload")], "Check for mail"),
+            (&[a("toggle-theme")], "Light or dark"),
+            (&[a("settings")], "Settings"),
+            (
+                &[a("close-window")],
+                "Close the window (Nimbra keeps checking mail)",
+            ),
             (&[k("⌘Q")], "Quit"),
-            (&[k("?")], "These shortcuts"),
+            (&[a("shortcuts")], "These shortcuts"),
         ],
     ),
 ];
@@ -606,9 +649,51 @@ mod tests {
         for (name, rows) in SHORTCUT_TABS {
             assert!(!rows.is_empty(), "{name}");
             for (caps, action) in *rows {
-                assert!(caps.iter().any(|c| matches!(c, Cap::Key(_))), "{action}");
+                assert!(
+                    pieces(caps).iter().any(|p| matches!(p, Piece::Key(_))),
+                    "{action}"
+                );
+                for cap in *caps {
+                    if let Cap::Action(id) = cap {
+                        assert!(crate::shortcuts::find(id).is_some(), "{id}");
+                    }
+                }
             }
         }
+    }
+
+    #[test]
+    fn the_sheet_shows_the_keys_in_effect() {
+        let defaults = |id: &str| {
+            crate::shortcuts::keys_in(&Default::default(), crate::shortcuts::find(id).unwrap())
+        };
+        let key = |k: &str| Piece::Key(k.into());
+        let word = |w: &str| Piece::Word(w.into());
+        assert_eq!(pieces_with(&[a("snooze")], defaults), [key("H"), key("⌘K")]);
+        assert_eq!(
+            pieces_with(&[Cap::GoTo], defaults),
+            [
+                key("G"),
+                word("then"),
+                key("I"),
+                key("S"),
+                key("B"),
+                key("T"),
+                key("D"),
+                key("A")
+            ]
+        );
+        // Changed: Inbox on F1, and Undo with no key at all.
+        let changed = |id: &str| match id {
+            "go-inbox" => vec!["f1".to_string()],
+            "undo" => Vec::new(),
+            id => defaults(id),
+        };
+        assert_eq!(
+            pieces_with(&[Cap::GoTo], changed)[..2],
+            [key("F1"), key("G S")]
+        );
+        assert_eq!(pieces_with(&[a("undo")], changed), [word("no key")]);
     }
 
     #[test]

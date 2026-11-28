@@ -21,6 +21,7 @@ mod pending;
 mod place;
 mod popup;
 mod quitting;
+mod shortcuts;
 mod signature_images;
 mod sky;
 mod system;
@@ -52,17 +53,13 @@ use gpui::{
 };
 
 use app::{
-    AboutNimbra, ActualSize, Back, CheckForUpdates, Compose, Confirm, Dismiss, DockDrafts,
-    DockInbox, DockSent, DockSnoozed, DockStarred, First, FocusSearch, FocusSidebar, Forward,
-    ForwardMessage, GoAllMail, GoDrafts, GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp,
-    HideOthers, HideWindow, Last, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone,
-    MenuMarkUnread, MenuReply, MenuReplyAll, MenuSearch, MenuShortcuts, MenuSnooze, MenuStar,
-    MenuToggleOriginal, MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra,
-    OpenInWindow, OpenSettings, OpenSidebarRow, PageDown, PageUp, PickDown, PickThread, PickUp,
-    Prev, Print, Quit, ReleaseNotes, Reload, Reply, ReplyAll, ReportProblem, SaveDraft,
-    SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList, ToggleOriginal,
-    TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
-    UseDarkAppearance, UseLightAppearance, UseSystemAppearance, ZoomIn, ZoomOut,
+    AboutNimbra, ActualSize, CheckForUpdates, Compose, Dismiss, DockDrafts, DockInbox, DockSent,
+    DockSnoozed, DockStarred, GoNumber, HideApp, HideOthers, HideWindow, MenuCompose,
+    MenuForwardMessage, MenuMarkDone, MenuMarkUnread, MenuReload, MenuReply, MenuReplyAll,
+    MenuSearch, MenuShortcuts, MenuSnooze, MenuStar, MenuToggleList, MenuToggleOriginal,
+    MenuToggleSidebar, MenuToggleTheme, MenuTrash, MenuUndo, Minimize, Nimbra, OpenSettings,
+    OpenSidebarRow, Print, Quit, ReleaseNotes, Reload, ReportProblem, ShowAll, ToggleList,
+    ToggleTheme, UseDarkAppearance, UseLightAppearance, UseSystemAppearance, ZoomIn, ZoomOut,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -216,6 +213,247 @@ fn keep_frame(window: &mut gpui::Window, cx: &mut gpui::Context<Nimbra>) {
     .detach();
 }
 
+/// The keys that stay as they are, whatever is changed in Settings › Shortcuts: Quit, copy,
+/// zoom, Escape, switching account. Every other key is in `shortcuts::TABLE`.
+pub fn fixed_bindings() -> Vec<KeyBinding> {
+    vec![
+        // Copies text selected in the reader.
+        KeyBinding::new("cmd-c", input::Copy, Some("Mail")),
+        KeyBinding::new("ctrl-c", input::Copy, Some("Mail")),
+        KeyBinding::new("escape", Dismiss, None),
+        // Zoom In takes ⌘= too: ⌘+ is ⌘⇧= on most keyboards.
+        KeyBinding::new("cmd-=", ZoomIn, None),
+        KeyBinding::new("cmd-+", ZoomIn, None),
+        KeyBinding::new("cmd--", ZoomOut, None),
+        KeyBinding::new("cmd-0", ActualSize, None),
+        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("alt-cmd-h", HideOthers, None),
+        KeyBinding::new("alt-shift-cmd-i", ReportProblem, None),
+        // Walking the window: ← to the sidebar (a shortcut of the table), → back with what
+        // is under the cursor.
+        KeyBinding::new(
+            "right",
+            OpenSidebarRow,
+            Some("Mail && Sidebar && !TextInput"),
+        ),
+        KeyBinding::new("cmd-1", GoNumber(1), Some("Mail")),
+        KeyBinding::new("cmd-2", GoNumber(2), Some("Mail")),
+        KeyBinding::new("cmd-3", GoNumber(3), Some("Mail")),
+        KeyBinding::new("cmd-4", GoNumber(4), Some("Mail")),
+        KeyBinding::new("cmd-5", GoNumber(5), Some("Mail")),
+        KeyBinding::new("cmd-6", GoNumber(6), Some("Mail")),
+        KeyBinding::new("cmd-7", GoNumber(7), Some("Mail")),
+        KeyBinding::new("cmd-8", GoNumber(8), Some("Mail")),
+        KeyBinding::new("cmd-9", GoNumber(9), Some("Mail")),
+        // Escape belongs to the message editor while it has the keyboard (it closes its
+        // link box). Its formatting and the composer's keys come from the table.
+        KeyBinding::new("escape", gpui::NoAction, Some("Editor")),
+    ]
+}
+
+/// The fixed keys a shortcut cannot take, each with what it does (the editor's own keys
+/// are not the app's, and are left out).
+pub fn fixed_keys() -> Vec<(String, &'static str)> {
+    fixed_bindings()
+        .iter()
+        .filter(|binding| !binding.action().as_any().is::<gpui::NoAction>())
+        .map(|binding| {
+            let key = binding
+                .keystrokes()
+                .iter()
+                .map(|k| k.unparse())
+                .collect::<Vec<_>>()
+                .join(" ");
+            (key, fixed_name(binding.action().name()))
+        })
+        .collect()
+}
+
+/// What a fixed key does, as the conflict prompt says it.
+fn fixed_name(action: &str) -> &'static str {
+    match action.rsplit("::").next().unwrap_or(action) {
+        "SendMail" => "Send",
+        "SaveDraft" => "Save draft",
+        "ToggleFullCompose" => "Full page composer",
+        "Undo" => "Undo",
+        "Copy" => "Copy",
+        "Dismiss" => "Close or go back",
+        "Confirm" => "Full view",
+        "ZoomIn" => "Zoom in",
+        "ZoomOut" => "Zoom out",
+        "ActualSize" => "Actual size",
+        "Quit" => "Quit",
+        "HideApp" => "Hide Nimbra",
+        "HideOthers" => "Hide others",
+        "Minimize" => "Minimise",
+        "OpenSettings" => "Settings",
+        "ReportProblem" => "Report a problem",
+        "Print" => "Print",
+        "OpenSidebarRow" => "Open the sidebar row",
+        "GoNumber" => "Switch account",
+        "HideWindow" => "Close window",
+        _ => "another shortcut",
+    }
+}
+
+/// A menu item for an action whose keys can be changed. macOS gives the item the action's
+/// first key that works anywhere in the app as its key equivalent. An action with no such
+/// key (only letters, say, which would fire while typing) goes through its `twin`, which
+/// has no key, and the title names the key instead.
+fn shortcut_item(
+    title: &str,
+    id: &str,
+    action: impl gpui::Action,
+    twin: impl gpui::Action,
+) -> gpui::MenuItem {
+    let anywhere = shortcuts::find(id).is_some_and(|shortcut| {
+        shortcuts::keys(id)
+            .iter()
+            .any(|key| shortcuts::context_for(shortcut, key).is_none())
+    });
+    if anywhere {
+        gpui::MenuItem::action(title.to_string(), action)
+    } else {
+        gpui::MenuItem::action(with_key(title, id), twin)
+    }
+}
+
+/// "Reply  (R)": a title with the action's key, for an item without a key equivalent.
+fn with_key(title: &str, id: &str) -> String {
+    let key = shortcuts::label(id);
+    if key.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title}  ({key})")
+    }
+}
+
+/// The menu bar. Items only carry shortcuts that use ⌘ and never clash with the message
+/// editor; the rest (E, R, S…) are menu-only twins without a shortcut, so a letter typed in
+/// the editor never triggers them. See `MenuReply` and friends.
+fn app_menus() -> Vec<gpui::Menu> {
+    use gpui::{Menu, MenuItem, OsAction};
+    vec![
+        Menu {
+            name: "Nimbra".into(),
+            items: vec![
+                MenuItem::action("About Nimbra", AboutNimbra),
+                MenuItem::action("Check for Updates…", CheckForUpdates),
+                MenuItem::separator(),
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Hide Nimbra", HideApp),
+                MenuItem::action("Hide Others", HideOthers),
+                MenuItem::action("Show All", ShowAll),
+                MenuItem::separator(),
+                MenuItem::action("Quit Nimbra", Quit),
+            ],
+        },
+        Menu {
+            name: "File".into(),
+            items: vec![
+                shortcut_item("New Message", "compose", Compose, MenuCompose),
+                shortcut_item("Check for Mail", "reload", Reload, MenuReload),
+                MenuItem::separator(),
+                MenuItem::action("Print…", Print),
+                MenuItem::separator(),
+                MenuItem::action("Close Window", HideWindow),
+            ],
+        },
+        // The Edit menu gives ⌘X, ⌘C, ⌘V and ⌘A to whichever view has the keyboard,
+        // including the message editor (a web view only gets them through the menu).
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+                MenuItem::separator(),
+                MenuItem::action("Find Mail", MenuSearch),
+            ],
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action("Show or Hide Sidebar", MenuToggleSidebar),
+                shortcut_item(
+                    "Show or Hide List",
+                    "toggle-list",
+                    ToggleList,
+                    MenuToggleList,
+                ),
+                MenuItem::action("Original Formatting or Reader", MenuToggleOriginal),
+                MenuItem::separator(),
+                MenuItem::action("Actual Size", ActualSize),
+                MenuItem::action("Zoom In", ZoomIn),
+                MenuItem::action("Zoom Out", ZoomOut),
+                MenuItem::separator(),
+                // Checked by `set_menu_check`, which finds it by these titles.
+                MenuItem::submenu(Menu {
+                    name: "Appearance".into(),
+                    items: vec![
+                        MenuItem::action("System", UseSystemAppearance),
+                        MenuItem::action("Light", UseLightAppearance),
+                        MenuItem::action("Dark", UseDarkAppearance),
+                        MenuItem::separator(),
+                        shortcut_item(
+                            "Switch Light and Dark",
+                            "toggle-theme",
+                            ToggleTheme,
+                            MenuToggleTheme,
+                        ),
+                    ],
+                }),
+            ],
+        },
+        Menu {
+            name: "Message".into(),
+            items: vec![
+                MenuItem::action(with_key("Reply", "reply"), MenuReply),
+                MenuItem::action(with_key("Reply All", "reply-all"), MenuReplyAll),
+                MenuItem::action(with_key("Forward", "forward-message"), MenuForwardMessage),
+                MenuItem::separator(),
+                MenuItem::action(with_key("Mark Done", "mark-done"), MenuMarkDone),
+                MenuItem::action(
+                    with_key("Mark Read or Unread", "mark-unread"),
+                    MenuMarkUnread,
+                ),
+                MenuItem::action(with_key("Star", "toggle-star"), MenuStar),
+                MenuItem::action(with_key("Snooze…", "snooze"), MenuSnooze),
+                MenuItem::action("Move to Trash", MenuTrash),
+                MenuItem::separator(),
+                MenuItem::action(with_key("Undo", "undo"), MenuUndo),
+            ],
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![
+                MenuItem::action("Minimize", Minimize),
+                MenuItem::action("Close Window", HideWindow),
+            ],
+        },
+        Menu {
+            name: "Help".into(),
+            items: vec![
+                MenuItem::action("Report a Problem…", ReportProblem),
+                MenuItem::action(with_key("Keyboard Shortcuts", "shortcuts"), MenuShortcuts),
+                MenuItem::action("Release Notes", ReleaseNotes),
+            ],
+        },
+    ]
+}
+
+/// Binds every key again, with the shortcuts in effect (`shortcuts::current`), and sets the
+/// menu bar to show them. At launch, and whenever a shortcut changes.
+pub fn apply_shortcuts(cx: &mut App) {
+    cx.clear_key_bindings();
+    input::bind_keys(cx);
+    cx.bind_keys(shortcuts::bindings(&shortcuts::current()));
+    cx.bind_keys(fixed_bindings());
+    cx.set_menus(app_menus());
+}
+
 fn main() {
     // Before any window builds its pipelines.
     erase::install();
@@ -244,7 +482,6 @@ fn main() {
             ])
             .expect("bundled fonts should load");
 
-        input::bind_keys(cx);
         // Arrows and the like go to a web view that has the keyboard, not through GPUI.
         webkeys::install();
         cx.on_action(|_: &AboutNimbra, _| about::show());
@@ -269,227 +506,11 @@ fn main() {
                 });
             }
         });
-        // Single-letter shortcuts belong to the mail view only, so they never fire while
-        // you are typing in the composer.
-        let mail = Some("Mail && !TextInput");
-        cx.bind_keys([
-            KeyBinding::new("/", FocusSearch, mail),
-            KeyBinding::new("cmd-f", FocusSearch, Some("Mail")),
-            KeyBinding::new("ctrl-f", FocusSearch, Some("Mail")),
-            KeyBinding::new("c", Compose, mail),
-            KeyBinding::new("r", Reply, mail),
-            KeyBinding::new("a", ReplyAll, mail),
-            KeyBinding::new("f", ForwardMessage, mail),
-            KeyBinding::new("cmd-enter", SendMail, Some("Composer")),
-            KeyBinding::new("cmd-s", SaveDraft, Some("Composer")),
-            KeyBinding::new("ctrl-s", SaveDraft, Some("Composer")),
-            KeyBinding::new("cmd-shift-f", ToggleFullCompose, Some("Composer")),
-            KeyBinding::new("ctrl-shift-f", ToggleFullCompose, Some("Composer")),
-            KeyBinding::new("ctrl-enter", SendMail, Some("Composer")),
-            KeyBinding::new("j", Next, mail),
-            KeyBinding::new("down", Next, mail),
-            KeyBinding::new("k", Prev, mail),
-            KeyBinding::new("up", Prev, mail),
-            KeyBinding::new("e", MarkDone, mail),
-            KeyBinding::new("z", Undo, mail),
-            KeyBinding::new("cmd-z", Undo, Some("Mail")),
-            // Copies text selected in the reader.
-            KeyBinding::new("cmd-c", input::Copy, Some("Mail")),
-            KeyBinding::new("ctrl-c", input::Copy, Some("Mail")),
-            KeyBinding::new("ctrl-z", Undo, Some("Mail")),
-            KeyBinding::new("s", ToggleStar, mail),
-            KeyBinding::new("u", MarkUnread, mail),
-            KeyBinding::new("v", ToggleOriginal, mail),
-            KeyBinding::new("cmd-backspace", Trash, mail),
-            // Backspace or Delete on its own moves the open (or picked) thread to the trash too.
-            KeyBinding::new("backspace", Trash, mail),
-            KeyBinding::new("delete", Trash, mail),
-            KeyBinding::new("ctrl-backspace", Trash, mail),
-            KeyBinding::new("cmd-k", TogglePalette, None),
-            KeyBinding::new("ctrl-k", TogglePalette, None),
-            KeyBinding::new("h", TogglePalette, mail),
-            KeyBinding::new("escape", Dismiss, None),
-            KeyBinding::new("enter", Confirm, mail),
-            // Zoom In takes ⌘= too: ⌘+ is ⌘⇧= on most keyboards.
-            KeyBinding::new("cmd-=", ZoomIn, None),
-            KeyBinding::new("cmd-+", ZoomIn, None),
-            KeyBinding::new("cmd--", ZoomOut, None),
-            KeyBinding::new("cmd-0", ActualSize, None),
-            KeyBinding::new("cmd-shift-l", ToggleTheme, None),
-            KeyBinding::new("ctrl-shift-l", ToggleTheme, None),
-            KeyBinding::new("cmd-b", ToggleSidebar, None),
-            KeyBinding::new("cmd-shift-b", ToggleList, None),
-            KeyBinding::new("ctrl-shift-b", ToggleList, None),
-            KeyBinding::new("ctrl-b", ToggleSidebar, None),
-            KeyBinding::new("cmd-[", Back, None),
-            KeyBinding::new("cmd-]", Forward, None),
-            KeyBinding::new("cmd-r", Reload, None),
-            KeyBinding::new("ctrl-r", Reload, None),
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-h", HideApp, None),
-            KeyBinding::new("alt-cmd-h", HideOthers, None),
-            KeyBinding::new("cmd-m", Minimize, None),
-            KeyBinding::new("cmd-,", OpenSettings, None),
-            KeyBinding::new("alt-shift-cmd-i", ReportProblem, None),
-            KeyBinding::new("cmd-n", Compose, None),
-            KeyBinding::new("cmd-p", Print, None),
-            // Walking the window: ← to the sidebar, → back with what is under the cursor.
-            KeyBinding::new("left", FocusSidebar, mail),
-            KeyBinding::new(
-                "right",
-                OpenSidebarRow,
-                Some("Mail && Sidebar && !TextInput"),
-            ),
-            KeyBinding::new("home", First, mail),
-            KeyBinding::new("end", Last, mail),
-            KeyBinding::new("cmd-up", First, mail),
-            KeyBinding::new("cmd-down", Last, mail),
-            KeyBinding::new("x", PickThread, mail),
-            KeyBinding::new("shift-down", PickDown, mail),
-            KeyBinding::new("shift-j", PickDown, mail),
-            KeyBinding::new("shift-up", PickUp, mail),
-            KeyBinding::new("shift-k", PickUp, mail),
-            KeyBinding::new("o", OpenInWindow, mail),
-            KeyBinding::new("space", PageDown, mail),
-            KeyBinding::new("shift-space", PageUp, mail),
-            KeyBinding::new("?", ToggleShortcuts, mail),
-            KeyBinding::new("shift-/", ToggleShortcuts, mail),
-            // Gmail's: G, then where.
-            KeyBinding::new("g i", GoInbox, mail),
-            KeyBinding::new("g s", GoStarred, mail),
-            KeyBinding::new("g b", GoSnoozed, mail),
-            KeyBinding::new("g t", GoSent, mail),
-            KeyBinding::new("g d", GoDrafts, mail),
-            KeyBinding::new("g a", GoAllMail, mail),
-            KeyBinding::new("cmd-a", SelectAllThreads, mail),
-            KeyBinding::new("ctrl-a", SelectAllThreads, mail),
-            KeyBinding::new("cmd-1", GoNumber(1), Some("Mail")),
-            KeyBinding::new("cmd-2", GoNumber(2), Some("Mail")),
-            KeyBinding::new("cmd-3", GoNumber(3), Some("Mail")),
-            KeyBinding::new("cmd-4", GoNumber(4), Some("Mail")),
-            KeyBinding::new("cmd-5", GoNumber(5), Some("Mail")),
-            KeyBinding::new("cmd-6", GoNumber(6), Some("Mail")),
-            KeyBinding::new("cmd-7", GoNumber(7), Some("Mail")),
-            KeyBinding::new("cmd-8", GoNumber(8), Some("Mail")),
-            KeyBinding::new("cmd-9", GoNumber(9), Some("Mail")),
-            // ⌘W hides the window; Nimbra keeps running and checking mail until ⌘Q.
-            KeyBinding::new("cmd-w", HideWindow, None),
-            // While writing in the message editor these keys format text (bold, link) or
-            // belong to the editor (Escape closes its link box), so the app leaves them.
-            KeyBinding::new("cmd-b", gpui::NoAction, Some("Editor")),
-            KeyBinding::new("ctrl-b", gpui::NoAction, Some("Editor")),
-            KeyBinding::new("cmd-k", gpui::NoAction, Some("Editor")),
-            KeyBinding::new("ctrl-k", gpui::NoAction, Some("Editor")),
-            KeyBinding::new("escape", gpui::NoAction, Some("Editor")),
-            // The editor page reports these itself (see editor.html), so they run once.
-            KeyBinding::new("cmd-enter", gpui::NoAction, Some("Editor")),
-            KeyBinding::new("ctrl-enter", gpui::NoAction, Some("Editor")),
-            KeyBinding::new("cmd-s", gpui::NoAction, Some("Editor")),
-            KeyBinding::new("ctrl-s", gpui::NoAction, Some("Editor")),
-            KeyBinding::new("cmd-shift-f", gpui::NoAction, Some("Editor")),
-            KeyBinding::new("ctrl-shift-f", gpui::NoAction, Some("Editor")),
-        ]);
-        // The Edit menu gives ⌘X, ⌘C, ⌘V and ⌘A to whichever view has the keyboard,
-        // including the message editor (a web view only gets them through the menu).
-        // The menu bar. Items only carry shortcuts that use ⌘ and never clash with the
-        // message editor; the rest (E, R, S…) are menu-only twins without a shortcut, so a
-        // letter typed in the editor never triggers them. See `MenuReply` and friends.
-        use gpui::{Menu, MenuItem, OsAction};
-        cx.set_menus(vec![
-            Menu {
-                name: "Nimbra".into(),
-                items: vec![
-                    MenuItem::action("About Nimbra", AboutNimbra),
-                    MenuItem::action("Check for Updates…", CheckForUpdates),
-                    MenuItem::separator(),
-                    MenuItem::action("Settings…", OpenSettings),
-                    MenuItem::separator(),
-                    MenuItem::action("Hide Nimbra", HideApp),
-                    MenuItem::action("Hide Others", HideOthers),
-                    MenuItem::action("Show All", ShowAll),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit Nimbra", Quit),
-                ],
-            },
-            Menu {
-                name: "File".into(),
-                items: vec![
-                    MenuItem::action("New Message", Compose),
-                    MenuItem::action("Check for Mail", Reload),
-                    MenuItem::separator(),
-                    MenuItem::action("Print…", Print),
-                    MenuItem::separator(),
-                    MenuItem::action("Close Window", HideWindow),
-                ],
-            },
-            Menu {
-                name: "Edit".into(),
-                items: vec![
-                    MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
-                    MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
-                    MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
-                    MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
-                    MenuItem::separator(),
-                    MenuItem::action("Find Mail", MenuSearch),
-                ],
-            },
-            Menu {
-                name: "View".into(),
-                items: vec![
-                    MenuItem::action("Show or Hide Sidebar", MenuToggleSidebar),
-                    MenuItem::action("Show or Hide List", ToggleList),
-                    MenuItem::action("Original Formatting or Reader", MenuToggleOriginal),
-                    MenuItem::separator(),
-                    MenuItem::action("Actual Size", ActualSize),
-                    MenuItem::action("Zoom In", ZoomIn),
-                    MenuItem::action("Zoom Out", ZoomOut),
-                    MenuItem::separator(),
-                    // Checked by `set_menu_check`, which finds it by these titles.
-                    MenuItem::submenu(Menu {
-                        name: "Appearance".into(),
-                        items: vec![
-                            MenuItem::action("System", UseSystemAppearance),
-                            MenuItem::action("Light", UseLightAppearance),
-                            MenuItem::action("Dark", UseDarkAppearance),
-                            MenuItem::separator(),
-                            MenuItem::action("Switch Light and Dark", ToggleTheme),
-                        ],
-                    }),
-                ],
-            },
-            Menu {
-                name: "Message".into(),
-                items: vec![
-                    MenuItem::action("Reply  (R)", MenuReply),
-                    MenuItem::action("Reply All  (A)", MenuReplyAll),
-                    MenuItem::action("Forward  (F)", MenuForwardMessage),
-                    MenuItem::separator(),
-                    MenuItem::action("Mark Done  (E)", MenuMarkDone),
-                    MenuItem::action("Mark Read or Unread  (U)", MenuMarkUnread),
-                    MenuItem::action("Star  (S)", MenuStar),
-                    MenuItem::action("Snooze…  (H)", MenuSnooze),
-                    MenuItem::action("Move to Trash", MenuTrash),
-                    MenuItem::separator(),
-                    MenuItem::action("Undo  (Z)", MenuUndo),
-                ],
-            },
-            Menu {
-                name: "Window".into(),
-                items: vec![
-                    MenuItem::action("Minimize", Minimize),
-                    MenuItem::action("Close Window", HideWindow),
-                ],
-            },
-            Menu {
-                name: "Help".into(),
-                items: vec![
-                    MenuItem::action("Report a Problem…", ReportProblem),
-                    MenuItem::action("Keyboard Shortcuts  (?)", MenuShortcuts),
-                    MenuItem::action("Release Notes", ReleaseNotes),
-                ],
-            },
-        ]);
+        // The keys and the menu bar, with the shortcuts changed on this Mac.
+        shortcuts::set_current(shortcuts::load());
+        apply_shortcuts(cx);
 
+        use gpui::MenuItem;
         cx.set_dock_menu(vec![
             MenuItem::action("New Message", Compose),
             MenuItem::separator(),
