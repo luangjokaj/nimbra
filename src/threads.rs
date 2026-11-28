@@ -954,9 +954,8 @@ impl Nimbra {
         }
         // Undoing a snooze cancels it.
         self.forget_snoozes(&[index]);
-        if let Some(inverse) = change.inverse() {
-            self.sync(index, inverse, false, cx);
-        }
+        // The label it was moved to comes off first: going back to its mailbox (`sync`
+        // below) shows it there at once as it is now, so without its label.
         if let Some(thread) = self.mails[index].id.clone()
             && let Some(label) = self.moved.remove(&thread)
         {
@@ -972,6 +971,9 @@ impl Nimbra {
                     })
                     .detach();
             }
+        }
+        if let Some(inverse) = change.inverse() {
+            self.sync(index, inverse, false, cx);
         }
     }
 
