@@ -276,8 +276,9 @@ impl Nimbra {
         true
     }
 
-    /// The first run of a new version opens its release notes in the browser, once. Only
-    /// builds that update themselves keep track, so other builds never open them.
+    /// A new version offers its release notes in the sidebar, at every launch until they
+    /// are opened or dismissed (only then is it marked as seen). Only builds that update
+    /// themselves keep track, so other builds never do.
     pub(super) fn greet_new_version(&mut self, cx: &mut Context<Self>) {
         if !crate::update::enabled() {
             return;
@@ -289,10 +290,34 @@ impl Nimbra {
         let used_before = !self.settings.accounts.is_empty();
         if crate::update::first_run_after_update(&self.settings.last_version, current, used_before)
         {
-            cx.open_url(&crate::update::release_notes(current));
+            self.just_updated = Some(current.to_string());
+        } else {
+            // A new install: nothing to tell, and nothing to tell later either.
+            self.settings.last_version = current.to_string();
+            self.save_settings(cx);
         }
-        self.settings.last_version = current.to_string();
+    }
+
+    /// The sidebar's link to what is new: opens the release notes and goes for good.
+    pub(super) fn read_release_notes(&mut self, cx: &mut Context<Self>) {
+        if let Some(version) = self.just_updated.take() {
+            cx.open_url(&crate::update::release_notes(&version));
+            self.release_notes_seen(version, cx);
+        }
+    }
+
+    /// The sidebar's link to what is new, dismissed unread: gone for good too.
+    pub(super) fn dismiss_release_notes(&mut self, cx: &mut Context<Self>) {
+        if let Some(version) = self.just_updated.take() {
+            self.release_notes_seen(version, cx);
+        }
+    }
+
+    /// Marks `version` as seen, so the sidebar stops offering its release notes.
+    fn release_notes_seen(&mut self, version: String, cx: &mut Context<Self>) {
+        self.settings.last_version = version;
         self.save_settings(cx);
+        cx.notify();
     }
 
     /// The sidebar's Restart: quits, and the new version opens in this one's place.

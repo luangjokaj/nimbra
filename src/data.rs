@@ -70,6 +70,33 @@ impl From<Row> for Mail {
 }
 
 impl Mail {
+    /// The subject to show: "Untitled" when it has none (a draft just begun, say), also
+    /// in place of the "(no subject)" a listing may have put there.
+    pub fn shown_subject(&self) -> SharedString {
+        match self.subject.trim() {
+            "" | "(no subject)" => "Untitled".into(),
+            _ => self.subject.clone().into(),
+        }
+    }
+
+    /// Whether the row names someone: not when it has no name or address (a draft with no
+    /// recipients yet), whatever a listing put there instead.
+    pub fn names_someone(&self) -> bool {
+        !matches!(self.sender.trim(), "" | "Unknown sender")
+    }
+
+    /// The name a row shows: in Drafts, "Draft" for one with no recipients yet; elsewhere
+    /// "Unknown sender" when there is no name or address.
+    pub fn shown_sender(&self, drafts: bool) -> SharedString {
+        if self.names_someone() {
+            self.sender.trim().to_string().into()
+        } else if drafts {
+            "Draft".into()
+        } else {
+            "Unknown sender".into()
+        }
+    }
+
     /// A list row for a real thread. The messages are filled in by [`Row::fill`].
     pub fn from_summary(summary: mail::Summary) -> Self {
         Row::from_summary(summary).into()
@@ -138,19 +165,23 @@ pub fn tone_for(name: &str) -> Tone {
     TONES[hash as usize % TONES.len()]
 }
 
-/// A short local time label, and whether it falls before today.
+/// A short label for a time, as the Mac shows times (`when`), and whether it falls before
+/// today. Within the last day it is the time, as Gmail shows it, then the weekday within
+/// the week, then the date.
 fn format_time(timestamp_ms: i64) -> (String, bool) {
     use chrono::{Local, TimeZone};
     let Some(when) = Local.timestamp_millis_opt(timestamp_ms).single() else {
         return (String::new(), true);
     };
-    let days = (Local::now().date_naive() - when.date_naive()).num_days();
+    let now = Local::now();
+    let days = (now.date_naive() - when.date_naive()).num_days();
+    let within_a_day = days == 0 || (days == 1 && now - when < chrono::TimeDelta::hours(24));
     let label = match days {
-        0 => when.format("%-H:%M"),
-        1..=6 => when.format("%a"),
-        _ => when.format("%b %-d"),
+        _ if within_a_day => crate::when::local(when, crate::when::TIME),
+        1..=6 => crate::when::local(when, crate::when::WEEKDAY),
+        _ => crate::when::local(when, crate::when::DAY_MONTH),
     };
-    (label.to_string(), days != 0)
+    (label, days != 0)
 }
 
 fn mail(
@@ -554,6 +585,24 @@ pub const COMMANDS: &[(&str, &str, &str, &str, Option<&str>)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_draft_shows_placeholders() {
+        let mut m = inbox().remove(0);
+        m.row.subject = "  ".into();
+        m.row.sender = String::new();
+        assert_eq!(m.shown_subject(), "Untitled");
+        assert_eq!(m.shown_sender(true), "Draft");
+        assert_eq!(m.shown_sender(false), "Unknown sender");
+        m.row.sender = "Unknown sender".into();
+        m.row.subject = "(no subject)".into();
+        assert_eq!(m.shown_subject(), "Untitled");
+        assert_eq!(m.shown_sender(true), "Draft");
+        m.row.subject = "Plan".into();
+        m.row.sender = "Ana".into();
+        assert_eq!(m.shown_subject(), "Plan");
+        assert_eq!(m.shown_sender(true), "Ana");
+    }
 
     #[test]
     fn a_thread_has_an_original_when_any_message_has_html() {

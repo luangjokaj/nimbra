@@ -9,6 +9,7 @@ mod checking;
 mod data;
 mod editor;
 mod erase;
+mod help;
 mod input;
 mod inspiration;
 mod integration;
@@ -17,6 +18,7 @@ mod listing;
 mod mail_views;
 mod notify;
 mod pending;
+mod place;
 mod popup;
 mod quitting;
 mod signature_images;
@@ -28,8 +30,10 @@ mod tooltip;
 mod ui;
 mod update;
 mod usage;
+mod wallpaper;
 mod webkeys;
 mod webview;
+mod when;
 mod window_frame;
 
 // The engine, as it was before it moved to its own crate: `crate::mail` and the like.
@@ -52,12 +56,13 @@ use app::{
     DockInbox, DockSent, DockSnoozed, DockStarred, First, FocusSearch, FocusSidebar, Forward,
     ForwardMessage, GoAllMail, GoDrafts, GoInbox, GoNumber, GoSent, GoSnoozed, GoStarred, HideApp,
     HideOthers, HideWindow, Last, MarkDone, MarkUnread, MenuForwardMessage, MenuMarkDone,
-    MenuMarkUnread, MenuReply, MenuReplyAll, MenuSearch, MenuSnooze, MenuStar, MenuToggleOriginal,
-    MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra, OpenInWindow, OpenSettings,
-    OpenSidebarRow, PageDown, PageUp, PickDown, PickThread, PickUp, Prev, Print, Quit, Reload,
-    Reply, ReplyAll, SaveDraft, SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList,
-    ToggleOriginal, TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash,
-    Undo, UseDarkAppearance, UseLightAppearance, UseSystemAppearance, ZoomIn, ZoomOut,
+    MenuMarkUnread, MenuReply, MenuReplyAll, MenuSearch, MenuShortcuts, MenuSnooze, MenuStar,
+    MenuToggleOriginal, MenuToggleSidebar, MenuTrash, MenuUndo, Minimize, Next, Nimbra,
+    OpenInWindow, OpenSettings, OpenSidebarRow, PageDown, PageUp, PickDown, PickThread, PickUp,
+    Prev, Print, Quit, ReleaseNotes, Reload, Reply, ReplyAll, ReportProblem, SaveDraft,
+    SelectAllThreads, SendMail, ShowAll, ToggleFullCompose, ToggleList, ToggleOriginal,
+    TogglePalette, ToggleShortcuts, ToggleSidebar, ToggleStar, ToggleTheme, Trash, Undo,
+    UseDarkAppearance, UseLightAppearance, UseSystemAppearance, ZoomIn, ZoomOut,
 };
 
 /// Icons are compiled into the binary so the app has no runtime file dependencies.
@@ -243,6 +248,8 @@ fn main() {
         // Arrows and the like go to a web view that has the keyboard, not through GPUI.
         webkeys::install();
         cx.on_action(|_: &AboutNimbra, _| about::show());
+        cx.on_action(|_: &ReportProblem, cx| help::report_problem(cx));
+        cx.on_action(|_: &ReleaseNotes, cx| help::release_notes(cx));
         cx.on_action(|_: &HideApp, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -323,6 +330,7 @@ fn main() {
             KeyBinding::new("alt-cmd-h", HideOthers, None),
             KeyBinding::new("cmd-m", Minimize, None),
             KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("alt-shift-cmd-i", ReportProblem, None),
             KeyBinding::new("cmd-n", Compose, None),
             KeyBinding::new("cmd-p", Print, None),
             // Walking the window: ← to the sidebar, → back with what is under the cursor.
@@ -472,6 +480,14 @@ fn main() {
                     MenuItem::action("Close Window", HideWindow),
                 ],
             },
+            Menu {
+                name: "Help".into(),
+                items: vec![
+                    MenuItem::action("Report a Problem…", ReportProblem),
+                    MenuItem::action("Keyboard Shortcuts  (?)", MenuShortcuts),
+                    MenuItem::action("Release Notes", ReleaseNotes),
+                ],
+            },
         ]);
 
         cx.set_dock_menu(vec![
@@ -544,6 +560,10 @@ fn main() {
                 },
                 |window, cx| {
                     blur::apply(window, 40);
+                    // The glass shows the desktop picture, not the windows behind.
+                    wallpaper::install(window);
+                    // Hovers and the pointer follow it with another app in front too.
+                    blur::track_pointer_always(window);
                     // The red close button hides the window too, instead of quitting.
                     window.on_window_should_close(cx, |window, _| {
                         blur::set_visible(window, false);

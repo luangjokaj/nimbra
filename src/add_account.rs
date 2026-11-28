@@ -1186,6 +1186,51 @@ fn save_credential(
     }
 }
 
+/// What went wrong, in a soft rose box with an alert icon. It opens over a moment (its height
+/// and opacity) so the sheet, which is centred, grows smoothly instead of jumping.
+fn error_callout(t: &Theme, error: &SharedString) -> AnyElement {
+    let callout = div()
+        .flex()
+        .items_start()
+        .gap(dp(10.))
+        .px(dp(12.))
+        .py(dp(10.))
+        .rounded(dp(10.))
+        .bg(t.rose.opacity(0.1))
+        .border_1()
+        .border_color(t.rose.opacity(0.3))
+        .child(div().pt(dp(1.)).child(icon("alert", 15., t.rose)))
+        .child(
+            div()
+                .flex_1()
+                .min_w(dp(0.))
+                .text_size(dp(12.5))
+                .line_height(dp(18.))
+                .text_color(t.text)
+                .child(error.clone()),
+        );
+    if crate::system::reduces_motion() {
+        return callout.into_any_element();
+    }
+    // Each new message opens again (keyed by its text).
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        error.hash(&mut hasher);
+        hasher.finish() as usize
+    };
+    div()
+        .overflow_hidden()
+        .child(callout)
+        .with_animation(
+            ("account-error", key),
+            Animation::new(Duration::from_millis(280)).with_easing(ease_out_quint()),
+            // Taller than any message, so the box is never cut once open.
+            |d, delta| d.max_h(dp(160. * delta)).opacity(delta),
+        )
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1326,49 +1371,4 @@ mod live {
             _ => panic!("an unreachable server must not be kept"),
         }
     }
-}
-
-/// What went wrong, in a soft rose box with an alert icon. It opens over a moment (its height
-/// and opacity) so the sheet, which is centred, grows smoothly instead of jumping.
-fn error_callout(t: &Theme, error: &SharedString) -> AnyElement {
-    let callout = div()
-        .flex()
-        .items_start()
-        .gap(dp(10.))
-        .px(dp(12.))
-        .py(dp(10.))
-        .rounded(dp(10.))
-        .bg(t.rose.opacity(0.1))
-        .border_1()
-        .border_color(t.rose.opacity(0.3))
-        .child(div().pt(dp(1.)).child(icon("alert", 15., t.rose)))
-        .child(
-            div()
-                .flex_1()
-                .min_w(dp(0.))
-                .text_size(dp(12.5))
-                .line_height(dp(18.))
-                .text_color(t.text)
-                .child(error.clone()),
-        );
-    if crate::system::reduces_motion() {
-        return callout.into_any_element();
-    }
-    // Each new message opens again (keyed by its text).
-    let key = {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        error.hash(&mut hasher);
-        hasher.finish() as usize
-    };
-    div()
-        .overflow_hidden()
-        .child(callout)
-        .with_animation(
-            ("account-error", key),
-            Animation::new(Duration::from_millis(280)).with_easing(ease_out_quint()),
-            // Taller than any message, so the box is never cut once open.
-            |d, delta| d.max_h(dp(160. * delta)).opacity(delta),
-        )
-        .into_any_element()
 }

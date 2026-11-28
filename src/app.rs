@@ -144,6 +144,10 @@ actions!(
         AboutNimbra,
         /// Nimbra › Check for Updates…
         CheckForUpdates,
+        /// Help › Report a Problem…: a new issue on GitHub.
+        ReportProblem,
+        /// Help › Release Notes: this version's, on the website.
+        ReleaseNotes,
         HideOthers,
         ShowAll,
         Minimize,
@@ -162,6 +166,7 @@ actions!(
         MenuToggleOriginal,
         MenuToggleSidebar,
         MenuSearch,
+        MenuShortcuts,
         Quit,
         // The keyboard (see `keyboard.rs`).
         FocusSidebar,
@@ -339,6 +344,16 @@ pub struct Nimbra {
     all_next: HashMap<View, HashMap<String, String>>,
     /// Every account's labels, one per name: what every account's `View::Label(i)` is.
     every_labels: Vec<nimbra_core::listing::NamedLabel>,
+    /// The other accounts' labels, as their stores last kept them (`refresh_every_labels`),
+    /// for their threads in every account's mailboxes (`labels_of`).
+    account_labels: HashMap<String, Vec<mail::Label>>,
+    /// Where the window was when Nimbra last closed (`place.rs`), until it is opened again
+    /// there once the account's store is open, or another mailbox is chosen first.
+    restore_place: Option<crate::place::Place>,
+    /// Where the window is, as last saved.
+    place_saved: Option<crate::place::Place>,
+    /// Opening last time's place again waits for the other accounts' stores (once).
+    place_waiting: bool,
     /// The other accounts' sidebar counts by label id, as the last listing of every
     /// account's mailboxes found them (the account shown has `counts`).
     account_counts: HashMap<String, HashMap<String, (u32, u32)>>,
@@ -372,6 +387,23 @@ pub struct Nimbra {
     details: Option<(String, usize)>,
     /// Earlier messages opening or folding, by thread and place (`reading::Fold`).
     folds: std::cell::RefCell<HashMap<(ThreadKey, usize), reading::Fold>>,
+    /// Drafts fetched ahead as their rows are opened in Drafts (`prefetch_draft`), so
+    /// Edit draft opens the composer at once.
+    drafts_ready: HashMap<ThreadKey, mail::Draft>,
+    /// Drafts being fetched now, so a row opened again or Edit draft never fetches twice.
+    drafts_fetching: std::collections::HashSet<ThreadKey>,
+    /// Edit draft was pressed while its draft was still on its way: opened when it is here
+    /// (`true`: in a window of its own).
+    draft_wanted: Option<(ThreadKey, bool)>,
+    /// Closed composers whose new drafts show in Drafts as made-up rows (`show_in_drafts`)
+    /// until Drafts is listed again, by row id: Edit draft on such a row brings its
+    /// composer back, as Gmail does not know the row's id.
+    closed_drafts: Vec<(String, Composer)>,
+    /// Rows of discarded drafts, hidden through every listing (`install`) until a listing
+    /// after their delete (`true` once it went through) no longer has them.
+    hidden_drafts: HashMap<ThreadKey, bool>,
+    /// The latest messages folded in their conversations: thread, account, Message-ID.
+    latest_folded: std::collections::HashSet<(String, String, String)>,
     /// The height of an open earlier message as last laid out, by thread and place.
     fold_heights: reading::FoldHeights,
     /// A folded message's line, as last laid out: where one opens from and folds to.
@@ -501,6 +533,9 @@ pub struct Nimbra {
     update_ready: Option<String>,
     /// Quitting to restart into it: the new version opens once it is in place.
     restart_for_update: bool,
+    /// This run is the first of a new version: the sidebar links to its release notes
+    /// until dismissed.
+    just_updated: Option<String>,
     /// A check for a new version is running (from the menu, Settings or the timer).
     update_checking: bool,
     /// How far the new version has got while it downloads and is checked (`update.rs`).
@@ -529,6 +564,11 @@ pub struct Nimbra {
     finder_sel: usize,
     finder_gen: u64,
     finder_loading: bool,
+    /// The accounts the search panel is set to search, when picked there; otherwise where
+    /// the window is decides (`search_scope_here`).
+    finder_scope: Option<Scope>,
+    /// The accounts the search on screen looks in.
+    search_scope: Scope,
     /// Counts All/Unread switches, to slide the highlight (0: never switched, no slide).
     filter_gen: usize,
     filter_switched: Option<std::time::Instant>,
@@ -551,10 +591,10 @@ pub struct Nimbra {
     /// Full view: the sidebar and list were hidden by a double-click (or Return); this is
     /// whether each was open before, to put them back.
     focus_restore: Option<(bool, bool)>,
-    /// The checking-for-mail bar was showing at the last frame.
-    bar_shown: bool,
-    /// When the bar started fading out (and a number per fade, for its animation).
-    bar_fade: Option<(std::time::Instant, usize)>,
+    /// The line over the list while mail is checked (`ui::LoadingLine`).
+    checking_line: crate::ui::LoadingLine,
+    /// The line under the reader's toolbar while its message loads.
+    reader_line: crate::ui::LoadingLine,
     /// The number shown on the Dock icon.
     badge: Option<u32>,
     /// A document waiting to be printed (it is loaded into the web view first).
@@ -754,9 +794,7 @@ pub struct Nimbra {
     /// sidebar to its cursor: set when the keyboard moves them.
     reveal_row: std::rc::Rc<std::cell::Cell<bool>>,
     reveal_cursor: std::rc::Rc<std::cell::Cell<bool>>,
-    /// The shortcuts sheet (?).
-    shortcuts: bool,
-    /// The shortcuts sheet's window, while it is open.
+    /// The shortcuts window (?), while it is open.
     shortcuts_window: Option<gpui::WindowHandle<ShortcutsSheet>>,
     /// What the conversation is scrolled to, for Space.
     reader_scroll: gpui::ScrollHandle,
@@ -788,6 +826,8 @@ pub struct Nimbra {
     paged: HashSet<View>,
     /// The search panel's results, kept scrolled to the highlighted one.
     finder_scroll: gpui::ScrollHandle,
+    /// The search panel's row of accounts, scrolled sideways when they do not fit.
+    finder_scope_scroll: gpui::ScrollHandle,
     pull: f32,
     pull_armed: bool,
     /// The indicator settling after release: (from height, to height). `pull_gen` restarts it.
@@ -856,6 +896,8 @@ impl Nimbra {
         });
         let finder_events = cx.subscribe(&finder, |this, _, event: &InputEvent, cx| match event {
             InputEvent::Changed => this.finder_changed(cx),
+            InputEvent::Tab if this.several_accounts() => this.step_scope(1, cx),
+            InputEvent::BackTab if this.several_accounts() => this.step_scope(-1, cx),
             InputEvent::Down | InputEvent::Tab => this.finder_step(1, cx),
             InputEvent::Up => this.finder_step(-1, cx),
             InputEvent::Enter => this.finder_open_selected(cx),
@@ -899,6 +941,8 @@ impl Nimbra {
             finder_sel: 0,
             finder_gen: 0,
             finder_loading: false,
+            finder_scope: None,
+            search_scope: Scope::All,
             search,
             query: String::new(),
             _search_events: search_events,
@@ -950,6 +994,7 @@ impl Nimbra {
             contacts_scans: HashSet::new(),
             update_ready: crate::update::staged(),
             restart_for_update: false,
+            just_updated: None,
             update_checking: false,
             update_progress: None,
             update_window: None,
@@ -968,8 +1013,8 @@ impl Nimbra {
             filter_gen: 0,
             filter_switched: None,
             fold_gen: 0,
-            bar_shown: false,
-            bar_fade: None,
+            checking_line: Default::default(),
+            reader_line: Default::default(),
             badge: None,
             print_pending: None,
             login_item: false,
@@ -1008,6 +1053,10 @@ impl Nimbra {
             others: HashMap::new(),
             account_unread: HashMap::new(),
             every_labels: Vec::new(),
+            account_labels: HashMap::new(),
+            restore_place: crate::place::load(),
+            place_saved: None,
+            place_waiting: false,
             account_counts: HashMap::new(),
             compose_host: None,
             format_hint: None,
@@ -1029,6 +1078,12 @@ impl Nimbra {
             send_later_times: Vec::new(),
             details: None,
             folds: Default::default(),
+            drafts_ready: HashMap::new(),
+            drafts_fetching: Default::default(),
+            draft_wanted: None,
+            closed_drafts: Vec::new(),
+            hidden_drafts: HashMap::new(),
+            latest_folded: Default::default(),
             fold_heights: Default::default(),
             fold_line: std::rc::Rc::new(std::cell::Cell::new(53.)),
             fold_lead: Default::default(),
@@ -1129,6 +1184,7 @@ impl Nimbra {
             sync_owed: false,
             paged: HashSet::new(),
             finder_scroll: gpui::ScrollHandle::new(),
+            finder_scope_scroll: gpui::ScrollHandle::new(),
             pull: 0.,
             pull_armed: false,
             pull_anim: None,
@@ -1142,7 +1198,6 @@ impl Nimbra {
             pick_end: None,
             reveal_row: Default::default(),
             reveal_cursor: Default::default(),
-            shortcuts: false,
             shortcuts_window: None,
             reader_scroll: gpui::ScrollHandle::new(),
             reload_gen: 0,
@@ -1265,6 +1320,11 @@ impl Nimbra {
         if screen == "update" {
             this.update_ready = Some("0.1.4".into());
             this.show_update_ready("0.1.4", cx);
+        }
+        // NIMBRA_SCREEN=updated: the first run after an update, with the sidebar's link to
+        // the release notes (screenshots).
+        if screen == "updated" {
+            this.just_updated = Some(env!("CARGO_PKG_VERSION").into());
         }
         // NIMBRA_SCREEN=update-download: a new version downloads, is checked, and is ready,
         // with nothing fetched (screenshots).
@@ -1669,6 +1729,10 @@ impl Nimbra {
                     ..Default::default()
                 },
                 |window, cx| {
+                    // Not seen until its emails are drawn (`MessageWindow::reveal`), so it
+                    // opens whole, as the main window shows an email.
+                    crate::blur::set_alpha(window, 0.);
+                    crate::blur::track_pointer_always(window);
                     let guard = owner.clone();
                     window.on_window_should_close(cx, move |window, cx| {
                         let handle = window.window_handle();
@@ -1679,6 +1743,16 @@ impl Nimbra {
             );
             if let Ok(handle) = opened {
                 me.update(cx, |n, _| n.message_windows.push(handle));
+                // Shown by now whatever it drew (`MessageWindow::reveal`).
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(900))
+                        .await;
+                    handle
+                        .update(cx, |view, window, _| view.reveal_now(window))
+                        .ok();
+                })
+                .detach();
             }
         });
     }
@@ -2030,7 +2104,6 @@ impl Nimbra {
         if self.window_covered() {
             return;
         }
-        self.close_shortcuts(cx);
         self.leave_sidebar(cx);
         // Under All inboxes, to every account's: G then T goes to every account's Trash.
         let view = if self.every_mode() {
@@ -2052,7 +2125,6 @@ impl Nimbra {
         else {
             return;
         };
-        self.close_shortcuts(cx);
         self.leave_sidebar(cx);
         self.go_to_row(row, cx);
     }
@@ -2476,8 +2548,9 @@ impl Render for Nimbra {
             });
         }
         if std::mem::take(&mut self.shortcuts_on_start) {
-            cx.defer_in(window, |this, window, cx| this.toggle_shortcuts(window, cx));
+            cx.defer_in(window, |this, _, cx| this.open_shortcuts(cx));
         }
+        self.save_place(cx);
         if let Some(hours) = self.snooze_on_start.take() {
             cx.defer_in(window, move |this, window, cx| {
                 let mode = if hours {
@@ -2580,20 +2653,12 @@ impl Render for Nimbra {
                 .ok();
             });
         }
-        // The checking-for-mail bar fades out when the check is done, instead of vanishing.
-        let bar = self.shows_checking() && !self.pull_hold && self.pull == 0.;
-        if self.bar_shown && !bar {
-            let n = self.bar_fade.map_or(0, |(_, n)| n + 1);
-            self.bar_fade = Some((std::time::Instant::now(), n));
-        } else if bar {
-            self.bar_fade = None;
-        }
-        self.bar_shown = bar;
-        if self
-            .bar_fade
-            .is_some_and(|(at, _)| at.elapsed() > Duration::from_millis(600))
-        {
-            self.bar_fade = None;
+        // The loading lines fade out when what they waited for is there, instead of
+        // vanishing.
+        let checking = self.shows_checking() && !self.pull_hold && self.pull == 0.;
+        let reading = self.reader_loading();
+        if self.checking_line.update(checking) | self.reader_line.update(reading) {
+            window.request_animation_frame();
         }
         self.frame = Some(window.bounds());
         // The update's progress stays on screen while Nimbra is the app in use. Asked of the
@@ -2612,7 +2677,7 @@ impl Render for Nimbra {
             let ready = system_events::update_notice(&p.version);
             let ready = Toast::new(&ready, room, window.text_system());
             UpdatePlace {
-                frame: window.bounds(),
+                frame: self.popup_frame(window.bounds()),
                 dark: self.dark,
                 size: (ready.width, ready.height),
             }
@@ -2701,14 +2766,17 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &PickUp, _, cx| this.pick_more(-1, cx)))
             .on_action(cx.listener(|this, _: &OpenInWindow, _, cx| {
                 if !this.palette && this.visible().contains(&this.selected) {
-                    this.open_message_window(this.selected, cx)
+                    // A draft opens to be written (as a double-click on it does).
+                    if this.mailbox.base() == View::Drafts && !this.is_demo() {
+                        this.open_draft(this.selected, true, cx)
+                    } else {
+                        this.open_message_window(this.selected, cx)
+                    }
                 }
             }))
             .on_action(cx.listener(|this, _: &PageDown, _, cx| this.page_message(true, cx)))
             .on_action(cx.listener(|this, _: &PageUp, _, cx| this.page_message(false, cx)))
-            .on_action(cx.listener(|this, _: &ToggleShortcuts, window, cx| {
-                this.toggle_shortcuts(window, cx)
-            }))
+            .on_action(cx.listener(|this, _: &ToggleShortcuts, _, cx| this.open_shortcuts(cx)))
             .on_action(cx.listener(|this, _: &GoInbox, _, cx| this.go_to(View::Inbox, cx)))
             .on_action(cx.listener(|this, _: &GoStarred, _, cx| this.go_to(View::Starred, cx)))
             .on_action(cx.listener(|this, _: &GoSnoozed, _, cx| this.go_to(View::Snoozed, cx)))
@@ -2724,7 +2792,6 @@ impl Render for Nimbra {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                    this.close_shortcuts(cx);
                     if from_screen(event.position.x) > this.side_w() + FLOAT_INSET {
                         this.leave_sidebar(cx);
                     }
@@ -2809,6 +2876,7 @@ impl Render for Nimbra {
             }))
             .on_action(cx.listener(|this, _: &MenuToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &MenuSearch, _, cx| this.focus_search(cx)))
+            .on_action(cx.listener(|this, _: &MenuShortcuts, _, cx| this.open_shortcuts(cx)))
             .on_action(cx.listener(|this, _: &SelectAllThreads, _, cx| {
                 let visible = this.visible();
                 if visible.len() >= 2 {
@@ -2827,8 +2895,6 @@ impl Render for Nimbra {
                     this.close_new_label(cx);
                 } else if this.account_sheet_over_main() {
                     this.close_account_sheet(cx);
-                } else if this.shortcuts {
-                    this.close_shortcuts(cx);
                 } else if this.pane == Pane::Sidebar && !this.palette {
                     this.leave_sidebar(cx);
                 } else if !this.picked.is_empty() && !this.palette {
@@ -2842,7 +2908,9 @@ impl Render for Nimbra {
                     cx.notify();
                 } else if this.compose.is_some() {
                     this.request_close_compose(cx);
-                } else if this.mailbox == View::Search || !this.search.read(cx).text().is_empty() {
+                } else if this.mailbox.base() == View::Search
+                    || !this.search.read(cx).text().is_empty()
+                {
                     this.clear_search(cx);
                 } else {
                     this.palette = false;
@@ -3104,7 +3172,14 @@ impl Nimbra {
                 .border_color(c(0xffffff, 0.18))
                 .child(gpui::img(logo).size_full().rounded_full())
                 .into_any_element(),
-            None => avatar(m.tone, &m.initials, size).into_any_element(),
+            // No one named (a draft with no recipients yet): no initials made from a
+            // stand-in such as "Unknown sender".
+            None => avatar(
+                m.tone,
+                if m.names_someone() { &m.initials } else { "" },
+                size,
+            )
+            .into_any_element(),
         }
     }
 

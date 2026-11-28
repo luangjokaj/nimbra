@@ -21,8 +21,19 @@ pub(super) struct MessageWindow {
     focused_once: bool,
     /// The text blocks as last drawn here, for selecting (`selection.rs`).
     layouts: super::selection::Layouts,
+    /// The line under the toolbar while the thread or its emails load, as in the main
+    /// window (`ui::LoadingLine`).
+    loading_line: crate::ui::LoadingLine,
+    /// When it opened, still unseen: it shows once its emails are drawn, or after
+    /// `REVEAL_WITHIN` at most (`reveal`).
+    unseen_since: Option<std::time::Instant>,
+    /// The thread's content was asked for (`fetch_if_missing`), until it is here.
+    asked: bool,
     _observe: gpui::Subscription,
 }
+
+/// The longest a message window waits, unseen, for its emails before it shows anyway.
+const REVEAL_WITHIN: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// The reader's column padding on either side, in a message window.
 const WINDOW_SIDE: f32 = 36.;
@@ -65,7 +76,50 @@ impl MessageWindow {
             focus: cx.focus_handle(),
             focused_once: false,
             layouts: Default::default(),
+            loading_line: Default::default(),
+            unseen_since: Some(std::time::Instant::now()),
+            asked: false,
             _observe: observe,
+        }
+    }
+
+    /// Shows the window once nothing in it is still being drawn (its content not fetched
+    /// yet does not count: that can take a while, and the loading line says so), or once it
+    /// has waited `REVEAL_WITHIN`. Until then it is drawn unseen.
+    fn reveal(&mut self, drawing: bool, window: &mut Window) {
+        let Some(since) = self.unseen_since else {
+            return;
+        };
+        if drawing && since.elapsed() < REVEAL_WITHIN {
+            window.request_animation_frame();
+            return;
+        }
+        self.unseen_since = None;
+        crate::blur::set_alpha(window, 1.);
+    }
+
+    /// Asks the app for the thread's content once while it is not here. True when that
+    /// failed (offline, say): then nothing is on its way.
+    fn fetch_if_missing(&mut self, m: &Mail, cx: &mut Context<Self>) -> bool {
+        if m.loaded {
+            self.asked = false;
+            return false;
+        }
+        let key = (self.key.clone(), self.account.clone());
+        let failed = self.owner.read(cx).body_failed.contains(&key);
+        if !self.asked && !failed && m.id.is_some() {
+            self.asked = true;
+            let (id, account) = key;
+            self.owner.update(cx, |n, cx| n.load_body(id, account, cx));
+        }
+        failed
+    }
+
+    /// Shows the window now if it is still unseen: the guard for a window that draws no
+    /// frames while unseen (macOS may count a transparent window as hidden).
+    pub(super) fn reveal_now(&mut self, window: &mut Window) {
+        if self.unseen_since.take().is_some() {
+            crate::blur::set_alpha(window, 1.);
         }
     }
 
@@ -162,7 +216,7 @@ impl Render for MessageWindow {
             )
         };
         let t = if dark { Theme::dark() } else { Theme::light() };
-        window.set_window_title(&m.subject);
+        window.set_window_title(&m.shown_subject());
         // A reply written here covers the message (and its web view, which is native).
         let compose = self.owner.update(cx, |n, cx| n.hosted_compose(window, cx));
         // A reply floating here: the email's web view (native, so above everything the app
@@ -175,7 +229,7 @@ impl Render for MessageWindow {
         let original = self.original && m.has_html() && m.loaded;
         let thread = self.thread();
         let wanted = if original {
-            crate::mail_views::wanted(&m, &thread, true)
+            crate::mail_views::wanted(&m, &thread, true, true)
         } else {
             Vec::new()
         };
@@ -197,6 +251,8 @@ impl Render for MessageWindow {
             self.original = false;
             self.mail_views.clear();
         }
+        // Each email shows once its text is laid out, without waiting for its images.
+        self.mail_views.measure_waiting();
         // Each message's email, where it has one (0 the latest, k + 1 `earlier[k]`).
         let emails: Vec<_> = (0..=m.earlier.len())
             .map(|index| {
@@ -227,6 +283,7 @@ impl Render for MessageWindow {
                     0.,
                     None,
                     darkened,
+                    false,
                     &t,
                 ),
                 None => n
@@ -234,6 +291,15 @@ impl Render for MessageWindow {
                     .pl(dp(40.)),
             }
         };
+        // Its content, when the app does not have it (dropped since, or never fetched):
+        // asked for here, as the main window only fetches the thread selected in it.
+        let failed = self.fetch_if_missing(&m, cx);
+        // Loading: the thread's content, or an email not drawn yet. Not once it failed.
+        let loading = !failed && (!m.loaded || emails.iter().flatten().any(|slot| slot.waiting()));
+        self.reveal(loading && m.loaded, window);
+        if self.loading_line.update(loading) {
+            window.request_animation_frame();
+        }
         let width = from_screen(window.viewport_size().width);
 
         // As the main window's toolbar (`reading.rs`): the actions as words, then icons.
@@ -350,7 +416,7 @@ impl Render for MessageWindow {
                 0.
             };
             let content = self.owner.update(cx, |n, cx| {
-                let mut d = div()
+                let d = div()
                     .flex()
                     .flex_col()
                     .gap(dp(16.))
@@ -372,9 +438,14 @@ impl Render for MessageWindow {
                         super::reading::ORIGINAL_SIDE
                     }))
                     .child(header(n, cx, (column - 72.).max(0.)));
-                // Every message, oldest first, the latest last.
+                // Every message, oldest first and the latest last, or the latest first
+                // (Settings › Appearance). `earlier` is newest first.
+                let newest_first = n.settings.newest_first;
+                let mut earlier: Vec<Div> = Vec::with_capacity(m.earlier.len());
                 for (k, e) in m.earlier.iter().enumerate() {
-                    d = d.child(
+                    // The message at the bottom has the column's padding under it instead.
+                    let bottom = newest_first && k + 1 == m.earlier.len();
+                    earlier.push(
                         div()
                             .flex()
                             .flex_col()
@@ -394,10 +465,12 @@ impl Render for MessageWindow {
                                 // attachments, or the column's to the next message.
                                 (
                                     12.,
-                                    if e.header.attachments.is_empty() {
-                                        16.
-                                    } else {
+                                    if !e.header.attachments.is_empty() {
                                         12. - super::reading::ORIGINAL_SIDE
+                                    } else if bottom {
+                                        0.
+                                    } else {
+                                        16.
                                     },
                                 ),
                                 &e.blocks,
@@ -419,45 +492,50 @@ impl Render for MessageWindow {
                             }),
                     );
                 }
-                d.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(dp(12.))
-                        .pt(dp(14.))
-                        .mx(dp(-across))
-                        .px(dp(across))
-                        .border_t_1()
-                        .border_color(t.border)
-                        .child(n.message_header(&t, &m, 0, false, cx))
-                        .child(body_of(
-                            n,
-                            cx,
-                            0,
-                            (
-                                12.,
-                                if m.header.attachments.is_empty() {
-                                    0.
-                                } else {
-                                    12. - super::reading::ORIGINAL_SIDE
-                                },
-                            ),
-                            &m.body,
-                            &selectable,
-                        ))
-                        .when(!m.header.attachments.is_empty(), |d| {
-                            d.child(
-                                n.attachment_row(
-                                    &t,
-                                    &m.header.attachments,
-                                    0,
-                                    m.account.as_deref(),
-                                    cx,
-                                )
-                                .pl(dp(super::reading::attachments_indent(emails[0].is_some()))),
+                let latest = div()
+                    .flex()
+                    .flex_col()
+                    .gap(dp(12.))
+                    .pt(dp(14.))
+                    .mx(dp(-across))
+                    .px(dp(across))
+                    .border_t_1()
+                    .border_color(t.border)
+                    .child(n.message_header(&t, &m, 0, false, cx))
+                    .child(body_of(
+                        n,
+                        cx,
+                        0,
+                        (
+                            12.,
+                            if !m.header.attachments.is_empty() {
+                                12. - super::reading::ORIGINAL_SIDE
+                            } else if newest_first {
+                                16.
+                            } else {
+                                0.
+                            },
+                        ),
+                        &m.body,
+                        &selectable,
+                    ))
+                    .when(!m.header.attachments.is_empty(), |d| {
+                        d.child(
+                            n.attachment_row(
+                                &t,
+                                &m.header.attachments,
+                                0,
+                                m.account.as_deref(),
+                                cx,
                             )
-                        }),
-                )
+                            .pl(dp(super::reading::attachments_indent(emails[0].is_some()))),
+                        )
+                    });
+                if newest_first {
+                    d.child(latest).children(earlier)
+                } else {
+                    d.children(earlier.into_iter().rev()).child(latest)
+                }
             });
             div()
                 .id("message-window-scroll")
@@ -536,6 +614,7 @@ impl Render for MessageWindow {
             .line_height(dp(18.))
             .text_color(t.text)
             .child(toolbar)
+            .child(self.loading_line.view(&t, "window-loading"))
             .child(body)
             .children(compose)
     }

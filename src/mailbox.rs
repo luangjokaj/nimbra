@@ -16,6 +16,10 @@ pub(super) struct Opening {
     shown: bool,
 }
 
+/// A stored list to read: the account to mark its rows with (every account's mailboxes),
+/// its account's store and its record there.
+type StoredSource = (Option<String>, Arc<crate::store::Store>, String);
+
 /// What to do with what was read for an `Opening`.
 #[derive(Debug, PartialEq)]
 enum Landing {
@@ -126,7 +130,7 @@ impl Nimbra {
             return;
         }
         let kept = self.listed();
-        if self.mailbox != View::Search {
+        if self.mailbox.base() != View::Search {
             self.cache.insert(self.mailbox, kept);
         }
     }
@@ -144,6 +148,8 @@ impl Nimbra {
 
     fn switch_mailbox(&mut self, view: View, now: bool, cx: &mut Context<Self>) {
         self.leave_sidebar(cx);
+        // Chosen now: where the window was last time no longer matters.
+        self.restore_place = None;
         // A mailbox clicked before, whose list is still being read, is not wanted now.
         self.opening = None;
         if self.mailbox == view || matches!(self.status, Status::SignedOut | Status::SigningIn) {
@@ -169,19 +175,20 @@ impl Nimbra {
         {
             self.cache.remove(&view);
         }
-        match (self.cache.get(&view).cloned(), self.store.clone()) {
-            (Some(mails), _) => {
+        let sources = self.stored_sources(view);
+        match self.cache.get(&view).cloned() {
+            Some(mails) => {
                 self.enter_mailbox(view);
                 self.show_listed(view, Some(mails), cx);
             }
             // Not visited this session: start from what is stored on disk.
-            (None, Some(store)) => {
-                let serial = self.open_stored(view, store, cx);
+            None if !sources.is_empty() => {
+                let serial = self.open_stored(view, sources, cx);
                 if now {
                     self.stored_slow(serial, cx);
                 }
             }
-            (None, None) => {
+            None => {
                 self.enter_mailbox(view);
                 self.show_listed(view, None, cx);
             }
@@ -220,6 +227,12 @@ impl Nimbra {
         self.selected = 0;
         if found {
             self.status = Status::Ready;
+            // A thread asked for (from a notification) that this list already has.
+            if let Some(id) = self.open_when_listed.clone()
+                && self.open_listed(&id, cx)
+            {
+                self.open_when_listed = None;
+            }
             self.load_selected(cx);
             self.look_again(cx);
         } else {
@@ -228,13 +241,55 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Reads a mailbox's stored list off the main thread. The list on screen stays until it
-    /// is read, so a quick read shows no loading screen; a slow one shows it after a frame
-    /// or two.
+    /// Where a mailbox's list is stored: the account shown's store, or for every account's
+    /// mailbox (All inboxes, every account's Sent…), each account's own list of it, whose
+    /// rows are then marked with their account. Empty when none is open.
+    fn stored_sources(&self, view: View) -> Vec<StoredSource> {
+        if !view.is_every() {
+            return self
+                .store
+                .clone()
+                .map(|store| (None, store, self.record_for(view)))
+                .into_iter()
+                .collect();
+        }
+        self.settings
+            .accounts
+            .iter()
+            .filter(|account| listing::takes_part(view, account.servers.is_some()))
+            .filter_map(|account| {
+                let store = if account.id == self.account_id {
+                    self.store.clone()
+                } else {
+                    self.other_stores.get(&account.id).cloned()
+                }?;
+                let record = match view.base() {
+                    View::Label(index) => {
+                        let label = self
+                            .every_labels
+                            .get(index)?
+                            .ids
+                            .iter()
+                            .find(|(id, _)| *id == account.id)?
+                            .1
+                            .clone();
+                        listing::record(View::Label(0), Some(&label))
+                    }
+                    base => listing::record(base, None),
+                };
+                Some((Some(account.id.clone()), store, record))
+            })
+            .collect()
+    }
+
+    /// Reads a mailbox's stored list off the main thread (from each account's store, for
+    /// every account's mailbox, put together newest first). The list on screen stays until
+    /// it is read, so a quick read shows no loading screen; a slow one shows it after a
+    /// frame or two.
     fn open_stored(
         &mut self,
         view: View,
-        store: Arc<crate::store::Store>,
+        sources: Vec<StoredSource>,
         cx: &mut Context<Self>,
     ) -> u64 {
         static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -246,16 +301,27 @@ impl Nimbra {
             serial,
             shown: false,
         });
-        let record = self.record_for(view);
         cx.spawn(async move |this, cx| {
             let mails = cx
                 .background_executor()
                 .spawn(async move {
-                    let mut mails: Vec<Mail> = loaded(store.load(&record)?);
-                    for mail in &mut mails {
-                        mail.refresh_time();
+                    let mut found = false;
+                    let mut mails: Vec<Mail> = Vec::new();
+                    for (account, store, record) in sources {
+                        let Some(rows) = store.load(&record) else {
+                            continue;
+                        };
+                        found = true;
+                        for mut mail in loaded(rows) {
+                            mail.refresh_time();
+                            if account.is_some() {
+                                mail.account = account.clone();
+                            }
+                            mails.push(mail);
+                        }
                     }
-                    Some(mails)
+                    listing::sort_newest_first(&mut mails);
+                    found.then_some(mails)
                 })
                 .await;
             this.update(cx, |this, cx| this.stored_read(serial, mails, cx))
@@ -499,6 +565,10 @@ impl Nimbra {
             return;
         }
         self.sync_owed = false;
+        // A search is not run again by itself, of one account or of every one.
+        if self.mailbox.base() == View::Search {
+            return;
+        }
         // All inboxes cannot be patched from one feed: list it again.
         if self.mailbox.is_every() {
             self.fetch_every(cx);
@@ -530,7 +600,7 @@ impl Nimbra {
         if self.connection.is_none() {
             return;
         }
-        if self.prefetching || self.mailbox == View::Search || self.status != Status::Ready {
+        if self.prefetching || self.mailbox.base() == View::Search || self.status != Status::Ready {
             return;
         }
         // Each thread with its own account's connection (All inboxes mixes accounts).
@@ -735,6 +805,7 @@ impl Nimbra {
                 }
                 // Something is already on screen (a sign-in in this session): just refresh.
                 if !this.mails.is_empty() || this.mailbox != view {
+                    this.restore_place = None;
                     this.refresh(cx);
                     return;
                 }
@@ -775,11 +846,95 @@ impl Nimbra {
                 }
                 // Bring it up to date: only what changed, when the store knows from where.
                 this.refresh(cx);
+                this.go_back_to_place(false, cx);
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Once the account's store is open at launch: the mailbox it was left in, if it was
+    /// this account and nothing else was asked for meanwhile (a notification's message).
+    /// Every account's mailbox waits for every account's store (what each kept, to show at
+    /// once), up to `PLACE_WAIT`; `now` is that wait running out.
+    pub(super) fn go_back_to_place(&mut self, now: bool, cx: &mut Context<Self>) {
+        const PLACE_WAIT: Duration = Duration::from_secs(5);
+        let Some(place) = self.restore_place.as_ref() else {
+            return;
+        };
+        if self.store.is_none() {
+            return;
+        }
+        if place.account != self.account_id || self.open_when_listed.is_some() {
+            self.restore_place = None;
+            return;
+        }
+        let every = place.every_label.is_some() || place.plain_view().is_some_and(View::is_every);
+        let others_open = self
+            .settings
+            .accounts
+            .iter()
+            .all(|a| a.id == self.account_id || self.other_stores.contains_key(&a.id));
+        if every && !others_open && !now {
+            if !std::mem::replace(&mut self.place_waiting, true) {
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(PLACE_WAIT).await;
+                    this.update(cx, |this, cx| this.go_back_to_place(true, cx))
+                        .ok();
+                })
+                .detach();
+            }
+            return;
+        }
+        let Some(place) = self.restore_place.take() else {
+            return;
+        };
+        let view = if let Some(view) = place.plain_view() {
+            Some(view)
+        } else if let Some(id) = &place.label {
+            self.labels
+                .iter()
+                .position(|l| &l.id == id)
+                .map(View::Label)
+        } else if let Some(name) = &place.every_label {
+            self.refresh_every_labels();
+            self.every_labels
+                .iter()
+                .position(|l| l.name.eq_ignore_ascii_case(name))
+                .map(|index| View::every(View::Label(index)))
+        } else {
+            None
+        };
+        if let Some(view) = view.filter(|view| *view != self.mailbox) {
+            self.select_mailbox(view, cx);
+        }
+    }
+
+    /// Keeps where the window is (`place.rs`) when it changed, in the background. Not
+    /// while last time's place is still to be opened, which it would overwrite. (The first
+    /// account's id is empty, so an empty one is an account too.)
+    pub(super) fn save_place(&mut self, cx: &mut Context<Self>) {
+        if self.restore_place.is_some() || self.status == Status::SignedOut {
+            return;
+        }
+        let label = match self.mailbox {
+            View::Label(index) => self.labels.get(index).map(|l| l.id.clone()),
+            View::Every(_) => match self.mailbox.base() {
+                View::Label(index) => self.every_labels.get(index).map(|l| l.name.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(place) = crate::place::Place::of(&self.account_id, self.mailbox, label) else {
+            return;
+        };
+        if self.place_saved.as_ref() == Some(&place) {
+            return;
+        }
+        self.place_saved = Some(place.clone());
+        cx.background_spawn(async move { crate::place::save(place) })
+            .detach();
     }
 
     /// Saves the open mailbox and the sidebar state, in the background. Search results are
@@ -799,6 +954,7 @@ impl Nimbra {
                 .iter()
                 .zip(&self.done)
                 .filter(|(_, done)| !**done)
+                .filter(|(mail, _)| !mail.id.as_deref().is_some_and(super::composer::made_up))
                 .map(|(mail, _)| &mail.row),
         );
         if self.mailbox == View::Inbox {
@@ -865,6 +1021,48 @@ impl Nimbra {
             self.open_when_listed = Some(id);
             self.refresh(cx);
         }
+    }
+
+    /// New threads in an account's inbox (`arrivals`), put in its Inbox and All inboxes now,
+    /// before their notifications show, rather than at the next listing: on screen if one
+    /// of those is, and kept (`pending`) for when one is opened, from memory or the store.
+    pub(super) fn arrived(&mut self, account: &str, rows: Vec<Mail>, cx: &mut Context<Self>) {
+        if rows.is_empty() {
+            return;
+        }
+        for mail in &rows {
+            self.pending.add(View::Inbox, account, mail);
+        }
+        let shown = self.account_id.clone();
+        // The lists kept in memory for a return, which a switch of account keeps too.
+        for view in [View::ALL_INBOXES, View::Inbox] {
+            if view == self.mailbox || (view == View::Inbox && account != shown) {
+                continue;
+            }
+            if let Some(list) = self.cache.get_mut(&view) {
+                self.pending.apply(view, &shown, list, false, true, |m| {
+                    m.account.clone().unwrap_or_else(|| shown.clone())
+                });
+            }
+        }
+        let here =
+            self.mailbox == View::ALL_INBOXES || (self.mailbox == View::Inbox && account == shown);
+        if !here || self.status != Status::Ready {
+            return;
+        }
+        let mut fresh = self.listed();
+        self.pending
+            .apply(self.mailbox, &shown, &mut fresh, false, true, |m| {
+                m.account.clone().unwrap_or_else(|| shown.clone())
+            });
+        // Put in as a listing would be, without counting as one: what is kept in `pending`
+        // stays until Gmail's own listing agrees, and a notice on screen stays up.
+        let pending = std::mem::take(&mut self.pending);
+        let notice = self.notice.clone();
+        self.install(fresh, cx);
+        self.pending = pending;
+        self.notice = notice;
+        cx.notify();
     }
 
     /// Opens the thread with this id if it is in the list. Returns whether it was.
@@ -1030,14 +1228,20 @@ impl Nimbra {
                         // Sender and subject for the first few; the rest are summed up.
                         let news =
                             nimbra_core::notifying::new_mail(&*client, store.as_deref(), fresh);
-                        (news.fresh, news.named)
+                        let rows = arrivals(&*client, &news);
+                        (news.fresh, (news.named, rows))
                     })
                     .await;
                 if fresh.is_empty() {
                     continue;
                 }
+                let (summaries, rows) = summaries;
                 let extra = fresh.len().saturating_sub(summaries.len());
-                this.update(cx, |this, _| {
+                this.update(cx, |this, cx| {
+                    // In the lists first, so the notification opens a thread that is there.
+                    if this.account_gen == generation {
+                        this.arrived(&account, rows, cx);
+                    }
                     if !this.settings.notifications {
                         return;
                     }
@@ -1142,6 +1346,7 @@ impl Nimbra {
                             }
                             let news =
                                 nimbra_core::notifying::new_mail(&*client, store.as_deref(), fresh);
+                            let rows = arrivals(&*client, &news);
                             let unread = listing::inbox_unread(&*client);
                             let (summaries, extra) = (news.named, news.more);
                             // Snoozes and scheduled sends kept with this account.
@@ -1153,10 +1358,10 @@ impl Nimbra {
                                     || writes.begin(),
                                 )
                             });
-                            anyhow::Ok((at, summaries, extra, changed, unread, woken))
+                            anyhow::Ok((at, summaries, extra, changed, unread, woken, rows))
                         })
                         .await;
-                    let Ok((at, summaries, extra, changed, unread, woken)) = checked else {
+                    let Ok((at, summaries, extra, changed, unread, woken, rows)) = checked else {
                         continue; // offline or signed out: next time
                     };
                     feeds.insert(id.clone(), at);
@@ -1172,6 +1377,8 @@ impl Nimbra {
                         if changed {
                             this.feed_changes += 1;
                         }
+                        // In All inboxes first, so the notification opens a thread that is there.
+                        this.arrived(&id, rows, cx);
                         if this.settings.notifications {
                             for mail in &summaries {
                                 crate::notify::show(
@@ -1206,6 +1413,7 @@ impl Nimbra {
                         }
                         if changed
                             && this.mailbox.is_every()
+                            && this.mailbox.base() != View::Search
                             && this.compose.is_none()
                             && !this.fetching()
                         {
@@ -1319,6 +1527,24 @@ impl Nimbra {
         .detach();
     }
 
+    /// An account's labels: the one shown's, and another's as its store last kept them
+    /// (`account_labels`, read when every account's mailboxes are).
+    pub(super) fn labels_of(&self, account: &str) -> &[mail::Label] {
+        if account == self.account_id {
+            return &self.labels;
+        }
+        self.account_labels.get(account).map_or(&[], Vec::as_slice)
+    }
+
+    /// Adds a label just made in another account to what is known of its labels.
+    pub(super) fn learn_label(&mut self, account: &str, label: mail::Label) {
+        let labels = self.account_labels.entry(account.to_string()).or_default();
+        if !labels.iter().any(|l| l.id == label.id) {
+            labels.push(label);
+            nimbra_core::listing::sort_labels(labels);
+        }
+    }
+
     /// Every account's labels by name (`every_labels`): the one shown's, and the others' as
     /// their stores last kept them. An open label of every account's stays open by name
     /// when the list moves under it. Disk, small.
@@ -1329,27 +1555,26 @@ impl Nimbra {
             }
             _ => None,
         };
-        let labels: Vec<(String, Vec<mail::Label>)> = self
+        self.account_labels = self
             .settings
             .accounts
             .iter()
+            .filter(|account| account.id != self.account_id)
             .map(|account| {
-                let labels = if account.id == self.account_id {
-                    self.labels.clone()
-                } else {
-                    self.other_stores
-                        .get(&account.id)
-                        .and_then(|store| store.load::<Saved>("meta"))
-                        .map(|saved| saved.labels)
-                        .unwrap_or_default()
-                };
+                let labels = self
+                    .other_stores
+                    .get(&account.id)
+                    .and_then(|store| store.load::<Saved>("meta"))
+                    .map(|saved| saved.labels)
+                    .unwrap_or_default();
                 (account.id.clone(), labels)
             })
             .collect();
         self.every_labels = listing::labels_by_name(
-            labels
+            self.settings
+                .accounts
                 .iter()
-                .map(|(account, labels)| (account.as_str(), labels.as_slice())),
+                .map(|account| (account.id.as_str(), self.labels_of(&account.id))),
         );
         if let Some(name) = open {
             match self
@@ -1374,8 +1599,17 @@ impl Nimbra {
             .accounts
             .iter()
             .filter(|account| listing::takes_part(view, account.servers.is_some()))
+            // A search of one account (not the one shown) asks only it.
+            .filter(|account| {
+                view.base() != View::Search
+                    || match &self.search_scope {
+                        Scope::All => true,
+                        Scope::Account(id) => account.id == *id,
+                    }
+            })
             .filter_map(|account| {
                 let label = match view.base() {
+                    View::Search => Some(self.query.clone()),
                     View::Label(index) => Some(
                         self.every_labels
                             .get(index)?
@@ -1431,7 +1665,7 @@ impl Nimbra {
                     crate::store::Store::saved_empty(&account.id, &record(View::Inbox))
                 });
         }
-        let check = self.checks.start(view, "");
+        let check = self.checks.start(view, &self.query);
         let seen = Asked::now(self.changes_seen());
         cx.notify();
         let generation = self.account_gen;
@@ -1599,9 +1833,27 @@ impl Nimbra {
 
     /// Fetches the content of the thread on show, without marking it read.
     pub(super) fn load_selected(&mut self, cx: &mut Context<Self>) {
+        // Edit draft waits on one row: another row opened, it waits no more.
+        if let Some(((thread, account), _)) = &self.draft_wanted
+            && self.mails.get(self.selected).is_none_or(|m| {
+                message_window::key_of(m) != *thread || self.account_of(m) != account
+            })
+        {
+            self.draft_wanted = None;
+        }
+        if self.mailbox.base() == View::Drafts && !self.is_demo() {
+            self.prefetch_draft(self.selected, cx);
+        }
         let Some(mail) = self.mails.get(self.selected) else {
             return;
         };
+        // A conversation opens on its latest message: folding it lasts while it is open.
+        let (thread, account) = (
+            message_window::key_of(mail),
+            self.account_of(mail).to_string(),
+        );
+        self.latest_folded
+            .retain(|(t, a, _)| *t == thread && *a == account);
         let (false, Some(id)) = (mail.loaded, mail.id.clone()) else {
             return;
         };
@@ -1612,6 +1864,15 @@ impl Nimbra {
     /// Fetches a thread's content.
     pub(super) fn load_body(&mut self, id: String, account: String, cx: &mut Context<Self>) {
         let key: ThreadKey = (id.clone(), account.clone());
+        // A row made up for a new draft has what it shows already (or, kept from an
+        // earlier run, nothing): never asked of the provider.
+        if super::composer::made_up(&id) {
+            if let Some(row) = self.row_of(&id, &account) {
+                self.mails[row].loaded = true;
+            }
+            cx.notify();
+            return;
+        }
         let Some(client) = self.client_for(Some(&account)) else {
             // Another account's, which is not connected: nothing is on its way.
             if self.connection.is_some() {
@@ -1669,6 +1930,14 @@ impl Nimbra {
         removed: bool,
         cx: &mut Context<Self>,
     ) {
+        // Trashing a row made up for a new draft deletes that draft (`trash_made_up`).
+        if change == mail::Change::Trash
+            && let Some(id) = self.mails.get(index).and_then(|m| m.id.clone())
+            && super::composer::made_up(&id)
+        {
+            self.trash_made_up(&id, cx);
+            return;
+        }
         let (Some(client), Some(id)) = (
             self.client_at(index),
             self.mails.get(index).and_then(|m| m.id.clone()),
@@ -1862,6 +2131,18 @@ impl Nimbra {
                 if kept && error.is::<mail::Offline>() {
                     return;
                 }
+                // Taken out of a list but no longer there at all (deleted elsewhere): it stays
+                // out here too, and out of the lists kept for a return.
+                if removed && mail::is_gone(&error) {
+                    for list in this.cache.values_mut() {
+                        list.retain(|m| {
+                            m.id.as_deref() != Some(id.as_str())
+                                || m.account.as_deref().unwrap_or(&this.account_id) != account
+                        });
+                    }
+                    this.persist(cx);
+                    return;
+                }
                 // Put back wherever the thread is by now.
                 if removed && let Some(row) = this.row_of(&id, &account) {
                     this.done[row] = false;
@@ -1924,6 +2205,7 @@ impl Nimbra {
         cx.notify();
         let generation = self.account_gen;
         let count = if from_top { self.mails.len() + 30 } else { 30 };
+        let query = self.query.clone();
         cx.spawn(async move |this, cx| {
             let executor = cx.background_executor();
             let results =
@@ -1940,7 +2222,8 @@ impl Nimbra {
                     return;
                 }
                 this.loading_more = false;
-                if this.mailbox != view {
+                // Another search was run meanwhile: these are not its results.
+                if this.mailbox != view || (view.base() == View::Search && this.query != query) {
                     cx.notify();
                     return;
                 }
@@ -2110,6 +2393,35 @@ impl Nimbra {
 }
 
 /// The rows a list is kept as in the store (the engine's `listing::Row`).
+/// The threads that just arrived (`new_mail`), as list rows: the ones named in a
+/// notification with their content, so that opening one from it shows it at once, and the
+/// next few without. Network: a call per thread.
+fn arrivals(client: &mail::Client, news: &nimbra_core::notifying::NewMail) -> Vec<Mail> {
+    const LISTED: usize = 20;
+    let mut rows: Vec<Mail> = news
+        .named
+        .iter()
+        .map(|summary| {
+            let mut mail = Mail::from_summary(summary.clone());
+            if let Ok(messages) = client.thread(&summary.id) {
+                mail.fill(messages);
+            }
+            mail
+        })
+        .collect();
+    let unnamed = news
+        .fresh
+        .iter()
+        .filter(|id| !news.named.iter().any(|named| &named.id == *id))
+        .take(LISTED.saturating_sub(rows.len()));
+    for id in unnamed {
+        if let Ok(summary) = client.summary(id, false) {
+            rows.push(Mail::from_summary(summary));
+        }
+    }
+    rows
+}
+
 pub(super) fn stored(mails: &[Mail]) -> Vec<crate::data::Row> {
     mails.iter().map(|mail| mail.row.clone()).collect()
 }

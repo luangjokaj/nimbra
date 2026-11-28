@@ -1,0 +1,38 @@
+name: Announce release
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  discord:
+    name: Post to Discord
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # nimbra.me/release-notes caches the GitHub releases for a few minutes: wait so the
+      # link's anchor exists when people click it.
+      - name: Wait for the website cache to refresh
+        run: sleep 300
+      # The release notes come from the changelog: pass them through env and jq, never
+      # inline in the script, and allow no mentions.
+      - name: Post to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+          TAG: ${{ github.event.release.tag_name }}
+          NOTES: ${{ github.event.release.body }}
+        run: |
+          jq -n --arg tag "$TAG" --arg notes "${NOTES:0:4000}" '{
+            username: "Nimbra",
+            avatar_url: "https://nimbra.me/icons/android-chrome-512x512.png",
+            embeds: [{
+              title: "Nimbra \($tag) is out",
+              url: "https://nimbra.me/release-notes#\($tag)",
+              description: $notes,
+              color: 9133302
+            }],
+            allowed_mentions: { parse: [] }
+          }' | curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK"

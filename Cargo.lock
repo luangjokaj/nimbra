@@ -4002,7 +4002,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nimbra"
-version = "0.1.8"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4028,8 +4028,8 @@ dependencies = [
 
 [[package]]
 name = "nimbra-core"
-version = "0.1.6"
-source = "git+https://github.com/nimbra-mail/core?tag=v0.1.6#b57e3d77643c75394dce70948965c24106fa7cff"
+version = "0.1.8"
+source = "git+https://github.com/nimbra-mail/core?rev=d1369d30d48bf65b17f0b5883feca23e856fc17a#d1369d30d48bf65b17f0b5883feca23e856fc17a"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

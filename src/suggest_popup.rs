@@ -188,10 +188,12 @@ impl Nimbra {
     /// Closes the suggestions window once the composer no longer suggests anything (the
     /// anchor that places it is then not drawn).
     pub(super) fn sync_suggestions(&mut self, cx: &mut Context<Self>) {
-        let suggesting = self
-            .compose
-            .as_ref()
-            .is_some_and(|c| c.suggest.as_ref().is_some_and(|s| !s.people.is_empty()));
+        // Never over "Save this draft?": that sheet covers the composer.
+        let suggesting = !self.compose_ask
+            && self
+                .compose
+                .as_ref()
+                .is_some_and(|c| c.suggest.as_ref().is_some_and(|s| !s.people.is_empty()));
         if !suggesting {
             self.close_suggestions(cx);
         }

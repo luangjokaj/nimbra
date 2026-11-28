@@ -256,12 +256,26 @@ pub fn primary_fill(level: f32) -> gpui::Background {
     gradient(90., mix(0x8b7cff, 0xa397ff), mix(0xff7ab6, 0xff95c6))
 }
 
-/// Each primary button's glow, by key: (hovered, times it changed, level shown last).
+/// Each primary button's glow, by key: whether the pointer is on it, and the fade toward
+/// that (from `from`, since `since`).
 #[derive(Clone, Copy, Default)]
 struct Glow {
     hovered: bool,
-    turns: usize,
-    level: f32,
+    from: f32,
+    since: Option<std::time::Instant>,
+}
+
+impl Glow {
+    /// The glow's level now, 0 to 1, and whether it is still fading.
+    fn level(&self) -> (f32, bool) {
+        let to = if self.hovered { 1. } else { 0. };
+        let Some(since) = self.since else {
+            return (to, false);
+        };
+        let t = (since.elapsed().as_secs_f32() / GLOW_TIME.as_secs_f32()).min(1.);
+        let eased = 1. - (1. - t).powi(3);
+        (self.from + (to - self.from) * eased, t < 1.)
+    }
 }
 
 thread_local! {
@@ -277,8 +291,11 @@ pub fn glow_hovered(key: &'static str, hovered: bool, window: &mut gpui::Window)
     GLOWS.with_borrow_mut(|glows| {
         let glow = glows.entry(key).or_default();
         if glow.hovered != hovered {
-            glow.hovered = hovered;
-            glow.turns += 1;
+            *glow = Glow {
+                hovered,
+                from: glow.level().0,
+                since: Some(std::time::Instant::now()),
+            };
         }
     });
     window.refresh();
@@ -286,14 +303,13 @@ pub fn glow_hovered(key: &'static str, hovered: bool, window: &mut gpui::Window)
 
 /// A primary button whose glow brightens and fades over a moment instead of jumping, from
 /// wherever it is when the pointer comes or goes. `key` names it for its whole life.
-pub fn glow(
-    button: Stateful<Div>,
-    key: &'static str,
-    listen: bool,
-) -> gpui::AnimationElement<Stateful<Div>> {
+///
+/// The fade is timed by the clock, not by an animation element: one keyed by the hover's
+/// changes would give the button a new identity as the pointer arrives, and a click whose
+/// press and release land on two identities is lost.
+pub fn glow(button: Stateful<Div>, key: &'static str, listen: bool) -> Stateful<Div> {
     let now = GLOWS.with_borrow(|glows| glows.get(key).copied().unwrap_or_default());
-    let to = if now.hovered { 1. } else { 0. };
-    let from = now.level;
+    let (level, fading) = now.level();
     let button = if listen {
         button.on_hover(move |hovered, window, _| glow_hovered(key, *hovered, window))
     } else {
@@ -301,21 +317,18 @@ pub fn glow(
     };
     // A button gone while hovered (Send closes the message) is not hovered when it is back:
     // whenever it is drawn, where the pointer really is wins.
-    let button = button.relative().child(
+    button.relative().bg(primary_fill(level)).child(
         gpui::canvas(
             |_, _, _| (),
             move |bounds, _, window, _| {
-                let hovered = now.hovered;
-                if hovered && !bounds.contains(&window.mouse_position()) {
+                if now.hovered && !bounds.contains(&window.mouse_position()) {
+                    // At rest at once: nobody saw it leave.
                     GLOWS.with_borrow_mut(|glows| {
-                        let glow = glows.entry(key).or_default();
-                        // At rest at once: nobody saw it leave.
-                        *glow = Glow {
-                            turns: glow.turns + 1,
-                            ..Glow::default()
-                        };
+                        glows.insert(key, Glow::default());
                     });
                     window.refresh();
+                } else if fading {
+                    window.request_animation_frame();
                 }
             },
         )
@@ -323,15 +336,6 @@ pub fn glow(
         .top_0()
         .left_0()
         .size_full(),
-    );
-    button.with_animation(
-        (key, now.turns),
-        gpui::Animation::new(GLOW_TIME).with_easing(|t| 1. - (1. - t).powi(3)),
-        move |button, delta| {
-            let level = from + (to - from) * delta;
-            GLOWS.with_borrow_mut(|glows| glows.entry(key).or_default().level = level);
-            button.bg(primary_fill(level))
-        },
     )
 }
 
@@ -343,4 +347,133 @@ pub fn tip(
 ) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView + 'static {
     let label = label.into();
     move |window, cx| crate::tooltip::build(dark, label.clone(), key, window, cx)
+}
+
+// ------------------------------------------------------------------ loading line
+
+/// Whether a loading line shows, and its fading out once what it waited for is there. A
+/// load that is over quickly never shows it (`SHOW_AFTER`), and one that shows stays a
+/// moment at least (`SHOWN_FOR`), so a fast load does not flicker it on and off.
+#[derive(Default)]
+pub struct LoadingLine {
+    /// Loading since then (whether shown yet or not).
+    since: Option<std::time::Instant>,
+    /// Shown since then.
+    shown: Option<std::time::Instant>,
+    fade: Option<(std::time::Instant, usize)>,
+}
+
+/// How long a load runs before its line shows.
+const SHOW_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
+/// How long a line that showed stays, however soon the load is over.
+const SHOWN_FOR: std::time::Duration = std::time::Duration::from_millis(600);
+/// How long the line takes to fade in or out.
+const LINE_FADE: std::time::Duration = std::time::Duration::from_millis(450);
+
+impl LoadingLine {
+    /// Called each frame with whether something is loading now. True while a frame is
+    /// wanted for the line to change (to show, or to stop showing) on its own.
+    pub fn update(&mut self, loading: bool) -> bool {
+        let now = std::time::Instant::now();
+        if loading {
+            self.fade = None;
+            let since = *self.since.get_or_insert(now);
+            if self.shown.is_none() && since.elapsed() >= SHOW_AFTER {
+                self.shown = Some(now);
+            }
+            return self.shown.is_none();
+        }
+        self.since = None;
+        if let Some(shown) = self.shown {
+            if shown.elapsed() < SHOWN_FOR {
+                return true;
+            }
+            self.shown = None;
+            let n = self.fade.map_or(0, |(_, n)| n + 1);
+            self.fade = Some((now, n));
+        }
+        if self.fade.is_some_and(|(at, _)| at.elapsed() > LINE_FADE) {
+            self.fade = None;
+        }
+        false
+    }
+
+    /// The thin line under a toolbar: a bar glides along it, from one edge to the other,
+    /// while something loads, and the line fades out when it is done. Its 2pt strip is
+    /// always there, so nothing below it moves. `id` names its animations.
+    pub fn view(&self, t: &Theme, id: &'static str) -> Div {
+        div()
+            .relative()
+            .flex_none()
+            .h(dp(2.))
+            .overflow_hidden()
+            .when(self.shown.is_some() || self.fade.is_some(), |d| {
+                let strip = div().absolute().inset_0().bg(t.border).child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .h_full()
+                        .w(gpui::relative(0.45))
+                        .rounded_full()
+                        .bg(gradient(90., c(0x8b7cff, 0.), c(0xff7ab6, 1.)))
+                        .with_animation(
+                            id,
+                            gpui::Animation::new(std::time::Duration::from_millis(1150))
+                                .repeat()
+                                .with_easing(gpui::ease_in_out),
+                            |bar, delta| bar.left(gpui::relative(-0.45 + 1.45 * delta)),
+                        ),
+                );
+                d.child(match self.fade {
+                    // Done: fade the whole strip out.
+                    Some((_, n)) => strip
+                        .with_animation(
+                            (SharedString::from(format!("{id}-fade")), n),
+                            gpui::Animation::new(LINE_FADE).with_easing(gpui::ease_out_quint()),
+                            |strip, delta| strip.opacity(1. - delta),
+                        )
+                        .into_any_element(),
+                    // Starting: fade in, rather than appear at once.
+                    None => strip
+                        .with_animation(
+                            SharedString::from(format!("{id}-in")),
+                            gpui::Animation::new(std::time::Duration::from_millis(200))
+                                .with_easing(gpui::ease_out_quint()),
+                            |strip, delta| strip.opacity(delta),
+                        )
+                        .into_any_element(),
+                })
+            })
+    }
+}
+
+#[cfg(test)]
+mod loading_line_tests {
+    use super::*;
+
+    #[test]
+    fn a_load_over_at_once_never_shows_its_line() {
+        let mut line = LoadingLine::default();
+        // Loading, not shown yet: a frame is wanted for it to show later.
+        assert!(line.update(true));
+        assert!(line.shown.is_none());
+        assert!(!line.update(false));
+        assert!(line.shown.is_none() && line.fade.is_none());
+    }
+
+    #[test]
+    fn a_line_that_showed_stays_a_moment_then_fades() {
+        let mut line = LoadingLine {
+            since: Some(std::time::Instant::now() - SHOW_AFTER),
+            ..Default::default()
+        };
+        assert!(!line.update(true));
+        assert!(line.shown.is_some());
+        // Done at once: it stays its moment.
+        assert!(line.update(false));
+        assert!(line.shown.is_some());
+        line.shown = Some(std::time::Instant::now() - SHOWN_FOR);
+        line.update(false);
+        assert!(line.shown.is_none() && line.fade.is_some());
+    }
 }

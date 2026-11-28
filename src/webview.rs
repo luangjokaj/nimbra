@@ -146,17 +146,23 @@ mod platform {
     use wry::dpi::{LogicalPosition, LogicalSize};
     use wry::{Rect, WebView, WebViewBuilder};
 
+    /// x, y, width and height, in window points.
+    type Bounds = (f32, f32, f32, f32);
+
     pub struct HtmlView {
         view: WebView,
         /// Documents handed over that have not started loading (see `navigation`).
         #[cfg(target_os = "windows")]
         loads: std::rc::Rc<std::cell::Cell<u32>>,
         /// Where the view is (window points), and the hole cut in it, as last applied.
-        frame: std::cell::Cell<(f32, f32, f32, f32)>,
-        hole: std::cell::Cell<Option<(f32, f32, f32, f32)>>,
-        applied: std::cell::Cell<Option<((f32, f32, f32, f32), Option<(f32, f32, f32, f32)>)>>,
+        frame: std::cell::Cell<Bounds>,
+        hole: std::cell::Cell<Option<Bounds>>,
+        applied: std::cell::Cell<Option<(Bounds, Option<Bounds>)>>,
         /// Whether the view is on screen (`set_visible`), so ⌘C goes to it only then.
         shown: std::cell::Cell<bool>,
+        /// Whether its column has put it in place (`place`). Until then it sits where wry
+        /// made it, at the window's top-left corner, so it is not put on screen.
+        placed: std::cell::Cell<bool>,
         /// The zoom last applied (`set_zoom`).
         zoom: std::cell::Cell<f32>,
         /// The account of the mail shown, for the `mailto:` links in it.
@@ -247,6 +253,7 @@ mod platform {
                 loads,
                 frame: std::cell::Cell::new((0., 0., 0., 0.)),
                 shown: std::cell::Cell::new(false),
+                placed: std::cell::Cell::new(false),
                 zoom: std::cell::Cell::new(1.),
                 hole: std::cell::Cell::new(None),
                 applied: std::cell::Cell::new(None),
@@ -347,6 +354,7 @@ mod platform {
                 clip::place(container, webview, full, seen);
                 clip::show(container, self.shown.get() && seen.2 > 0. && seen.3 > 0.);
             }
+            self.now_placed();
             if self.hole.get().is_some() || self.applied.get().is_some_and(|(_, h)| h.is_some()) {
                 self.apply_hole();
             }
@@ -359,6 +367,44 @@ mod platform {
             let top = y.max(clip.1);
             let bottom = (y + h).min(clip.1 + clip.3);
             self.set_bounds(x, top, w, (bottom - top).max(0.));
+            self.now_placed();
+        }
+
+        /// The first time it is in place: shown now if it was asked to be meanwhile.
+        fn now_placed(&self) {
+            if !self.placed.replace(true) && self.shown.get() {
+                let _ = self.view.set_visible(true);
+            }
+        }
+
+        /// A picture of the whole email as it is drawn now (TIFF), for `answer`; `None` when
+        /// WebKit made none. The app draws it in the email's place while things move
+        /// (`reading::email_frame`), as the app's drawing and the web view's reach the
+        /// screen at different times.
+        #[cfg(target_os = "macos")]
+        #[allow(unexpected_cfgs)]
+        pub fn snapshot(&self, answer: impl Fn(Option<Vec<u8>>) + 'static) {
+            use objc::runtime::Object;
+            use objc::{msg_send, sel, sel_impl};
+            use wry::WebViewExtMacOS as _;
+            let webview = self.view.webview();
+            let webview = &*webview as *const _ as *mut Object;
+            let handler = block::ConcreteBlock::new(move |image: *mut Object, _: *mut Object| {
+                // SAFETY: WebKit calls this on the main thread with an NSImage or nil.
+                answer(unsafe { super::tiff_of(image) });
+            })
+            .copy();
+            let none: *mut Object = std::ptr::null_mut();
+            // SAFETY: main thread, a live WKWebView; the block is copied to the heap and
+            // WebKit keeps it until it has called it.
+            unsafe {
+                let _: () = msg_send![webview, takeSnapshotWithConfiguration: none completionHandler: &*handler];
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        pub fn snapshot(&self, answer: impl Fn(Option<Vec<u8>>) + 'static) {
+            answer(None);
         }
 
         /// Asks how tall the email is (points, at the current zoom); `answer` gets it once
@@ -417,7 +463,7 @@ mod platform {
 
         pub fn set_visible(&self, visible: bool) {
             self.shown.set(visible);
-            let _ = self.view.set_visible(visible);
+            let _ = self.view.set_visible(visible && self.placed.get());
             #[cfg(target_os = "macos")]
             if let Some(container) = self.clip.get() {
                 // SAFETY: main thread, the live container `place` made.
@@ -1186,6 +1232,9 @@ mod platform {
         }
         pub fn place(&self, _full: (f32, f32, f32, f32), _clip: (f32, f32, f32, f32)) {}
         pub fn measure(&self, _answer: impl Fn(f32) + Send + 'static) {}
+        pub fn snapshot(&self, answer: impl Fn(Option<Vec<u8>>) + 'static) {
+            answer(None);
+        }
         pub fn focused(&self) -> bool {
             false
         }
@@ -1193,6 +1242,29 @@ mod platform {
 }
 
 pub use platform::HtmlView;
+
+/// An NSImage's pixels as TIFF (uncompressed, so quick to make and to read back).
+///
+/// # Safety
+/// Main thread, with an NSImage or nil.
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+unsafe fn tiff_of(image: *mut objc::runtime::Object) -> Option<Vec<u8>> {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    if image.is_null() {
+        return None;
+    }
+    unsafe {
+        let data: *mut Object = msg_send![image, TIFFRepresentation];
+        if data.is_null() {
+            return None;
+        }
+        let length: usize = msg_send![data, length];
+        let bytes: *const u8 = msg_send![data, bytes];
+        (!bytes.is_null() && length > 0).then(|| std::slice::from_raw_parts(bytes, length).to_vec())
+    }
+}
 
 #[cfg(test)]
 mod tests {

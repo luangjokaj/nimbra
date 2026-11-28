@@ -89,8 +89,12 @@ impl Nimbra {
                     let mut deleted = 0;
                     for (account, client, list) in &by_account {
                         for id in list {
-                            if let Err(error) = client.delete_thread(id) {
-                                return Err((deleted, account.clone(), error));
+                            match client.delete_thread(id) {
+                                // Already gone from the server: deleted all the same.
+                                Err(error) if !mail::is_gone(&error) => {
+                                    return Err((deleted, account.clone(), error));
+                                }
+                                _ => {}
                             }
                             deleted += 1;
                         }
@@ -151,7 +155,13 @@ impl Nimbra {
             self.picked.clear();
             self.open(i);
             self.open_selected(cx);
-            self.open_message_window(i, cx);
+            // A draft opens to be written, in a window of its own; any other thread to be
+            // read there.
+            if self.mailbox.base() == View::Drafts && !self.is_demo() {
+                self.open_draft(i, true, cx);
+            } else {
+                self.open_message_window(i, cx);
+            }
             return;
         }
         if modifiers.platform || modifiers.control {
@@ -221,8 +231,9 @@ impl Nimbra {
     /// The times offered when snoozing (`snooze::menu_times`), as the menu shows them.
     pub(super) fn snooze_choices() -> Vec<SnoozeChoice> {
         use nimbra_core::snooze::MenuTime;
-        let label =
-            |when: chrono::DateTime<chrono::Local>| when.format("%a %-d %b, %H:%M").to_string();
+        let label = |when: chrono::DateTime<chrono::Local>| {
+            crate::when::local(when, crate::when::WEEKDAY_DAY_TIME)
+        };
         nimbra_core::snooze::menu_times(chrono::Local::now())
             .into_iter()
             .map(|(kind, when)| {
@@ -663,8 +674,24 @@ impl Nimbra {
 
     pub(super) fn open_in_gmail(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
+        self.open_in_gmail_at(self.selected, cx);
+    }
+
+    /// Whether the thread in that row is a Gmail account's (so Gmail can open it), whichever
+    /// account is shown: in All inboxes, threads are from every account.
+    pub(super) fn gmail_at(&self, row: usize) -> bool {
+        self.mails
+            .get(row)
+            .is_some_and(|mail| self.servers_of(self.account_of(mail)).is_none())
+    }
+
+    /// The thread in that row in Gmail, in the browser.
+    pub(super) fn open_in_gmail_at(&mut self, row: usize, cx: &mut Context<Self>) {
+        if !self.gmail_at(row) {
+            return;
+        }
         // Thread ids are validated as plain alphanumerics before they get here.
-        if let Some(mail) = self.mails.get(self.selected)
+        if let Some(mail) = self.mails.get(row)
             && let Some(id) = mail.id.as_ref()
             && id.chars().all(|c| c.is_ascii_alphanumeric())
         {
@@ -938,15 +965,15 @@ impl Nimbra {
         }
         // Undoing a snooze cancels it.
         self.forget_snoozes(&[index]);
-        if let Some(inverse) = change.inverse() {
-            self.sync(index, inverse, false, cx);
-        }
+        // The label it was moved to comes off first: going back to its mailbox (`sync`
+        // below) shows it there at once as it is now, so without its label.
         if let Some(thread) = self.mails[index].id.clone()
             && let Some(label) = self.moved.remove(&thread)
         {
             self.undo_block(index, &label, cx);
             self.mails[index].labels.retain(|id| *id != label);
-            if let Some(client) = self.connection.clone() {
+            // The thread's own account: in All inboxes it may be another than the one shown.
+            if let Some(client) = self.client_at(index) {
                 let working = self.writes.begin();
                 cx.background_executor()
                     .spawn(async move {
@@ -955,6 +982,9 @@ impl Nimbra {
                     })
                     .detach();
             }
+        }
+        if let Some(inverse) = change.inverse() {
+            self.sync(index, inverse, false, cx);
         }
     }
 

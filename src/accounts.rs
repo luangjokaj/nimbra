@@ -484,6 +484,8 @@ impl Nimbra {
                     this.read_snoozed_elsewhere();
                     this.scan_contacts(account.clone(), cx);
                     this.load_photo(account, cx);
+                    // Every account's mailbox to open again may have waited for this one.
+                    this.go_back_to_place(false, cx);
                 }
             })
             .ok();
@@ -564,18 +566,14 @@ impl Nimbra {
         }
     }
 
-    /// The thread in row `index` belongs to an account other than the one shown.
-    pub(super) fn is_foreign(&self, index: usize) -> bool {
-        self.mails
-            .get(index)
-            .and_then(|m| m.account.as_deref())
-            .is_some_and(|a| a != self.account_id)
-    }
-
     /// The connection for the thread in row `index` (its own account in All inboxes).
     pub(super) fn client_at(&self, index: usize) -> Option<Arc<mail::Client>> {
-        let account = self.mails.get(index).and_then(|m| m.account.clone());
-        self.client_for(account.as_deref())
+        let mail = self.mails.get(index)?;
+        // A row made up for a new draft is not in the provider: nothing to ask it.
+        if mail.id.as_deref().is_some_and(super::composer::made_up) {
+            return None;
+        }
+        self.client_for(mail.account.as_deref())
     }
 
     /// Clears everything that belongs to the account shown, and makes `id` the account shown.
@@ -592,23 +590,29 @@ impl Nimbra {
                 .unwrap_or_else(|| self.account_id.clone());
             composer.account = (from != id).then_some(from);
         }
-        // All inboxes is the same whichever account is shown: it outlives a switch, so that
-        // it does not load again each time. Not for an account being added (its mail is not
-        // in it), and without the mail of one signed out.
+        // Every account's mailboxes (All inboxes, and every account's Sent, Trash…) are the
+        // same whichever account is shown: they outlive a switch, so that they do not load
+        // again each time. Not for an account being added (its mail is not in them), and
+        // without the mail of one signed out.
         self.remember_mailbox();
         let listed = |account: &str| self.settings.accounts.iter().any(|a| a.id == account);
-        let all_inboxes = self
-            .cache
-            .get(&View::ALL_INBOXES)
-            .filter(|_| listed(&id))
-            .map(|mails| {
-                let kept: Vec<Mail> = mails
-                    .iter()
-                    .filter(|mail| mail.account.as_deref().is_some_and(listed))
-                    .cloned()
-                    .collect();
-                (kept, self.all_inboxes_whole)
-            });
+        let every: Vec<(View, Vec<Mail>)> = if listed(&id) {
+            self.cache
+                .iter()
+                .filter(|(view, _)| view.is_every())
+                .map(|(view, mails)| {
+                    let kept = mails
+                        .iter()
+                        .filter(|mail| mail.account.as_deref().is_some_and(listed))
+                        .cloned()
+                        .collect();
+                    (*view, kept)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let all_inboxes_whole = self.all_inboxes_whole;
         // While it was shown its count was kept in `counts`: hand that on, or the sidebar
         // and the Dock go back to the number from before it was shown.
         if listed(&self.account_id) && self.counts.contains_key("INBOX") {
@@ -713,9 +717,11 @@ impl Nimbra {
         self.print_view = None;
         self.account = "".into();
         self.me_initials = "".into();
-        if let Some((mails, whole)) = all_inboxes {
-            self.cache.insert(View::ALL_INBOXES, mails);
-            self.all_inboxes_whole = whole;
+        for (view, mails) in every {
+            if view == View::ALL_INBOXES {
+                self.all_inboxes_whole = all_inboxes_whole;
+            }
+            self.cache.insert(view, mails);
         }
         // Left before its store had opened.
         if !self.other_stores.contains_key(&left) {
@@ -905,6 +911,8 @@ impl Nimbra {
             .apply(self.mailbox, &shown, &mut fresh, true, false, |m| {
                 m.account.clone().unwrap_or_else(|| shown.clone())
             });
+        // Rows made up for new drafts give way to Gmail's own once it lists them.
+        self.drop_made_up_listed(&mut fresh);
         // For the chips of other accounts' snoozed threads (All inboxes), and Snoozed.
         self.read_snoozed_elsewhere();
         // Snoozed lists Gmail's own snoozed threads and the ones snoozed here; Reminders,
@@ -939,6 +947,23 @@ impl Nimbra {
         for i in &self.history {
             self.done[*i] = true;
         }
+        // Discarded drafts stay hidden while their delete is on its way, and until the
+        // listing no longer has them.
+        if !self.hidden_drafts.is_empty() {
+            let mut listed = std::collections::HashSet::new();
+            for (i, mail) in self.mails.iter().enumerate() {
+                let Some(id) = mail.id.clone() else {
+                    continue;
+                };
+                let key = (id, self.account_of(mail).to_string());
+                if self.hidden_drafts.contains_key(&key) {
+                    self.done[i] = true;
+                    listed.insert(key);
+                }
+            }
+            self.hidden_drafts
+                .retain(|key, deleted| !*deleted || listed.contains(key));
+        }
         self.picked = self.picked.iter().filter_map(|&row| now(row)).collect();
         self.selected = now(self.selected).unwrap_or(0);
         // One picked row left is simply the open one (as when ⌘-click leaves one).
@@ -962,7 +987,7 @@ impl Nimbra {
         let opened = self.search_opened.take();
         if let Some(id) = self.open_when_listed.take()
             && !self.open_listed(&id, cx)
-            && self.mailbox == View::Search
+            && self.mailbox.base() == View::Search
             && let Some(mail) = opened
             && mail.id.as_deref() == Some(id.as_str())
         {

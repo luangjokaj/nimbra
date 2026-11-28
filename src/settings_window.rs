@@ -690,6 +690,7 @@ fn switch(t: &Theme, on: bool) -> Div {
 
 impl SettingsWindow {
     /// A switch row that flips a preference.
+    #[allow(clippy::too_many_arguments)]
     fn toggle(
         &self,
         t: &Theme,
@@ -1244,10 +1245,12 @@ impl SettingsWindow {
 
     fn appearance(&mut self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let n = self.owner.read(cx);
-        let (theme, size, zoom) = (
+        let (theme, size, zoom, newest_first, subject_own_line) = (
             n.settings.theme,
             n.settings.reader_text,
             (n.settings.zoom() * 100.).round() as u16,
+            n.settings.newest_first,
+            n.settings.subject_own_line,
         );
         // Small previews of each look.
         let tile =
@@ -1392,9 +1395,28 @@ impl SettingsWindow {
                 },
             ),
         );
+        let order_row = self.toggle(
+            t,
+            "newest-first",
+            "Newest message first",
+            "Conversations open with the latest message at the top.",
+            newest_first,
+            cx,
+            |n| n.settings.newest_first = !n.settings.newest_first,
+        );
+        let lines_row = self.toggle(
+            t,
+            "subject-own-line",
+            "Subject on its own line",
+            "In the message list, the start of the email goes under the subject.",
+            subject_own_line,
+            cx,
+            |n| n.settings.subject_own_line = !n.settings.subject_own_line,
+        );
         vec![
             group(t, Some("Theme"), vec![tiles]),
             group(t, None, vec![zoom_row, size_row]),
+            group(t, None, vec![order_row, lines_row]),
         ]
     }
 

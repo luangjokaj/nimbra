@@ -222,7 +222,7 @@ impl Sidebar<'_> {
     /// The row of what is open, where the cursor starts.
     pub fn here(&self) -> Row {
         match self.mailbox {
-            View::Search => Row::Search,
+            view if view.base() == View::Search => Row::Search,
             View::ALL_INBOXES if !self.several() => Row::Mailbox(View::Inbox),
             View::ALL_INBOXES => Row::AllInboxes,
             view => Row::Mailbox(view),

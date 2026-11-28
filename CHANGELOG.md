@@ -4,10 +4,71 @@
 
 ### New
 - **Gmail with an app password.** Add account takes a Gmail or Google Workspace address with an app password too, over IMAP and SMTP, from the same form as any other address. Continue with Google is still the way in. When Google wants an app password rather than the account's own password, Nimbra says so, and Sign in again asks for a new one when the old one is revoked.
+- **Pick the accounts to search.** With several accounts, the search panel has a chip for All accounts and one for each account, under the field: click one, or press Tab and Shift-Tab, to search there. It starts on All accounts in All inboxes and on the account shown elsewhere, and a search kept open remembers its own.
+- **Search every account.** A search from All inboxes, or any of every account's mailboxes, looks in every account at once and lists what it finds newest first, loading more from each as you scroll; the search panel's suggestions come from every account too. A search from one account's mailbox stays in that account, and Esc from a search of every account goes back to All inboxes. On IMAP accounts, Gmail's own words like `label:` and `category:` are left out of the search rather than finding nothing; a Gmail account added with an app password keeps them, as Gmail searches it.
 
 ### Fixed
 - **Adding an address twice.** Adding an address that's already in Nimbra is refused, instead of replacing that account's sign-in.
 - **The Add account form and the keyboard.** Escape closes the form in Settings too, typing while it checks starts over, and after a refused password the keyboard is back in the password field, ready to type over it.
+
+## [0.1.10] - 2026-11-28
+
+### New
+- **Newest message first.** Settings › Appearance can show a conversation with its latest message at the top and the older ones under it, in the reader and in a message's own window.
+- **Subject on its own line.** The message list gives the subject and the start of the email a line each, the avatar staying in the middle of the sender's line and the subject's. On by default; Settings › Appearance puts them side by side again.
+- **The desktop behind the glass.** The sidebar's glass shows the desktop picture, blurred, where the window is on screen, rather than the windows behind it.
+- **Fold the latest message too.** In a conversation, the latest message folds to its line and opens again like the earlier ones, with the same animation, from its header or its line. Each foldable message has an arrow after its time that turns as it opens and folds. A conversation always opens on its latest message, and a single email does not fold.
+- **Emails you have read open at once.** The emails of the last few conversations you left stay ready, and the ones just above and below the open conversation are prepared ahead, so going back or pressing J and K shows them straight away. An email shows as soon as its text is laid out, without waiting for its images.
+- **Nimbra opens where you left it.** The account and mailbox you were in when you quit (All inboxes, Sent, a label, any of them) are open again when you come back, rather than the account's Inbox. A notification you click still opens its message, and a search is not kept.
+- **Drafts in Drafts at once.** A draft saved with ⌘S, or kept as its composer closes, shows in Drafts straight away: an existing draft's row is brought up to date, and a new one gets a row of its own, made from the composer, until Drafts is listed again. Edit draft on that row brings its composer back.
+- **Edit draft opens at once.** A draft is fetched as its row is opened in Drafts, so Edit draft opens the composer straight away; pressed while it is still on its way, it waits for it, with the loading line under the toolbar, rather than fetching it again.
+
+### Fixed
+- **Hover with another app in front.** Rows, buttons and the pointer follow the mouse over Nimbra's windows when another app is in front, rather than only after a first click.
+- **Calmer tooltips.** A tooltip casts a close, faint shadow rather than a wide one that looked like a smudge on the dark theme.
+- **The glass keeps up with the window.** While the window is moved, the desktop picture behind the sidebar follows it frame by frame, rather than catching up once the move is over.
+- **Menus fit their items.** A menu grows to its longest item, so Send later's "Monday morning" time (and any long name) is no longer cut off.
+- **Untitled drafts.** A draft without a subject shows "Untitled", and one without recipients "Draft" (with no initials made up for it), in the list and the reader, rather than nothing or "Unknown sender"; mail without a sender shows "Unknown sender". The reader names who a message is from, "Me" for one of your accounts, rather than the draft's or sent message's recipient.
+- **A draft opens to be written.** Double-clicking a draft (or pressing O on it) opens it in the composer, in a window of its own, rather than in a window to read it.
+- **A conversation in order.** Its messages read oldest first and the latest last; the earlier ones showed newest first above the latest.
+- **The filters as the toolbar's actions.** All and Unread are an icon and a word, as Done and Compose are, the one in use with the pressed look, which slides to the other.
+- **A message's own window opens whole.** It shows once its emails are drawn, as the main window shows an email, rather than with empty space that fills in and moves; each email shows as soon as its text is laid out, with the same loading line under its toolbar. A window whose conversation's content is not on this Mac fetches it, rather than waiting for the main window, and its loading line stops if that fails.
+- **Room around the address details.** Opened, the card with a message's From, To and Date has as much space over and under it as at its side.
+- **Smooth folding over emails.** Opening or folding a message above an email no longer makes that email jump ahead of its header and flash: while the conversation moves, a picture of the email moves with the rest of it.
+- **A calmer loading line.** While a message loads, the reader shows the same thin line under its toolbar as the list does when it checks for mail, instead of a spinner. Both lines wait a moment before showing, so a quick load does not flicker them, stay a moment once shown, and fade in and out.
+- **Times as your Mac shows them.** Times and dates in the list, the reader, Snooze and Send later follow your Mac's 12- or 24-hour clock, language, region and time zone, as Mail does, rather than always a 24-hour clock in English. Mail from the last 24 hours shows its time, as Gmail does, rather than the day it came.
+- **Gmail mail dated as Gmail shows it.** A message shows the time its sender sent it, as Gmail does, rather than when Gmail took it in, which for newsletters could be most of an hour apart.
+- **No more stray "…" in previews.** A newsletter that pads its preview with invisible characters (or with invisible joiners between spaces) no longer leaves a long blank gap ending in "…" in the list and in a conversation's folded messages. Each mailbox loads its first page again once, so previews already on this Mac are cleaned too.
+- **Labels and folders in All inboxes.** A conversation from any account can be labelled, moved to a label or folder, or have a label taken off, without opening its account first. The Label and Move to menus list the labels of the conversation's own account, and New label… makes it there. Conversations picked from several accounts at once are asked to be from one, as a label is one account's.
+- **Open in Gmail from All inboxes.** It is offered for a conversation from a Gmail account, whichever account is shown, and no longer for one from another provider. From a row's menu it opens in that account's Gmail too, rather than the browser's first one.
+- **Undo takes the label off at once.** Undoing a block, or a move to a label or folder, no longer shows the conversation back in its mailbox with that label still on it for a while.
+- **Block a sender from All inboxes.** Blocking a conversation from another account no longer asks you to open that account first: the sender is blocked in the conversation's own account, the conversation goes to that account's Blocked label (made if it has none), and Undo unblocks them there again.
+- **An email no longer flashes in the window's corner.** A message's email could show as a small square at the top left, over the sidebar, while its conversation was still loading; it now shows only once it is in its place in the reader.
+- **Primary buttons take the first click.** Edit draft, Send and the other primary buttons no longer miss a click made as the pointer arrives on them.
+- **A new message from the account shown.** Compose writes from the account on screen; the default account is only for All inboxes and the other views of every account.
+- **A quieter composer edge.** The composer and its "Save this draft?" sheet have the app's usual border rather than the strong one.
+- **"No content" for an empty message.** A message with nothing in it says so in the reader rather than showing a blank.
+- **Gone is gone.** A message trashed, deleted forever or discarded here that the server has already removed stays removed, rather than coming back with an error.
+- **A discarded draft leaves Drafts at once.** Its row goes as it is discarded, and Undo puts it back. Trashing the row of a draft just written here deletes that draft.
+- **The whole composer dims.** "Save this draft?" dims the composer's border too, rather than leaving it bright around the dimmed composer.
+- **No suggestions over "Save this draft?".** Address suggestions close as the sheet opens and stay hidden while it is up.
+- **Fast scrolling at the top.** Scrolling up quickly at the top of the list no longer leaves rows (or the whole list) blank while the scroll settles.
+- **A discarded draft leaves Drafts, whatever its composer knew.** Discarding from "Save this draft?" hides the draft's row at once, even when the composer had lost track of which row it was.
+- **A discarded draft stays gone.** Its row stays hidden while Drafts is listed again during the undo delay, and until Gmail no longer lists it.
+- **A saved draft shows once.** The row shown for a new draft as it is saved gives way to Gmail's own when Drafts lists it, and a draft Gmail already lists is brought up to date rather than shown twice.
+
+## [0.1.9] - 2026-11-28
+
+### Changed
+- **Pop-ups centre on the mail.** With the sidebar fixed, the Undo and sending pill, notices and the update's card sit in the middle of the mail, right of the sidebar; with the sidebar hiding, in the middle of the window as before.
+- **New mail is there when it is announced.** A thread that arrives goes into the Inbox and All inboxes, with its message, before its notification shows, so clicking the notification opens it at once.
+- **Every account's mailboxes open at once.** All inboxes, and every account's Sent, Trash, Drafts and the rest, open from what each account keeps on this Mac and are brought up to date behind it, rather than waiting on every account. Switching accounts no longer forgets them either.
+- **What's new, in the sidebar.** After an update, Nimbra no longer opens the release notes in the browser: a card above Settings says it just updated and links to the changelog. It stays until it is opened or dismissed with its X, and after another update it links to the newest notes.
+- **A Help menu.** Report a Problem… (⌥⇧⌘I) opens a new issue on GitHub, with Nimbra's and macOS's versions filled in; Keyboard Shortcuts opens the shortcuts window; Release Notes opens this version's notes.
+- **Keyboard shortcuts in a window of their own.** `?` opens them in a window like Settings, which stays open beside the mail until it is closed; pressed again, it brings that window forward.
+
+### Fixed
+- **Rounded corners on the search panel.** Its footer (and the command palette's) no longer shows square corners past the panel's rounded ones.
 
 ## [0.1.8] - 2026-11-27
 
