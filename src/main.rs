@@ -30,6 +30,7 @@ mod tooltip;
 mod ui;
 mod update;
 mod usage;
+mod wallpaper;
 mod webkeys;
 mod webview;
 mod when;
@@ -559,6 +560,8 @@ fn main() {
                 },
                 |window, cx| {
                     blur::apply(window, 40);
+                    // The glass shows the desktop picture, not the windows behind.
+                    wallpaper::install(window);
                     // The red close button hides the window too, instead of quitting.
                     window.on_window_should_close(cx, |window, _| {
                         blur::set_visible(window, false);
