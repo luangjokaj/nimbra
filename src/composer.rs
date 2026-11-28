@@ -3308,7 +3308,12 @@ impl Nimbra {
                     div()
                         .id("compose-ask")
                         .absolute()
-                        .inset_0()
+                        // Over the composer's border too, which would stay bright around the
+                        // dimmed composer otherwise.
+                        .top(dp(-1.))
+                        .left(dp(-1.))
+                        .right(dp(-1.))
+                        .bottom(dp(-1.))
                         .flex()
                         .items_center()
                         .justify_center()
