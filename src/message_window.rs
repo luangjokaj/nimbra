@@ -21,8 +21,19 @@ pub(super) struct MessageWindow {
     focused_once: bool,
     /// The text blocks as last drawn here, for selecting (`selection.rs`).
     layouts: super::selection::Layouts,
+    /// The line under the toolbar while the thread or its emails load, as in the main
+    /// window (`ui::LoadingLine`).
+    loading_line: crate::ui::LoadingLine,
+    /// When it opened, still unseen: it shows once its emails are drawn, or after
+    /// `REVEAL_WITHIN` at most (`reveal`).
+    unseen_since: Option<std::time::Instant>,
+    /// The thread's content was asked for (`fetch_if_missing`), until it is here.
+    asked: bool,
     _observe: gpui::Subscription,
 }
+
+/// The longest a message window waits, unseen, for its emails before it shows anyway.
+const REVEAL_WITHIN: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// The reader's column padding on either side, in a message window.
 const WINDOW_SIDE: f32 = 36.;
@@ -65,7 +76,50 @@ impl MessageWindow {
             focus: cx.focus_handle(),
             focused_once: false,
             layouts: Default::default(),
+            loading_line: Default::default(),
+            unseen_since: Some(std::time::Instant::now()),
+            asked: false,
             _observe: observe,
+        }
+    }
+
+    /// Shows the window once nothing in it is still being drawn (its content not fetched
+    /// yet does not count: that can take a while, and the loading line says so), or once it
+    /// has waited `REVEAL_WITHIN`. Until then it is drawn unseen.
+    fn reveal(&mut self, drawing: bool, window: &mut Window) {
+        let Some(since) = self.unseen_since else {
+            return;
+        };
+        if drawing && since.elapsed() < REVEAL_WITHIN {
+            window.request_animation_frame();
+            return;
+        }
+        self.unseen_since = None;
+        crate::blur::set_alpha(window, 1.);
+    }
+
+    /// Asks the app for the thread's content once while it is not here. True when that
+    /// failed (offline, say): then nothing is on its way.
+    fn fetch_if_missing(&mut self, m: &Mail, cx: &mut Context<Self>) -> bool {
+        if m.loaded {
+            self.asked = false;
+            return false;
+        }
+        let key = (self.key.clone(), self.account.clone());
+        let failed = self.owner.read(cx).body_failed.contains(&key);
+        if !self.asked && !failed && m.id.is_some() {
+            self.asked = true;
+            let (id, account) = key;
+            self.owner.update(cx, |n, cx| n.load_body(id, account, cx));
+        }
+        failed
+    }
+
+    /// Shows the window now if it is still unseen: the guard for a window that draws no
+    /// frames while unseen (macOS may count a transparent window as hidden).
+    pub(super) fn reveal_now(&mut self, window: &mut Window) {
+        if self.unseen_since.take().is_some() {
+            crate::blur::set_alpha(window, 1.);
         }
     }
 
@@ -197,6 +251,8 @@ impl Render for MessageWindow {
             self.original = false;
             self.mail_views.clear();
         }
+        // Each email shows once its text is laid out, without waiting for its images.
+        self.mail_views.measure_waiting();
         // Each message's email, where it has one (0 the latest, k + 1 `earlier[k]`).
         let emails: Vec<_> = (0..=m.earlier.len())
             .map(|index| {
@@ -235,6 +291,15 @@ impl Render for MessageWindow {
                     .pl(dp(40.)),
             }
         };
+        // Its content, when the app does not have it (dropped since, or never fetched):
+        // asked for here, as the main window only fetches the thread selected in it.
+        let failed = self.fetch_if_missing(&m, cx);
+        // Loading: the thread's content, or an email not drawn yet. Not once it failed.
+        let loading = !failed && (!m.loaded || emails.iter().flatten().any(|slot| slot.waiting()));
+        self.reveal(loading && m.loaded, window);
+        if self.loading_line.update(loading) {
+            window.request_animation_frame();
+        }
         let width = from_screen(window.viewport_size().width);
 
         // As the main window's toolbar (`reading.rs`): the actions as words, then icons.
@@ -537,6 +602,7 @@ impl Render for MessageWindow {
             .line_height(dp(18.))
             .text_color(t.text)
             .child(toolbar)
+            .child(self.loading_line.view(&t, "window-loading"))
             .child(body)
             .children(compose)
     }

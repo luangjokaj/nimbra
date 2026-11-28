@@ -182,6 +182,35 @@ pub fn set_visible(window: &gpui::Window, visible: bool) {
 #[cfg(not(target_os = "macos"))]
 pub fn set_visible(_window: &gpui::Window, _visible: bool) {}
 
+/// Sets a window's opacity (0 to 1) as a whole. A window at 0 is still drawn and laid out,
+/// as one on screen is, but not seen: a message window waits so until its emails are drawn
+/// (`message_window`), and then shows whole.
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)] // emitted by the objc crate's macros
+pub fn set_alpha(window: &gpui::Window, alpha: f64) {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: main thread; `ns_view` is this window's live content view.
+    unsafe {
+        let view = handle.ns_view.as_ptr() as *mut Object;
+        let ns_window: *mut Object = msg_send![view, window];
+        if !ns_window.is_null() {
+            let _: () = msg_send![ns_window, setAlphaValue: alpha];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_alpha(_window: &gpui::Window, _alpha: f64) {}
+
 /// Screen geometry for the tooltips' windows, in AppKit's own coordinates (from the bottom
 /// left, across all displays).
 #[cfg(target_os = "macos")]

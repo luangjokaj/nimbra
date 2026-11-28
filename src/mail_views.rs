@@ -469,7 +469,8 @@ pub fn wanted<'a>(
             key: message_key(thread, id, index),
             html,
             open,
-            latest: index == 0,
+            // In a window of its own every message is open at once: none grows into place.
+            latest: index == 0 || all,
             account: None,
         })
         .collect()
