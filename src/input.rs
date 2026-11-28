@@ -6,6 +6,7 @@
 //! and build a multi-line editor out of several of them.
 
 use std::ops::Range;
+use std::time::Duration;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
@@ -106,7 +107,19 @@ pub struct TextInput {
     is_selecting: bool,
     /// A password: drawn as dots, and never copied out.
     secret: bool,
+    /// The cursor's blink: whether it shows now, which blink is current (a newer one ends
+    /// the one before), whether one is running, and whether the field had focus when last
+    /// drawn (a blink ends once it has not).
+    cursor_shown: bool,
+    blink_epoch: usize,
+    blinking: bool,
+    focused: bool,
 }
+
+/// How long the cursor stays on and off as it blinks, and how long it holds still after
+/// typing or moving before it blinks again: as macOS's own fields do.
+const BLINK: Duration = Duration::from_millis(530);
+const BLINK_PAUSE: Duration = Duration::from_millis(500);
 
 impl TextInput {
     pub fn new(cx: &mut Context<Self>, placeholder: &str, muted: Hsla, accent: Hsla) -> Self {
@@ -124,7 +137,45 @@ impl TextInput {
             scroll_x: px(0.),
             is_selecting: false,
             secret: false,
+            cursor_shown: true,
+            blink_epoch: 0,
+            blinking: false,
+            focused: false,
         }
+    }
+
+    /// Shows the cursor and holds it still for a moment (typing, moving, clicking), then
+    /// blinks it for as long as the field has focus.
+    fn hold_cursor(&mut self, cx: &mut Context<Self>) {
+        self.cursor_shown = true;
+        self.blink_epoch += 1;
+        self.blinking = true;
+        let epoch = self.blink_epoch;
+        cx.spawn(async move |this, cx| {
+            let mut wait = BLINK_PAUSE;
+            loop {
+                cx.background_executor().timer(wait).await;
+                wait = BLINK;
+                let going = this.update(cx, |input, cx| {
+                    // A newer blink took over, or the field lost focus: this one ends.
+                    if input.blink_epoch != epoch {
+                        return false;
+                    }
+                    if !input.focused {
+                        input.blinking = false;
+                        input.cursor_shown = true;
+                        return false;
+                    }
+                    input.cursor_shown = !input.cursor_shown;
+                    cx.notify();
+                    true
+                });
+                if !matches!(going, Ok(true)) {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Makes this a password field: dots on screen, nothing to the clipboard.
@@ -191,6 +242,7 @@ impl TextInput {
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.hold_cursor(cx);
         cx.notify();
     }
 
@@ -332,6 +384,7 @@ impl TextInput {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
+        self.hold_cursor(cx);
         cx.notify()
     }
 
@@ -371,6 +424,7 @@ impl TextInput {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
+        self.hold_cursor(cx);
         cx.notify()
     }
 
@@ -485,6 +539,7 @@ impl EntityInputHandler for TextInput {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        self.hold_cursor(cx);
         cx.notify();
         cx.emit(InputEvent::Changed);
     }
@@ -517,6 +572,7 @@ impl EntityInputHandler for TextInput {
             .map(|new_range| new_range.start + range.start..new_range.end + range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
 
+        self.hold_cursor(cx);
         cx.notify();
         cx.emit(InputEvent::Changed);
     }
@@ -737,6 +793,7 @@ impl Element for TextElement {
         let line = prepaint.line.take().unwrap();
         let scroll_x = prepaint.scroll_x;
         let focused = focus_handle.is_focused(window);
+        let shown = self.input.read(cx).cursor_shown;
         // Everything stays inside the field's own box.
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             if let Some(selection) = prepaint.selection.take() {
@@ -749,7 +806,10 @@ impl Element for TextElement {
                 cx,
             )
             .unwrap();
-            if focused && let Some(cursor) = prepaint.cursor.take() {
+            if focused
+                && shown
+                && let Some(cursor) = prepaint.cursor.take()
+            {
                 window.paint_quad(cursor);
             }
         });
@@ -763,7 +823,12 @@ impl Element for TextElement {
 }
 
 impl Render for TextInput {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Focus comes in: the cursor shows at once, then blinks.
+        self.focused = self.focus_handle.is_focused(window);
+        if self.focused && !self.blinking {
+            self.hold_cursor(cx);
+        }
         div()
             .flex()
             .key_context("TextInput")
