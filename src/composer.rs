@@ -2461,8 +2461,6 @@ impl Nimbra {
         cx.notify();
     }
 
-    /// Where a new message is from: the default account, with several and it connected;
-    /// otherwise (`None`) the account shown.
     /// Who a new message is from: the account on screen, or in a view of every account
     /// (All inboxes and the like) the default account.
     fn new_message_account(&self) -> Option<String> {
