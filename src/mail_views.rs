@@ -32,6 +32,10 @@ pub struct Wanted<'a> {
     /// Shown, as its message is open. A folded one is loaded and laid out hidden, at the
     /// column's width, so its message opens straight to its height.
     pub open: bool,
+    /// The thread's latest message: there at once at its height, with no opening.
+    pub latest: bool,
+    /// The account it is in, for the `mailto:` links in it (`None`: the window's).
+    pub account: Option<&'a str>,
 }
 
 pub enum Event {
@@ -39,6 +43,15 @@ pub enum Event {
     Loaded(u64),
     /// How tall that view's email is, in points.
     Height(u64, f32),
+    /// A picture of that view's email (TIFF), at the width and height it was taken at.
+    Snapshot(u64, Option<Vec<u8>>, f32, f32),
+}
+
+/// A picture of an email as drawn, and the size it was drawn at (`Slot::snapshot`).
+struct Snapshot {
+    image: std::sync::Arc<gpui::Image>,
+    width: f32,
+    height: f32,
 }
 
 /// One message's web view, as the column places it while it is drawn.
@@ -52,6 +65,24 @@ pub struct Slot {
     width: Cell<f32>,
     /// Whether it has been placed in a column (`HtmlView::place`) at least once.
     placed: Cell<bool>,
+    /// The latest message's: it does not open to its height, it is there.
+    latest: Cell<bool>,
+    /// When it was made, for how long it may keep the reader waiting (`waiting`).
+    made: std::time::Instant,
+    /// When its height was last asked for while it has none (`measure_waiting`).
+    asked: Cell<Option<std::time::Instant>>,
+    /// The zoom its height was measured at.
+    zoom: Cell<f32>,
+    /// Shown as its message is open (`Wanted::open`).
+    open: Cell<bool>,
+    /// Its page has loaded, images and all.
+    loaded: Cell<bool>,
+    /// When its height last changed: a picture is taken once it holds still.
+    steady_since: Cell<std::time::Instant>,
+    /// A picture of it is on its way.
+    snapping: Cell<bool>,
+    /// The picture the app draws in its place while things move (`take_snapshots`).
+    snapshot: std::cell::RefCell<Option<Snapshot>>,
     /// The column's width as last placed, shared by the window's views.
     column: Rc<Cell<f32>>,
     page: Cell<Option<Look>>,
@@ -65,6 +96,22 @@ impl Slot {
     /// The email's height in points; 0 until it has been measured.
     pub fn height(&self) -> f32 {
         self.height.get()
+    }
+
+    /// The picture of the email as it is drawn now (its size unchanged since), if any.
+    pub fn snapshot(&self) -> Option<std::sync::Arc<gpui::Image>> {
+        let snapshot = self.snapshot.borrow();
+        let snapshot = snapshot.as_ref()?;
+        ((snapshot.width - self.width.get()).abs() <= 0.5
+            && (snapshot.height - self.height.get()).abs() <= 0.5)
+            .then(|| snapshot.image.clone())
+    }
+
+    /// Its page is still loading or being measured, for a while at most: one that never
+    /// answers does not keep the reader waiting.
+    pub fn waiting(&self) -> bool {
+        const LONGEST: std::time::Duration = std::time::Duration::from_secs(10);
+        self.height.get() <= 0. && self.made.elapsed() < LONGEST
     }
 
     /// How much of the email shows now, and whether that is still growing: a message opens
@@ -95,6 +142,19 @@ impl Slot {
         }
     }
 
+    /// Its height asked for early, before its page has finished loading (its images): the
+    /// text is laid out long before, so it shows then, and grows when the images come.
+    /// Too small an answer is the page not there yet, and is not taken.
+    fn measure_early(&self) {
+        const SOME_TEXT: f32 = 40.;
+        let (id, tell) = (self.id, self.tell.clone());
+        self.view.measure(move |height| {
+            if height >= SOME_TEXT {
+                let _ = tell.unbounded_send(Event::Height(id, height));
+            }
+        });
+    }
+
     fn measure(&self) {
         let (id, tell) = (self.id, self.tell.clone());
         self.view.measure(move |height| {
@@ -103,9 +163,15 @@ impl Slot {
     }
 }
 
+/// How many emails no longer wanted stay loaded, hidden, so that going back to them is
+/// instant: the most recently left first.
+const KEEP_LEFT: usize = 10;
+
 /// The web views of the conversation a window shows.
 pub struct MailViews {
     slots: HashMap<String, Rc<Slot>>,
+    /// The slots not wanted now, kept for a return (`KEEP_LEFT`), most recently left first.
+    left: std::collections::VecDeque<String>,
     next: u64,
     tell: UnboundedSender<Event>,
     zoom: f32,
@@ -121,6 +187,7 @@ impl MailViews {
         (
             MailViews {
                 slots: HashMap::new(),
+                left: std::collections::VecDeque::new(),
                 next: 0,
                 tell,
                 zoom: 1.,
@@ -131,9 +198,10 @@ impl MailViews {
         )
     }
 
-    /// Makes the views match `wanted`: new ones are made and loaded, the others go. While
-    /// `shown` is false they are all hidden but kept, so they need not load again. False
-    /// when there is no web view on this system.
+    /// Makes the views match `wanted`: new ones are made and loaded; the others are
+    /// hidden, the last `KEEP_LEFT` of them kept loaded for a return. While `shown` is
+    /// false they are all hidden but kept, so they need not load again. False when there
+    /// is no web view on this system.
     #[allow(clippy::too_many_arguments)]
     pub fn sync(
         &mut self,
@@ -145,12 +213,39 @@ impl MailViews {
         hole: Option<(f32, f32, f32, f32)>,
         window: &gpui::Window,
     ) -> bool {
-        self.slots
-            .retain(|key, _| wanted.iter().any(|w| w.key == *key));
-        let rezoom = (self.zoom - zoom).abs() > f32::EPSILON;
+        // Left now: hidden, and kept among the last few left; older ones go.
+        let mut gone: Vec<String> = self
+            .slots
+            .keys()
+            .filter(|key| !wanted.iter().any(|w| w.key == **key) && !self.left.contains(key))
+            .cloned()
+            .collect();
+        gone.sort();
+        for key in gone {
+            if let Some(slot) = self.slots.get(&key) {
+                slot.view.set_visible(false);
+                // Pictures are for the conversation on screen only (they are large).
+                slot.snapshot.borrow_mut().take();
+            }
+            self.left.push_front(key);
+        }
+        self.left
+            .retain(|key| !wanted.iter().any(|w| w.key == *key));
+        while self.left.len() > KEEP_LEFT {
+            if let Some(oldest) = self.left.pop_back() {
+                self.slots.remove(&oldest);
+            }
+        }
         self.zoom = zoom;
         self.shown = shown;
-        for Wanted { key, html, open } in wanted {
+        for Wanted {
+            key,
+            html,
+            open,
+            latest,
+            account: own,
+        } in wanted
+        {
             let slot = match self.slots.get(&key) {
                 Some(slot) => slot.clone(),
                 None => {
@@ -170,6 +265,15 @@ impl MailViews {
                         opening: Cell::new(None),
                         width: Cell::new(0.),
                         placed: Cell::new(false),
+                        latest: Cell::new(latest),
+                        made: std::time::Instant::now(),
+                        asked: Cell::new(None),
+                        zoom: Cell::new(zoom),
+                        open: Cell::new(open),
+                        loaded: Cell::new(false),
+                        steady_since: Cell::new(std::time::Instant::now()),
+                        snapping: Cell::new(false),
+                        snapshot: std::cell::RefCell::new(None),
                         column: self.column.clone(),
                         page: Cell::new(None),
                         tell,
@@ -178,13 +282,19 @@ impl MailViews {
                     slot
                 }
             };
+            slot.open.set(open);
             if slot.page.get() != Some(look) {
+                // Another page: its picture is of the old one.
+                slot.loaded.set(false);
+                slot.snapshot.borrow_mut().take();
                 slot.view.set_dark(look.dark, look.darkened);
-                slot.view.show(html, look.images, Some(account));
+                slot.view
+                    .show(html, look.images, Some(own.unwrap_or(account)));
                 slot.page.set(Some(look));
             }
             slot.view.set_zoom(zoom);
-            if rezoom {
+            // Measured at another zoom (or kept while the zoom changed): measured again.
+            if (slot.zoom.replace(zoom) - zoom).abs() > f32::EPSILON {
                 slot.measure();
             }
             if open {
@@ -215,21 +325,96 @@ impl MailViews {
         match event {
             Event::Loaded(id) => {
                 if let Some(slot) = self.slots.values().find(|s| s.id == id) {
+                    slot.loaded.set(true);
                     slot.measure();
                 }
                 false
+            }
+            Event::Snapshot(id, tiff, width, height) => {
+                let Some(slot) = self.slots.values().find(|s| s.id == id) else {
+                    return false;
+                };
+                slot.snapping.set(false);
+                let Some(tiff) = tiff else {
+                    return false;
+                };
+                *slot.snapshot.borrow_mut() = Some(Snapshot {
+                    image: std::sync::Arc::new(gpui::Image::from_bytes(
+                        gpui::ImageFormat::Tiff,
+                        tiff,
+                    )),
+                    width,
+                    height,
+                });
+                true
             }
             Event::Height(id, height) => {
                 let Some(slot) = self.slots.values().find(|s| s.id == id) else {
                     return false;
                 };
                 let old = slot.height.replace(height);
-                // Its first height: the message opens to it (unless motion is reduced).
-                if old <= 0. && !crate::integration::display_options().reduce_motion {
+                if (old - height).abs() > 0.5 {
+                    slot.steady_since.set(std::time::Instant::now());
+                }
+                // Its first height: a message opened opens to it (unless motion is reduced);
+                // the latest, which the conversation opens on, is there at once.
+                if old <= 0.
+                    && !slot.latest.get()
+                    && !crate::integration::display_options().reduce_motion
+                {
                     slot.opening.set(Some((std::time::Instant::now(), 0.)));
                 }
                 (old - height).abs() > 0.5
             }
+        }
+    }
+
+    /// Asks the shown emails that have no height yet for one, every so often (each frame
+    /// asks; this keeps it to `EVERY`), so they show as soon as their text is laid out.
+    pub fn measure_waiting(&self) {
+        const EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+        if !self.shown {
+            return;
+        }
+        for slot in self.slots.values() {
+            if slot.height.get() > 0.
+                || !slot.placed.get()
+                || slot.asked.get().is_some_and(|at| at.elapsed() < EVERY)
+            {
+                continue;
+            }
+            slot.asked.set(Some(std::time::Instant::now()));
+            slot.measure_early();
+        }
+    }
+
+    /// Takes a picture of each open email that has loaded and holds still, unless it has
+    /// one of it as it is: the app draws it in the email's place while things move
+    /// (`reading::email_frame`). Not while they move, nor of very tall emails (memory).
+    pub fn take_snapshots(&self, moving: bool) {
+        const STEADY: std::time::Duration = std::time::Duration::from_millis(250);
+        const TALLEST: f32 = 4000.;
+        if moving || !self.shown {
+            return;
+        }
+        for slot in self.slots.values() {
+            let height = slot.height.get();
+            if !slot.open.get()
+                || !slot.placed.get()
+                || !slot.loaded.get()
+                || slot.snapping.get()
+                || height <= 0.
+                || height > TALLEST
+                || slot.steady_since.get().elapsed() < STEADY
+                || slot.snapshot().is_some()
+            {
+                continue;
+            }
+            slot.snapping.set(true);
+            let (id, tell, width) = (slot.id, slot.tell.clone(), slot.width.get());
+            slot.view.snapshot(move |tiff| {
+                let _ = tell.unbounded_send(Event::Snapshot(id, tiff, width, height));
+            });
         }
     }
 
@@ -242,6 +427,7 @@ impl MailViews {
 
     pub fn clear(&mut self) {
         self.slots.clear();
+        self.left.clear();
     }
 
     /// ⌘C in the email the keyboard is in. False when it is in none.
@@ -258,12 +444,18 @@ impl MailViews {
 const AHEAD: usize = 12;
 
 /// The messages of `mail` with HTML to have as emails: the open ones, shown, and the
-/// latest folded ones, hidden (`all`: every message open, as a message window shows them).
-pub fn wanted<'a>(mail: &'a crate::data::Mail, thread: &str, all: bool) -> Vec<Wanted<'a>> {
+/// latest folded ones, hidden (`all`: every message open, as a message window shows them;
+/// `latest_open`: the latest message is not folded).
+pub fn wanted<'a>(
+    mail: &'a crate::data::Mail,
+    thread: &str,
+    all: bool,
+    latest_open: bool,
+) -> Vec<Wanted<'a>> {
     let latest = mail
         .html
         .as_deref()
-        .map(|html| (0, mail.header.message_id.as_str(), html, true));
+        .map(|html| (0, mail.header.message_id.as_str(), html, all || latest_open));
     // Newest first, so the ones loaded ahead are the latest.
     let earlier = mail.earlier.iter().enumerate().filter_map(|(k, e)| {
         let open = all || e.expanded;
@@ -277,6 +469,8 @@ pub fn wanted<'a>(mail: &'a crate::data::Mail, thread: &str, all: bool) -> Vec<W
             key: message_key(thread, id, index),
             html,
             open,
+            latest: index == 0,
+            account: None,
         })
         .collect()
 }
@@ -306,10 +500,13 @@ mod tests {
     fn the_open_messages_with_html_are_shown_as_emails() {
         let mut m = crate::data::inbox().remove(0);
         let keys = |m: &crate::data::Mail, all: bool| -> Vec<String> {
-            wanted(m, "t", all).into_iter().map(|w| w.key).collect()
+            wanted(m, "t", all, true)
+                .into_iter()
+                .map(|w| w.key)
+                .collect()
         };
         let open = |m: &crate::data::Mail, all: bool| -> Vec<String> {
-            wanted(m, "t", all)
+            wanted(m, "t", all, true)
                 .into_iter()
                 .filter(|w| w.open)
                 .map(|w| w.key)
@@ -325,6 +522,21 @@ mod tests {
         // One without HTML is drawn by the reader instead.
         m.earlier[0].html = None;
         assert_eq!(keys(&m, true), ["t#0", "t#2"]);
-        assert!(wanted(&m, "t", false)[1].html.contains("first pass"));
+        assert!(wanted(&m, "t", false, true)[1].html.contains("first pass"));
+    }
+
+    #[test]
+    fn a_folded_latest_message_keeps_its_email_loaded_but_hidden() {
+        let m = crate::data::inbox().remove(0);
+        let latest = |all: bool, open: bool| {
+            wanted(&m, "t", all, open)
+                .into_iter()
+                .find(|w| w.key == "t#0")
+                .map(|w| w.open)
+        };
+        assert_eq!(latest(false, false), Some(false));
+        assert_eq!(latest(false, true), Some(true));
+        // Its own window shows it whatever the reader does.
+        assert_eq!(latest(true, false), Some(true));
     }
 }

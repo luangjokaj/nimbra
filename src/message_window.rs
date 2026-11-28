@@ -175,7 +175,7 @@ impl Render for MessageWindow {
         let original = self.original && m.has_html() && m.loaded;
         let thread = self.thread();
         let wanted = if original {
-            crate::mail_views::wanted(&m, &thread, true)
+            crate::mail_views::wanted(&m, &thread, true, true)
         } else {
             Vec::new()
         };
@@ -227,6 +227,7 @@ impl Render for MessageWindow {
                     0.,
                     None,
                     darkened,
+                    false,
                     &t,
                 ),
                 None => n

@@ -387,6 +387,8 @@ pub struct Nimbra {
     details: Option<(String, usize)>,
     /// Earlier messages opening or folding, by thread and place (`reading::Fold`).
     folds: std::cell::RefCell<HashMap<(ThreadKey, usize), reading::Fold>>,
+    /// The latest messages folded in their conversations: thread, account, Message-ID.
+    latest_folded: std::collections::HashSet<(String, String, String)>,
     /// The height of an open earlier message as last laid out, by thread and place.
     fold_heights: reading::FoldHeights,
     /// A folded message's line, as last laid out: where one opens from and folds to.
@@ -569,10 +571,10 @@ pub struct Nimbra {
     /// Full view: the sidebar and list were hidden by a double-click (or Return); this is
     /// whether each was open before, to put them back.
     focus_restore: Option<(bool, bool)>,
-    /// The checking-for-mail bar was showing at the last frame.
-    bar_shown: bool,
-    /// When the bar started fading out (and a number per fade, for its animation).
-    bar_fade: Option<(std::time::Instant, usize)>,
+    /// The line over the list while mail is checked (`ui::LoadingLine`).
+    checking_line: crate::ui::LoadingLine,
+    /// The line under the reader's toolbar while its message loads.
+    reader_line: crate::ui::LoadingLine,
     /// The number shown on the Dock icon.
     badge: Option<u32>,
     /// A document waiting to be printed (it is loaded into the web view first).
@@ -985,8 +987,8 @@ impl Nimbra {
             filter_gen: 0,
             filter_switched: None,
             fold_gen: 0,
-            bar_shown: false,
-            bar_fade: None,
+            checking_line: Default::default(),
+            reader_line: Default::default(),
             badge: None,
             print_pending: None,
             login_item: false,
@@ -1050,6 +1052,7 @@ impl Nimbra {
             send_later_times: Vec::new(),
             details: None,
             folds: Default::default(),
+            latest_folded: Default::default(),
             fold_heights: Default::default(),
             fold_line: std::rc::Rc::new(std::cell::Cell::new(53.)),
             fold_lead: Default::default(),
@@ -2595,20 +2598,12 @@ impl Render for Nimbra {
                 .ok();
             });
         }
-        // The checking-for-mail bar fades out when the check is done, instead of vanishing.
-        let bar = self.shows_checking() && !self.pull_hold && self.pull == 0.;
-        if self.bar_shown && !bar {
-            let n = self.bar_fade.map_or(0, |(_, n)| n + 1);
-            self.bar_fade = Some((std::time::Instant::now(), n));
-        } else if bar {
-            self.bar_fade = None;
-        }
-        self.bar_shown = bar;
-        if self
-            .bar_fade
-            .is_some_and(|(at, _)| at.elapsed() > Duration::from_millis(600))
-        {
-            self.bar_fade = None;
+        // The loading lines fade out when what they waited for is there, instead of
+        // vanishing.
+        let checking = self.shows_checking() && !self.pull_hold && self.pull == 0.;
+        let reading = self.reader_loading();
+        if self.checking_line.update(checking) | self.reader_line.update(reading) {
+            window.request_animation_frame();
         }
         self.frame = Some(window.bounds());
         // The update's progress stays on screen while Nimbra is the app in use. Asked of the

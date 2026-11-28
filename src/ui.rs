@@ -344,3 +344,132 @@ pub fn tip(
     let label = label.into();
     move |window, cx| crate::tooltip::build(dark, label.clone(), key, window, cx)
 }
+
+// ------------------------------------------------------------------ loading line
+
+/// Whether a loading line shows, and its fading out once what it waited for is there. A
+/// load that is over quickly never shows it (`SHOW_AFTER`), and one that shows stays a
+/// moment at least (`SHOWN_FOR`), so a fast load does not flicker it on and off.
+#[derive(Default)]
+pub struct LoadingLine {
+    /// Loading since then (whether shown yet or not).
+    since: Option<std::time::Instant>,
+    /// Shown since then.
+    shown: Option<std::time::Instant>,
+    fade: Option<(std::time::Instant, usize)>,
+}
+
+/// How long a load runs before its line shows.
+const SHOW_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
+/// How long a line that showed stays, however soon the load is over.
+const SHOWN_FOR: std::time::Duration = std::time::Duration::from_millis(600);
+/// How long the line takes to fade in or out.
+const LINE_FADE: std::time::Duration = std::time::Duration::from_millis(450);
+
+impl LoadingLine {
+    /// Called each frame with whether something is loading now. True while a frame is
+    /// wanted for the line to change (to show, or to stop showing) on its own.
+    pub fn update(&mut self, loading: bool) -> bool {
+        let now = std::time::Instant::now();
+        if loading {
+            self.fade = None;
+            let since = *self.since.get_or_insert(now);
+            if self.shown.is_none() && since.elapsed() >= SHOW_AFTER {
+                self.shown = Some(now);
+            }
+            return self.shown.is_none();
+        }
+        self.since = None;
+        if let Some(shown) = self.shown {
+            if shown.elapsed() < SHOWN_FOR {
+                return true;
+            }
+            self.shown = None;
+            let n = self.fade.map_or(0, |(_, n)| n + 1);
+            self.fade = Some((now, n));
+        }
+        if self.fade.is_some_and(|(at, _)| at.elapsed() > LINE_FADE) {
+            self.fade = None;
+        }
+        false
+    }
+
+    /// The thin line under a toolbar: a bar glides along it, from one edge to the other,
+    /// while something loads, and the line fades out when it is done. Its 2pt strip is
+    /// always there, so nothing below it moves. `id` names its animations.
+    pub fn view(&self, t: &Theme, id: &'static str) -> Div {
+        div()
+            .relative()
+            .flex_none()
+            .h(dp(2.))
+            .overflow_hidden()
+            .when(self.shown.is_some() || self.fade.is_some(), |d| {
+                let strip = div().absolute().inset_0().bg(t.border).child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .h_full()
+                        .w(gpui::relative(0.45))
+                        .rounded_full()
+                        .bg(gradient(90., c(0x8b7cff, 0.), c(0xff7ab6, 1.)))
+                        .with_animation(
+                            id,
+                            gpui::Animation::new(std::time::Duration::from_millis(1150))
+                                .repeat()
+                                .with_easing(gpui::ease_in_out),
+                            |bar, delta| bar.left(gpui::relative(-0.45 + 1.45 * delta)),
+                        ),
+                );
+                d.child(match self.fade {
+                    // Done: fade the whole strip out.
+                    Some((_, n)) => strip
+                        .with_animation(
+                            (SharedString::from(format!("{id}-fade")), n),
+                            gpui::Animation::new(LINE_FADE).with_easing(gpui::ease_out_quint()),
+                            |strip, delta| strip.opacity(1. - delta),
+                        )
+                        .into_any_element(),
+                    // Starting: fade in, rather than appear at once.
+                    None => strip
+                        .with_animation(
+                            SharedString::from(format!("{id}-in")),
+                            gpui::Animation::new(std::time::Duration::from_millis(200))
+                                .with_easing(gpui::ease_out_quint()),
+                            |strip, delta| strip.opacity(delta),
+                        )
+                        .into_any_element(),
+                })
+            })
+    }
+}
+
+#[cfg(test)]
+mod loading_line_tests {
+    use super::*;
+
+    #[test]
+    fn a_load_over_at_once_never_shows_its_line() {
+        let mut line = LoadingLine::default();
+        // Loading, not shown yet: a frame is wanted for it to show later.
+        assert!(line.update(true));
+        assert!(line.shown.is_none());
+        assert!(!line.update(false));
+        assert!(line.shown.is_none() && line.fade.is_none());
+    }
+
+    #[test]
+    fn a_line_that_showed_stays_a_moment_then_fades() {
+        let mut line = LoadingLine {
+            since: Some(std::time::Instant::now() - SHOW_AFTER),
+            ..Default::default()
+        };
+        assert!(!line.update(true));
+        assert!(line.shown.is_some());
+        // Done at once: it stays its moment.
+        assert!(line.update(false));
+        assert!(line.shown.is_some());
+        line.shown = Some(std::time::Instant::now() - SHOWN_FOR);
+        line.update(false);
+        assert!(line.shown.is_none() && line.fade.is_some());
+    }
+}

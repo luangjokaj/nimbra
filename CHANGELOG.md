@@ -3,9 +3,13 @@
 ## [Unreleased]
 
 ### New
+- **Fold the latest message too.** In a conversation, the latest message folds to its line and opens again like the earlier ones, with the same animation, from its header or its line. Each foldable message has an arrow after its time that turns as it opens and folds. A conversation always opens on its latest message, and a single email does not fold.
+- **Emails you have read open at once.** The emails of the last few conversations you left stay ready, and the ones just above and below the open conversation are prepared ahead, so going back or pressing J and K shows them straight away. An email shows as soon as its text is laid out, without waiting for its images.
 - **Nimbra opens where you left it.** The account and mailbox you were in when you quit (All inboxes, Sent, a label, any of them) are open again when you come back, rather than the account's Inbox. A notification you click still opens its message, and a search is not kept.
 
 ### Fixed
+- **Smooth folding over emails.** Opening or folding a message above an email no longer makes that email jump ahead of its header and flash: while the conversation moves, a picture of the email moves with the rest of it.
+- **A calmer loading line.** While a message loads, the reader shows the same thin line under its toolbar as the list does when it checks for mail, instead of a spinner. Both lines wait a moment before showing, so a quick load does not flicker them, stay a moment once shown, and fade in and out.
 - **Times as your Mac shows them.** Times and dates in the list, the reader, Snooze and Send later follow your Mac's 12- or 24-hour clock, language, region and time zone, as Mail does, rather than always a 24-hour clock in English. Mail from the last 24 hours shows its time, as Gmail does, rather than the day it came.
 - **Gmail mail dated as Gmail shows it.** A message shows the time its sender sent it, as Gmail does, rather than when Gmail took it in, which for newsletters could be most of an hour apart.
 - **No more stray "…" in previews.** A newsletter that pads its preview with invisible characters (or with invisible joiners between spaces) no longer leaves a long blank gap ending in "…" in the list and in a conversation's folded messages. Each mailbox loads its first page again once, so previews already on this Mac are cleaned too.

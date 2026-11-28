@@ -324,7 +324,33 @@ impl Nimbra {
             self.original_images = self.settings.load_images;
             self.html_shown = Some(thread.clone());
         }
-        let wanted = crate::mail_views::wanted(mail, &thread, false);
+        let mut wanted = crate::mail_views::wanted(mail, &thread, false, !self.latest_folded(mail));
+        // The conversations beside it in the list: their latest email loaded and laid out,
+        // hidden, so that moving to one (J, K, a click) shows it at once.
+        let visible = self.visible();
+        if let Some(at) = visible.iter().position(|row| *row == self.selected) {
+            let near = [at.checked_sub(1), at.checked_add(1)];
+            for row in near.into_iter().flatten().filter_map(|at| visible.get(at)) {
+                let Some(other) = self.mails.get(*row) else {
+                    continue;
+                };
+                let Some(html) = other.html.as_deref() else {
+                    continue;
+                };
+                wanted.push(crate::mail_views::Wanted {
+                    key: crate::mail_views::message_key(
+                        &self.original_thread(other),
+                        &other.header.message_id,
+                        0,
+                    ),
+                    html,
+                    open: false,
+                    latest: true,
+                    // By field (not `account_of`): the views are changed below.
+                    account: Some(other.account.as_deref().unwrap_or(&self.account_id)),
+                });
+            }
+        }
         let look = crate::mail_views::Look {
             images: self.original_images,
             dark: self.dark,
@@ -361,7 +387,13 @@ impl Nimbra {
             self.original = false;
             self.mail_views.clear();
             self.notice = Some("The original view is not available on this system.".into());
+            return;
         }
+        // An email shows once its text is laid out, without waiting for its images.
+        self.mail_views.measure_waiting();
+        // Pictures of the open emails, for while the conversation moves (`email_frame`).
+        let moving = self.folds.borrow().values().any(|fold| !fold.done);
+        self.mail_views.take_snapshots(moving);
     }
 
     /// ⌘P: prints the open message with its sender, recipients and date.
@@ -915,6 +947,7 @@ impl Nimbra {
         name: &str,
         snippet: &str,
         when: &str,
+        turn: f32,
     ) -> Div {
         let row_text = super::list::RowText::of(self.settings.reader_text);
         div()
@@ -952,6 +985,22 @@ impl Nimbra {
                     })),
             )
             .child(mono(when.to_string(), t.faint))
+            .child(fold_arrow(turn, t.faint))
+    }
+
+    /// How far a message's arrow has turned: 0 folded, 1 open, and in between while it
+    /// opens or folds, on the same curve (`fold_block`).
+    pub(super) fn fold_turn(&self, key: &(ThreadKey, usize), open: bool) -> f32 {
+        let folds = self.folds.borrow();
+        match folds.get(key).filter(|f| !f.done) {
+            Some(fold) => {
+                let eased =
+                    ease_in_out((fold.start.elapsed().as_secs_f32() / FOLD_TIME).clamp(0., 1.));
+                if fold.closing { 1. - eased } else { eased }
+            }
+            None if open => 1.,
+            None => 0.,
+        }
     }
 
     pub(super) fn reading(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -988,10 +1037,25 @@ impl Nimbra {
         // (HTML) version, so show a loader, not the reader view that would flash by first.
         let loading = self.original && !is_draft && !m.loaded;
         let divider = || div().h(dp(1.)).bg(t.border);
-
-        let earlier = |tone: Tone, initials: &str, name: &str, snippet: &str, when: &str| {
-            self.folded_line(t, column, tone, initials, name, snippet, when)
+        // The latest message folded to its line (only in a conversation).
+        let latest_folded = self.latest_folded(m);
+        let latest_line = || {
+            self.folded_line(
+                t,
+                column,
+                m.tone,
+                &m.initials,
+                &m.sender,
+                &m.snippet,
+                &m.time,
+                self.fold_turn(&(self.thread_key(m), LATEST), !latest_folded),
+            )
         };
+
+        let earlier =
+            |tone: Tone, initials: &str, name: &str, snippet: &str, when: &str, turn: f32| {
+                self.folded_line(t, column, tone, initials, name, snippet, when, turn)
+            };
 
         let attachment = |name: &str, info: &str, from: u32, to: u32| {
             card(t)
@@ -1254,6 +1318,8 @@ impl Nimbra {
                             )
                     }),
             )
+            // While the message loads, the line the list has while mail is checked.
+            .child(self.reader_line.view(t, "reader-loading"))
             // Conversation (native reader)
             .when(loading, |d| d.child(self.loading_pane(t, m, cx.entity())))
             .when(!loading, |d| {
@@ -1373,9 +1439,9 @@ impl Nimbra {
                                 .when(!original && !m.brief.is_empty(), |d| {
                                     d.child(self.brief(t, m))
                                 })
-                                // The folded messages, each between two lines: the stack closes
-                                // with its own line, right under the last one, so the last sits
-                                // as the others do (the column's gap comes after the line).
+                                // A conversation's messages, each under a line: the earlier
+                                // ones and then the latest, which fold to their lines and open
+                                // again alike (a single message is drawn on its own below).
                                 .when(!m.earlier.is_empty(), |d| {
                                     // In the original view the lines run across the pane,
                                     // as the one over each email does.
@@ -1383,145 +1449,245 @@ impl Nimbra {
                                     d.child(
                                         div()
                                             .mx(dp(-across))
-                                            .border_b_1()
+                                            // A line closes the stack when it ends with the
+                                            // latest folded too.
+                                            .when(latest_folded, |d| d.border_b_1())
                                             .border_color(t.border)
-                                            .children(m.earlier.iter().enumerate().map(
-                                                |(k, e)| {
-                                                    let (tone, initials, when) = m.earlier_look(k);
-                                                    // Click a folded message to read it in
-                                                    // full; open, its header stands in for its
-                                                    // line, and the change is animated.
-                                                    let line = earlier(
-                                                        tone, &initials, &e.sender, &e.snippet,
-                                                        &when,
-                                                    )
-                                                    .px(dp(across));
-                                                    if !e.expanded {
-                                                        return self
-                                                            .folded_message(line, k, cx)
-                                                            .into_any_element();
-                                                    }
+                                            .children(m.earlier.iter().enumerate().map(|(k, e)| {
+                                                let (tone, initials, when) = m.earlier_look(k);
+                                                // Click a folded message to read it in
+                                                // full; open, its header stands in for its
+                                                // line, and the change is animated.
+                                                let turn = self.fold_turn(
+                                                    &(self.thread_key(m), k),
+                                                    e.expanded,
+                                                );
+                                                let line = earlier(
+                                                    tone, &initials, &e.sender, &e.snippet, &when,
+                                                    turn,
+                                                )
+                                                .px(dp(across));
+                                                if !e.expanded {
+                                                    return self
+                                                        .folded_message(line, k, cx)
+                                                        .into_any_element();
+                                                }
+                                                let body = div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .gap(dp(12.))
+                                                    // Where its line has its text, so it opens
+                                                    // without anything in it moving.
+                                                    .pt(dp(FOLD_LINE_PAD))
+                                                    .pb(dp(14.))
+                                                    .px(dp(across))
+                                                    .border_t_1()
+                                                    .border_color(t.border)
+                                                    .child(self.message_header(
+                                                        t,
+                                                        m,
+                                                        k + 1,
+                                                        true,
+                                                        cx,
+                                                    ))
+                                                    .child(self.message_text(
+                                                        t,
+                                                        m,
+                                                        k + 1,
+                                                        original.then_some(&thread),
+                                                        // The gap over it, and the gap or
+                                                        // padding under it.
+                                                        (
+                                                            12.,
+                                                            if e.header.attachments.is_empty() {
+                                                                14.
+                                                            } else {
+                                                                12. - ORIGINAL_SIDE
+                                                            },
+                                                        ),
+                                                        &selectable,
+                                                        cx,
+                                                    ))
+                                                    .when(!e.header.attachments.is_empty(), |d| {
+                                                        d.child(
+                                                            self.attachment_row(
+                                                                t,
+                                                                &e.header.attachments,
+                                                                (k + 1) * 100,
+                                                                m.account.as_deref(),
+                                                                cx,
+                                                            )
+                                                            .pl(dp(attachments_indent(
+                                                                original && e.html.is_some(),
+                                                            ))),
+                                                        )
+                                                    });
+                                                self.fold_block((self.thread_key(m), k), body, line)
+                                            }))
+                                            // The latest, last in the stack and laid out as
+                                            // the earlier ones are, so it folds and opens the
+                                            // same way and nothing around it moves.
+                                            .child({
+                                                let line = latest_line().px(dp(across));
+                                                if latest_folded {
+                                                    self.folded_message(line, LATEST, cx)
+                                                        .into_any_element()
+                                                } else {
                                                     let body = div()
                                                         .flex()
                                                         .flex_col()
                                                         .gap(dp(12.))
-                                                        // Where its line has its text, so it opens
-                                                        // without anything in it moving.
                                                         .pt(dp(FOLD_LINE_PAD))
                                                         .pb(dp(14.))
                                                         .px(dp(across))
                                                         .border_t_1()
                                                         .border_color(t.border)
-                                                        .child(self.message_header(
-                                                            t,
-                                                            m,
-                                                            k + 1,
-                                                            true,
-                                                            cx,
-                                                        ))
-                                                        .child(self.message_text(
-                                                            t,
-                                                            m,
-                                                            k + 1,
-                                                            original.then_some(&thread),
-                                                            // The gap over it, and the gap or
-                                                            // padding under it.
-                                                            (
-                                                                12.,
-                                                                if e.header.attachments.is_empty() {
-                                                                    14.
-                                                                } else {
-                                                                    12. - ORIGINAL_SIDE
-                                                                },
-                                                            ),
-                                                            &selectable,
-                                                            cx,
-                                                        ))
+                                                        .child(
+                                                            self.message_header(t, m, 0, true, cx),
+                                                        )
+                                                        .child(
+                                                            self.message_text(
+                                                                t,
+                                                                m,
+                                                                0,
+                                                                original.then_some(&thread),
+                                                                (
+                                                                    12.,
+                                                                    if trailing {
+                                                                        12. - ORIGINAL_SIDE
+                                                                    } else {
+                                                                        14.
+                                                                    },
+                                                                ),
+                                                                &selectable,
+                                                                cx,
+                                                            )
+                                                            .when(!m.loaded, |d| {
+                                                                d.child(self.loading_line(
+                                                                    t,
+                                                                    m,
+                                                                    cx.entity(),
+                                                                ))
+                                                            }),
+                                                        )
                                                         .when(
-                                                            !e.header.attachments.is_empty(),
+                                                            !m.header.attachments.is_empty(),
                                                             |d| {
                                                                 d.child(
                                                                     self.attachment_row(
                                                                         t,
-                                                                        &e.header.attachments,
-                                                                        (k + 1) * 100,
+                                                                        &m.header.attachments,
+                                                                        0,
                                                                         m.account.as_deref(),
                                                                         cx,
                                                                     )
                                                                     .pl(dp(attachments_indent(
                                                                         original
-                                                                            && e.html.is_some(),
+                                                                            && m.html.is_some(),
                                                                     ))),
                                                                 )
                                                             },
-                                                        );
+                                                        )
+                                                        .when(m.rich, |d| {
+                                                            d.child(
+                                                                div()
+                                                                    .flex()
+                                                                    .gap(dp(10.))
+                                                                    .pl(dp(attachments_indent(
+                                                                        original
+                                                                            && m.html.is_some(),
+                                                                    )))
+                                                                    .child(attachment(
+                                                                        "Q4-Launch-Plan.pdf",
+                                                                        "PDF · 4.2 MB",
+                                                                        0xff7ab6,
+                                                                        0xff4f7b,
+                                                                    ))
+                                                                    .child(attachment(
+                                                                        "Pricing-tiers.fig",
+                                                                        "Figma · 1.1 MB",
+                                                                        0x8b7cff,
+                                                                        0x5b47e0,
+                                                                    )),
+                                                            )
+                                                        });
                                                     self.fold_block(
-                                                        (self.thread_key(m), k),
+                                                        (self.thread_key(m), LATEST),
                                                         body,
                                                         line,
                                                     )
-                                                },
-                                            )),
+                                                }
+                                            }),
                                     )
                                 })
                                 .when(m.earlier.is_empty() && !original, |d| d.child(divider()))
-                                .child(self.message_header(t, m, 0, true, cx))
-                                .child(
-                                    self.message_text(
-                                        t,
-                                        m,
-                                        0,
-                                        original.then_some(&thread),
-                                        // The column's gap over and under it
-                                        // (emails show only in the original view).
-                                        (
-                                            ORIGINAL_GAP,
-                                            if trailing {
-                                                ORIGINAL_GAP - ORIGINAL_SIDE
-                                            } else {
-                                                0.
-                                            },
-                                        ),
-                                        &selectable,
-                                        cx,
-                                    )
-                                    .when(!m.loaded, |d| {
-                                        d.child(self.loading_line(t, m, cx.entity()))
-                                    }),
-                                )
-                                .when(!m.header.attachments.is_empty(), |d| {
-                                    d.child(
-                                        self.attachment_row(
-                                            t,
-                                            &m.header.attachments,
-                                            0,
-                                            m.account.as_deref(),
-                                            cx,
+                                .when(m.earlier.is_empty(), |d| {
+                                    let body = div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(dp(if original { ORIGINAL_GAP } else { 22. }))
+                                        .child(self.message_header(t, m, 0, true, cx))
+                                        .child(
+                                            self.message_text(
+                                                t,
+                                                m,
+                                                0,
+                                                original.then_some(&thread),
+                                                // The column's gap over and under it
+                                                // (emails show only in the original view).
+                                                (
+                                                    ORIGINAL_GAP,
+                                                    if trailing {
+                                                        ORIGINAL_GAP - ORIGINAL_SIDE
+                                                    } else {
+                                                        0.
+                                                    },
+                                                ),
+                                                &selectable,
+                                                cx,
+                                            )
+                                            .when(!m.loaded, |d| {
+                                                d.child(self.loading_line(t, m, cx.entity()))
+                                            }),
                                         )
-                                        .pl(dp(attachments_indent(original && m.html.is_some()))),
-                                    )
-                                })
-                                .when(m.rich, |d| {
-                                    d.child(
-                                        div()
-                                            .flex()
-                                            .gap(dp(10.))
-                                            .pl(dp(attachments_indent(
-                                                original && m.html.is_some(),
-                                            )))
-                                            .child(attachment(
-                                                "Q4-Launch-Plan.pdf",
-                                                "PDF · 4.2 MB",
-                                                0xff7ab6,
-                                                0xff4f7b,
-                                            ))
-                                            .child(attachment(
-                                                "Pricing-tiers.fig",
-                                                "Figma · 1.1 MB",
-                                                0x8b7cff,
-                                                0x5b47e0,
-                                            )),
-                                    )
+                                        .when(!m.header.attachments.is_empty(), |d| {
+                                            d.child(
+                                                self.attachment_row(
+                                                    t,
+                                                    &m.header.attachments,
+                                                    0,
+                                                    m.account.as_deref(),
+                                                    cx,
+                                                )
+                                                .pl(dp(attachments_indent(
+                                                    original && m.html.is_some(),
+                                                ))),
+                                            )
+                                        })
+                                        .when(m.rich, |d| {
+                                            d.child(
+                                                div()
+                                                    .flex()
+                                                    .gap(dp(10.))
+                                                    .pl(dp(attachments_indent(
+                                                        original && m.html.is_some(),
+                                                    )))
+                                                    .child(attachment(
+                                                        "Q4-Launch-Plan.pdf",
+                                                        "PDF · 4.2 MB",
+                                                        0xff7ab6,
+                                                        0xff4f7b,
+                                                    ))
+                                                    .child(attachment(
+                                                        "Pricing-tiers.fig",
+                                                        "Figma · 1.1 MB",
+                                                        0x8b7cff,
+                                                        0x5b47e0,
+                                                    )),
+                                            )
+                                        });
+                                    // A single message does not fold.
+                                    d.child(body)
                                 }),
                         ),
                 )
@@ -1530,12 +1696,7 @@ impl Nimbra {
     }
 
     /// Shown while an email's content is on its way, or could not be fetched.
-    pub(super) fn loading_pane(
-        &self,
-        t: &Theme,
-        mail: &Mail,
-        owner: gpui::Entity<Self>,
-    ) -> impl IntoElement {
+    pub(super) fn loading_pane(&self, t: &Theme, mail: &Mail, owner: gpui::Entity<Self>) -> Div {
         let pane = div()
             .flex()
             .flex_col()
@@ -1544,23 +1705,45 @@ impl Nimbra {
             .items_center()
             .justify_center()
             .gap(dp(12.));
+        // On its way, the line under the toolbar says so (`reader_loading`).
         if self.body_failed.contains(&self.thread_key(mail)) {
             return pane.child(self.loading_line(t, mail, owner));
         }
-        pane.child(icon("reload", 22., t.violet).with_animation(
-            "message-loading",
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
-        ))
-        .child(meta("Loading message…", t.text3))
+        pane
+    }
+
+    /// Whether the open message is on its way: its content not fetched yet, or its email
+    /// (the latest, in its own formatting) not drawn yet. The line under the reader's
+    /// toolbar shows while it is.
+    pub(super) fn reader_loading(&self) -> bool {
+        let Some(m) = self.mails.get(self.selected) else {
+            return false;
+        };
+        if self.body_failed.contains(&self.thread_key(m)) {
+            return false;
+        }
+        if !m.loaded {
+            return true;
+        }
+        self.original_on()
+            && !self.latest_folded(m)
+            && self
+                .mail_views
+                .slot(&crate::mail_views::message_key(
+                    &self.original_thread(m),
+                    &m.header.message_id,
+                    0,
+                ))
+                .is_some_and(|slot| slot.waiting())
     }
 
     /// The same in words, with a way to try again when it failed.
     fn loading_line(&self, t: &Theme, mail: &Mail, owner: gpui::Entity<Self>) -> Div {
         let line = div().flex().items_center().gap(dp(12.)).text_color(t.text3);
         let key = self.thread_key(mail);
+        // Still on its way: the line under the toolbar says so.
         if !self.body_failed.contains(&key) {
-            return line.child("Loading message…");
+            return line;
         }
         line.child("This message could not be loaded.").child(
             button(t, ButtonKind::Secondary, "Try again", None)
@@ -1650,7 +1833,7 @@ impl Nimbra {
             };
         // An open earlier message in the main window folds again from its header row, as it
         // opened from its line (its buttons and recipients keep their own clicks).
-        let foldable = actions && index > 0;
+        let foldable = actions && (index > 0 || !mail.earlier.is_empty());
         // The details card needs an address to show.
         let has_details = !header.from.address.is_empty();
         div()
@@ -1666,9 +1849,10 @@ impl Nimbra {
                     .items_start()
                     .gap(dp(12.))
                     .when(foldable, |d| {
-                        d.cursor_pointer().on_click(
-                            cx.listener(move |this, _, _, cx| this.fold(index - 1, true, cx)),
-                        )
+                        d.cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.fold(index.checked_sub(1).unwrap_or(LATEST), true, cx)
+                            }))
                     })
                     .child(if index == 0 {
                         // The latest message is the one DMARC was checked for.
@@ -1839,7 +2023,22 @@ impl Nimbra {
                             .flex()
                             .items_center()
                             .h(dp(HEADER_LINE)),
-                    ),
+                    )
+                    // Folds as its line opened it: the arrow turns back as it does.
+                    .when(foldable, |d| {
+                        let key = (
+                            self.thread_key(mail),
+                            index.checked_sub(1).unwrap_or(LATEST),
+                        );
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .h(dp(HEADER_LINE))
+                                .child(fold_arrow(self.fold_turn(&key, true), t.text3)),
+                        )
+                    }),
             )
             .when(open && !header.from.address.is_empty(), |d| {
                 d.child(self.details_card(t, header, &card_thread, index, &person, cx))
@@ -2564,6 +2763,7 @@ impl Nimbra {
                 self.pane_lead(),
                 Some(self.fold_lead.clone()),
                 self.darkens_mail(),
+                self.folds.borrow().values().any(|fold| !fold.done),
                 t,
             ),
             None => self
@@ -2610,13 +2810,7 @@ impl Nimbra {
             cx.notify();
             return;
         }
-        if let Some(e) = self
-            .mails
-            .get_mut(selected)
-            .and_then(|m| m.earlier.get_mut(k))
-        {
-            e.expanded = !folded;
-        }
+        self.set_open(selected, k, !folded);
         if folded || !animate {
             self.folds.borrow_mut().remove(&key);
         } else {
@@ -2635,6 +2829,40 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// Opens or folds message `k` of the thread in row `row`: `earlier[k]`, or the latest
+    /// (`LATEST`), which is folded by its Message-ID so that a newer message comes in open.
+    fn set_open(&mut self, row: usize, k: usize, open: bool) {
+        let Some(m) = self.mails.get_mut(row) else {
+            return;
+        };
+        if k != LATEST {
+            if let Some(e) = m.earlier.get_mut(k) {
+                e.expanded = open;
+            }
+            return;
+        }
+        let latest = (
+            message_window::key_of(m),
+            m.account.clone().unwrap_or_else(|| self.account_id.clone()),
+            m.header.message_id.clone(),
+        );
+        if open {
+            self.latest_folded.remove(&latest);
+        } else {
+            self.latest_folded.insert(latest);
+        }
+    }
+
+    /// Whether the open thread's latest message is folded: only in a conversation.
+    pub(super) fn latest_folded(&self, m: &Mail) -> bool {
+        !m.earlier.is_empty()
+            && self.latest_folded.contains(&(
+                message_window::key_of(m),
+                self.account_of(m).to_string(),
+                m.header.message_id.clone(),
+            ))
+    }
+
     /// Folds the messages whose folding has ended (`fold_block` cannot: it only reads).
     pub(super) fn settle_folds(&mut self) {
         let done: Vec<_> = self
@@ -2650,15 +2878,12 @@ impl Nimbra {
                 continue;
             }
             let (thread, k) = &key;
-            let at = self
+            if let Some(at) = self
                 .mails
                 .iter()
-                .position(|m| self.thread_key(m) == *thread);
-            if let Some(e) = at
-                .and_then(|i| self.mails.get_mut(i))
-                .and_then(|m| m.earlier.get_mut(*k))
+                .position(|m| self.thread_key(m) == *thread)
             {
-                e.expanded = false;
+                self.set_open(at, *k, false);
             }
         }
     }
@@ -2842,6 +3067,17 @@ const COPY_TIME: f32 = 0.15;
 /// How long a message takes to open or fold (seconds).
 const FOLD_TIME: f32 = 0.28;
 
+/// A foldable message's arrow, after its time: down when folded, turned up (by `turn`, 0
+/// to 1) as it opens.
+fn fold_arrow(turn: f32, color: Hsla) -> gpui::Svg {
+    icon("down", 14., color).with_transformation(Transformation::rotate(gpui::radians(
+        turn * std::f32::consts::PI,
+    )))
+}
+
+/// The latest message, among a thread's folds (the earlier ones are by their place).
+pub(super) const LATEST: usize = usize::MAX;
+
 /// Slow out, slow in (cubic): no jump at the start, none at the end.
 fn ease_in_out(t: f32) -> f32 {
     if t < 0.5 {
@@ -2895,11 +3131,18 @@ pub(super) fn email_frame(
     lead: f32,
     below: Option<FoldLead>,
     darkened: bool,
+    moving: bool,
     t: &Theme,
 ) -> Div {
     // While it opens, the web view keeps its full height and only that much shows.
     let (height, opening) = slot.shown_height();
     let full = slot.height();
+    // Its picture, under the web view, hidden by it. While the conversation moves (a
+    // message opening or folding), the web view steps aside and the picture moves with
+    // the app's own drawing, in step: the web view reaches the screen sooner than the
+    // app's frames, so it would run ahead of them.
+    let picture = slot.snapshot();
+    let stand_in = moving && picture.is_some();
     div()
         .ml(dp(-side))
         .mr(dp(-side))
@@ -2910,47 +3153,83 @@ pub(super) fn email_frame(
         .border_t_1()
         .border_color(t.border)
         .child(
-            gpui::canvas(
-                move |bounds, window, _| {
-                    if opening {
-                        window.request_animation_frame();
-                    }
-                    // Under a message opening or folding: where the next frame has it.
-                    let ahead = below
-                        .as_ref()
-                        .and_then(|b| b.get())
-                        .filter(|(bottom, _)| f32::from(bounds.origin.y) >= bottom - 1.)
-                        .map_or(0., |(_, dy)| dy);
-                    let bounds = gpui::Bounds {
-                        origin: gpui::point(bounds.origin.x, bounds.origin.y + px(ahead)),
-                        size: bounds.size,
-                    };
-                    // What of the pane is on screen, and of the email has opened.
-                    let clip = window.content_mask().bounds.intersect(&bounds);
-                    slot.place(
-                        (
-                            f32::from(bounds.origin.x) + lead,
-                            f32::from(bounds.origin.y),
-                            f32::from(bounds.size.width) - lead,
-                            full,
-                        ),
-                        (
-                            f32::from(clip.origin.x) + lead,
-                            f32::from(clip.origin.y),
-                            f32::from(clip.size.width) - lead,
-                            f32::from(clip.size.height),
-                        ),
-                    );
-                },
-                |_, _, _, _| {},
-            )
-            .w_full()
-            .h(px(height))
-            .bg(if darkened || height <= 0. {
-                t.surface
-            } else {
-                gpui::white()
-            }),
+            div()
+                .relative()
+                .w_full()
+                .h(px(height))
+                .overflow_hidden()
+                .bg(if darkened || height <= 0. {
+                    t.surface
+                } else {
+                    gpui::white()
+                })
+                .children(picture.map(|picture| {
+                    gpui::img(picture)
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .h(px(full))
+                }))
+                .child(
+                    gpui::canvas(
+                        move |bounds, window, _| {
+                            if opening {
+                                window.request_animation_frame();
+                            }
+                            if stand_in {
+                                // Out of sight while its picture stands in for it.
+                                let none = (
+                                    f32::from(bounds.origin.x),
+                                    f32::from(bounds.origin.y),
+                                    0.,
+                                    0.,
+                                );
+                                slot.place(
+                                    (
+                                        f32::from(bounds.origin.x) + lead,
+                                        f32::from(bounds.origin.y),
+                                        f32::from(bounds.size.width) - lead,
+                                        full,
+                                    ),
+                                    none,
+                                );
+                                return;
+                            }
+                            // Under a message opening or folding: where the next frame has it.
+                            let ahead = below
+                                .as_ref()
+                                .and_then(|b| b.get())
+                                .filter(|(bottom, _)| f32::from(bounds.origin.y) >= bottom - 1.)
+                                .map_or(0., |(_, dy)| dy);
+                            let bounds = gpui::Bounds {
+                                origin: gpui::point(bounds.origin.x, bounds.origin.y + px(ahead)),
+                                size: bounds.size,
+                            };
+                            // What of the pane is on screen, and of the email has opened.
+                            let clip = window.content_mask().bounds.intersect(&bounds);
+                            slot.place(
+                                (
+                                    f32::from(bounds.origin.x) + lead,
+                                    f32::from(bounds.origin.y),
+                                    f32::from(bounds.size.width) - lead,
+                                    full,
+                                ),
+                                (
+                                    f32::from(clip.origin.x) + lead,
+                                    f32::from(clip.origin.y),
+                                    f32::from(clip.size.width) - lead,
+                                    f32::from(clip.size.height),
+                                ),
+                            );
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                ),
         )
 }
 

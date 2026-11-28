@@ -942,52 +942,9 @@ impl Nimbra {
                             )
                     }),
             )
-            // While mail is checked, a thin bar glides along the top of the list, from one
-            // edge to the other, on the header's line. Its 2px strip is always there, so
-            // nothing below it moves.
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .h(dp(2.))
-                    .overflow_hidden()
-                    .when(self.bar_shown || self.bar_fade.is_some(), |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .bg(t.border)
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .h_full()
-                                        .w(relative(0.45))
-                                        .rounded_full()
-                                        .bg(gradient(90., c(0x8b7cff, 0.), c(0xff7ab6, 1.)))
-                                        .with_animation(
-                                            "checking-mail",
-                                            Animation::new(Duration::from_millis(1150))
-                                                .repeat()
-                                                .with_easing(gpui::ease_in_out),
-                                            |bar, delta| bar.left(relative(-0.45 + 1.45 * delta)),
-                                        ),
-                                )
-                                .map(|strip| match self.bar_fade {
-                                    // Done: fade the whole strip out.
-                                    Some((_, n)) => strip
-                                        .with_animation(
-                                            ("checking-mail-fade", n),
-                                            Animation::new(Duration::from_millis(450))
-                                                .with_easing(ease_out_quint()),
-                                            |strip, delta| strip.opacity(1. - delta),
-                                        )
-                                        .into_any_element(),
-                                    None => strip.into_any_element(),
-                                }),
-                        )
-                    }),
-            )
+            // While mail is checked, a thin line glides along the top of the list, on the
+            // header's line (`LoadingLine`).
+            .child(self.checking_line.view(t, "checking-mail"))
             .child(self.rows(t, &slots, window, cx))
     }
 
