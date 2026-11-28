@@ -64,9 +64,9 @@ impl Mode {
 fn when_text(when: chrono::DateTime<Local>) -> String {
     let days = (when.date_naive() - Local::now().date_naive()).num_days();
     match days {
-        0 => when.format("Today, %-I:%M %p").to_string(),
-        1..=6 => when.format("%a, %-I:%M %p").to_string(),
-        _ => when.format("%a, %b %-d, %-I:%M %p").to_string(),
+        0 => format!("Today, {}", crate::when::local(when, crate::when::TIME)),
+        1..=6 => crate::when::local(when, crate::when::WEEKDAY_TIME),
+        _ => crate::when::local(when, crate::when::WEEKDAY_DAY_TIME),
     }
 }
 
@@ -112,11 +112,9 @@ fn first_open_day(time: (u32, u32)) -> NaiveDate {
     nimbra_core::snooze::first_open_day(time, Local::now())
 }
 
-/// "9:00 AM".
+/// "9:00 AM", or "09:00" on a 24-hour Mac.
 fn time_text((hour, minute): (u32, u32)) -> String {
-    chrono::NaiveTime::from_hms_opt(hour, minute, 0)
-        .map(|t| t.format("%-I:%M %p").to_string())
-        .unwrap_or_default()
+    crate::when::clock(hour, minute, crate::when::TIME)
 }
 
 pub(super) struct SnoozeMenu {
@@ -185,7 +183,7 @@ impl SnoozeMenu {
         };
         let picked = SnoozeChoice {
             icon: "calendar",
-            label: self.day.format("%A, %B %-d").to_string(),
+            label: crate::when::day(self.day, crate::when::FULL_DAY),
             hint: when_text(when),
             header: None,
             until_ms: when.timestamp_millis(),
@@ -483,7 +481,7 @@ impl SnoozeMenu {
                             .flex_1()
                             .text_center()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(first.format("%B %Y").to_string()),
+                            .child(crate::when::day(first, crate::when::MONTH_YEAR)),
                     )
                     .child(nav("snooze-next", "next", true).on_click(cx.listener(
                         move |this, _, window, cx| this.calendar(next, hours, window, cx),
@@ -580,11 +578,7 @@ impl SnoozeMenu {
                                         .text_color(t.text2)
                                         .hover(move |s| s.bg(hover))
                                 })
-                                .child(
-                                    chrono::NaiveTime::from_hms_opt(hour, 0, 0)
-                                        .map(|t| t.format("%-I %p").to_string())
-                                        .unwrap_or_default(),
-                                )
+                                .child(crate::when::clock(hour, 0, crate::when::HOUR))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.set_time(first, (hour, 0), window, cx)
                                 }))
@@ -911,7 +905,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_time_reads_on_the_twelve_hour_clock() {
-        assert_eq!(time_text((21, 0)), "9:00 PM");
+    fn a_time_reads_on_the_macs_own_clock() {
+        // "9:00 PM" or "21:00", as the Mac is set.
+        let text = time_text((21, 0));
+        assert!(text.contains(":00"), "{text}");
+        assert!(text.contains('9') || text.contains("21"), "{text}");
     }
 }

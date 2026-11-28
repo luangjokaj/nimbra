@@ -752,14 +752,27 @@ impl Nimbra {
             .into_iter()
             .map(|(kind, when)| {
                 let label = match kind {
-                    Later::InAnHour => format!("In an hour · {}", when.format("%H:%M")),
-                    Later::ThisEvening => "This evening · 18:00".into(),
-                    Later::TomorrowMorning => {
-                        format!("Tomorrow morning · {} 8:00", when.format("%a"))
+                    Later::InAnHour => {
+                        format!(
+                            "In an hour · {}",
+                            crate::when::local(when, crate::when::TIME)
+                        )
                     }
-                    Later::MondayMorning => {
-                        format!("Monday morning · {} 8:00", when.format("%b %-d"))
+                    Later::ThisEvening => {
+                        format!(
+                            "This evening · {}",
+                            crate::when::local(when, crate::when::TIME)
+                        )
                     }
+                    Later::TomorrowMorning => format!(
+                        "Tomorrow morning · {}",
+                        crate::when::local(when, crate::when::WEEKDAY_TIME)
+                    ),
+                    Later::MondayMorning => format!(
+                        "Monday morning · {}, {}",
+                        crate::when::local(when, crate::when::DAY_MONTH),
+                        crate::when::local(when, crate::when::TIME)
+                    ),
                 };
                 (label, when.timestamp_millis())
             })

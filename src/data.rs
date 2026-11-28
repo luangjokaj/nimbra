@@ -138,19 +138,23 @@ pub fn tone_for(name: &str) -> Tone {
     TONES[hash as usize % TONES.len()]
 }
 
-/// A short local time label, and whether it falls before today.
+/// A short label for a time, as the Mac shows times (`when`), and whether it falls before
+/// today. Within the last day it is the time, as Gmail shows it, then the weekday within
+/// the week, then the date.
 fn format_time(timestamp_ms: i64) -> (String, bool) {
     use chrono::{Local, TimeZone};
     let Some(when) = Local.timestamp_millis_opt(timestamp_ms).single() else {
         return (String::new(), true);
     };
-    let days = (Local::now().date_naive() - when.date_naive()).num_days();
+    let now = Local::now();
+    let days = (now.date_naive() - when.date_naive()).num_days();
+    let within_a_day = days == 0 || (days == 1 && now - when < chrono::TimeDelta::hours(24));
     let label = match days {
-        0 => when.format("%-H:%M"),
-        1..=6 => when.format("%a"),
-        _ => when.format("%b %-d"),
+        _ if within_a_day => crate::when::local(when, crate::when::TIME),
+        1..=6 => crate::when::local(when, crate::when::WEEKDAY),
+        _ => crate::when::local(when, crate::when::DAY_MONTH),
     };
-    (label.to_string(), days != 0)
+    (label, days != 0)
 }
 
 fn mail(
