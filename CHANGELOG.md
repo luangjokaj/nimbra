@@ -4,7 +4,7 @@
 
 ### New
 - **Newest message first.** Settings › Appearance can show a conversation with its latest message at the top and the older ones under it, in the reader and in a message's own window.
-- **Subject on its own line.** Settings › Appearance can give the subject and the start of the email a line each in the message list, the avatar staying in the middle of the sender's line and the subject's.
+- **Subject on its own line.** The message list gives the subject and the start of the email a line each, the avatar staying in the middle of the sender's line and the subject's. On by default; Settings › Appearance puts them side by side again.
 - **The desktop behind the glass.** The sidebar's glass shows the desktop picture, blurred, where the window is on screen, rather than the windows behind it.
 - **Fold the latest message too.** In a conversation, the latest message folds to its line and opens again like the earlier ones, with the same animation, from its header or its line. Each foldable message has an arrow after its time that turns as it opens and folds. A conversation always opens on its latest message, and a single email does not fold.
 - **Emails you have read open at once.** The emails of the last few conversations you left stay ready, and the ones just above and below the open conversation are prepared ahead, so going back or pressing J and K shows them straight away. An email shows as soon as its text is laid out, without waiting for its images.
