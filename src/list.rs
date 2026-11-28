@@ -1237,10 +1237,7 @@ impl Nimbra {
         let today = if self.is_demo() {
             "THURSDAY, NOVEMBER 20".to_string()
         } else {
-            chrono::Local::now()
-                .format("%A, %B %-d")
-                .to_string()
-                .to_uppercase()
+            crate::when::local(chrono::Local::now(), crate::when::FULL_DAY).to_uppercase()
         };
         let layer = |index: usize, angle: f32, color: u32, alpha: f32, end: f32| {
             let shown = arrival.glow(index);

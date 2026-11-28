@@ -221,8 +221,9 @@ impl Nimbra {
     /// The times offered when snoozing (`snooze::menu_times`), as the menu shows them.
     pub(super) fn snooze_choices() -> Vec<SnoozeChoice> {
         use nimbra_core::snooze::MenuTime;
-        let label =
-            |when: chrono::DateTime<chrono::Local>| when.format("%a %-d %b, %H:%M").to_string();
+        let label = |when: chrono::DateTime<chrono::Local>| {
+            crate::when::local(when, crate::when::WEEKDAY_DAY_TIME)
+        };
         nimbra_core::snooze::menu_times(chrono::Local::now())
             .into_iter()
             .map(|(kind, when)| {

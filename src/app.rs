@@ -352,6 +352,8 @@ pub struct Nimbra {
     restore_place: Option<crate::place::Place>,
     /// Where the window is, as last saved.
     place_saved: Option<crate::place::Place>,
+    /// Opening last time's place again waits for the other accounts' stores (once).
+    place_waiting: bool,
     /// The other accounts' sidebar counts by label id, as the last listing of every
     /// account's mailboxes found them (the account shown has `counts`).
     account_counts: HashMap<String, HashMap<String, (u32, u32)>>,
@@ -1026,6 +1028,7 @@ impl Nimbra {
             account_labels: HashMap::new(),
             restore_place: crate::place::load(),
             place_saved: None,
+            place_waiting: false,
             account_counts: HashMap::new(),
             compose_host: None,
             format_hint: None,

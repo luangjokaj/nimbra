@@ -3,17 +3,12 @@
 
 use super::*;
 
-/// "Fri, Nov 21, 2026 at 09:41", in local time; empty when unknown.
+/// "Fri, Nov 21, 2026 at 9:41 PM", as the Mac shows dates (`when`); empty when unknown.
 pub(super) fn long_date(timestamp_ms: i64) -> String {
-    use chrono::{Local, TimeZone};
     if timestamp_ms <= 0 {
         return String::new();
     }
-    Local
-        .timestamp_millis_opt(timestamp_ms)
-        .single()
-        .map(|when| when.format("%a, %b %-d, %Y at %H:%M").to_string())
-        .unwrap_or_default()
+    crate::when::millis(timestamp_ms, crate::when::LONG)
 }
 
 fn downloads_dir() -> anyhow::Result<std::path::PathBuf> {
