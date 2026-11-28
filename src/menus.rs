@@ -1023,14 +1023,14 @@ impl Nimbra {
                 .map(|a| text_width(&a.email, 13., crate::theme::SANS, cx))
                 .fold(0., f32::max);
             MENU_WIDTH.max((longest + ACCOUNT_ROW_CHROME).ceil())
-        } else if menu == Menu::Signature {
+        } else {
+            // Any other grows to fit its longest item too (Send later's times, a long
+            // signature's name), rather than cutting it off.
             let longest = items
                 .iter()
                 .map(|(_, label, _)| text_width(label, 13., crate::theme::SANS, cx))
                 .fold(0., f32::max);
             MENU_WIDTH.max((longest + MENU_ROW_CHROME).ceil())
-        } else {
-            MENU_WIDTH
         };
         let height = if menu == Menu::From {
             accounts.len() as f32 * ACCOUNT_ROW + ACCOUNT_LIST_CHROME
