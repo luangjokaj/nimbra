@@ -40,6 +40,7 @@
 - **Gone is gone.** A message trashed, deleted forever or discarded here that the server has already removed stays removed, rather than coming back with an error.
 - **A discarded draft leaves Drafts at once.** Its row goes as it is discarded, and Undo puts it back. Trashing the row of a draft just written here deletes that draft.
 - **The whole composer dims.** "Save this draft?" dims the composer's border too, rather than leaving it bright around the dimmed composer.
+- **No suggestions over "Save this draft?".** Address suggestions close as the sheet opens and stay hidden while it is up.
 
 ## [0.1.9] - 2026-11-28
 

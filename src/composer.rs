@@ -1730,6 +1730,10 @@ impl Nimbra {
             self.pending_focus = Some(self.editor_focus.clone());
         } else if composer.has_content(cx) {
             self.compose_ask = true;
+            if let Some(composer) = &mut self.compose {
+                composer.suggest = None;
+            }
+            self.sync_suggestions(cx);
             self.compose_ask_at = Some(std::time::Instant::now());
         } else {
             self.close_compose(cx);
@@ -1749,6 +1753,10 @@ impl Nimbra {
         if here && self.compose.as_ref().is_some_and(|c| c.has_content(cx)) {
             if !self.compose_ask {
                 self.compose_ask = true;
+                if let Some(composer) = &mut self.compose {
+                    composer.suggest = None;
+                }
+                self.sync_suggestions(cx);
                 self.compose_ask_at = Some(std::time::Instant::now());
                 cx.notify();
             }
