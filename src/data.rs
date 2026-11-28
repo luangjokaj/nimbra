@@ -70,22 +70,30 @@ impl From<Row> for Mail {
 }
 
 impl Mail {
-    /// The subject to show: "Untitled" when it has none (a draft just begun, say).
+    /// The subject to show: "Untitled" when it has none (a draft just begun, say), also
+    /// in place of the "(no subject)" a listing may have put there.
     pub fn shown_subject(&self) -> SharedString {
-        if self.subject.trim().is_empty() {
-            "Untitled".into()
-        } else {
-            self.subject.clone().into()
+        match self.subject.trim() {
+            "" | "(no subject)" => "Untitled".into(),
+            _ => self.subject.clone().into(),
         }
     }
 
-    /// The name a row and the reader show: in Drafts, "Draft" for one with no recipients
-    /// yet; elsewhere "Unknown sender" when there is no name or address.
+    /// Whether the row names someone: not when it has no name or address (a draft with no
+    /// recipients yet), whatever a listing put there instead.
+    pub fn names_someone(&self) -> bool {
+        !matches!(self.sender.trim(), "" | "Unknown sender")
+    }
+
+    /// The name a row shows: in Drafts, "Draft" for one with no recipients yet; elsewhere
+    /// "Unknown sender" when there is no name or address.
     pub fn shown_sender(&self, drafts: bool) -> SharedString {
-        match self.sender.trim() {
-            "" if drafts => "Draft".into(),
-            "" => "Unknown sender".into(),
-            name => name.to_string().into(),
+        if self.names_someone() {
+            self.sender.trim().to_string().into()
+        } else if drafts {
+            "Draft".into()
+        } else {
+            "Unknown sender".into()
         }
     }
 
@@ -586,6 +594,10 @@ mod tests {
         assert_eq!(m.shown_subject(), "Untitled");
         assert_eq!(m.shown_sender(true), "Draft");
         assert_eq!(m.shown_sender(false), "Unknown sender");
+        m.row.sender = "Unknown sender".into();
+        m.row.subject = "(no subject)".into();
+        assert_eq!(m.shown_subject(), "Untitled");
+        assert_eq!(m.shown_sender(true), "Draft");
         m.row.subject = "Plan".into();
         m.row.sender = "Ana".into();
         assert_eq!(m.shown_subject(), "Plan");

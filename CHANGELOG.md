@@ -11,7 +11,11 @@
 - **Nimbra opens where you left it.** The account and mailbox you were in when you quit (All inboxes, Sent, a label, any of them) are open again when you come back, rather than the account's Inbox. A notification you click still opens its message, and a search is not kept.
 
 ### Fixed
-- **Untitled drafts.** A draft without a subject shows "Untitled", and one without recipients "Draft", in the list and the reader, rather than nothing; mail without a sender shows "Unknown sender".
+- **Hover with another app in front.** Rows, buttons and the pointer follow the mouse over Nimbra's windows when another app is in front, rather than only after a first click.
+- **Calmer tooltips.** A tooltip casts a close, faint shadow rather than a wide one that looked like a smudge on the dark theme.
+- **The glass keeps up with the window.** While the window is moved, the desktop picture behind the sidebar follows it frame by frame, rather than catching up once the move is over.
+- **Menus fit their items.** A menu grows to its longest item, so Send later's "Monday morning" time (and any long name) is no longer cut off.
+- **Untitled drafts.** A draft without a subject shows "Untitled", and one without recipients "Draft" (with no initials made up for it), in the list and the reader, rather than nothing or "Unknown sender"; mail without a sender shows "Unknown sender". The reader names who a message is from, "Me" for one of your accounts, rather than the draft's or sent message's recipient.
 - **A draft opens to be written.** Double-clicking a draft (or pressing O on it) opens it in the composer, in a window of its own, rather than in a window to read it.
 - **A conversation in order.** Its messages read oldest first and the latest last; the earlier ones showed newest first above the latest.
 - **The filters as the toolbar's actions.** All and Unread are an icon and a word, as Done and Compose are, the one in use with the pressed look, which slides to the other.

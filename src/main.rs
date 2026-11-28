@@ -562,6 +562,8 @@ fn main() {
                     blur::apply(window, 40);
                     // The glass shows the desktop picture, not the windows behind.
                     wallpaper::install(window);
+                    // Hovers and the pointer follow it with another app in front too.
+                    blur::track_pointer_always(window);
                     // The red close button hides the window too, instead of quitting.
                     window.on_window_should_close(cx, |window, _| {
                         blur::set_visible(window, false);
