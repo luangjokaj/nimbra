@@ -1039,6 +1039,14 @@ impl Nimbra {
         let divider = || div().h(dp(1.)).bg(t.border);
         // The latest message folded to its line (only in a conversation).
         let latest_folded = self.latest_folded(m);
+        // The conversation's order (Settings › Appearance), and whether the message the
+        // stack ends with is folded: the latest's, or the oldest's when it comes first.
+        let newest_first = self.settings.newest_first;
+        let last_folded = if newest_first {
+            m.earlier.last().is_some_and(|e| !e.expanded)
+        } else {
+            latest_folded
+        };
         let latest_line = || {
             self.folded_line(
                 t,
@@ -1147,7 +1155,7 @@ impl Nimbra {
                                         )
                                     }))
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_draft(this.selected, cx)
+                                        this.open_draft(this.selected, false, cx)
                                     })),
                                 "edit-draft",
                                 false,
@@ -1346,9 +1354,9 @@ impl Nimbra {
                         })
                         // Clicking a draft's text opens it in the editor.
                         .when(is_draft, |d| {
-                            d.cursor_pointer().on_click(
-                                cx.listener(|this, _, _, cx| this.open_draft(this.selected, cx)),
-                            )
+                            d.cursor_pointer().on_click(cx.listener(|this, _, _, cx| {
+                                this.open_draft(this.selected, false, cx)
+                            }))
                         })
                         .child(
                             div()
@@ -1439,9 +1447,10 @@ impl Nimbra {
                                 .when(!original && !m.brief.is_empty(), |d| {
                                     d.child(self.brief(t, m))
                                 })
-                                // A conversation's messages, each under a line: the earlier
-                                // ones and then the latest, which fold to their lines and open
-                                // again alike (a single message is drawn on its own below).
+                                // A conversation's messages, each under a line, oldest first
+                                // and the latest last (or the latest first, Settings ›
+                                // Appearance), which fold to their lines and open again alike
+                                // (a single message is drawn on its own below).
                                 .when(!m.earlier.is_empty(), |d| {
                                     // In the original view the lines run across the pane,
                                     // as the one over each email does.
@@ -1449,174 +1458,209 @@ impl Nimbra {
                                     d.child(
                                         div()
                                             .mx(dp(-across))
-                                            // A line closes the stack when it ends with the
-                                            // latest folded too.
-                                            .when(latest_folded, |d| d.border_b_1())
+                                            // A line closes the stack when the message it
+                                            // ends with is folded too.
+                                            .when(last_folded, |d| d.border_b_1())
                                             .border_color(t.border)
-                                            .children(m.earlier.iter().enumerate().map(|(k, e)| {
-                                                let (tone, initials, when) = m.earlier_look(k);
-                                                // Click a folded message to read it in
-                                                // full; open, its header stands in for its
-                                                // line, and the change is animated.
-                                                let turn = self.fold_turn(
-                                                    &(self.thread_key(m), k),
-                                                    e.expanded,
-                                                );
-                                                let line = earlier(
-                                                    tone, &initials, &e.sender, &e.snippet, &when,
-                                                    turn,
-                                                )
-                                                .px(dp(across));
-                                                if !e.expanded {
-                                                    return self
-                                                        .folded_message(line, k, cx)
-                                                        .into_any_element();
-                                                }
-                                                let body = div()
-                                                    .flex()
-                                                    .flex_col()
-                                                    .gap(dp(12.))
-                                                    // Where its line has its text, so it opens
-                                                    // without anything in it moving.
-                                                    .pt(dp(FOLD_LINE_PAD))
-                                                    .pb(dp(14.))
-                                                    .px(dp(across))
-                                                    .border_t_1()
-                                                    .border_color(t.border)
-                                                    .child(self.message_header(
-                                                        t,
-                                                        m,
-                                                        k + 1,
-                                                        true,
-                                                        cx,
-                                                    ))
-                                                    .child(self.message_text(
-                                                        t,
-                                                        m,
-                                                        k + 1,
-                                                        original.then_some(&thread),
-                                                        // The gap over it, and the gap or
-                                                        // padding under it.
-                                                        (
-                                                            12.,
-                                                            if e.header.attachments.is_empty() {
-                                                                14.
-                                                            } else {
-                                                                12. - ORIGINAL_SIDE
-                                                            },
-                                                        ),
-                                                        &selectable,
-                                                        cx,
-                                                    ))
-                                                    .when(!e.header.attachments.is_empty(), |d| {
-                                                        d.child(
-                                                            self.attachment_row(
-                                                                t,
-                                                                &e.header.attachments,
-                                                                (k + 1) * 100,
-                                                                m.account.as_deref(),
-                                                                cx,
-                                                            )
-                                                            .pl(dp(attachments_indent(
-                                                                original && e.html.is_some(),
-                                                            ))),
+                                            .children({
+                                                // `earlier` is newest first.
+                                                let mut earlier_entries: Vec<AnyElement> = m
+                                                    .earlier
+                                                    .iter()
+                                                    .enumerate()
+                                                    .map(|(k, e)| {
+                                                        let (tone, initials, when) =
+                                                            m.earlier_look(k);
+                                                        // Click a folded message to read it in
+                                                        // full; open, its header stands in for its
+                                                        // line, and the change is animated.
+                                                        let turn = self.fold_turn(
+                                                            &(self.thread_key(m), k),
+                                                            e.expanded,
+                                                        );
+                                                        let line = earlier(
+                                                            tone, &initials, &e.sender, &e.snippet,
+                                                            &when, turn,
                                                         )
-                                                    });
-                                                self.fold_block((self.thread_key(m), k), body, line)
-                                            }))
-                                            // The latest, last in the stack and laid out as
-                                            // the earlier ones are, so it folds and opens the
-                                            // same way and nothing around it moves.
-                                            .child({
-                                                let line = latest_line().px(dp(across));
-                                                if latest_folded {
-                                                    self.folded_message(line, LATEST, cx)
-                                                        .into_any_element()
-                                                } else {
-                                                    let body = div()
-                                                        .flex()
-                                                        .flex_col()
-                                                        .gap(dp(12.))
-                                                        .pt(dp(FOLD_LINE_PAD))
-                                                        .pb(dp(14.))
-                                                        .px(dp(across))
-                                                        .border_t_1()
-                                                        .border_color(t.border)
-                                                        .child(
-                                                            self.message_header(t, m, 0, true, cx),
-                                                        )
-                                                        .child(
-                                                            self.message_text(
+                                                        .px(dp(across));
+                                                        if !e.expanded {
+                                                            return self
+                                                                .folded_message(line, k, cx)
+                                                                .into_any_element();
+                                                        }
+                                                        let body = div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap(dp(12.))
+                                                            // Where its line has its text, so it opens
+                                                            // without anything in it moving.
+                                                            .pt(dp(FOLD_LINE_PAD))
+                                                            .pb(dp(14.))
+                                                            .px(dp(across))
+                                                            .border_t_1()
+                                                            .border_color(t.border)
+                                                            .child(self.message_header(
                                                                 t,
                                                                 m,
-                                                                0,
-                                                                original.then_some(&thread),
-                                                                (
-                                                                    12.,
-                                                                    if trailing {
-                                                                        12. - ORIGINAL_SIDE
-                                                                    } else {
-                                                                        14.
-                                                                    },
-                                                                ),
-                                                                &selectable,
+                                                                k + 1,
+                                                                true,
                                                                 cx,
-                                                            )
-                                                            .when(!m.loaded, |d| {
-                                                                d.child(self.loading_line(
+                                                            ))
+                                                            .child(
+                                                                self.message_text(
                                                                     t,
                                                                     m,
-                                                                    cx.entity(),
-                                                                ))
-                                                            }),
-                                                        )
-                                                        .when(
-                                                            !m.header.attachments.is_empty(),
-                                                            |d| {
-                                                                d.child(
-                                                                    self.attachment_row(
-                                                                        t,
-                                                                        &m.header.attachments,
-                                                                        0,
-                                                                        m.account.as_deref(),
-                                                                        cx,
-                                                                    )
-                                                                    .pl(dp(attachments_indent(
-                                                                        original
-                                                                            && m.html.is_some(),
-                                                                    ))),
-                                                                )
-                                                            },
-                                                        )
-                                                        .when(m.rich, |d| {
-                                                            d.child(
-                                                                div()
-                                                                    .flex()
-                                                                    .gap(dp(10.))
-                                                                    .pl(dp(attachments_indent(
-                                                                        original
-                                                                            && m.html.is_some(),
-                                                                    )))
-                                                                    .child(attachment(
-                                                                        "Q4-Launch-Plan.pdf",
-                                                                        "PDF · 4.2 MB",
-                                                                        0xff7ab6,
-                                                                        0xff4f7b,
-                                                                    ))
-                                                                    .child(attachment(
-                                                                        "Pricing-tiers.fig",
-                                                                        "Figma · 1.1 MB",
-                                                                        0x8b7cff,
-                                                                        0x5b47e0,
-                                                                    )),
+                                                                    k + 1,
+                                                                    original.then_some(&thread),
+                                                                    // The gap over it, and the gap or
+                                                                    // padding under it.
+                                                                    (
+                                                                        12.,
+                                                                        if e.header
+                                                                            .attachments
+                                                                            .is_empty()
+                                                                        {
+                                                                            14.
+                                                                        } else {
+                                                                            12. - ORIGINAL_SIDE
+                                                                        },
+                                                                    ),
+                                                                    &selectable,
+                                                                    cx,
+                                                                ),
                                                             )
-                                                        });
-                                                    self.fold_block(
-                                                        (self.thread_key(m), LATEST),
-                                                        body,
-                                                        line,
-                                                    )
+                                                            .when(
+                                                                !e.header.attachments.is_empty(),
+                                                                |d| {
+                                                                    d.child(
+                                                                        self.attachment_row(
+                                                                            t,
+                                                                            &e.header.attachments,
+                                                                            (k + 1) * 100,
+                                                                            m.account.as_deref(),
+                                                                            cx,
+                                                                        )
+                                                                        .pl(dp(attachments_indent(
+                                                                            original
+                                                                                && e.html.is_some(),
+                                                                        ))),
+                                                                    )
+                                                                },
+                                                            );
+                                                        self.fold_block(
+                                                            (self.thread_key(m), k),
+                                                            body,
+                                                            line,
+                                                        )
+                                                    })
+                                                    .collect();
+                                                // The latest, laid out as the earlier ones are, so
+                                                // it folds and opens the same way and nothing
+                                                // around it moves.
+                                                let latest_entry: AnyElement = {
+                                                    let line = latest_line().px(dp(across));
+                                                    if latest_folded {
+                                                        self.folded_message(line, LATEST, cx)
+                                                            .into_any_element()
+                                                    } else {
+                                                        let body = div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap(dp(12.))
+                                                            .pt(dp(FOLD_LINE_PAD))
+                                                            .pb(dp(14.))
+                                                            .px(dp(across))
+                                                            .border_t_1()
+                                                            .border_color(t.border)
+                                                            .child(
+                                                                self.message_header(
+                                                                    t, m, 0, true, cx,
+                                                                ),
+                                                            )
+                                                            .child(
+                                                                self.message_text(
+                                                                    t,
+                                                                    m,
+                                                                    0,
+                                                                    original.then_some(&thread),
+                                                                    (
+                                                                        12.,
+                                                                        if trailing {
+                                                                            12. - ORIGINAL_SIDE
+                                                                        } else {
+                                                                            14.
+                                                                        },
+                                                                    ),
+                                                                    &selectable,
+                                                                    cx,
+                                                                )
+                                                                .when(!m.loaded, |d| {
+                                                                    d.child(self.loading_line(
+                                                                        t,
+                                                                        m,
+                                                                        cx.entity(),
+                                                                    ))
+                                                                }),
+                                                            )
+                                                            .when(
+                                                                !m.header.attachments.is_empty(),
+                                                                |d| {
+                                                                    d.child(
+                                                                        self.attachment_row(
+                                                                            t,
+                                                                            &m.header.attachments,
+                                                                            0,
+                                                                            m.account.as_deref(),
+                                                                            cx,
+                                                                        )
+                                                                        .pl(dp(attachments_indent(
+                                                                            original
+                                                                                && m.html.is_some(),
+                                                                        ))),
+                                                                    )
+                                                                },
+                                                            )
+                                                            .when(m.rich, |d| {
+                                                                d.child(
+                                                                    div()
+                                                                        .flex()
+                                                                        .gap(dp(10.))
+                                                                        .pl(dp(attachments_indent(
+                                                                            original
+                                                                                && m.html.is_some(),
+                                                                        )))
+                                                                        .child(attachment(
+                                                                            "Q4-Launch-Plan.pdf",
+                                                                            "PDF · 4.2 MB",
+                                                                            0xff7ab6,
+                                                                            0xff4f7b,
+                                                                        ))
+                                                                        .child(attachment(
+                                                                            "Pricing-tiers.fig",
+                                                                            "Figma · 1.1 MB",
+                                                                            0x8b7cff,
+                                                                            0x5b47e0,
+                                                                        )),
+                                                                )
+                                                            });
+                                                        self.fold_block(
+                                                            (self.thread_key(m), LATEST),
+                                                            body,
+                                                            line,
+                                                        )
+                                                    }
+                                                };
+                                                let mut entries =
+                                                    Vec::with_capacity(earlier_entries.len() + 1);
+                                                if newest_first {
+                                                    entries.push(latest_entry);
+                                                    entries.extend(earlier_entries);
+                                                } else {
+                                                    earlier_entries.reverse();
+                                                    entries.extend(earlier_entries);
+                                                    entries.push(latest_entry);
                                                 }
+                                                entries
                                             }),
                                     )
                                 })

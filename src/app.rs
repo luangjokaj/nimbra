@@ -2724,7 +2724,12 @@ impl Render for Nimbra {
             .on_action(cx.listener(|this, _: &PickUp, _, cx| this.pick_more(-1, cx)))
             .on_action(cx.listener(|this, _: &OpenInWindow, _, cx| {
                 if !this.palette && this.visible().contains(&this.selected) {
-                    this.open_message_window(this.selected, cx)
+                    // A draft opens to be written (as a double-click on it does).
+                    if this.mailbox.base() == View::Drafts && !this.is_demo() {
+                        this.open_draft(this.selected, true, cx)
+                    } else {
+                        this.open_message_window(this.selected, cx)
+                    }
                 }
             }))
             .on_action(cx.listener(|this, _: &PageDown, _, cx| this.page_message(true, cx)))

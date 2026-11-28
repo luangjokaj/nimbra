@@ -151,7 +151,13 @@ impl Nimbra {
             self.picked.clear();
             self.open(i);
             self.open_selected(cx);
-            self.open_message_window(i, cx);
+            // A draft opens to be written, in a window of its own; any other thread to be
+            // read there.
+            if self.mailbox.base() == View::Drafts && !self.is_demo() {
+                self.open_draft(i, true, cx);
+            } else {
+                self.open_message_window(i, cx);
+            }
             return;
         }
         if modifiers.platform || modifiers.control {

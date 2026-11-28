@@ -960,8 +960,9 @@ impl Nimbra {
     }
 
     /// Opens the draft behind a row of the Drafts mailbox in the composer, from the row's
-    /// own account (every account's Drafts mixes them).
-    pub(super) fn open_draft(&mut self, index: usize, cx: &mut Context<Self>) {
+    /// own account (every account's Drafts mixes them); `in_window`: in a window of its own
+    /// (a double-click on the row), as a detached composer is.
+    pub(super) fn open_draft(&mut self, index: usize, in_window: bool, cx: &mut Context<Self>) {
         let Some(mail) = self.mails.get(index) else {
             return;
         };
@@ -979,7 +980,12 @@ impl Nimbra {
                 .spawn(async move { client.draft_for_thread(&thread_id) })
                 .await;
             this.update(cx, |this, cx| match result {
-                Ok(draft) => this.edit_draft(draft, Some(account), cx),
+                Ok(draft) => {
+                    this.edit_draft(draft, Some(account), cx);
+                    if in_window {
+                        this.detach_compose(cx);
+                    }
+                }
                 Err(error) => this.fail(error, cx),
             })
             .ok();

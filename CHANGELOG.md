@@ -3,11 +3,17 @@
 ## [Unreleased]
 
 ### New
+- **Newest message first.** Settings › Appearance can show a conversation with its latest message at the top and the older ones under it, in the reader and in a message's own window.
+- **Subject on its own line.** Settings › Appearance can give the subject and the start of the email a line each in the message list, the avatar staying in the middle of the sender's line and the subject's.
+- **The desktop behind the glass.** The sidebar's glass shows the desktop picture, blurred, where the window is on screen, rather than the windows behind it.
 - **Fold the latest message too.** In a conversation, the latest message folds to its line and opens again like the earlier ones, with the same animation, from its header or its line. Each foldable message has an arrow after its time that turns as it opens and folds. A conversation always opens on its latest message, and a single email does not fold.
 - **Emails you have read open at once.** The emails of the last few conversations you left stay ready, and the ones just above and below the open conversation are prepared ahead, so going back or pressing J and K shows them straight away. An email shows as soon as its text is laid out, without waiting for its images.
 - **Nimbra opens where you left it.** The account and mailbox you were in when you quit (All inboxes, Sent, a label, any of them) are open again when you come back, rather than the account's Inbox. A notification you click still opens its message, and a search is not kept.
 
 ### Fixed
+- **A draft opens to be written.** Double-clicking a draft (or pressing O on it) opens it in the composer, in a window of its own, rather than in a window to read it.
+- **A conversation in order.** Its messages read oldest first and the latest last; the earlier ones showed newest first above the latest.
+- **The filters as the toolbar's actions.** All and Unread are an icon and a word, as Done and Compose are, the one in use with the pressed look, which slides to the other.
 - **A message's own window opens whole.** It shows once its emails are drawn, as the main window shows an email, rather than with empty space that fills in and moves; each email shows as soon as its text is laid out, with the same loading line under its toolbar. A window whose conversation's content is not on this Mac fetches it, rather than waiting for the main window, and its loading line stops if that fails.
 - **Room around the address details.** Opened, the card with a message's From, To and Date has as much space over and under it as at its side.
 - **Smooth folding over emails.** Opening or folding a message above an email no longer makes that email jump ahead of its header and flash: while the conversation moves, a picture of the email moves with the rest of it.
