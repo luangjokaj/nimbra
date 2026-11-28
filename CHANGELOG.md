@@ -34,6 +34,7 @@
 - **Primary buttons take the first click.** Edit draft, Send and the other primary buttons no longer miss a click made as the pointer arrives on them.
 - **A new message from the account shown.** Compose writes from the account on screen; the default account is only for All inboxes and the other views of every account.
 - **A quieter composer edge.** The composer and its "Save this draft?" sheet have the app's usual border rather than the strong one.
+- **"No content" for an empty message.** A message with nothing in it says so in the reader rather than showing a blank.
 
 ## [0.1.9] - 2026-11-28
 
