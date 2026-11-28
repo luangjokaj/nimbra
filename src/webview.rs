@@ -377,6 +377,36 @@ mod platform {
             }
         }
 
+        /// A picture of the whole email as it is drawn now (TIFF), for `answer`; `None` when
+        /// WebKit made none. The app draws it in the email's place while things move
+        /// (`reading::email_frame`), as the app's drawing and the web view's reach the
+        /// screen at different times.
+        #[cfg(target_os = "macos")]
+        #[allow(unexpected_cfgs)]
+        pub fn snapshot(&self, answer: impl Fn(Option<Vec<u8>>) + 'static) {
+            use objc::runtime::Object;
+            use objc::{msg_send, sel, sel_impl};
+            use wry::WebViewExtMacOS as _;
+            let webview = self.view.webview();
+            let webview = &*webview as *const _ as *mut Object;
+            let handler = block::ConcreteBlock::new(move |image: *mut Object, _: *mut Object| {
+                // SAFETY: WebKit calls this on the main thread with an NSImage or nil.
+                answer(unsafe { super::tiff_of(image) });
+            })
+            .copy();
+            let none: *mut Object = std::ptr::null_mut();
+            // SAFETY: main thread, a live WKWebView; the block is copied to the heap and
+            // WebKit keeps it until it has called it.
+            unsafe {
+                let _: () = msg_send![webview, takeSnapshotWithConfiguration: none completionHandler: &*handler];
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        pub fn snapshot(&self, answer: impl Fn(Option<Vec<u8>>) + 'static) {
+            answer(None);
+        }
+
         /// Asks how tall the email is (points, at the current zoom); `answer` gets it once
         /// the page has worked it out.
         pub fn measure(&self, answer: impl Fn(f32) + Send + 'static) {
@@ -1202,6 +1232,9 @@ mod platform {
         }
         pub fn place(&self, _full: (f32, f32, f32, f32), _clip: (f32, f32, f32, f32)) {}
         pub fn measure(&self, _answer: impl Fn(f32) + Send + 'static) {}
+        pub fn snapshot(&self, answer: impl Fn(Option<Vec<u8>>) + 'static) {
+            answer(None);
+        }
         pub fn focused(&self) -> bool {
             false
         }
@@ -1209,6 +1242,29 @@ mod platform {
 }
 
 pub use platform::HtmlView;
+
+/// An NSImage's pixels as TIFF (uncompressed, so quick to make and to read back).
+///
+/// # Safety
+/// Main thread, with an NSImage or nil.
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+unsafe fn tiff_of(image: *mut objc::runtime::Object) -> Option<Vec<u8>> {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    if image.is_null() {
+        return None;
+    }
+    unsafe {
+        let data: *mut Object = msg_send![image, TIFFRepresentation];
+        if data.is_null() {
+            return None;
+        }
+        let length: usize = msg_send![data, length];
+        let bytes: *const u8 = msg_send![data, bytes];
+        (!bytes.is_null() && length > 0).then(|| std::slice::from_raw_parts(bytes, length).to_vec())
+    }
+}
 
 #[cfg(test)]
 mod tests {

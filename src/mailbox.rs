@@ -1821,6 +1821,13 @@ impl Nimbra {
         let Some(mail) = self.mails.get(self.selected) else {
             return;
         };
+        // A conversation opens on its latest message: folding it lasts while it is open.
+        let (thread, account) = (
+            message_window::key_of(mail),
+            self.account_of(mail).to_string(),
+        );
+        self.latest_folded
+            .retain(|(t, a, _)| *t == thread && *a == account);
         let (false, Some(id)) = (mail.loaded, mail.id.clone()) else {
             return;
         };
