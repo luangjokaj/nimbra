@@ -3,8 +3,13 @@
 ## [Unreleased]
 
 ### New
+- **Gmail with an app password.** Add account takes a Gmail or Google Workspace address with an app password too, over IMAP and SMTP, from the same form as any other address. Continue with Google is still the way in. When Google wants an app password rather than the account's own password, Nimbra says so, and Sign in again asks for a new one when the old one is revoked.
 - **Pick the accounts to search.** With several accounts, the search panel has a chip for All accounts and one for each account, under the field: click one, or press Tab and Shift-Tab, to search there. It starts on All accounts in All inboxes and on the account shown elsewhere, and a search kept open remembers its own.
-- **Search every account.** A search from All inboxes, or any of every account's mailboxes, looks in every account at once and lists what it finds newest first, loading more from each as you scroll; the search panel's suggestions come from every account too. A search from one account's mailbox stays in that account, and Esc from a search of every account goes back to All inboxes. On IMAP accounts, Gmail's own words like `label:` and `category:` are left out of the search rather than finding nothing.
+- **Search every account.** A search from All inboxes, or any of every account's mailboxes, looks in every account at once and lists what it finds newest first, loading more from each as you scroll; the search panel's suggestions come from every account too. A search from one account's mailbox stays in that account, and Esc from a search of every account goes back to All inboxes. On IMAP accounts, Gmail's own words like `label:` and `category:` are left out of the search rather than finding nothing; a Gmail account added with an app password keeps them, as Gmail searches it.
+
+### Fixed
+- **Adding an address twice.** Adding an address that's already in Nimbra is refused, instead of replacing that account's sign-in.
+- **The Add account form and the keyboard.** Escape closes the form in Settings too, typing while it checks starts over, and after a refused password the keyboard is back in the password field, ready to type over it.
 
 ## [0.1.10] - 2026-11-28
 

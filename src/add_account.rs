@@ -1,14 +1,16 @@
-//! Adding an account that is not Gmail (Zoho, iCloud, Fastmail, a company's own server):
-//! the sheet that asks for the address and password, finds the servers, checks that both
-//! take the password, and only then keeps the account. The same sheet asks for the password
-//! again when a server stops taking it. Microsoft accounts (Outlook.com, Microsoft 365) sign
-//! in with Microsoft in the browser instead, from its button or when the address is found
-//! to be one.
+//! Adding an account with a password (Zoho, iCloud, Fastmail, a company's own server, or
+//! Gmail with an app password): the sheet that asks for the address and password, finds the
+//! servers, checks that both take the password, and only then keeps the account. The same
+//! sheet asks for the password again when a server stops taking it. Microsoft accounts
+//! (Outlook.com, Microsoft 365) sign in with Microsoft in the browser instead, from its
+//! button or when the address is found to be one; so does Google, from its button or for a
+//! Google address with no password typed.
 
 use super::*;
 use crate::discover::Found;
 use crate::imap_mail::Credential;
 use crate::servers::{Secret, Security, Server, Servers};
+use crate::settings::AccountRef;
 
 /// Google's "G", in its colours, for the Continue with Google button. A PNG made from
 /// `assets/google.svg` (`rsvg-convert -h 64 assets/google.svg -o assets/google.png`): GPUI
@@ -130,6 +132,7 @@ impl Nimbra {
                 InputEvent::Enter => this.account_sheet_continue(cx),
                 InputEvent::Tab => this.account_sheet_tab(&input, false, cx),
                 InputEvent::BackTab => this.account_sheet_tab(&input, true, cx),
+                InputEvent::Changed => this.account_sheet_edited(cx),
                 _ => {}
             }
         };
@@ -219,6 +222,19 @@ impl Nimbra {
         cx.notify();
     }
 
+    /// Typing while the form is checked: the answer would be for what was there before, so
+    /// it is dropped and the form can be sent again.
+    fn account_sheet_edited(&mut self, cx: &mut Context<Self>) {
+        let Some(sheet) = &mut self.account_sheet else {
+            return;
+        };
+        if sheet.busy && !sheet.microsoft {
+            sheet.busy = false;
+            sheet.attempt += 1;
+            cx.notify();
+        }
+    }
+
     pub(super) fn close_account_sheet(&mut self, cx: &mut Context<Self>) {
         let in_settings = self
             .account_sheet
@@ -246,10 +262,18 @@ impl Nimbra {
             cx.notify();
             return;
         }
+        if sheet.for_account.is_none()
+            && let Some(why) = already_here(&self.settings.accounts, &email)
+        {
+            sheet.error = Some(why.into());
+            cx.notify();
+            return;
+        }
         // Without a password, what the address is decides (Google and Microsoft sign in
         // in the browser); typed servers always need one.
         if password.is_empty() && sheet.manual {
             sheet.error = Some("Type the account’s password.".into());
+            sheet.retype_password(&mut self.pending_focus, cx);
             cx.notify();
             return;
         }
@@ -273,13 +297,12 @@ impl Nimbra {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let address = email.clone();
-            let secret = password.clone();
             let outcome = cx
                 .background_executor()
-                .spawn(async move { find_and_check(&address, &secret, typed) })
+                .spawn(async move { find_and_check(&address, &password, typed) })
                 .await;
             this.update(cx, |this, cx| {
-                this.account_checked(attempt, email, password, outcome, cx)
+                this.account_checked(attempt, email, outcome, cx)
             })
             .ok();
         })
@@ -290,7 +313,6 @@ impl Nimbra {
         &mut self,
         attempt: u64,
         email: String,
-        password: String,
         outcome: Checked,
         cx: &mut Context<Self>,
     ) {
@@ -299,12 +321,13 @@ impl Nimbra {
         };
         sheet.busy = false;
         match outcome {
-            Checked::Google => {
+            Checked::Google if self.config.is_some() => {
                 self.close_account_sheet(cx);
                 self.add_google_account(cx);
             }
-            Checked::NoPassword => {
+            Checked::Google | Checked::NoPassword => {
                 sheet.error = Some("Type the account’s password.".into());
+                sheet.retype_password(&mut self.pending_focus, cx);
                 cx.notify();
             }
             Checked::OAuth("Microsoft") if self.microsoft.is_some() => {
@@ -329,15 +352,23 @@ impl Nimbra {
                     Some("Nimbra could not find this account’s servers. Check them above.".into());
                 cx.notify();
             }
-            Checked::Failed(servers, why) => {
-                if !sheet.manual {
+            Checked::Failed {
+                servers,
+                why,
+                refused,
+            } => {
+                // Gmail's servers are right whatever the password: only the password is asked.
+                if !sheet.manual && !(refused && servers.is_gmail()) {
                     fill(sheet, &servers, cx);
                     sheet.manual = true;
                 }
                 sheet.error = Some(why);
+                if refused {
+                    sheet.retype_password(&mut self.pending_focus, cx);
+                }
                 cx.notify();
             }
-            Checked::Works(servers) => {
+            Checked::Works(servers, password) => {
                 let for_account = sheet.for_account.clone();
                 let credential = Credential::Password(password);
                 if let Err(error) =
@@ -444,18 +475,14 @@ impl Nimbra {
         from_sheet: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), SharedString> {
-        let existing = for_account.or_else(|| {
-            self.settings
-                .accounts
-                .iter()
-                .find(|a| a.email.eq_ignore_ascii_case(&email))
-                .map(|a| a.id.clone())
-        });
-        let new = existing.is_none();
-        let id = match existing {
-            Some(id) if !id.is_empty() => id,
-            // The first account of an old install is Gmail's and has no id of its own.
-            Some(_) => return Err("That address is already in Nimbra, with Google.".into()),
+        if for_account.is_none()
+            && let Some(why) = already_here(&self.settings.accounts, &email)
+        {
+            return Err(why.into());
+        }
+        let new = for_account.is_none();
+        let id = match for_account {
+            Some(id) => id,
             None => mail::new_account_id().map_err(|error| error.to_string())?,
         };
         let asked_in = self
@@ -914,7 +941,7 @@ impl Nimbra {
                             match () {
                                 _ if sheet.microsoft => "Finish signing in with Microsoft in your browser…",
                                 _ if sheet.busy => "Finding the servers and checking the password…",
-                                _ => "The password is kept in your Mac’s keychain. With two-step sign-in on, use an app password from your provider.",
+                                _ => "The password is kept in your Mac’s keychain. With two-step sign-in on, use an app password.",
                             },
                             t.text3,
                         )
@@ -933,26 +960,38 @@ impl Nimbra {
                                         cx.listener(|this, _, _, cx| this.close_account_sheet(cx)),
                                     ),
                             )
-                            .child(crate::ui::glow(
-
-                                button(
-                                    t,
-                                    ButtonKind::Primary,
-                                    if sheet.busy { "Checking…" } else if asking_again { "Sign in" } else { "Add" },
-                                    Some("↵"),
+                            .child(if sheet.busy {
+                                // Dimmed, with no hover or press, until the check is done.
+                                button(t, ButtonKind::Primary, "Checking…", Some("↵"))
+                                    .id("account-continue")
+                                    .opacity(0.5)
+                                    .cursor_default()
+                                    .into_any_element()
+                            } else {
+                                crate::ui::glow(
+                                    button(
+                                        t,
+                                        ButtonKind::Primary,
+                                        if asking_again { "Sign in" } else { "Add" },
+                                        Some("↵"),
+                                    )
+                                    .id("account-continue")
+                                    .press_soft()
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.account_sheet_continue(cx)),
+                                    ),
+                                    "account-continue",
+                                    true,
                                 )
-                                .id("account-continue")
-                                .press_soft()
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.account_sheet_continue(cx)),
-                                ), "account-continue", true)),
+                                .into_any_element()
+                            }),
                     )
     }
 }
 
 /// What finding the servers and checking the password came to.
 enum Checked {
-    /// Gmail: signed in with Google instead.
+    /// A Google address with no password typed: signed in with Google instead.
     Google,
     /// A provider that only takes its own sign-in (Microsoft).
     OAuth(&'static str),
@@ -960,43 +999,66 @@ enum Checked {
     NoPassword,
     /// Nothing found: these guesses (imap. and smtp. of the domain) to start from.
     Unknown(Servers),
-    /// These servers did not take it, and why.
-    Failed(Servers, SharedString),
-    Works(Servers),
+    /// These servers did not take it (`refused`: the password), and why.
+    Failed {
+        servers: Servers,
+        why: SharedString,
+        refused: bool,
+    },
+    /// Both servers took it: the password as it is kept.
+    Works(Servers, String),
 }
 
 /// Runs off the main thread: discovery (unless the servers were typed), then a sign-in to
 /// each server.
-fn find_and_check(email: &str, password: &str, typed: Option<Servers>) -> Checked {
+fn find_and_check(email: &str, typed_password: &str, typed: Option<Servers>) -> Checked {
     let servers = match typed {
         Some(servers) => servers,
         None => match crate::discover::discover(email) {
             Ok(Found::Servers(servers)) => servers,
-            Ok(Found::NeedsOAuth { provider: "Google" }) => return Checked::Google,
+            Ok(Found::Google(_)) if typed_password.is_empty() => return Checked::Google,
+            Ok(Found::Google(servers)) => servers,
             Ok(Found::NeedsOAuth { provider }) => return Checked::OAuth(provider),
             Ok(Found::Unknown) | Err(_) => return Checked::Unknown(guess(email)),
         },
     };
+    let password = servers.normalize_password(typed_password);
     if password.is_empty() {
         return Checked::NoPassword;
     }
-    let credential = Credential::Password(password.to_string());
+    let credential = Credential::Password(password.clone());
     if let Err(error) = crate::imap_mail::check_login(&servers, credential) {
-        return Checked::Failed(servers, explain(&error, "incoming (IMAP)"));
+        return failed(servers, &error, "incoming (IMAP)");
     }
-    let secret = Secret::Password(password.to_string());
+    let secret = Secret::Password(password.clone());
     if let Err(error) = crate::smtp::check_login(&servers.smtp, &servers.username, &secret) {
-        return Checked::Failed(servers, explain(&error, "outgoing (SMTP)"));
+        return failed(servers, &error, "outgoing (SMTP)");
     }
-    Checked::Works(servers)
+    Checked::Works(servers, password)
+}
+
+fn failed(servers: Servers, error: &anyhow::Error, which: &str) -> Checked {
+    Checked::Failed {
+        why: explain(error, which, servers.is_gmail()),
+        refused: refused(error),
+        servers,
+    }
+}
+
+fn refused(error: &anyhow::Error) -> bool {
+    error.is::<mail::SignedOut>() || error.is::<crate::smtp::AuthFailed>()
 }
 
 /// A readable reason a server refused.
-fn explain(error: &anyhow::Error, which: &str) -> SharedString {
-    if error.is::<mail::SignedOut>() || error.is::<crate::smtp::AuthFailed>() {
-        // The server's own words, when it gave a reason ("enable IMAP first").
+fn explain(error: &anyhow::Error, which: &str, gmail: bool) -> SharedString {
+    if error.is::<mail::NeedsAppPassword>() {
+        "Use an app password from your Google Account, not your Google password.".into()
+    } else if refused(error) {
+        // The server's own words, when it gave a reason ("enable IMAP first"). Gmail's add
+        // nothing to this.
         let reason = error
             .downcast_ref::<crate::imap_mail::ServerSaid>()
+            .filter(|_| !gmail)
             .map(|said| said.0.trim().to_string())
             .filter(|said| !said.is_empty())
             .map(|said| format!(" It said: “{said}”."))
@@ -1019,6 +1081,38 @@ fn guess(email: &str) -> Servers {
         username: email.to_string(),
         imap: Server::new(&format!("imap.{domain}"), 993, Security::Tls),
         smtp: Server::new(&format!("smtp.{domain}"), 465, Security::Tls),
+    }
+}
+
+/// Why an address cannot be added: it is here already, signed in with Google or with its
+/// own servers.
+fn already_here(accounts: &[AccountRef], email: &str) -> Option<&'static str> {
+    let existing = accounts
+        .iter()
+        .find(|a| a.email.eq_ignore_ascii_case(email.trim()))?;
+    Some(if existing.servers.is_none() {
+        "That address is already in Nimbra, with Google."
+    } else {
+        "That account is already in Nimbra."
+    })
+}
+
+impl AccountSheet {
+    /// Puts the keyboard in the password field, its text selected to type over.
+    fn retype_password(
+        &mut self,
+        pending_focus: &mut Option<FocusHandle>,
+        cx: &mut Context<Nimbra>,
+    ) {
+        self.password
+            .update(cx, |input, cx| input.select_all_text(cx));
+        let focus = self.password.read(cx).focus_handle(cx);
+        // The window the form is in takes it (see `focus`).
+        if self.in_settings {
+            self.focus = Some(focus);
+        } else {
+            *pending_focus = Some(focus);
+        }
     }
 }
 
@@ -1137,6 +1231,108 @@ fn error_callout(t: &Theme, error: &SharedString) -> AnyElement {
         .into_any_element()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::imap_mail::ServerSaid;
+
+    fn refusal(said: &str) -> anyhow::Error {
+        anyhow::anyhow!(mail::SignedOut {
+            account: String::new(),
+        })
+        .context(ServerSaid(said.into()))
+    }
+
+    #[test]
+    fn a_google_address_with_no_password_goes_to_google_and_microsofts_to_microsoft() {
+        for email in ["jo@gmail.com", "Jo@GoogleMail.com"] {
+            assert!(matches!(find_and_check(email, "", None), Checked::Google));
+        }
+        assert!(matches!(
+            find_and_check("jo@outlook.com", "", None),
+            Checked::OAuth("Microsoft")
+        ));
+    }
+
+    #[test]
+    fn a_pasted_line_break_alone_is_no_password() {
+        let gmail = crate::servers::gmail("jo@gmail.com");
+        assert!(matches!(
+            find_and_check("jo@gmail.com", " \r\n", Some(gmail)),
+            Checked::NoPassword
+        ));
+    }
+
+    #[test]
+    fn google_asking_for_an_app_password_says_so_in_its_own_words() {
+        let imap = refusal("Application-specific password required (Failure)")
+            .context(mail::NeedsAppPassword);
+        let smtp = anyhow::Error::from(crate::smtp::AuthFailed).context(mail::NeedsAppPassword);
+        for (error, which) in [(imap, "incoming (IMAP)"), (smtp, "outgoing (SMTP)")] {
+            assert!(refused(&error));
+            assert_eq!(
+                explain(&error, which, true),
+                "Use an app password from your Google Account, not your Google password."
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrong_app_password_is_refused_without_gmails_words() {
+        let why = explain(
+            &refusal("Invalid credentials (Failure)"),
+            "incoming (IMAP)",
+            true,
+        );
+        assert!(
+            why.starts_with("The incoming (IMAP) server did not take that password."),
+            "{why}"
+        );
+        assert!(!why.contains("Invalid credentials"), "{why}");
+        // Another provider's reason is what tells someone what to do.
+        let why = explain(&refusal("Enable IMAP first"), "incoming (IMAP)", false);
+        assert!(why.contains("“Enable IMAP first”"), "{why}");
+    }
+
+    #[test]
+    fn an_unreachable_server_is_not_a_refused_password() {
+        let error = anyhow::Error::from(mail::Offline);
+        assert!(!refused(&error));
+        assert_eq!(
+            explain(&error, "outgoing (SMTP)", true),
+            "The outgoing (SMTP) server could not be reached. Check its name and port."
+        );
+    }
+
+    #[test]
+    fn an_address_already_here_is_refused_however_it_signs_in() {
+        let account = |id: &str, email: &str, servers: Option<Servers>| AccountRef {
+            id: id.into(),
+            email: email.into(),
+            servers,
+            oauth: None,
+        };
+        let accounts = [
+            // An old install's first account, Gmail's, has no id of its own.
+            account("", "first@example.com", None),
+            account("g1", "jo@example.com", None),
+            account(
+                "i1",
+                "ana@example.com",
+                Some(crate::servers::gmail("ana@example.com")),
+            ),
+        ];
+        let google = Some("That address is already in Nimbra, with Google.");
+        assert_eq!(already_here(&accounts, "first@example.com"), google);
+        assert_eq!(already_here(&accounts, " JO@example.com "), google);
+        assert_eq!(
+            already_here(&accounts, "Ana@Example.com"),
+            Some("That account is already in Nimbra.")
+        );
+        assert_eq!(already_here(&accounts, "new@example.com"), None);
+    }
+}
+
 /// Against the local test servers (see `imap_mail::live`): `cargo test -- --ignored live`.
 #[cfg(test)]
 mod live {
@@ -1155,16 +1351,23 @@ mod live {
     fn live_the_sheet_checks_both_servers() {
         assert!(matches!(
             find_and_check("sheet@example.org", "pass", Some(local())),
-            Checked::Works(_)
+            Checked::Works(_, _)
         ));
         match find_and_check("sheet@example.org", "wrong", Some(local())) {
-            Checked::Failed(_, why) => assert!(why.contains("did not take that password"), "{why}"),
+            Checked::Failed { why, refused, .. } => {
+                assert!(
+                    refused && why.contains("did not take that password"),
+                    "{why}"
+                )
+            }
             _ => panic!("a wrong password must not be kept"),
         }
         let mut closed = local();
         closed.imap.port = 1;
         match find_and_check("sheet@example.org", "pass", Some(closed)) {
-            Checked::Failed(_, why) => assert!(why.contains("could not be reached"), "{why}"),
+            Checked::Failed { why, refused, .. } => {
+                assert!(!refused && why.contains("could not be reached"), "{why}")
+            }
             _ => panic!("an unreachable server must not be kept"),
         }
     }
