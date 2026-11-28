@@ -4028,8 +4028,8 @@ dependencies = [
 
 [[package]]
 name = "nimbra-core"
-version = "0.1.7"
-source = "git+https://github.com/nimbra-mail/core?tag=v0.1.7#db312b5ea59df80d660a6a66ec4d8e07287823ac"
+version = "0.1.8"
+source = "git+https://github.com/nimbra-mail/core?rev=d1369d30d48bf65b17f0b5883feca23e856fc17a#d1369d30d48bf65b17f0b5883feca23e856fc17a"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

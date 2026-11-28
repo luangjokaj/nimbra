@@ -130,7 +130,7 @@ impl Nimbra {
             return;
         }
         let kept = self.listed();
-        if self.mailbox != View::Search {
+        if self.mailbox.base() != View::Search {
             self.cache.insert(self.mailbox, kept);
         }
     }
@@ -565,6 +565,10 @@ impl Nimbra {
             return;
         }
         self.sync_owed = false;
+        // A search is not run again by itself, of one account or of every one.
+        if self.mailbox.base() == View::Search {
+            return;
+        }
         // All inboxes cannot be patched from one feed: list it again.
         if self.mailbox.is_every() {
             self.fetch_every(cx);
@@ -596,7 +600,7 @@ impl Nimbra {
         if self.connection.is_none() {
             return;
         }
-        if self.prefetching || self.mailbox == View::Search || self.status != Status::Ready {
+        if self.prefetching || self.mailbox.base() == View::Search || self.status != Status::Ready {
             return;
         }
         // Each thread with its own account's connection (All inboxes mixes accounts).
@@ -1409,6 +1413,7 @@ impl Nimbra {
                         }
                         if changed
                             && this.mailbox.is_every()
+                            && this.mailbox.base() != View::Search
                             && this.compose.is_none()
                             && !this.fetching()
                         {
@@ -1594,8 +1599,17 @@ impl Nimbra {
             .accounts
             .iter()
             .filter(|account| listing::takes_part(view, account.servers.is_some()))
+            // A search of one account (not the one shown) asks only it.
+            .filter(|account| {
+                view.base() != View::Search
+                    || match &self.search_scope {
+                        Scope::All => true,
+                        Scope::Account(id) => account.id == *id,
+                    }
+            })
             .filter_map(|account| {
                 let label = match view.base() {
+                    View::Search => Some(self.query.clone()),
                     View::Label(index) => Some(
                         self.every_labels
                             .get(index)?
@@ -1651,7 +1665,7 @@ impl Nimbra {
                     crate::store::Store::saved_empty(&account.id, &record(View::Inbox))
                 });
         }
-        let check = self.checks.start(view, "");
+        let check = self.checks.start(view, &self.query);
         let seen = Asked::now(self.changes_seen());
         cx.notify();
         let generation = self.account_gen;
@@ -2191,6 +2205,7 @@ impl Nimbra {
         cx.notify();
         let generation = self.account_gen;
         let count = if from_top { self.mails.len() + 30 } else { 30 };
+        let query = self.query.clone();
         cx.spawn(async move |this, cx| {
             let executor = cx.background_executor();
             let results =
@@ -2207,7 +2222,8 @@ impl Nimbra {
                     return;
                 }
                 this.loading_more = false;
-                if this.mailbox != view {
+                // Another search was run meanwhile: these are not its results.
+                if this.mailbox != view || (view.base() == View::Search && this.query != query) {
                     cx.notify();
                     return;
                 }

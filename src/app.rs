@@ -564,6 +564,11 @@ pub struct Nimbra {
     finder_sel: usize,
     finder_gen: u64,
     finder_loading: bool,
+    /// The accounts the search panel is set to search, when picked there; otherwise where
+    /// the window is decides (`search_scope_here`).
+    finder_scope: Option<Scope>,
+    /// The accounts the search on screen looks in.
+    search_scope: Scope,
     /// Counts All/Unread switches, to slide the highlight (0: never switched, no slide).
     filter_gen: usize,
     filter_switched: Option<std::time::Instant>,
@@ -821,6 +826,8 @@ pub struct Nimbra {
     paged: HashSet<View>,
     /// The search panel's results, kept scrolled to the highlighted one.
     finder_scroll: gpui::ScrollHandle,
+    /// The search panel's row of accounts, scrolled sideways when they do not fit.
+    finder_scope_scroll: gpui::ScrollHandle,
     pull: f32,
     pull_armed: bool,
     /// The indicator settling after release: (from height, to height). `pull_gen` restarts it.
@@ -889,6 +896,8 @@ impl Nimbra {
         });
         let finder_events = cx.subscribe(&finder, |this, _, event: &InputEvent, cx| match event {
             InputEvent::Changed => this.finder_changed(cx),
+            InputEvent::Tab if this.several_accounts() => this.step_scope(1, cx),
+            InputEvent::BackTab if this.several_accounts() => this.step_scope(-1, cx),
             InputEvent::Down | InputEvent::Tab => this.finder_step(1, cx),
             InputEvent::Up => this.finder_step(-1, cx),
             InputEvent::Enter => this.finder_open_selected(cx),
@@ -932,6 +941,8 @@ impl Nimbra {
             finder_sel: 0,
             finder_gen: 0,
             finder_loading: false,
+            finder_scope: None,
+            search_scope: Scope::All,
             search,
             query: String::new(),
             _search_events: search_events,
@@ -1173,6 +1184,7 @@ impl Nimbra {
             sync_owed: false,
             paged: HashSet::new(),
             finder_scroll: gpui::ScrollHandle::new(),
+            finder_scope_scroll: gpui::ScrollHandle::new(),
             pull: 0.,
             pull_armed: false,
             pull_anim: None,
@@ -2887,7 +2899,9 @@ impl Render for Nimbra {
                     cx.notify();
                 } else if this.compose.is_some() {
                     this.request_close_compose(cx);
-                } else if this.mailbox == View::Search || !this.search.read(cx).text().is_empty() {
+                } else if this.mailbox.base() == View::Search
+                    || !this.search.read(cx).text().is_empty()
+                {
                     this.clear_search(cx);
                 } else {
                     this.palette = false;

@@ -49,7 +49,7 @@ struct Check {
 
 impl Check {
     fn is_for(&self, view: View, query: &str) -> bool {
-        self.view == view && (view != View::Search || self.query == query)
+        self.view == view && (view.base() != View::Search || self.query == query)
     }
 }
 
@@ -155,6 +155,12 @@ mod tests {
         let search = checks.start(View::Search, "alpha");
         assert!(!checks.running_for(View::Search, "beta"));
         assert!(!checks.finish(search, View::Search, "beta"));
+        // Every account's search too: another search's answer is not its own.
+        let every = View::every(View::Search);
+        let search = checks.start(every, "alpha");
+        assert!(checks.running_for(every, "alpha"));
+        assert!(!checks.running_for(every, "beta"));
+        assert!(!checks.finish(search, every, "beta"));
     }
 
     #[test]
