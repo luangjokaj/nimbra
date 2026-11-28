@@ -38,7 +38,7 @@ NIMBRA_DEMO=1 cargo run         # the same, even with an account set up
 ```
 
 Without an OAuth client in `~/.config/nimbra/oauth.env`, Nimbra runs on built-in sample data and never touches the
-network. That's all most changes need. To use a real account, follow [Connect your mail](README.md#connect-your-mail)
+network. That's all most changes need. To use a real account, follow [Connecting your mail](docs/accounts.md#gmail)
 with a Google Cloud project of your own. Never commit a client id, a secret or a token.
 
 Test copies of the app should never touch your real mail store. Run them with a throwaway home folder:
@@ -47,17 +47,17 @@ Test copies of the app should never touch your real mail store. Run them with a 
 HOME=/tmp/nimbra-test NIMBRA_DEMO=1 cargo run
 ```
 
-`NIMBRA_SCREEN`, `NIMBRA_THEME` and the other variables in [Screenshot states](README.md#screenshot-states) open a
+`NIMBRA_SCREEN`, `NIMBRA_THEME` and the other variables in [Screenshot states](docs/development.md#screenshot-states) open a
 given screen directly, which is how screenshots for issues and pull requests are made.
 
-Where things live is in [Layout](README.md#layout).
+Where things live is in [Layout](docs/development.md#layout).
 
 The mail engine is its own repo, [nimbra-core](https://github.com/nimbra-mail/core), shared with the iOS app. Cargo
 fetches it from GitHub at the release tag in `Cargo.toml`, so you don't need a copy of it to work on the app. A change
 to the engine is made, tested and reviewed there first (it has its own CONTRIBUTING.md), then this app takes it up
 with a new tag. To try an engine change in the app before it is released, clone the engine next to this repo
 (`../core`) and run `scripts/local-core.sh on`; run `scripts/local-core.sh off` before you commit, so `Cargo.lock`
-points at GitHub again (CI checks it). [Working on the engine](README.md#working-on-the-engine) has the details.
+points at GitHub again (CI checks it). [Working on the engine](docs/development.md#working-on-the-engine) has the details.
 
 ## What a good change looks like
 
@@ -176,7 +176,7 @@ Leave out real addresses, subjects and message text. Redact screenshots.
   to see still has something to show: the failing test before and the passing one after.
 - **Keep it green and mergeable.** CI (format, clippy, tests, the title check) passes, and the branch rebases cleanly
   on `main`.
-- **Update the docs** a user would read: the README when behaviour or keys change.
+- **Update the docs** a user would read: [the guide](docs/guide.md) or [the keys](docs/keys.md) when behaviour or keys change, and the README only when the front page should say so.
 - We don't owe a review or a merge, and a good pull request can still wait. Sometimes your work lands in a different
   shape; you stay on it as a `Co-authored-by:` trailer.
 

@@ -75,7 +75,7 @@ pub fn document(body: &str, images: bool) -> String {
 /// in the head, and ignores `rel` and `href`. Nothing is lost, as the policy blocks all a
 /// link could load. No parser is needed: a tag's name can only be written out literally
 /// (entities and NULs cannot spell one), in any letter case.
-fn without_links(html: &str) -> String {
+pub(crate) fn without_links(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut done = 0;
     for (at, _) in html.match_indices('<') {
@@ -174,17 +174,9 @@ mod platform {
     }
 
     impl HtmlView {
-        /// Creates the (hidden) web view as a child of the app window.
-        pub fn new(window: &gpui::Window) -> Option<Self> {
-            Self::build(window, None)
-        }
-
-        /// As `new`, with `loaded` called each time a page has loaded (its images too).
+        /// Creates the (hidden) web view as a child of the app window, with `loaded` called
+        /// each time a page has loaded (its images too).
         pub fn with_loaded(window: &gpui::Window, loaded: impl Fn() + 'static) -> Option<Self> {
-            Self::build(window, Some(Box::new(loaded)))
-        }
-
-        fn build(window: &gpui::Window, loaded: Option<Box<dyn Fn()>>) -> Option<Self> {
             let builder = WebViewBuilder::new()
                 .with_javascript_disabled()
                 .with_incognito(true)
@@ -228,14 +220,11 @@ mod platform {
                     follow(&link);
                     NewWindowResponse::Deny
                 });
-            let builder = match loaded {
-                Some(loaded) => builder.with_on_page_load_handler(move |event, _| {
-                    if matches!(event, wry::PageLoadEvent::Finished) {
-                        loaded();
-                    }
-                }),
-                None => builder,
-            };
+            let builder = builder.with_on_page_load_handler(move |event, _| {
+                if matches!(event, wry::PageLoadEvent::Finished) {
+                    loaded();
+                }
+            });
             let view = builder.build_as_child(window).ok()?;
             // Without the check there is no view at all (the reader shows the mail instead).
             #[cfg(target_os = "windows")]
@@ -301,14 +290,34 @@ mod platform {
             self.account.replace(account.map(str::to_string));
             #[cfg(not(target_os = "macos"))]
             let _ = account;
+            self.load(&document(body, images));
+        }
+
+        /// Loads a whole page made by the app as it is, with its own policy: the print
+        /// page (`print::document`).
+        pub fn show_page(&self, page: &str) {
+            #[cfg(target_os = "macos")]
+            self.account.replace(None);
+            self.load(page);
+        }
+
+        fn load(&self, html: &str) {
             #[cfg(target_os = "windows")]
             self.loads.set(self.loads.get() + 1);
-            let shown = self.view.load_html(&document(body, images));
+            let shown = self.view.load_html(html);
             #[cfg(target_os = "windows")]
             if shown.is_err() {
                 self.loads.set(self.loads.get().saturating_sub(1));
             }
             let _ = shown;
+        }
+
+        /// Asks the print page whether it is ready (`print::READY`); `answer` gets what
+        /// it says.
+        pub fn when_ready(&self, answer: impl Fn(String) + Send + 'static) {
+            let _ = self
+                .view
+                .evaluate_script_with_callback(crate::print::READY, answer);
         }
 
         /// Position and size in window points.
@@ -510,9 +519,25 @@ mod platform {
             true
         }
 
-        /// Opens the system print panel for what the view shows.
+        /// Opens the system print panel for what the view shows, with the paper's margins
+        /// (points) around it: the page itself has none.
         pub fn print(&self) {
-            let _ = self.view.print();
+            #[cfg(target_os = "macos")]
+            {
+                let options = wry::PrintOptions {
+                    margins: wry::PrintMargin {
+                        top: 40.,
+                        right: 44.,
+                        bottom: 40.,
+                        left: 44.,
+                    },
+                };
+                let _ = wry::WebViewExtDarwin::print_with_options(&self.view, &options);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = self.view.print();
+            }
         }
 
         /// Makes the page see a light or dark colour scheme, following the app's theme
@@ -1220,10 +1245,9 @@ mod platform {
     pub struct HtmlView;
 
     impl HtmlView {
-        pub fn new(_window: &gpui::Window) -> Option<Self> {
-            None
-        }
         pub fn show(&self, _body: &str, _images: bool, _account: Option<&str>) {}
+        pub fn show_page(&self, _page: &str) {}
+        pub fn when_ready(&self, _answer: impl Fn(String) + Send + 'static) {}
         pub fn set_bounds(&self, _x: f32, _y: f32, _width: f32, _height: f32) {}
         pub fn set_visible(&self, _visible: bool) {}
         pub fn set_zoom(&self, _zoom: f32) {}

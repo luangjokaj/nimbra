@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### New
+- **Print a conversation or one message.** The ⋯ menu and the File menu have Print conversation (⌘P), every message oldest first, and Print this message (⇧⌘P), the one you are reading with its full headers; a thread of one message just has Print. The page is new too: the subject in Instrument Serif, a compact header for each message with its sender, recipients and date, attachments by name and size, always light. Emails in their original formatting keep their own design, and their styles no longer spill over the headers or the other emails. The print panel opens once the page has loaded, instead of after a fixed wait, and the paper gets proper margins.
+
 ### Fixed
 - **Menus keep the window in front.** Opening a menu (Label, Move to, ⋯, a right-click) no longer dims the window's traffic lights as if another app had come forward; the menu still takes the arrow keys, Return and Esc.
 - **Menus open under their button.** Label, Move to and ⋯ open right under the button that opened them, wherever the toolbar puts it and however narrow the window, in a message's own window too.

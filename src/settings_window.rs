@@ -14,7 +14,7 @@ const ABOUT_ICON: f32 = 96.;
 const MAIL_APP_CONTROL: f32 = 28.;
 
 /// The app's icon in its light (Default) and Dark appearances, rendered from
-/// `assets/AppIcon.icon` (README: how to render them again).
+/// `assets/AppIcon.icon` (docs/development.md: how to render them again).
 pub(super) static APP_ICON: std::sync::LazyLock<std::sync::Arc<gpui::Image>> =
     std::sync::LazyLock::new(|| {
         std::sync::Arc::new(gpui::Image::from_bytes(

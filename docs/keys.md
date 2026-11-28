@@ -36,6 +36,7 @@ zoom, `esc` and switching account (`⌘1` to `⌘9`) stay as they are.
 | `⌘[` / `⌘]` | Back / forward through opened threads |
 | `⌘W` | Close the window; Nimbra keeps running and checking mail (`⌘Q` quits) |
 | `⌘R` or pull the list down | Check for mail |
+| `⌘P` / `⌘⇧P` | Print the conversation / the message you're reading |
 | Right-click a thread | Mark read or unread, star, mark done, trash, report spam, open in Gmail |
 
 Shortcuts with a bare letter (E, R, S…) work in the list and the reading pane, not while you're typing in a field.

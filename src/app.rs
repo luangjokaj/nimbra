@@ -86,6 +86,7 @@ use list::*;
 
 #[path = "reading.rs"]
 mod reading;
+pub(crate) use reading::file_size;
 use reading::*;
 
 #[path = "palette.rs"]
@@ -138,7 +139,10 @@ actions!(
         Reload,
         OpenSettings,
         SelectAllThreads,
+        /// The open conversation, every message (⌘P).
         Print,
+        /// The message being read (⇧⌘P).
+        PrintMessage,
         HideApp,
         /// Nimbra › About Nimbra.
         AboutNimbra,
@@ -606,8 +610,13 @@ pub struct Nimbra {
     reader_line: crate::ui::LoadingLine,
     /// The number shown on the Dock icon.
     badge: Option<u32>,
-    /// A document waiting to be printed (it is loaded into the web view first).
+    /// A page waiting to be printed (it is loaded into the print view first).
     print_pending: Option<String>,
+    /// The print job last asked for, and the one whose page is still loading.
+    print_job: u64,
+    print_waiting: Option<u64>,
+    /// What the print view says: a page has loaded, or its answer to `print::READY`.
+    print_events: futures::channel::mpsc::UnboundedSender<PrintEvent>,
     /// Nimbra opens at login (read when Settings opens).
     login_item: bool,
     /// Rows picked with ⌘-click, Shift-click or ⌘A, for actions on several threads.
@@ -877,6 +886,7 @@ impl Nimbra {
                 .flatten()
         });
         let (mail_views, mail_events) = crate::mail_views::MailViews::new();
+        let (print_events, print_incoming) = futures::channel::mpsc::unbounded();
         let mut settings = crate::settings::load();
         crate::ui::set_zoom(settings.zoom());
         crate::usage::opened(settings.usage_counts);
@@ -1032,6 +1042,9 @@ impl Nimbra {
             reader_line: Default::default(),
             badge: None,
             print_pending: None,
+            print_job: 0,
+            print_waiting: None,
+            print_events,
             login_item: false,
             picked: Default::default(),
             history_groups: Vec::new(),
@@ -1294,6 +1307,20 @@ impl Nimbra {
         // native reader instead. Messages without HTML always use the reader.
         this.original = this.settings.original_view && std::env::var_os("NIMBRA_READER").is_none();
         this.original_images = this.settings.load_images;
+        // The print view's pages loading, and their answers (`print_event`).
+        cx.spawn(async move |this, cx| {
+            use futures::StreamExt as _;
+            let mut events = print_incoming;
+            while let Some(event) = events.next().await {
+                if this
+                    .update(cx, |this, cx| this.print_event(event, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         // Each email's height, as its page works it out (`mail_views.rs`).
         cx.spawn(async move |this, cx| {
             use futures::StreamExt as _;
@@ -2917,7 +2944,12 @@ impl Render for Nimbra {
             }))
             // Menu items grey out when they would do nothing (`MenuState`).
             .when(enabled.open, |d| {
-                d.on_action(cx.listener(|this, _: &Print, _, cx| this.print_selected(cx)))
+                d.on_action(cx.listener(|this, _: &Print, _, cx| {
+                    this.print_selected(crate::print::Scope::Conversation, cx)
+                }))
+                .on_action(cx.listener(|this, _: &PrintMessage, _, cx| {
+                    this.print_selected(crate::print::Scope::Message, cx)
+                }))
             })
             .when(enabled.answer, |d| {
                 d.on_action(cx.listener(|this, _: &MenuReply, _, cx| {
