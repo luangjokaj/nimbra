@@ -1697,6 +1697,9 @@ impl Nimbra {
                     ..Default::default()
                 },
                 |window, cx| {
+                    // Not seen until its emails are drawn (`MessageWindow::reveal`), so it
+                    // opens whole, as the main window shows an email.
+                    crate::blur::set_alpha(window, 0.);
                     let guard = owner.clone();
                     window.on_window_should_close(cx, move |window, cx| {
                         let handle = window.window_handle();
@@ -1707,6 +1710,16 @@ impl Nimbra {
             );
             if let Ok(handle) = opened {
                 me.update(cx, |n, _| n.message_windows.push(handle));
+                // Shown by now whatever it drew (`MessageWindow::reveal`).
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(900))
+                        .await;
+                    handle
+                        .update(cx, |view, window, _| view.reveal_now(window))
+                        .ok();
+                })
+                .detach();
             }
         });
     }
