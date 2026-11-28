@@ -459,6 +459,7 @@ fn main() {
     // Before any window builds its pipelines.
     erase::install();
     quitting::install();
+    popup::install();
     let app = Application::new().with_assets(Assets);
     // Clicking the Dock icon while the window is hidden brings it back.
     app.on_reopen(show_main_window);

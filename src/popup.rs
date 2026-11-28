@@ -9,6 +9,53 @@
 //! windows at its level, so they move with it and stay behind other apps' windows when
 //! Nimbra is not in front, rather than floating over everything as pop-ups do.
 
+/// Pop-ups never become the main window. GPUI's panel class (`GPUIPanel`, every pop-up:
+/// menus, tooltips, notices) says it can, so a menu that takes the keyboard (↑↓, Return,
+/// Esc) also took the main window's place, and its traffic lights and the rest dimmed as if
+/// another app were in front each time a menu opened. A panel that takes the keys while the
+/// window stays main is how AppKit's own panels behave. Run before the app does.
+pub fn install() {
+    install_platform::run();
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)] // emitted by the objc crate's macros
+mod install_platform {
+    use objc::runtime::{BOOL, Class, Imp, Method, NO, Object, Sel, method_setImplementation};
+    use objc::{sel, sel_impl};
+
+    extern "C" fn never(_: &Object, _: Sel) -> BOOL {
+        NO
+    }
+
+    pub fn run() {
+        let Some(panel) = Class::get("GPUIPanel") else {
+            return;
+        };
+        // GPUI's own answer (yes), on the class itself: never one it inherits, which would be
+        // NSWindow's, for every window (the main one too).
+        let wanted = sel!(canBecomeMainWindow);
+        if !panel.instance_methods().iter().any(|m| m.name() == wanted) {
+            return;
+        }
+        let Some(method) = panel.instance_method(wanted) else {
+            return;
+        };
+        // SAFETY: on the main thread before the app runs and any window exists. The
+        // function has the method's signature, BOOL (id, SEL), and only this class (GPUI's
+        // pop-ups) answers differently; its windows can still take the keyboard.
+        unsafe {
+            let imp = std::mem::transmute::<extern "C" fn(&Object, Sel) -> BOOL, Imp>(never);
+            method_setImplementation(method as *const Method as *mut Method, imp);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod install_platform {
+    pub fn run() {}
+}
+
 /// How long a pop-up takes to go (seconds): it is closed after.
 pub const FADE: f64 = 0.22;
 

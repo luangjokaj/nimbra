@@ -1,5 +1,11 @@
 # Nimbra changelog
 
+## [Unreleased]
+
+### Fixed
+- **Menus keep the window in front.** Opening a menu (Label, Move to, ⋯, a right-click) no longer dims the window's traffic lights as if another app had come forward; the menu still takes the arrow keys, Return and Esc.
+- **Menus open under their button.** Label, Move to and ⋯ open right under the button that opened them, wherever the toolbar puts it and however narrow the window, in a message's own window too.
+
 ## [0.1.11] - 2026-11-28
 
 ### New

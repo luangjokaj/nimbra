@@ -47,7 +47,7 @@ impl RowAction {
 }
 
 /// A small menu dropped from the reading toolbar.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Menu {
     Labels,
     More,
@@ -148,6 +148,32 @@ pub(super) const ACCOUNT_ROW_CHROME: f32 = 2. * (1. + 4. + 8.) + 24. + 10. + 14.
 /// How far an account row's photo sits in from the list's left edge: the card's border (1)
 /// and padding (4) and the row's padding (8).
 pub(super) const ACCOUNT_ROW_INSET: f32 = 1. + 4. + 8.;
+
+/// Where each menu's button is drawn, by window (a conversation's own window has the same
+/// toolbar): left, bottom and right, in the window's points.
+pub(super) type Anchors =
+    std::rc::Rc<std::cell::RefCell<HashMap<(gpui::WindowId, Menu), (f32, f32, f32)>>>;
+
+/// An invisible layer over a button that records where it is drawn, for `menu` to open
+/// under it (`menu_anchors`).
+pub(super) fn anchor_for(anchors: &Anchors, menu: Menu) -> impl IntoElement {
+    let anchors = anchors.clone();
+    gpui::canvas(
+        move |bounds, window, _| {
+            anchors.borrow_mut().insert(
+                (window.window_handle().window_id(), menu),
+                (
+                    from_screen(bounds.left()),
+                    from_screen(bounds.bottom()),
+                    from_screen(bounds.right()),
+                ),
+            );
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}
 
 /// An account's photo, or its initial on its tone when it has none.
 pub(super) fn account_face(email: &str, photo: Option<&Arc<gpui::Image>>, size: f32) -> AnyElement {
@@ -1040,10 +1066,22 @@ impl Nimbra {
         } else {
             items.len() as f32 * 32. + 14.
         };
+        let anchored = self
+            .menu_anchors
+            .borrow()
+            .get(&(window.window_handle().window_id(), menu))
+            .copied();
         let (left, top) = match menu {
-            Menu::Labels => (pane_left + 150., 50.),
-            Menu::MoveTo => (pane_left + 186., 50.),
-            Menu::More => (from_screen(viewport.width) - 20. - width, 50.),
+            // Under its button, wherever the toolbar has it: Label and Move to start at the
+            // button's left edge, ⋯ (at the far right) ends at its right one.
+            Menu::Labels | Menu::MoveTo => match anchored {
+                Some((left, bottom, _)) => (left, bottom + 4.),
+                None => (pane_left + 150., 50.),
+            },
+            Menu::More => match anchored {
+                Some((_, bottom, right)) => (right - width, bottom + 4.),
+                None => (from_screen(viewport.width) - 20. - width, 50.),
+            },
             // Under the composer's From button, its photos over the button's.
             Menu::From => {
                 let (left, bottom) = self.from_anchor.get();
@@ -1072,6 +1110,12 @@ impl Nimbra {
                     .1
                     .min(from_screen(viewport.height) - height - 8.),
             ),
+        };
+        // A menu under its button stays inside the window, however narrow.
+        let left = if matches!(menu, Menu::Labels | Menu::MoveTo | Menu::More) {
+            left.min(from_screen(viewport.width) - width - 8.).max(8.)
+        } else {
+            left
         };
         let origin = window.bounds().origin;
         let bounds = gpui::Bounds::new(
