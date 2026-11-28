@@ -1,6 +1,6 @@
 # Nimbra changelog
 
-## [Unreleased]
+## [0.1.11] - 2026-11-28
 
 ### New
 - **Signatures, tidier.** In Settings › Composing the signatures sit on one line that scrolls sideways, New signature first in the accent; the name has a small label with a full-width field under it, and Make default and Delete sit beside Text, HTML and Preview.
