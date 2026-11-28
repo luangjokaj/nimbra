@@ -1184,10 +1184,10 @@ impl Nimbra {
             return;
         };
         let account = composer.account.clone().unwrap_or_else(|| shown.clone());
-        // A new draft already saved is in Gmail's Drafts: the listing after the save has it.
-        if composer.listed_as.is_none() && composer.draft_id.is_some() {
-            return;
-        }
+        // Saved already, with nothing more to save: no save will come to take its made-up row
+        // out of `pending` (`composer_saved`), so it is shown without, until the listing
+        // asked for below has the real one.
+        let confirmed = composer.draft_id.is_some() && !composer.dirty() && !composer.saving;
         let out = composer.outgoing(cx);
         let id = match composer.listed_as.clone() {
             Some(id) => id,
@@ -1297,6 +1297,7 @@ impl Nimbra {
         }
         // Not listed yet: in Drafts now, as new mail is in the Inbox (`arrived`).
         self.pending.add(View::Drafts, &account, &row);
+        let refresh_after = confirmed;
         for view in [View::Drafts, View::every(View::Drafts)] {
             if view == self.mailbox {
                 continue;
@@ -1310,6 +1311,9 @@ impl Nimbra {
         let here = self.mailbox == View::every(View::Drafts)
             || (self.mailbox == View::Drafts && account == shown);
         if !here || self.status != Status::Ready || found {
+            if refresh_after {
+                self.pending.forget(View::Drafts, &account, &id);
+            }
             cx.notify();
             return;
         }
@@ -1323,6 +1327,10 @@ impl Nimbra {
         self.install(fresh, cx);
         self.pending = pending;
         self.notice = notice;
+        if refresh_after {
+            self.pending.forget(View::Drafts, &account, &id);
+            self.refresh(cx);
+        }
         cx.notify();
     }
 
@@ -1772,6 +1780,21 @@ impl Nimbra {
             let serial = composer.serial;
             self.parked.push((Parked::Closing, composer));
             self.save_composer(serial, false, cx);
+        } else if composer.draft_id.is_some() && composer.listed_as.is_none() {
+            // Saved already (as typing paused): in Drafts now all the same, its composer
+            // kept for Edit draft on that row until Drafts is listed again.
+            let serial = composer.serial;
+            self.parked.push((Parked::Closing, composer));
+            self.show_in_drafts(serial, cx);
+            if let Some(pos) = self.parked.iter().position(|(_, c)| c.serial == serial) {
+                let (_, composer) = self.parked.remove(pos);
+                if let Some(id) = composer.listed_as.clone() {
+                    self.closed_drafts.retain(|(i, _)| *i != id);
+                    self.closed_drafts.push((id, composer));
+                    let excess = self.closed_drafts.len().saturating_sub(8);
+                    self.closed_drafts.drain(..excess);
+                }
+            }
         }
         cx.notify();
     }
