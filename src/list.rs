@@ -773,14 +773,19 @@ impl Nimbra {
             self.more().is_some(),
         );
 
-        // Each option has a fixed width, so the highlight behind them can slide from one to
-        // the other (and nothing shifts when it does).
+        // The filters are the toolbar's actions (an icon and a word, 30pt tall): each has a
+        // fixed width, so the active look behind them can slide from one to the other (and
+        // nothing shifts when it does).
         let unread_text = unread.to_string();
-        let widths = [44., 70. + 7. * unread_text.len() as f32];
-        // The switch: its options, the 2pt between them, its padding and its border.
-        let mut switch_w = widths[0] + widths[1] + 2. + 8.;
+        let word = |label: &str| text_width(label, 13.5, crate::theme::SANS, cx);
+        let widths = [
+            9. + 16. + 6. + word("All") + 9.,
+            9. + 16. + 6. + word("Unread") + 6. + 7. * unread_text.len() as f32 + 9.,
+        ];
+        // The filters and the 2pt between them.
+        let mut switch_w = widths[0] + widths[1] + 2.;
         if self.is_demo() {
-            switch_w += 2. + 112.;
+            switch_w += 2. + 140.;
         }
         // Dot, gap, padding and border around the pill's words.
         let offline_w = self
@@ -791,21 +796,27 @@ impl Nimbra {
             switch_w,
             offline_w,
         );
-        let segment = |label: &str, count: Option<(&str, Hsla)>, active: bool, width: f32| {
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .gap(dp(6.))
-                .w(dp(width))
-                .h(dp(SEGMENT_H))
-                .rounded(dp(7.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if active { t.text } else { t.text3 })
-                .child(label.to_string())
-                .children(count.map(|(n, color)| mono(n.to_string(), color)))
-        };
+        let hover = t.hover;
+        let segment =
+            |name: &str, label: &str, count: Option<(&str, Hsla)>, active: bool, width: f32| {
+                let color = if active { t.text } else { t.text2 };
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(dp(6.))
+                    .w(dp(width))
+                    .h(dp(30.))
+                    .px(dp(9.))
+                    .rounded(dp(8.))
+                    .text_size(dp(13.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(color)
+                    .when(!active, |d| d.hover(move |s| s.bg(hover)))
+                    .child(icon(name, 16., color))
+                    .child(label.to_string())
+                    .children(count.map(|(n, color)| mono(n.to_string(), color)))
+            };
         // The highlight: where it is, and where it was before the last switch.
         let spot = |unread: bool| {
             if unread {
@@ -816,33 +827,26 @@ impl Nimbra {
         };
         let (to_x, to_w) = spot(self.unread_only);
         let (from_x, from_w) = spot(!self.unread_only);
+        // The active one has the look a toolbar action has while it is pressed.
         let pill = div()
             .absolute()
-            .top(dp(3.))
-            .h(dp(SEGMENT_H))
-            .rounded(dp(7.))
-            .bg(t.raised)
-            .border_1()
-            .border_color(t.border)
-            .shadow(vec![shadow(
-                c(0x000000, if t.dark { 0.25 } else { 0.08 }),
-                1.,
-                3.,
-                0.,
-            )]);
+            .top_0()
+            .h(dp(30.))
+            .rounded(dp(8.))
+            .bg(t.selected);
         // Only right after a switch (not again each time the list is drawn anew).
         let switching = self
             .filter_switched
             .is_some_and(|at| at.elapsed() < Duration::from_millis(260))
             && !crate::system::reduces_motion();
         let pill = if self.filter_gen == 0 || !switching {
-            pill.left(dp(3. + to_x)).w(dp(to_w)).into_any_element()
+            pill.left(dp(to_x)).w(dp(to_w)).into_any_element()
         } else {
             pill.with_animation(
                 ("filter-pill", self.filter_gen),
                 Animation::new(Duration::from_millis(260)).with_easing(ease_out_quint()),
                 move |d, delta| {
-                    d.left(dp(3. + from_x + (to_x - from_x) * delta))
+                    d.left(dp(from_x + (to_x - from_x) * delta))
                         .w(dp(from_w + (to_w - from_w) * delta))
                 },
             )
@@ -906,14 +910,9 @@ impl Nimbra {
                             .flex()
                             .flex_none()
                             .gap(dp(2.))
-                            .p(dp(3.))
-                            .rounded(dp(10.))
-                            .bg(t.hover)
-                            .border_1()
-                            .border_color(t.border)
                             .child(pill)
                             .child(
-                                segment("All", None, !self.unread_only, widths[0])
+                                segment("inbox", "All", None, !self.unread_only, widths[0])
                                     .id("filter-all")
                                     .cursor_pointer()
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -922,6 +921,7 @@ impl Nimbra {
                             )
                             .child(
                                 segment(
+                                    "mail",
                                     "Unread",
                                     Some((&unread_text, t.faint)),
                                     self.unread_only,
@@ -934,7 +934,13 @@ impl Nimbra {
                                 ),
                             )
                             .when(self.is_demo(), |d| {
-                                d.child(segment("Needs reply", Some(("2", t.rose)), false, 112.))
+                                d.child(segment(
+                                    "reply",
+                                    "Needs reply",
+                                    Some(("2", t.rose)),
+                                    false,
+                                    140.,
+                                ))
                             }),
                     )
                     .child(div().flex_1().min_w(dp(0.)).mx(dp(-HEADER_GAP / 2.)))
