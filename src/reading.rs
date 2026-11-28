@@ -2040,8 +2040,16 @@ impl Nimbra {
                         )
                     }),
             )
+            // As far from what is over and under it as from the pane's side: 8 is the
+            // header's own gap over it, and 12 the gap under the header to the email's line.
             .when(open && !header.from.address.is_empty(), |d| {
-                d.child(self.details_card(t, header, &card_thread, index, &person, cx))
+                d.child(
+                    self.details_card(t, header, &card_thread, index, &person, cx)
+                        .mt(dp(ORIGINAL_SIDE - 8.))
+                        .when(self.original_on(), |card| {
+                            card.mb(dp(ORIGINAL_SIDE - ORIGINAL_GAP))
+                        }),
+                )
             })
     }
 
